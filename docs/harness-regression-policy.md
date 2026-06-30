@@ -33,16 +33,16 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-01 03:58 +10: the current
+Latest known live HG status, as of 2026-07-01 04:47 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 3,294
 packet files, and packet window
 `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`. Gameplay was reached through
 module/resource load, area/gameplay traffic, and repeated live-object frames.
-At the latest live-data gate the newest packet was about 21h17m old. The
+At the latest live-data gate the newest packet was about 22h16m old. The
 strict proxy2 replay
-`C:\nwnbridge\codex-proxy2-replay-quickbar-proof-provenance-automation-20260701-0345`
+`C:\nwnbridge\codex-proxy2-replay-quickbar-reject-diagnostics-automation-20260701-043828`
 reported 0 quarantines, 3,547 strict allows, 2,781 captured direct live-object
 frames, 445 exact live-object rewrite matches, 3,226 exact lifecycle claim
 summaries, 10 area rewrites, 0 strict quarantine decisions, and 0
@@ -62,10 +62,14 @@ second-list refs as deferred inventory item context without treating them as
 active lifecycle materialization, and the quickbar writer now records which
 proof source allowed each emitted item object: explicit EE self-materialization,
 active registry state, Feature-25 first-list refs, Feature-25 second-list refs,
-or legacy-tail refs. The 2026-07-01 03:45 replay did not exercise quickbar item
-emission, so all new quickbar item materialization provenance counters stayed
-at 0 while spell/general quickbar traffic continued to rewrite cleanly.
-Missing-source-type recovered item bodies remain blanked. The replay used
+or legacy-tail refs, and now also records item-source/rejection buckets:
+explicit/compact/recovered sources plus recovered-type, missing-source-type,
+no-present-item, invalid-object-id, missing-active-property,
+unsupported-appearance, appearance-shape, and missing-state-proof rejects. The
+2026-07-01 04:38 replay saw 40 quickbar rewrite summaries but 0 item buttons,
+so every quickbar item provenance and rejection counter stayed at 0 while
+spell/general quickbar traffic continued to rewrite cleanly. Missing-source-type
+recovered item bodies remain blanked. The replay used
 alternate local ports and
 `-DrainReceiveTimeoutMilliseconds 5` because the default empty-UDP-receive
 timeout can make long captures exceed automation limits.

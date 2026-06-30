@@ -771,6 +771,24 @@ not as standalone workaround targets.
   item slots after verified Feature-25 refs, then use the provenance counters to
   decide whether compact item emission should accept active-only, first-list,
   or second-list proof.
+- 2026-07-01 quickbar item rejection diagnostics: live-data gate used the same
+  gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 22h16m old at gate
+  time, with gameplay reached. The quickbar writer now reports why parsed item
+  slots are not emitted, separating explicit/compact/recovered source buckets
+  from recovered-type, missing-source-type, no-present-item, invalid-object-id,
+  missing-active-property, unsupported-appearance, appearance-shape, and
+  missing-state-proof rejects. This keeps the decompile-backed policy strict
+  while making the next item-slot capture actionable. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-reject-diagnostics-automation-20260701-043828`
+  completed all 3,294 packets with 0 quarantines, 3,547 strict allows, 445
+  exact live-object rewrites, 3,226 exact lifecycle claim summaries, 2,781
+  direct live-object frames, 10 area rewrites, and 0 terminal residuals. The
+  replay saw 40 quickbar rewrite summaries but still 0 item buttons, so the
+  next production path remains obtaining a live or replayed `SetAllButtons`
+  stream that carries item slots after verified Feature-25 refs; then use these
+  buckets to decide the bounded compact-item proof rule.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

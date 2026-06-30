@@ -238,6 +238,36 @@ pub(super) fn quickbar_item_button_verified_materialization_proofs(
     recovered_type_tag: bool,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> Option<[Option<QuickbarItemMaterializationProof>; 2]> {
+    quickbar_item_button_materialization_decision(
+        primary,
+        secondary,
+        source,
+        recovered_type_tag,
+        materialization,
+    )
+    .ok()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QuickbarItemMaterializationRejectReason {
+    RecoveredTypeTag,
+    MissingTypeSource,
+    NoPresentItem,
+    InvalidObjectId,
+    MissingActiveProperties,
+    UnsupportedAppearanceType,
+    AppearanceShape,
+    MissingStateProof,
+}
+
+pub(super) fn quickbar_item_button_materialization_decision(
+    primary: &QuickbarItemObject,
+    secondary: &QuickbarItemObject,
+    source: QuickbarItemSource,
+    recovered_type_tag: bool,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Result<[Option<QuickbarItemMaterializationProof>; 2], QuickbarItemMaterializationRejectReason>
+{
     // EE's server writer only emits a type-1 quickbar item branch after it has
     // resolved a real CNWSItem, then writes a BOOL-gated primary item object and
     // a BOOL-gated secondary item object. The client receiver consumes those
@@ -269,10 +299,10 @@ pub(super) fn quickbar_item_button_verified_materialization_proofs(
     // item-create, or inventory Feature-25 refs before being emitted. Missing
     // source type recovery remains boundary-only.
     if recovered_type_tag {
-        return None;
+        return Err(QuickbarItemMaterializationRejectReason::RecoveredTypeTag);
     }
     if !primary.present && !secondary.present {
-        return None;
+        return Err(QuickbarItemMaterializationRejectReason::NoPresentItem);
     }
     let requirement = match source {
         QuickbarItemSource::ExplicitTypeAndFragmentBits => {
@@ -281,7 +311,9 @@ pub(super) fn quickbar_item_button_verified_materialization_proofs(
         QuickbarItemSource::CompactByteOwnedWithSourceType => {
             QuickbarItemMaterializationRequirement::RequireKnownState
         }
-        QuickbarItemSource::RecoveredMissingType => return None,
+        QuickbarItemSource::RecoveredMissingType => {
+            return Err(QuickbarItemMaterializationRejectReason::MissingTypeSource);
+        }
     };
     let primary_proof =
         quickbar_item_object_verified_materialization_proof(primary, materialization, requirement)?;
@@ -290,7 +322,7 @@ pub(super) fn quickbar_item_button_verified_materialization_proofs(
         materialization,
         requirement,
     )?;
-    Some([primary_proof, secondary_proof])
+    Ok([primary_proof, secondary_proof])
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -303,26 +335,26 @@ fn quickbar_item_object_verified_materialization_proof(
     item: &QuickbarItemObject,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
     requirement: QuickbarItemMaterializationRequirement,
-) -> Option<Option<QuickbarItemMaterializationProof>> {
+) -> Result<Option<QuickbarItemMaterializationProof>, QuickbarItemMaterializationRejectReason> {
     if !item.present {
-        return Some(None);
+        return Ok(None);
     }
     if item.object_id == NWN_OBJECT_INVALID {
-        return None;
+        return Err(QuickbarItemMaterializationRejectReason::InvalidObjectId);
     }
     if item.active_props.is_none() {
-        return None;
+        return Err(QuickbarItemMaterializationRejectReason::MissingActiveProperties);
     }
     let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
-        return None;
+        return Err(QuickbarItemMaterializationRejectReason::UnsupportedAppearanceType);
     };
     if item.appearance_bytes.len() != expected_legacy
         || read_u32_le(&item.appearance_bytes, 0) != Some(item.base_item)
     {
-        return None;
+        return Err(QuickbarItemMaterializationRejectReason::AppearanceShape);
     }
     match requirement {
-        QuickbarItemMaterializationRequirement::AllowExplicitSelfMaterialization => Some(Some(
+        QuickbarItemMaterializationRequirement::AllowExplicitSelfMaterialization => Ok(Some(
             materialization
                 .and_then(|materialization| {
                     materialization.item_object_materialization_proof(item.object_id)
@@ -333,7 +365,8 @@ fn quickbar_item_object_verified_materialization_proof(
             .and_then(|materialization| {
                 materialization.item_object_materialization_proof(item.object_id)
             })
-            .map(Some),
+            .map(Some)
+            .ok_or(QuickbarItemMaterializationRejectReason::MissingStateProof),
     }
 }
 
@@ -695,6 +728,97 @@ mod tests {
             )
             .is_none(),
             "byte-owned compact item bodies need session-state proof"
+        );
+    }
+
+    #[test]
+    fn quickbar_item_materialization_reports_reject_reason_buckets() {
+        let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &item,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::CompactByteOwnedWithSourceType,
+                false,
+                None,
+            ),
+            Err(QuickbarItemMaterializationRejectReason::MissingStateProof),
+            "compact byte-owned item slots need registry or Feature-25 proof"
+        );
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &item,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::RecoveredMissingType,
+                false,
+                None,
+            ),
+            Err(QuickbarItemMaterializationRejectReason::MissingTypeSource),
+            "missing source type recovery is boundary-only"
+        );
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &item,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                true,
+                None,
+            ),
+            Err(QuickbarItemMaterializationRejectReason::RecoveredTypeTag),
+            "recovered compact slots remain blocked even with item-looking bytes"
+        );
+
+        let mut invalid_id = item.clone();
+        invalid_id.object_id = NWN_OBJECT_INVALID;
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &invalid_id,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                false,
+                None,
+            ),
+            Err(QuickbarItemMaterializationRejectReason::InvalidObjectId)
+        );
+
+        let mut missing_props = item.clone();
+        missing_props.active_props = None;
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &missing_props,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                false,
+                None,
+            ),
+            Err(QuickbarItemMaterializationRejectReason::MissingActiveProperties)
+        );
+
+        let mut unsupported_appearance = item.clone();
+        unsupported_appearance.appearance_type = 9;
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &unsupported_appearance,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                false,
+                None,
+            ),
+            Err(QuickbarItemMaterializationRejectReason::UnsupportedAppearanceType)
+        );
+
+        let mut shifted_appearance = item;
+        shifted_appearance.appearance_bytes[0] ^= 1;
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &shifted_appearance,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                false,
+                None,
+            ),
+            Err(QuickbarItemMaterializationRejectReason::AppearanceShape),
+            "base-item/appearance cursor drift must stay distinguishable"
         );
     }
 

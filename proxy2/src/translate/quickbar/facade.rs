@@ -329,7 +329,11 @@ fn summarize_quickbar_rewrite(
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> QuickbarRewriteSummary {
     let mut item_buttons_total = 0_u32;
+    let mut item_buttons_source_explicit = 0_u32;
+    let mut item_buttons_source_compact = 0_u32;
+    let mut item_buttons_source_recovered = 0_u32;
     let mut item_buttons_emitted = 0_u32;
+    let mut rejection_counts = QuickbarItemRejectionCounts::default();
     let mut materialization_counts = QuickbarMaterializationCounts::default();
     for button in &parsed.buttons {
         let QuickbarButtonKind::Item {
@@ -342,14 +346,29 @@ fn summarize_quickbar_rewrite(
             continue;
         };
         item_buttons_total = item_buttons_total.saturating_add(1);
-        let Some(proofs) = super::writer::quickbar_item_button_verified_materialization_proofs(
+        match source {
+            QuickbarItemSource::ExplicitTypeAndFragmentBits => {
+                item_buttons_source_explicit = item_buttons_source_explicit.saturating_add(1);
+            }
+            QuickbarItemSource::CompactByteOwnedWithSourceType => {
+                item_buttons_source_compact = item_buttons_source_compact.saturating_add(1);
+            }
+            QuickbarItemSource::RecoveredMissingType => {
+                item_buttons_source_recovered = item_buttons_source_recovered.saturating_add(1);
+            }
+        }
+        let proofs = match super::writer::quickbar_item_button_materialization_decision(
             primary,
             secondary,
             *source,
             *recovered_type_tag,
             materialization,
-        ) else {
-            continue;
+        ) {
+            Ok(proofs) => proofs,
+            Err(reason) => {
+                rejection_counts.observe(reason);
+                continue;
+            }
         };
         item_buttons_emitted = item_buttons_emitted.saturating_add(1);
         materialization_counts.observe(proofs);
@@ -403,12 +422,26 @@ fn summarize_quickbar_rewrite(
         final_cursor: parsed.final_cursor,
         trailing_read_bytes: parsed.read_size.saturating_sub(parsed.final_cursor),
         direct_opcode_stream: parsed.direct_opcode_stream,
+        item_buttons_seen: item_buttons_total,
+        item_buttons_source_explicit,
+        item_buttons_source_compact,
+        item_buttons_source_recovered,
         item_buttons_preserved: item_buttons_emitted,
         spells_preserved,
         general_buttons_preserved,
         general_buttons_blanked,
         item_buttons_blanked: item_candidate_buttons.saturating_add(item_buttons_blanked_by_policy),
+        item_buttons_blanked_candidate: item_candidate_buttons,
         unsupported_buttons_blanked,
+        item_buttons_rejected_recovered_type_tag: rejection_counts.recovered_type_tag,
+        item_buttons_rejected_missing_type_source: rejection_counts.missing_type_source,
+        item_buttons_rejected_no_present_item: rejection_counts.no_present_item,
+        item_buttons_rejected_invalid_object_id: rejection_counts.invalid_object_id,
+        item_buttons_rejected_missing_active_properties: rejection_counts.missing_active_properties,
+        item_buttons_rejected_unsupported_appearance_type: rejection_counts
+            .unsupported_appearance_type,
+        item_buttons_rejected_appearance_shape: rejection_counts.appearance_shape,
+        item_buttons_rejected_missing_state_proof: rejection_counts.missing_state_proof,
         item_objects_preserved_by_explicit_self_materialization: materialization_counts
             .explicit_self_materialization,
         item_objects_preserved_by_active_state: materialization_counts.active_state,
@@ -416,6 +449,50 @@ fn summarize_quickbar_rewrite(
         item_objects_preserved_by_feature25_second: materialization_counts.feature25_second,
         item_objects_preserved_by_feature25_legacy_tail: materialization_counts
             .feature25_legacy_tail,
+    }
+}
+
+#[derive(Default)]
+struct QuickbarItemRejectionCounts {
+    recovered_type_tag: u32,
+    missing_type_source: u32,
+    no_present_item: u32,
+    invalid_object_id: u32,
+    missing_active_properties: u32,
+    unsupported_appearance_type: u32,
+    appearance_shape: u32,
+    missing_state_proof: u32,
+}
+
+impl QuickbarItemRejectionCounts {
+    fn observe(&mut self, reason: super::writer::QuickbarItemMaterializationRejectReason) {
+        match reason {
+            super::writer::QuickbarItemMaterializationRejectReason::RecoveredTypeTag => {
+                self.recovered_type_tag = self.recovered_type_tag.saturating_add(1);
+            }
+            super::writer::QuickbarItemMaterializationRejectReason::MissingTypeSource => {
+                self.missing_type_source = self.missing_type_source.saturating_add(1);
+            }
+            super::writer::QuickbarItemMaterializationRejectReason::NoPresentItem => {
+                self.no_present_item = self.no_present_item.saturating_add(1);
+            }
+            super::writer::QuickbarItemMaterializationRejectReason::InvalidObjectId => {
+                self.invalid_object_id = self.invalid_object_id.saturating_add(1);
+            }
+            super::writer::QuickbarItemMaterializationRejectReason::MissingActiveProperties => {
+                self.missing_active_properties = self.missing_active_properties.saturating_add(1);
+            }
+            super::writer::QuickbarItemMaterializationRejectReason::UnsupportedAppearanceType => {
+                self.unsupported_appearance_type =
+                    self.unsupported_appearance_type.saturating_add(1);
+            }
+            super::writer::QuickbarItemMaterializationRejectReason::AppearanceShape => {
+                self.appearance_shape = self.appearance_shape.saturating_add(1);
+            }
+            super::writer::QuickbarItemMaterializationRejectReason::MissingStateProof => {
+                self.missing_state_proof = self.missing_state_proof.saturating_add(1);
+            }
+        }
     }
 }
 
@@ -474,12 +551,29 @@ fn trace_quickbar_rewrite_summary(path: &str, summary: &QuickbarRewriteSummary) 
         final_cursor = summary.final_cursor,
         trailing_read_bytes = summary.trailing_read_bytes,
         direct_opcode_stream = summary.direct_opcode_stream,
+        item_buttons_seen = summary.item_buttons_seen,
+        item_buttons_source_explicit = summary.item_buttons_source_explicit,
+        item_buttons_source_compact = summary.item_buttons_source_compact,
+        item_buttons_source_recovered = summary.item_buttons_source_recovered,
         item_buttons_preserved = summary.item_buttons_preserved,
         spells_preserved = summary.spells_preserved,
         general_buttons_preserved = summary.general_buttons_preserved,
         general_buttons_blanked = summary.general_buttons_blanked,
         item_buttons_blanked = summary.item_buttons_blanked,
+        item_buttons_blanked_candidate = summary.item_buttons_blanked_candidate,
         unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
+        item_buttons_rejected_recovered_type_tag = summary.item_buttons_rejected_recovered_type_tag,
+        item_buttons_rejected_missing_type_source =
+            summary.item_buttons_rejected_missing_type_source,
+        item_buttons_rejected_no_present_item = summary.item_buttons_rejected_no_present_item,
+        item_buttons_rejected_invalid_object_id = summary.item_buttons_rejected_invalid_object_id,
+        item_buttons_rejected_missing_active_properties =
+            summary.item_buttons_rejected_missing_active_properties,
+        item_buttons_rejected_unsupported_appearance_type =
+            summary.item_buttons_rejected_unsupported_appearance_type,
+        item_buttons_rejected_appearance_shape = summary.item_buttons_rejected_appearance_shape,
+        item_buttons_rejected_missing_state_proof =
+            summary.item_buttons_rejected_missing_state_proof,
         item_objects_preserved_by_explicit_self_materialization =
             summary.item_objects_preserved_by_explicit_self_materialization,
         item_objects_preserved_by_active_state = summary.item_objects_preserved_by_active_state,
