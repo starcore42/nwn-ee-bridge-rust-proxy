@@ -31,6 +31,7 @@ use super::event::{
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
+const ITEM_OBJECT_TYPE: u8 = 0x06;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
 const PLACEABLE_POSITION_EPSILON: f32 = 0.01;
 
@@ -698,7 +699,7 @@ impl ObjectRegistry {
         &self,
         object_id: u32,
     ) -> Option<InventoryItemObjectProof> {
-        if self.has_active_object_id(object_id) {
+        if self.has_known_inventory_item_object_id(object_id) {
             return Some(InventoryItemObjectProof::ActiveObject);
         }
         if self
@@ -720,6 +721,16 @@ impl ObjectRegistry {
             return Some(InventoryItemObjectProof::Feature25LegacyTail);
         }
         None
+    }
+
+    pub(crate) fn has_known_inventory_item_object_id(&self, object_id: u32) -> bool {
+        if self.materialized_item_object_ids.contains(&object_id) {
+            return true;
+        }
+        self.known
+            .get(&object_id)
+            .map(|object| object.active && object.object_type == ITEM_OBJECT_TYPE)
+            .unwrap_or(false)
     }
 
     pub(crate) fn has_active_object_id(&self, object_id: u32) -> bool {
@@ -1727,8 +1738,9 @@ mod tests {
     use super::{
         AreaStaticPlaceableConflictRecordObservation,
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
-        LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
+        ITEM_OBJECT_TYPE, InventoryItemObjectProof, LiveObjectBounds, LiveObjectMention,
+        LiveObjectOrientation, LiveObjectPlaceableAppearance, LiveObjectPlaceableState,
+        LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
     };
 
     #[test]
@@ -3537,6 +3549,75 @@ mod tests {
         registry.reset_for_area();
 
         assert!(!registry.has_active_object_id(item_object_id));
+    }
+
+    #[test]
+    fn inventory_item_proof_requires_item_specific_state() {
+        let mut registry = ObjectRegistry::default();
+        let creature_id = 0x8000_0005;
+        let placeable_id = 0x8000_0009;
+        let item_id = 0x8000_0006;
+        let gui_materialized_item_id = 0x8000_0106;
+
+        registry.observe_mentions(&[
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x05,
+                object_id: creature_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            },
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x09,
+                object_id: placeable_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            },
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: ITEM_OBJECT_TYPE,
+                object_id: item_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            },
+        ]);
+        registry.observe_materialized_item_object_ids(&[gui_materialized_item_id]);
+
+        assert!(registry.has_active_object_id(creature_id));
+        assert!(registry.has_active_object_id(placeable_id));
+        assert_eq!(
+            registry.inventory_item_object_proof(creature_id),
+            None,
+            "quickbar item proof must not accept active creature lifecycle state"
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(placeable_id),
+            None,
+            "quickbar item proof must not accept active placeable lifecycle state"
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(item_id),
+            Some(InventoryItemObjectProof::ActiveObject),
+            "typed item live-object state remains valid quickbar item proof"
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(gui_materialized_item_id),
+            Some(InventoryItemObjectProof::ActiveObject),
+            "GUI item-create materialization remains valid quickbar item proof"
+        );
     }
 
     #[test]

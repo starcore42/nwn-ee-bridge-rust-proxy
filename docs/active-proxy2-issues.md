@@ -789,6 +789,25 @@ not as standalone workaround targets.
   next production path remains obtaining a live or replayed `SetAllButtons`
   stream that carries item slots after verified Feature-25 refs; then use these
   buckets to decide the bounded compact-item proof rule.
+- 2026-07-01 item-specific quickbar active proof: live-data gate used the same
+  gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 23h16m old at gate
+  time, with gameplay reached. The quickbar materialization gateway now treats
+  active registry state as item proof only when the state is a materialized GUI
+  item id or an active typed `0x06` item live-object. Broader lifecycle checks
+  for inventory owners still use active creature/placeable ids and placeable
+  aliases, but those ids can no longer satisfy quickbar item emission by
+  accident. Feature-25 first/second/legacy-tail refs remain distinct deferred
+  item-context proofs. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-item-proof-specific-automation-20260701-0558`
+  completed all 3,294 packets with 0 quarantines, 3,547 strict allows, 445
+  exact live-object rewrites, 3,226 exact lifecycle claim summaries, 2,781
+  direct live-object frames, 10 area rewrites, 40 quickbar rewrite summaries,
+  and 0 quickbar item buttons. Next production path is still to obtain a live
+  or replayed `SetAllButtons` stream with real item slots after verified
+  Feature-25 refs, then use the existing source/proof/rejection buckets to
+  choose any bounded compact-item rule.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 
