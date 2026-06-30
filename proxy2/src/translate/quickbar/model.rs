@@ -65,6 +65,7 @@ pub struct QuickbarRewriteSummary {
     pub item_buttons_source_recovered: u32,
     pub item_buttons_preserved: u32,
     pub spells_preserved: u32,
+    pub blank_buttons_seen: u32,
     pub general_buttons_preserved: u32,
     pub general_buttons_blanked: u32,
     pub item_buttons_blanked: u32,

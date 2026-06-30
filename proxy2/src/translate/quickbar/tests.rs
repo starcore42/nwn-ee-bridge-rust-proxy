@@ -44,6 +44,7 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
         item_buttons_source_recovered: 0,
         item_buttons_preserved: 0,
         spells_preserved: 1,
+        blank_buttons_seen: 0,
         general_buttons_preserved: 0,
         general_buttons_blanked: 3,
         item_buttons_blanked: 19,
@@ -71,6 +72,51 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
 }
 
 #[test]
+fn owned_quickbar_boundary_with_only_blank_slots_does_not_wait_for_placeholder() {
+    let summary = QuickbarRewriteSummary {
+        old_payload_length: 96,
+        new_payload_length: 44,
+        old_declared: 43,
+        new_declared: 43,
+        read_size: 40,
+        fragment_size: 2,
+        final_cursor: 36,
+        trailing_read_bytes: 4,
+        direct_opcode_stream: false,
+        item_buttons_seen: 0,
+        item_buttons_source_explicit: 0,
+        item_buttons_source_compact: 0,
+        item_buttons_source_recovered: 0,
+        item_buttons_preserved: 0,
+        spells_preserved: 0,
+        blank_buttons_seen: 36,
+        general_buttons_preserved: 0,
+        general_buttons_blanked: 0,
+        item_buttons_blanked: 0,
+        item_buttons_blanked_candidate: 0,
+        unsupported_buttons_blanked: 0,
+        item_buttons_rejected_recovered_type_tag: 0,
+        item_buttons_rejected_missing_type_source: 0,
+        item_buttons_rejected_no_present_item: 0,
+        item_buttons_rejected_invalid_object_id: 0,
+        item_buttons_rejected_missing_active_properties: 0,
+        item_buttons_rejected_unsupported_appearance_type: 0,
+        item_buttons_rejected_appearance_shape: 0,
+        item_buttons_rejected_missing_state_proof: 0,
+        item_objects_preserved_by_explicit_self_materialization: 0,
+        item_objects_preserved_by_active_state: 0,
+        item_objects_preserved_by_feature25_first: 0,
+        item_objects_preserved_by_feature25_second: 0,
+        item_objects_preserved_by_feature25_legacy_tail: 0,
+    };
+
+    assert!(
+        !rewrite_summary_needs_more_quickbar_bytes(&summary),
+        "type-0 slots are decompile-owned one-byte records, so all-blank quickbars with fragment-tail proof should not be replaced by placeholders"
+    );
+}
+
+#[test]
 fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
     let summary = QuickbarRewriteSummary {
         old_payload_length: 1340,
@@ -88,6 +134,7 @@ fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
         item_buttons_source_recovered: 0,
         item_buttons_preserved: 0,
         spells_preserved: 1,
+        blank_buttons_seen: 0,
         general_buttons_preserved: 0,
         general_buttons_blanked: 3,
         item_buttons_blanked: 19,
@@ -475,6 +522,10 @@ fn starcore5_live_driver_only_capture_keeps_visible_quickbar_page_populated() {
         summary.general_buttons_blanked, 1,
         "the live Starcore5 command slot must not be emitted as byte-identical after the EE reader overflow proof"
     );
+    assert_eq!(
+        summary.blank_buttons_seen, 2,
+        "the live Starcore5 quickbar should account for the two real blank slots separately from item/spell/general records"
+    );
     assert_eq!(summary.item_buttons_blanked, 0);
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(
@@ -553,6 +604,10 @@ fn starcore5_compact_quickbar_with_valid_declared_offset_claims_spells() {
     assert_eq!(summary.read_size, 79);
     assert_eq!(summary.fragment_size, 1);
     assert_eq!(summary.spells_preserved, 5);
+    assert_eq!(
+        summary.blank_buttons_seen, 29,
+        "compact quickbar diagnostics should prove this stream contained no hidden item slots"
+    );
     assert_eq!(summary.general_buttons_preserved, 2);
     assert_eq!(summary.item_buttons_blanked, 0);
     assert_eq!(summary.unsupported_buttons_blanked, 0);
@@ -664,6 +719,10 @@ fn local_cepv22_crp_starter_quickbar_keeps_unverified_items_blanked() {
     assert_eq!(summary.final_cursor, 246);
     assert_eq!(summary.trailing_read_bytes, 0);
     assert_eq!(summary.spells_preserved, 22);
+    assert_eq!(
+        summary.blank_buttons_seen, 8,
+        "local CEPv22 CRP quickbar diagnostics should distinguish true blank slots from unverified item slots"
+    );
     assert_eq!(summary.general_buttons_preserved, 4);
     assert_eq!(summary.item_buttons_preserved, 0);
     assert_eq!(

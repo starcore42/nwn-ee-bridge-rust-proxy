@@ -151,7 +151,8 @@ fn quickbar_summary_has_complete_decompile_owned_slot_shape(
     !summary.direct_opcode_stream
         && summary.fragment_size != 0
         && summary.final_cursor <= summary.read_size
-        && (summary.spells_preserved != 0
+        && (summary.blank_buttons_seen != 0
+            || summary.spells_preserved != 0
             || summary.item_buttons_preserved != 0
             || summary.general_buttons_preserved != 0
             || summary.general_buttons_blanked != 0
@@ -379,6 +380,16 @@ fn summarize_quickbar_rewrite(
         .iter()
         .filter(|button| matches!(button.kind, QuickbarButtonKind::Spell { .. }))
         .count() as u32;
+    let blank_buttons_seen = parsed
+        .buttons
+        .iter()
+        .filter(|button| {
+            matches!(
+                button.kind,
+                QuickbarButtonKind::General { ref bytes } if bytes.len() == 1 && bytes[0] == 0
+            )
+        })
+        .count() as u32;
     let general_buttons_preserved = parsed
         .buttons
         .iter()
@@ -428,6 +439,7 @@ fn summarize_quickbar_rewrite(
         item_buttons_source_recovered,
         item_buttons_preserved: item_buttons_emitted,
         spells_preserved,
+        blank_buttons_seen,
         general_buttons_preserved,
         general_buttons_blanked,
         item_buttons_blanked: item_candidate_buttons.saturating_add(item_buttons_blanked_by_policy),
@@ -557,6 +569,7 @@ fn trace_quickbar_rewrite_summary(path: &str, summary: &QuickbarRewriteSummary) 
         item_buttons_source_recovered = summary.item_buttons_source_recovered,
         item_buttons_preserved = summary.item_buttons_preserved,
         spells_preserved = summary.spells_preserved,
+        blank_buttons_seen = summary.blank_buttons_seen,
         general_buttons_preserved = summary.general_buttons_preserved,
         general_buttons_blanked = summary.general_buttons_blanked,
         item_buttons_blanked = summary.item_buttons_blanked,

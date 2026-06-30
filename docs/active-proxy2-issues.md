@@ -827,6 +827,26 @@ not as standalone workaround targets.
   production path remains obtaining or replaying a `SetAllButtons` stream with
   real item slots after verified Feature-25 refs; the stale-proof lifecycle
   guard should stay in place before accepting compact item-slot emission.
+- 2026-07-01 quickbar blank-slot profile diagnostics: live-data gate used the
+  same fresh gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`; packet window
+  `2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`, with gameplay reached.
+  Production quickbar summaries now count true type-0 blank slots separately
+  from item, spell, general, unsupported, and rejected item buckets, and the
+  complete-slot stream gate treats type-0 slots as decompile-owned one-byte
+  `SetAllButtons` records when a fragment-tail proof exists. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-slot-profile-automation-20260701-0747`
+  stayed at 0 quarantines, 256 strict allows, 79 direct live-object frames, 16
+  exact live-object rewrite matches, 77 exact lifecycle claim summaries, 10
+  area rewrites, and 40 quickbar rewrite summaries. The current HG quickbar
+  stream had 0 item buttons, 492 blank slots, 192 spells, 80 preserved general
+  buttons, 0 general blanks, and 676 unsupported blanks across those 40
+  summaries. Inventory Feature-25 evidence in the replay showed 18 typed
+  claims, 9/9 first-list refs materialized, 1/13 second-list refs materialized,
+  12/13 second-list refs unmaterialized, and 0 legacy-tail refs. Next
+  production path remains obtaining or replaying a `SetAllButtons` stream with
+  real item slots after verified Feature-25 refs; this slot profile proves the
+  current fresh HG capture cannot decide compact item-slot emission.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 
