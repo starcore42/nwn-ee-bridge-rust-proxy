@@ -22,15 +22,22 @@ pub(super) fn apply_2000(
             try_parse_inventory_2000_prefix_at(bytes, candidate.cursor, record_end)
         };
         let Some(feature25) = feature25 else { continue };
+        let feature25_bits = usize::try_from(feature25.second_count)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(3);
+        let Some(feature25_claim) = feature25.to_candidate(
+            candidate.bits,
+            candidate.bits.saturating_add(feature25_bits),
+        ) else {
+            continue;
+        };
         next.push(
-            candidate.advanced(
-                feature25.block_end,
-                candidate.bits.saturating_add(
-                    usize::try_from(feature25.second_count)
-                        .unwrap_or(usize::MAX)
-                        .saturating_mul(3),
-                ),
-            ),
+            candidate
+                .advanced(
+                    feature25.block_end,
+                    candidate.bits.saturating_add(feature25_bits),
+                )
+                .with_feature25(feature25_claim),
         );
     }
     next
@@ -38,8 +45,42 @@ pub(super) fn apply_2000(
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Inventory2000Shape {
+    pub branch_offset: usize,
+    pub first_count: u32,
+    pub first_objects_offset: usize,
+    pub first_objects_end: usize,
     pub second_count: u32,
+    pub second_objects_offset: usize,
+    pub second_objects_end: usize,
     pub block_end: usize,
+    pub legacy_tail_offset: Option<usize>,
+    pub legacy_tail_end: Option<usize>,
+}
+
+impl Inventory2000Shape {
+    pub(super) fn to_candidate(
+        self,
+        second_fragment_bit_start: usize,
+        second_fragment_bit_end: usize,
+    ) -> Option<InventoryFeature25Candidate> {
+        if second_fragment_bit_end < second_fragment_bit_start {
+            return None;
+        }
+        Some(InventoryFeature25Candidate {
+            branch_offset: self.branch_offset,
+            block_end: self.block_end,
+            first_count: self.first_count,
+            first_objects_offset: self.first_objects_offset,
+            first_objects_end: self.first_objects_end,
+            second_count: self.second_count,
+            second_objects_offset: self.second_objects_offset,
+            second_objects_end: self.second_objects_end,
+            second_fragment_bit_start,
+            second_fragment_bit_end,
+            legacy_tail_offset: self.legacy_tail_offset,
+            legacy_tail_end: self.legacy_tail_end,
+        })
+    }
 }
 
 pub(super) fn try_parse_inventory_2000_record(
@@ -81,8 +122,16 @@ pub(super) fn try_parse_inventory_2000_at(
     }
     if feature25.block_end == record_end {
         return Some(Inventory2000Shape {
+            branch_offset: feature25.branch_offset,
+            first_count: feature25.first_count,
+            first_objects_offset: feature25.first_objects_offset,
+            first_objects_end: feature25.first_objects_end,
             second_count: feature25.second_count,
+            second_objects_offset: feature25.second_objects_offset,
+            second_objects_end: feature25.second_objects_end,
             block_end: feature25.block_end,
+            legacy_tail_offset: feature25.legacy_tail_offset,
+            legacy_tail_end: feature25.legacy_tail_end,
         });
     }
     if feature25.second_count != 0 || record_end - feature25.block_end != 8 {
@@ -97,8 +146,16 @@ pub(super) fn try_parse_inventory_2000_at(
     }
 
     Some(Inventory2000Shape {
+        branch_offset: feature25.branch_offset,
+        first_count: feature25.first_count,
+        first_objects_offset: feature25.first_objects_offset,
+        first_objects_end: feature25.first_objects_end,
         second_count: 0,
+        second_objects_offset: feature25.second_objects_offset,
+        second_objects_end: feature25.second_objects_end,
         block_end: record_end,
+        legacy_tail_offset: Some(feature25.block_end),
+        legacy_tail_end: Some(record_end),
     })
 }
 
@@ -117,8 +174,16 @@ pub(super) fn try_parse_inventory_2000_prefix_at(
         return None;
     }
     Some(Inventory2000Shape {
+        branch_offset: feature25.branch_offset,
+        first_count: feature25.first_count,
+        first_objects_offset: feature25.first_objects_offset,
+        first_objects_end: feature25.first_objects_end,
         second_count: feature25.second_count,
+        second_objects_offset: feature25.second_objects_offset,
+        second_objects_end: feature25.second_objects_end,
         block_end: feature25.block_end,
+        legacy_tail_offset: feature25.legacy_tail_offset,
+        legacy_tail_end: feature25.legacy_tail_end,
     })
 }
 
@@ -535,6 +600,12 @@ fn try_parse_inventory_2a00_feature25_at(
     }
     if first_end == record_end {
         return Some(Feature25Shape {
+            branch_offset: cursor,
+            first_count,
+            first_objects_offset: first_objects,
+            first_objects_end: first_end,
+            second_objects_offset: first_end,
+            second_objects_end: first_end,
             block_end: record_end,
             missing_second_count: true,
             ..Feature25Shape::default()
@@ -561,9 +632,16 @@ fn try_parse_inventory_2a00_feature25_at(
         return None;
     }
     Some(Feature25Shape {
+        branch_offset: cursor,
+        first_count,
+        first_objects_offset: first_objects,
+        first_objects_end: first_end,
         second_count,
+        second_objects_offset: second_objects,
+        second_objects_end: second_end,
         block_end: second_end,
         missing_second_count: false,
+        ..Feature25Shape::default()
     })
 }
 
@@ -615,6 +693,12 @@ fn try_parse_feature25_at(
     }
     if first_end == record_end {
         return Some(Feature25Shape {
+            branch_offset: cursor,
+            first_count,
+            first_objects_offset: first_objects,
+            first_objects_end: first_end,
+            second_objects_offset: first_end,
+            second_objects_end: first_end,
             block_end: record_end,
             missing_second_count: true,
             ..Feature25Shape::default()
@@ -636,9 +720,16 @@ fn try_parse_feature25_at(
         return None;
     }
     Some(Feature25Shape {
+        branch_offset: cursor,
+        first_count,
+        first_objects_offset: first_objects,
+        first_objects_end: first_end,
         second_count,
+        second_objects_offset: second_objects,
+        second_objects_end: second_end,
         block_end: second_end,
         missing_second_count: false,
+        ..Feature25Shape::default()
     })
 }
 
@@ -662,8 +753,16 @@ fn try_parse_zero_first_sentinel_tail_at(
         return None;
     }
     Some(Inventory2000Shape {
+        branch_offset: cursor,
+        first_count: 0,
+        first_objects_offset: cursor.checked_add(4)?,
+        first_objects_end: cursor.checked_add(4)?,
         second_count: 0,
+        second_objects_offset: record_end,
+        second_objects_end: record_end,
         block_end: record_end,
+        legacy_tail_offset: Some(tail_start),
+        legacy_tail_end: Some(sentinel_start),
     })
 }
 

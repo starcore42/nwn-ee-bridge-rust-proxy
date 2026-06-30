@@ -35,11 +35,12 @@ const GENERIC_INVENTORY_PARSE_MASK: u16 = 0x0001
     | 0x4000
     | 0x8000;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct InventoryRecordClaim {
     pub owner_id: u32,
     pub mask: u16,
     pub fragment_bits: usize,
+    pub feature25: Option<InventoryFeature25RecordClaim>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,12 +61,42 @@ pub(super) struct InventoryFragmentBitRepair {
     pub bits_materialized: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct InventoryFeature25RecordClaim {
+    pub branch_offset: usize,
+    pub block_end: usize,
+    pub first_count: u32,
+    pub first_object_ids: Vec<u32>,
+    pub second_count: u32,
+    pub second_object_ids: Vec<u32>,
+    pub second_fragment_bit_start: usize,
+    pub second_fragment_bit_end: usize,
+    pub legacy_tail_object_ids: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InventoryFeature25Candidate {
+    branch_offset: usize,
+    block_end: usize,
+    first_count: u32,
+    first_objects_offset: usize,
+    first_objects_end: usize,
+    second_count: u32,
+    second_objects_offset: usize,
+    second_objects_end: usize,
+    second_fragment_bit_start: usize,
+    second_fragment_bit_end: usize,
+    legacy_tail_offset: Option<usize>,
+    legacy_tail_end: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GenericInventoryCandidate {
     cursor: usize,
     bits: usize,
     required_fragment_bits: [(usize, bool); MAX_GENERIC_INVENTORY_REQUIRED_FRAGMENT_BITS],
     required_fragment_bit_count: usize,
+    feature25: Option<InventoryFeature25Candidate>,
 }
 
 impl GenericInventoryCandidate {
@@ -76,6 +107,7 @@ impl GenericInventoryCandidate {
             required_fragment_bits: [(usize::MAX, false);
                 MAX_GENERIC_INVENTORY_REQUIRED_FRAGMENT_BITS],
             required_fragment_bit_count: 0,
+            feature25: None,
         }
     }
 
@@ -83,6 +115,13 @@ impl GenericInventoryCandidate {
         Self {
             cursor,
             bits,
+            ..self
+        }
+    }
+
+    fn with_feature25(self, feature25: InventoryFeature25Candidate) -> Self {
+        Self {
+            feature25: Some(feature25),
             ..self
         }
     }
@@ -151,9 +190,17 @@ impl GenericInventoryCandidate {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Feature25Shape {
+    branch_offset: usize,
+    first_count: u32,
+    first_objects_offset: usize,
+    first_objects_end: usize,
     second_count: u32,
+    second_objects_offset: usize,
+    second_objects_end: usize,
     block_end: usize,
     missing_second_count: bool,
+    legacy_tail_offset: Option<usize>,
+    legacy_tail_end: Option<usize>,
 }
 
 pub(super) fn owns_fragment_tail(opcode: u8) -> bool {
@@ -265,7 +312,7 @@ pub(super) fn advance_verified_inventory_record(
         )?
     };
     *bit_cursor = bit_cursor.saturating_add(candidate.bits);
-    inventory_record_claim(bytes, offset, candidate.bits)
+    inventory_record_claim_with_feature25(bytes, offset, candidate.bits, candidate.feature25)
 }
 
 pub(super) fn verified_inventory_owner_claim_for_ee(
@@ -297,6 +344,21 @@ pub(super) fn verified_inventory_owner_claim_for_ee(
         owner_id: claim.owner_id,
         mask: claim.mask,
         mask_branches: super::LiveObjectInventoryMaskBranches::from_mask(claim.mask),
+        feature25: claim
+            .feature25
+            .map(|feature25| super::LiveObjectInventoryFeature25Claim {
+                branch_offset: feature25.branch_offset,
+                block_end: feature25.block_end,
+                first_count: feature25.first_count,
+                first_object_ids: feature25.first_object_ids,
+                second_count: feature25.second_count,
+                second_object_ids: feature25.second_object_ids,
+                second_fragment_bit_start: bit_cursor
+                    .saturating_add(feature25.second_fragment_bit_start),
+                second_fragment_bit_end: bit_cursor
+                    .saturating_add(feature25.second_fragment_bit_end),
+                legacy_tail_object_ids: feature25.legacy_tail_object_ids,
+            }),
         fragment_bits: claim.fragment_bits,
         bit_cursor,
         next_bit_cursor: proof_cursor,
@@ -308,11 +370,65 @@ fn inventory_record_claim(
     record_offset: usize,
     fragment_bits: usize,
 ) -> Option<InventoryRecordClaim> {
+    inventory_record_claim_with_feature25(bytes, record_offset, fragment_bits, None)
+}
+
+fn inventory_record_claim_with_feature25(
+    bytes: &[u8],
+    record_offset: usize,
+    fragment_bits: usize,
+    feature25: Option<InventoryFeature25Candidate>,
+) -> Option<InventoryRecordClaim> {
     Some(InventoryRecordClaim {
         owner_id: read_u32_le(bytes, record_offset.checked_add(1)?)?,
         mask: read_u16_le(bytes, record_offset.checked_add(5)?)?,
         fragment_bits,
+        feature25: match feature25 {
+            Some(claim) => Some(inventory_feature25_record_claim(bytes, claim)?),
+            None => None,
+        },
     })
+}
+
+fn inventory_feature25_record_claim(
+    bytes: &[u8],
+    claim: InventoryFeature25Candidate,
+) -> Option<InventoryFeature25RecordClaim> {
+    Some(InventoryFeature25RecordClaim {
+        branch_offset: claim.branch_offset,
+        block_end: claim.block_end,
+        first_count: claim.first_count,
+        first_object_ids: collect_feature25_object_ids(
+            bytes,
+            claim.first_objects_offset,
+            claim.first_objects_end,
+        )?,
+        second_count: claim.second_count,
+        second_object_ids: collect_feature25_object_ids(
+            bytes,
+            claim.second_objects_offset,
+            claim.second_objects_end,
+        )?,
+        second_fragment_bit_start: claim.second_fragment_bit_start,
+        second_fragment_bit_end: claim.second_fragment_bit_end,
+        legacy_tail_object_ids: match (claim.legacy_tail_offset, claim.legacy_tail_end) {
+            (Some(offset), Some(end)) => collect_feature25_object_ids(bytes, offset, end)?,
+            _ => Vec::new(),
+        },
+    })
+}
+
+fn collect_feature25_object_ids(bytes: &[u8], offset: usize, end: usize) -> Option<Vec<u32>> {
+    if offset > end || end > bytes.len() || (end - offset) % 4 != 0 {
+        return None;
+    }
+    let mut object_ids = Vec::with_capacity((end - offset) / 4);
+    let mut cursor = offset;
+    while cursor < end {
+        object_ids.push(read_u32_le(bytes, cursor)?);
+        cursor = cursor.checked_add(4)?;
+    }
+    Some(object_ids)
 }
 
 pub(super) fn try_get_legacy_live_inventory_fragment_bit_count(
@@ -359,12 +475,13 @@ fn try_get_legacy_live_inventory_claim_candidate(
 
     if mask == 0x2000 {
         let feature25 = try_parse_inventory_2000_record(bytes, record_offset, record_end)?;
-        return Some(GenericInventoryCandidate::new(
-            record_end,
-            usize::try_from(feature25.second_count)
-                .ok()?
-                .saturating_mul(3),
-        ));
+        let feature25_bits = usize::try_from(feature25.second_count)
+            .ok()?
+            .saturating_mul(3);
+        return Some(
+            GenericInventoryCandidate::new(record_end, feature25_bits)
+                .with_feature25(feature25.to_candidate(0, feature25_bits)?),
+        );
     }
 
     if mask == 0x0400 {
@@ -1506,7 +1623,12 @@ fn try_advance_inventory_2000_gui_hand_trap_feature25_object_list(
     }
 
     *bit_cursor = bit_cursor.saturating_add(consumed_bits);
-    inventory_record_claim(bytes, offset, consumed_bits)
+    inventory_record_claim_with_feature25(
+        bytes,
+        offset,
+        consumed_bits,
+        Some(feature25.to_candidate(0, consumed_bits)?),
+    )
 }
 
 #[cfg(test)]
@@ -1532,6 +1654,19 @@ mod gui_hand_trap_feature25_tests {
         .expect("HG I/0x2000 GUI hand-trap Feature-25 list should claim exactly");
 
         assert_eq!(claim.fragment_bits, 6);
+        let feature25 = claim
+            .feature25
+            .as_ref()
+            .expect("exact I/0x2000 claim should expose the Feature-25 lists");
+        assert_eq!(feature25.branch_offset, 7);
+        assert_eq!(feature25.block_end, record.len());
+        assert_eq!(feature25.first_count, 0);
+        assert!(feature25.first_object_ids.is_empty());
+        assert_eq!(feature25.second_count, 2);
+        assert_eq!(feature25.second_object_ids, [0x8001_7021, 0x8001_7035]);
+        assert_eq!(feature25.second_fragment_bit_start, 0);
+        assert_eq!(feature25.second_fragment_bit_end, 6);
+        assert!(feature25.legacy_tail_object_ids.is_empty());
         assert_eq!(bit_cursor, 6);
     }
 }

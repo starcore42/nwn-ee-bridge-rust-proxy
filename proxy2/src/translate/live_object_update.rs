@@ -19963,14 +19963,28 @@ pub struct LiveObjectCreatureUpdateClaim {
     pub orientation_bit_cursor: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveObjectInventoryOwnerClaim {
     pub owner_id: u32,
     pub mask: u16,
     pub mask_branches: LiveObjectInventoryMaskBranches,
+    pub feature25: Option<LiveObjectInventoryFeature25Claim>,
     pub fragment_bits: usize,
     pub bit_cursor: usize,
     pub next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveObjectInventoryFeature25Claim {
+    pub branch_offset: usize,
+    pub block_end: usize,
+    pub first_count: u32,
+    pub first_object_ids: Vec<u32>,
+    pub second_count: u32,
+    pub second_object_ids: Vec<u32>,
+    pub second_fragment_bit_start: usize,
+    pub second_fragment_bit_end: usize,
+    pub legacy_tail_object_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

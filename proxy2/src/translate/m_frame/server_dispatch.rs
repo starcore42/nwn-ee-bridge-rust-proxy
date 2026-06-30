@@ -143,6 +143,11 @@ struct LiveObjectExactClaimTraceSummary {
     inventory_owner_branch_0800_tail_selector_mentions: u32,
     inventory_owner_branch_1000_ui_clear_mentions: u32,
     inventory_owner_branch_2000_feature25_mentions: u32,
+    inventory_owner_feature25_claim_mentions: u32,
+    inventory_owner_feature25_first_object_refs: u32,
+    inventory_owner_feature25_second_object_refs: u32,
+    inventory_owner_feature25_second_fragment_bits: u32,
+    inventory_owner_feature25_legacy_tail_object_refs: u32,
     inventory_owner_branch_4000_state_stream_mentions: u32,
     inventory_owner_branch_8000_fixed_scalar_mentions: u32,
     live_gui_records: u32,
@@ -217,7 +222,7 @@ impl LiveObjectExactClaimTraceSummary {
             if mention.requires_materialized_object {
                 trace.materialized_mentions += 1;
             }
-            if let Some(inventory) = mention.inventory_owner {
+            if let Some(inventory) = &mention.inventory_owner {
                 trace.inventory_owner_claim_mentions =
                     trace.inventory_owner_claim_mentions.saturating_add(1);
                 trace.inventory_owner_claim_fragment_bits = trace
@@ -326,6 +331,37 @@ impl LiveObjectExactClaimTraceSummary {
                     trace.inventory_owner_branch_2000_feature25_mentions = trace
                         .inventory_owner_branch_2000_feature25_mentions
                         .saturating_add(1);
+                }
+                if let Some(feature25) = &inventory.feature25 {
+                    trace.inventory_owner_feature25_claim_mentions = trace
+                        .inventory_owner_feature25_claim_mentions
+                        .saturating_add(1);
+                    trace.inventory_owner_feature25_first_object_refs = trace
+                        .inventory_owner_feature25_first_object_refs
+                        .saturating_add(
+                            u32::try_from(feature25.first_object_ids.len()).unwrap_or(u32::MAX),
+                        );
+                    trace.inventory_owner_feature25_second_object_refs = trace
+                        .inventory_owner_feature25_second_object_refs
+                        .saturating_add(
+                            u32::try_from(feature25.second_object_ids.len()).unwrap_or(u32::MAX),
+                        );
+                    trace.inventory_owner_feature25_second_fragment_bits = trace
+                        .inventory_owner_feature25_second_fragment_bits
+                        .saturating_add(
+                            u32::try_from(
+                                feature25
+                                    .second_fragment_bit_end
+                                    .saturating_sub(feature25.second_fragment_bit_start),
+                            )
+                            .unwrap_or(u32::MAX),
+                        );
+                    trace.inventory_owner_feature25_legacy_tail_object_refs = trace
+                        .inventory_owner_feature25_legacy_tail_object_refs
+                        .saturating_add(
+                            u32::try_from(feature25.legacy_tail_object_ids.len())
+                                .unwrap_or(u32::MAX),
+                        );
                 }
                 if branches.bit_4000_state_stream {
                     trace.inventory_owner_branch_4000_state_stream_mentions = trace
@@ -1260,6 +1296,15 @@ fn trace_live_object_exact_claim_summary(
             trace.inventory_owner_branch_1000_ui_clear_mentions,
         inventory_owner_branch_2000_feature25_mentions =
             trace.inventory_owner_branch_2000_feature25_mentions,
+        inventory_owner_feature25_claim_mentions = trace.inventory_owner_feature25_claim_mentions,
+        inventory_owner_feature25_first_object_refs =
+            trace.inventory_owner_feature25_first_object_refs,
+        inventory_owner_feature25_second_object_refs =
+            trace.inventory_owner_feature25_second_object_refs,
+        inventory_owner_feature25_second_fragment_bits =
+            trace.inventory_owner_feature25_second_fragment_bits,
+        inventory_owner_feature25_legacy_tail_object_refs =
+            trace.inventory_owner_feature25_legacy_tail_object_refs,
         inventory_owner_branch_4000_state_stream_mentions =
             trace.inventory_owner_branch_4000_state_stream_mentions,
         inventory_owner_branch_8000_fixed_scalar_mentions =
@@ -4634,11 +4679,12 @@ mod live_object_dispatch_tests {
 mod exact_claim_trace_tests {
     use super::*;
     use crate::translate::live_object_update::{
-        LiveObjectCreatureUpdateClaim, LiveObjectInventoryMaskBranches,
-        LiveObjectInventoryOwnerClaim, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableAppearanceClaim, LiveObjectPlaceableState, LiveObjectRecordMention,
-        LiveObjectRecordOrientation, LiveObjectRecordOrientationSource,
-        LiveObjectRecordOrientationVector, LiveObjectRecordPosition,
+        LiveObjectCreatureUpdateClaim, LiveObjectInventoryFeature25Claim,
+        LiveObjectInventoryMaskBranches, LiveObjectInventoryOwnerClaim,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableAppearanceClaim,
+        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordOrientation,
+        LiveObjectRecordOrientationSource, LiveObjectRecordOrientationVector,
+        LiveObjectRecordPosition,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -4731,6 +4777,17 @@ mod exact_claim_trace_tests {
             owner_id: 0xFFFF_FFEC,
             mask: 0x2E00,
             mask_branches: LiveObjectInventoryMaskBranches::from_mask(0x2E00),
+            feature25: Some(LiveObjectInventoryFeature25Claim {
+                branch_offset: 12,
+                block_end: 28,
+                first_count: 1,
+                first_object_ids: vec![0x8000_0100],
+                second_count: 1,
+                second_object_ids: vec![0x8000_0101],
+                second_fragment_bit_start: 6,
+                second_fragment_bit_end: 9,
+                legacy_tail_object_ids: vec![0x8000_0102],
+            }),
             fragment_bits: 6,
             bit_cursor: 3,
             next_bit_cursor: 9,
@@ -4789,6 +4846,11 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.inventory_owner_branch_0800_tail_selector_mentions, 1);
         assert_eq!(trace.inventory_owner_branch_1000_ui_clear_mentions, 0);
         assert_eq!(trace.inventory_owner_branch_2000_feature25_mentions, 1);
+        assert_eq!(trace.inventory_owner_feature25_claim_mentions, 1);
+        assert_eq!(trace.inventory_owner_feature25_first_object_refs, 1);
+        assert_eq!(trace.inventory_owner_feature25_second_object_refs, 1);
+        assert_eq!(trace.inventory_owner_feature25_second_fragment_bits, 3);
+        assert_eq!(trace.inventory_owner_feature25_legacy_tail_object_refs, 1);
         assert_eq!(trace.inventory_owner_branch_4000_state_stream_mentions, 0);
         assert_eq!(trace.inventory_owner_branch_8000_fixed_scalar_mentions, 0);
         assert_eq!(trace.live_gui_records, 2);

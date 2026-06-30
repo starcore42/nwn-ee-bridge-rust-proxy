@@ -656,6 +656,26 @@ not as standalone workaround targets.
   production path: reduce the dominant `0x2000` Feature-25 owner rows into a
   typed list-count/object-reference claim so the following writer/parser work
   can target the actual inventory pressure.
+- 2026-06-30 typed inventory Feature-25 claims: live-data gate used the same
+  gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 17h14m old at
+  gate time, with gameplay reached. Exact `I` owner claims now expose the
+  decompile-backed `0x2000` Feature-25 branch as first-list and second-list
+  OBJECTID vectors, byte cursors, and the second-list fragment-bit span only
+  after the inventory mask walker has replayed the accepted branch order and
+  landed on the same next cursor. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-feature25-claim-automation-20260630-2344`
+  completed with 0 quarantines, 3,547 strict allows, 445 exact rewrite
+  matches, 3,226 exact lifecycle claim summaries, 2,781 captured direct
+  live-object frames, 10 area rewrites, and 0 fixed-width/live-object terminal
+  residuals. All 870 `0x2000` inventory-owner branch mentions now have typed
+  Feature-25 claims: 437 first-list object refs, 442 second-list object refs,
+  1,326 second-list BOOL bits, and 0 legacy-tail object refs in this live
+  replay. Next production path: classify these Feature-25 object refs by
+  owner/mask and materialization state, then implement the bounded inventory
+  state/writer rule that consumes or validates the referenced objects instead
+  of leaving them as diagnostics.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 
