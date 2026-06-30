@@ -54,6 +54,6 @@ pub use facade::{
     rewrite_simple_quickbar_payload_with_context_if_possible,
     rewrite_summary_needs_more_quickbar_bytes,
 };
-pub(crate) use model::QuickbarMaterializationContext;
+pub(crate) use model::{QuickbarItemMaterializationProof, QuickbarMaterializationContext};
 pub(crate) use validator::ee_set_all_buttons_payload_shape_valid;
 pub use writer::build_blank_set_all_buttons_payload;

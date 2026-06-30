@@ -20,6 +20,9 @@ use super::{
     ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
 };
 
+#[cfg(test)]
+use super::InventoryItemObjectProof;
+
 pub(crate) fn observe_verified_payload(
     state: &mut SemanticSessionState,
     direction: Direction,
@@ -405,17 +408,15 @@ mod fixture_free_tests {
             &payload,
         );
 
-        assert!(
-            state
-                .objects
-                .has_known_inventory_item_object_id(first_item_id),
-            "Feature-25 first-list refs should become inventory item context"
+        assert_eq!(
+            state.objects.inventory_item_object_proof(first_item_id),
+            Some(InventoryItemObjectProof::Feature25FirstList),
+            "Feature-25 first-list refs should retain their proof source"
         );
-        assert!(
-            state
-                .objects
-                .has_known_inventory_item_object_id(second_item_id),
-            "Feature-25 second-list refs are deferred item context even before object materialization"
+        assert_eq!(
+            state.objects.inventory_item_object_proof(second_item_id),
+            Some(InventoryItemObjectProof::Feature25SecondList),
+            "Feature-25 second-list refs should stay distinguishable from first-list refs"
         );
         assert!(
             !state.objects.has_active_object_id(second_item_id),

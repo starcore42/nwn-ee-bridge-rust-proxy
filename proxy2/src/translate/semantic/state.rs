@@ -93,6 +93,14 @@ pub(crate) struct ClientInputState {
     pub(crate) transition_door_close_rewrite_skips: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InventoryItemObjectProof {
+    ActiveObject,
+    Feature25FirstList,
+    Feature25SecondList,
+    Feature25LegacyTail,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ObjectRegistry {
     pub(crate) live_object_packets: u64,
@@ -686,17 +694,32 @@ impl ObjectRegistry {
         }
     }
 
-    pub(crate) fn has_known_inventory_item_object_id(&self, object_id: u32) -> bool {
-        self.has_active_object_id(object_id)
-            || self
-                .inventory_feature25_first_item_refs
-                .contains(&object_id)
-            || self
-                .inventory_feature25_second_item_refs
-                .contains(&object_id)
-            || self
-                .inventory_feature25_legacy_tail_item_refs
-                .contains(&object_id)
+    pub(crate) fn inventory_item_object_proof(
+        &self,
+        object_id: u32,
+    ) -> Option<InventoryItemObjectProof> {
+        if self.has_active_object_id(object_id) {
+            return Some(InventoryItemObjectProof::ActiveObject);
+        }
+        if self
+            .inventory_feature25_first_item_refs
+            .contains(&object_id)
+        {
+            return Some(InventoryItemObjectProof::Feature25FirstList);
+        }
+        if self
+            .inventory_feature25_second_item_refs
+            .contains(&object_id)
+        {
+            return Some(InventoryItemObjectProof::Feature25SecondList);
+        }
+        if self
+            .inventory_feature25_legacy_tail_item_refs
+            .contains(&object_id)
+        {
+            return Some(InventoryItemObjectProof::Feature25LegacyTail);
+        }
+        None
     }
 
     pub(crate) fn has_active_object_id(&self, object_id: u32) -> bool {

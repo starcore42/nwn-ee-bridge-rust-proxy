@@ -21,6 +21,6 @@ pub(crate) use reducer::{observe_verified_payload, observe_verified_payload_with
 pub(crate) use state::{
     AreaState, AreaStaticPlaceableConflictRecordObservation,
     AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
-    AuthState, KnownObjectState, ModuleState, ObjectRegistry, ResourceState, SemanticSessionState,
-    SyntheticState, UiState,
+    AuthState, InventoryItemObjectProof, KnownObjectState, ModuleState, ObjectRegistry,
+    ResourceState, SemanticSessionState, SyntheticState, UiState,
 };

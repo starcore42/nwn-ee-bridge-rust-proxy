@@ -61,9 +61,13 @@ fn rewrite_quickbar_payload_for_stream(
     object_registry: Option<&semantic::ObjectRegistry>,
 ) -> Option<quickbar::QuickbarRewriteSummary> {
     if let Some(registry) = object_registry {
-        let item_object_is_known =
-            |object_id| registry.has_known_inventory_item_object_id(object_id);
-        let materialization = quickbar::QuickbarMaterializationContext::new(&item_object_is_known);
+        let item_object_proof = |object_id| {
+            registry
+                .inventory_item_object_proof(object_id)
+                .map(quickbar_materialization_proof_from_registry)
+        };
+        let materialization =
+            quickbar::QuickbarMaterializationContext::new_with_proof(&item_object_proof);
         if let Some((_, summary)) =
             quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
                 payload,
@@ -83,6 +87,25 @@ fn rewrite_quickbar_payload_for_stream(
         return Some(summary);
     }
     quickbar::rewrite_simple_quickbar_payload_if_possible(payload)
+}
+
+fn quickbar_materialization_proof_from_registry(
+    proof: semantic::InventoryItemObjectProof,
+) -> quickbar::QuickbarItemMaterializationProof {
+    match proof {
+        semantic::InventoryItemObjectProof::ActiveObject => {
+            quickbar::QuickbarItemMaterializationProof::ActiveObject
+        }
+        semantic::InventoryItemObjectProof::Feature25FirstList => {
+            quickbar::QuickbarItemMaterializationProof::InventoryFeature25FirstList
+        }
+        semantic::InventoryItemObjectProof::Feature25SecondList => {
+            quickbar::QuickbarItemMaterializationProof::InventoryFeature25SecondList
+        }
+        semantic::InventoryItemObjectProof::Feature25LegacyTail => {
+            quickbar::QuickbarItemMaterializationProof::InventoryFeature25LegacyTail
+        }
+    }
 }
 
 pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
@@ -118,6 +141,16 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                         spells_preserved = summary.spells_preserved,
                         general_buttons_preserved = summary.general_buttons_preserved,
                         item_buttons_blanked = summary.item_buttons_blanked,
+                        item_objects_preserved_by_explicit_self_materialization =
+                            summary.item_objects_preserved_by_explicit_self_materialization,
+                        item_objects_preserved_by_active_state =
+                            summary.item_objects_preserved_by_active_state,
+                        item_objects_preserved_by_feature25_first =
+                            summary.item_objects_preserved_by_feature25_first,
+                        item_objects_preserved_by_feature25_second =
+                            summary.item_objects_preserved_by_feature25_second,
+                        item_objects_preserved_by_feature25_legacy_tail =
+                            summary.item_objects_preserved_by_feature25_legacy_tail,
                         unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
                         buffered = bytes.len(),
                         "server GuiQuickbar_SetAllButtons continuation buffering started"
@@ -453,6 +486,15 @@ fn flush_pending_server_quickbar_stream(
             spells_preserved = summary.spells_preserved,
             general_buttons_preserved = summary.general_buttons_preserved,
             item_buttons_blanked = summary.item_buttons_blanked,
+            item_objects_preserved_by_explicit_self_materialization =
+                summary.item_objects_preserved_by_explicit_self_materialization,
+            item_objects_preserved_by_active_state = summary.item_objects_preserved_by_active_state,
+            item_objects_preserved_by_feature25_first =
+                summary.item_objects_preserved_by_feature25_first,
+            item_objects_preserved_by_feature25_second =
+                summary.item_objects_preserved_by_feature25_second,
+            item_objects_preserved_by_feature25_legacy_tail =
+                summary.item_objects_preserved_by_feature25_legacy_tail,
             unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
             old_payload_length = summary.old_payload_length,
             new_payload_length = summary.new_payload_length,

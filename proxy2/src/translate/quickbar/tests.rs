@@ -44,6 +44,11 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
         general_buttons_blanked: 3,
         item_buttons_blanked: 19,
         unsupported_buttons_blanked: 13,
+        item_objects_preserved_by_explicit_self_materialization: 0,
+        item_objects_preserved_by_active_state: 0,
+        item_objects_preserved_by_feature25_first: 0,
+        item_objects_preserved_by_feature25_second: 0,
+        item_objects_preserved_by_feature25_legacy_tail: 0,
     };
 
     assert!(
@@ -70,6 +75,11 @@ fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
         general_buttons_blanked: 3,
         item_buttons_blanked: 19,
         unsupported_buttons_blanked: 13,
+        item_objects_preserved_by_explicit_self_materialization: 0,
+        item_objects_preserved_by_active_state: 0,
+        item_objects_preserved_by_feature25_first: 0,
+        item_objects_preserved_by_feature25_second: 0,
+        item_objects_preserved_by_feature25_legacy_tail: 0,
     };
 
     assert!(
@@ -274,8 +284,12 @@ fn state_proven_quickbar_item_objects_emit_typed_ee_item_slots() {
         "fixture must contain explicit type-1 item slots for state-backed materialization proof"
     );
 
-    let item_object_is_known = |object_id| known_item_objects.contains(&object_id);
-    let materialization = QuickbarMaterializationContext::new(&item_object_is_known);
+    let item_object_proof = |object_id| {
+        known_item_objects
+            .contains(&object_id)
+            .then_some(QuickbarItemMaterializationProof::ActiveObject)
+    };
+    let materialization = QuickbarMaterializationContext::new_with_proof(&item_object_proof);
     let summary = rewrite_simple_quickbar_payload_with_context_if_possible(
         &mut payload,
         Some(&materialization),
@@ -812,8 +826,12 @@ fn state_proven_compact_byte_owned_quickbar_items_emit_typed_ee_slots() {
         "state-backed compact item proof needs concrete object ids"
     );
 
-    let item_object_is_known = |object_id| known_item_objects.contains(&object_id);
-    let materialization = QuickbarMaterializationContext::new(&item_object_is_known);
+    let item_object_proof = |object_id| {
+        known_item_objects
+            .contains(&object_id)
+            .then_some(QuickbarItemMaterializationProof::ActiveObject)
+    };
+    let materialization = QuickbarMaterializationContext::new_with_proof(&item_object_proof);
     let summary = rewrite_simple_quickbar_payload_with_context_if_possible(
         &mut payload,
         Some(&materialization),

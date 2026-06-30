@@ -221,6 +221,23 @@ pub(super) fn quickbar_item_button_has_verified_ee_materialization(
     recovered_type_tag: bool,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> bool {
+    quickbar_item_button_verified_materialization_proofs(
+        primary,
+        secondary,
+        source,
+        recovered_type_tag,
+        materialization,
+    )
+    .is_some()
+}
+
+pub(super) fn quickbar_item_button_verified_materialization_proofs(
+    primary: &QuickbarItemObject,
+    secondary: &QuickbarItemObject,
+    source: QuickbarItemSource,
+    recovered_type_tag: bool,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Option<[Option<QuickbarItemMaterializationProof>; 2]> {
     // EE's server writer only emits a type-1 quickbar item branch after it has
     // resolved a real CNWSItem, then writes a BOOL-gated primary item object and
     // a BOOL-gated secondary item object. The client receiver consumes those
@@ -252,10 +269,10 @@ pub(super) fn quickbar_item_button_has_verified_ee_materialization(
     // item-create, or inventory Feature-25 refs before being emitted. Missing
     // source type recovery remains boundary-only.
     if recovered_type_tag {
-        return false;
+        return None;
     }
     if !primary.present && !secondary.present {
-        return false;
+        return None;
     }
     let requirement = match source {
         QuickbarItemSource::ExplicitTypeAndFragmentBits => {
@@ -264,14 +281,16 @@ pub(super) fn quickbar_item_button_has_verified_ee_materialization(
         QuickbarItemSource::CompactByteOwnedWithSourceType => {
             QuickbarItemMaterializationRequirement::RequireKnownState
         }
-        QuickbarItemSource::RecoveredMissingType => return false,
+        QuickbarItemSource::RecoveredMissingType => return None,
     };
-    quickbar_item_object_has_verified_ee_materialization(primary, materialization, requirement)
-        && quickbar_item_object_has_verified_ee_materialization(
-            secondary,
-            materialization,
-            requirement,
-        )
+    let primary_proof =
+        quickbar_item_object_verified_materialization_proof(primary, materialization, requirement)?;
+    let secondary_proof = quickbar_item_object_verified_materialization_proof(
+        secondary,
+        materialization,
+        requirement,
+    )?;
+    Some([primary_proof, secondary_proof])
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -280,32 +299,41 @@ enum QuickbarItemMaterializationRequirement {
     RequireKnownState,
 }
 
-fn quickbar_item_object_has_verified_ee_materialization(
+fn quickbar_item_object_verified_materialization_proof(
     item: &QuickbarItemObject,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
     requirement: QuickbarItemMaterializationRequirement,
-) -> bool {
+) -> Option<Option<QuickbarItemMaterializationProof>> {
     if !item.present {
-        return true;
+        return Some(None);
     }
     if item.object_id == NWN_OBJECT_INVALID {
-        return false;
+        return None;
     }
     if item.active_props.is_none() {
-        return false;
+        return None;
     }
     let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
-        return false;
+        return None;
     };
     if item.appearance_bytes.len() != expected_legacy
         || read_u32_le(&item.appearance_bytes, 0) != Some(item.base_item)
     {
-        return false;
+        return None;
     }
     match requirement {
-        QuickbarItemMaterializationRequirement::AllowExplicitSelfMaterialization => true,
+        QuickbarItemMaterializationRequirement::AllowExplicitSelfMaterialization => Some(Some(
+            materialization
+                .and_then(|materialization| {
+                    materialization.item_object_materialization_proof(item.object_id)
+                })
+                .unwrap_or(QuickbarItemMaterializationProof::ExplicitSelfMaterialization),
+        )),
         QuickbarItemMaterializationRequirement::RequireKnownState => materialization
-            .is_some_and(|materialization| materialization.item_object_is_known(item.object_id)),
+            .and_then(|materialization| {
+                materialization.item_object_materialization_proof(item.object_id)
+            })
+            .map(Some),
     }
 }
 
@@ -601,6 +629,73 @@ mod tests {
         };
 
         build_ee_quickbar_payload(&parsed).expect("quickbar payload should write")
+    }
+
+    #[test]
+    fn explicit_item_materialization_reports_self_materialization_without_registry() {
+        let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+
+        let proofs = quickbar_item_button_verified_materialization_proofs(
+            &item,
+            &QuickbarItemObject::default(),
+            QuickbarItemSource::ExplicitTypeAndFragmentBits,
+            false,
+            None,
+        )
+        .expect("explicit type-1 item body may self-materialize");
+
+        assert_eq!(
+            proofs,
+            [
+                Some(QuickbarItemMaterializationProof::ExplicitSelfMaterialization),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_item_materialization_reports_feature25_second_proof() {
+        let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+        let item_object_id = item.object_id;
+        let item_object_proof = |object_id| {
+            (object_id == item_object_id)
+                .then_some(QuickbarItemMaterializationProof::InventoryFeature25SecondList)
+        };
+        let materialization = QuickbarMaterializationContext::new_with_proof(&item_object_proof);
+
+        let proofs = quickbar_item_button_verified_materialization_proofs(
+            &item,
+            &QuickbarItemObject::default(),
+            QuickbarItemSource::CompactByteOwnedWithSourceType,
+            false,
+            Some(&materialization),
+        )
+        .expect("state-proven compact item body may be emitted");
+
+        assert_eq!(
+            proofs,
+            [
+                Some(QuickbarItemMaterializationProof::InventoryFeature25SecondList),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_item_materialization_still_requires_registry_proof() {
+        let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+
+        assert!(
+            quickbar_item_button_verified_materialization_proofs(
+                &item,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::CompactByteOwnedWithSourceType,
+                false,
+                None,
+            )
+            .is_none(),
+            "byte-owned compact item bodies need session-state proof"
+        );
     }
 
     fn ee_reader_for_payload(payload: &[u8]) -> QuickbarPacketReader<'_> {

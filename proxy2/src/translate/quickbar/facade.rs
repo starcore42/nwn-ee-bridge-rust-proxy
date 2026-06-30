@@ -328,48 +328,33 @@ fn summarize_quickbar_rewrite(
     new_declared: u32,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> QuickbarRewriteSummary {
-    let item_buttons_emitted = parsed
-        .buttons
-        .iter()
-        .filter(|button| {
-            matches!(
-                &button.kind,
-                QuickbarButtonKind::Item {
-                    primary,
-                    secondary,
-                    source,
-                    recovered_type_tag,
-                } if super::writer::quickbar_item_button_has_verified_ee_materialization(
-                    primary,
-                    secondary,
-                    *source,
-                    *recovered_type_tag,
-                    materialization,
-                )
-            )
-        })
-        .count() as u32;
-    let item_buttons_blanked_by_policy = parsed
-        .buttons
-        .iter()
-        .filter(|button| {
-            matches!(
-                &button.kind,
-                QuickbarButtonKind::Item {
-                    primary,
-                    secondary,
-                    source,
-                    recovered_type_tag,
-                } if !super::writer::quickbar_item_button_has_verified_ee_materialization(
-                    primary,
-                    secondary,
-                    *source,
-                    *recovered_type_tag,
-                    materialization,
-                )
-            )
-        })
-        .count() as u32;
+    let mut item_buttons_total = 0_u32;
+    let mut item_buttons_emitted = 0_u32;
+    let mut materialization_counts = QuickbarMaterializationCounts::default();
+    for button in &parsed.buttons {
+        let QuickbarButtonKind::Item {
+            primary,
+            secondary,
+            source,
+            recovered_type_tag,
+        } = &button.kind
+        else {
+            continue;
+        };
+        item_buttons_total = item_buttons_total.saturating_add(1);
+        let Some(proofs) = super::writer::quickbar_item_button_verified_materialization_proofs(
+            primary,
+            secondary,
+            *source,
+            *recovered_type_tag,
+            materialization,
+        ) else {
+            continue;
+        };
+        item_buttons_emitted = item_buttons_emitted.saturating_add(1);
+        materialization_counts.observe(proofs);
+    }
+    let item_buttons_blanked_by_policy = item_buttons_total.saturating_sub(item_buttons_emitted);
     let spells_preserved = parsed
         .buttons
         .iter()
@@ -424,6 +409,47 @@ fn summarize_quickbar_rewrite(
         general_buttons_blanked,
         item_buttons_blanked: item_candidate_buttons.saturating_add(item_buttons_blanked_by_policy),
         unsupported_buttons_blanked,
+        item_objects_preserved_by_explicit_self_materialization: materialization_counts
+            .explicit_self_materialization,
+        item_objects_preserved_by_active_state: materialization_counts.active_state,
+        item_objects_preserved_by_feature25_first: materialization_counts.feature25_first,
+        item_objects_preserved_by_feature25_second: materialization_counts.feature25_second,
+        item_objects_preserved_by_feature25_legacy_tail: materialization_counts
+            .feature25_legacy_tail,
+    }
+}
+
+#[derive(Default)]
+struct QuickbarMaterializationCounts {
+    explicit_self_materialization: u32,
+    active_state: u32,
+    feature25_first: u32,
+    feature25_second: u32,
+    feature25_legacy_tail: u32,
+}
+
+impl QuickbarMaterializationCounts {
+    fn observe(&mut self, proofs: [Option<QuickbarItemMaterializationProof>; 2]) {
+        for proof in proofs.into_iter().flatten() {
+            match proof {
+                QuickbarItemMaterializationProof::ExplicitSelfMaterialization => {
+                    self.explicit_self_materialization =
+                        self.explicit_self_materialization.saturating_add(1);
+                }
+                QuickbarItemMaterializationProof::ActiveObject => {
+                    self.active_state = self.active_state.saturating_add(1);
+                }
+                QuickbarItemMaterializationProof::InventoryFeature25FirstList => {
+                    self.feature25_first = self.feature25_first.saturating_add(1);
+                }
+                QuickbarItemMaterializationProof::InventoryFeature25SecondList => {
+                    self.feature25_second = self.feature25_second.saturating_add(1);
+                }
+                QuickbarItemMaterializationProof::InventoryFeature25LegacyTail => {
+                    self.feature25_legacy_tail = self.feature25_legacy_tail.saturating_add(1);
+                }
+            }
+        }
     }
 }
 
@@ -454,6 +480,15 @@ fn trace_quickbar_rewrite_summary(path: &str, summary: &QuickbarRewriteSummary) 
         general_buttons_blanked = summary.general_buttons_blanked,
         item_buttons_blanked = summary.item_buttons_blanked,
         unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
+        item_objects_preserved_by_explicit_self_materialization =
+            summary.item_objects_preserved_by_explicit_self_materialization,
+        item_objects_preserved_by_active_state = summary.item_objects_preserved_by_active_state,
+        item_objects_preserved_by_feature25_first =
+            summary.item_objects_preserved_by_feature25_first,
+        item_objects_preserved_by_feature25_second =
+            summary.item_objects_preserved_by_feature25_second,
+        item_objects_preserved_by_feature25_legacy_tail =
+            summary.item_objects_preserved_by_feature25_legacy_tail,
         "server GuiQuickbar_SetAllButtons rewrite summary"
     );
 }

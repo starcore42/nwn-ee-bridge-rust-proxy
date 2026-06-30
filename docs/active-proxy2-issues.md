@@ -748,6 +748,29 @@ not as standalone workaround targets.
   follows verified Feature-25 refs to confirm whether real HG compact
   byte-owned item slots now stay visible, then continue bounded inventory/GUI
   item writer work from any remaining blanked state-proven slots.
+- 2026-07-01 quickbar materialization provenance diagnostics: live-data gate
+  used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 21h17m old at gate
+  time, with gameplay reached. The quickbar writer now reports the proof source
+  for every emitted item object: explicit EE self-materialization, active
+  registry state, Feature-25 first-list refs, Feature-25 second-list refs, or
+  legacy-tail refs. The registry exposes those Feature-25 refs as distinct
+  proof kinds, with active object state taking precedence over deferred
+  references. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-proof-provenance-automation-20260701-0345`
+  completed all 3,294 packets with 0 quarantines, 3,547 strict allows, 445
+  exact live-object rewrites, 3,226 exact lifecycle claim summaries, 2,781
+  direct live-object frames, 10 area rewrites, and 0 fixed-width/live-object
+  terminal residuals. Feature-25 evidence stayed stable: 870 claims, 437/437
+  first-list refs materialized, 1/442 second-list refs materialized, 441/442
+  deferred second-list refs, 1,326 second-list BOOL bits, and 0 legacy-tail
+  refs. This capture's quickbar traffic emitted no item objects, so every new
+  quickbar item materialization provenance counter stayed at 0. Next production
+  path: capture or replay a quickbar SetAllButtons stream that actually carries
+  item slots after verified Feature-25 refs, then use the provenance counters to
+  decide whether compact item emission should accept active-only, first-list,
+  or second-list proof.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

@@ -7,6 +7,15 @@
 
 use super::constants::NWN_OBJECT_INVALID;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemMaterializationProof {
+    ExplicitSelfMaterialization,
+    ActiveObject,
+    InventoryFeature25FirstList,
+    InventoryFeature25SecondList,
+    InventoryFeature25LegacyTail,
+}
+
 /// Session-state proof used by the EE quickbar writer when deciding whether a
 /// parsed legacy item button may be emitted as an EE item button.
 ///
@@ -21,18 +30,21 @@ use super::constants::NWN_OBJECT_INVALID;
 /// `CGameObjectArray::AddExternalObject` before applying the quickbar slot.
 /// Missing-source-type recovered item bodies still remain blanked by policy.
 pub struct QuickbarMaterializationContext<'a> {
-    item_object_is_known: &'a dyn Fn(u32) -> bool,
+    item_object_proof: &'a dyn Fn(u32) -> Option<QuickbarItemMaterializationProof>,
 }
 
 impl<'a> QuickbarMaterializationContext<'a> {
-    pub fn new(item_object_is_known: &'a dyn Fn(u32) -> bool) -> Self {
-        Self {
-            item_object_is_known,
-        }
+    pub fn new_with_proof(
+        item_object_proof: &'a dyn Fn(u32) -> Option<QuickbarItemMaterializationProof>,
+    ) -> Self {
+        Self { item_object_proof }
     }
 
-    pub(in crate::translate::quickbar) fn item_object_is_known(&self, object_id: u32) -> bool {
-        (self.item_object_is_known)(object_id)
+    pub(in crate::translate::quickbar) fn item_object_materialization_proof(
+        &self,
+        object_id: u32,
+    ) -> Option<QuickbarItemMaterializationProof> {
+        (self.item_object_proof)(object_id)
     }
 }
 
@@ -53,6 +65,11 @@ pub struct QuickbarRewriteSummary {
     pub general_buttons_blanked: u32,
     pub item_buttons_blanked: u32,
     pub unsupported_buttons_blanked: u32,
+    pub item_objects_preserved_by_explicit_self_materialization: u32,
+    pub item_objects_preserved_by_active_state: u32,
+    pub item_objects_preserved_by_feature25_first: u32,
+    pub item_objects_preserved_by_feature25_second: u32,
+    pub item_objects_preserved_by_feature25_legacy_tail: u32,
 }
 
 #[derive(Debug, Clone)]
