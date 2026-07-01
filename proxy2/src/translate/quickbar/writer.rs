@@ -375,14 +375,33 @@ pub(super) fn quickbar_item_button_missing_state_status(
     secondary: &QuickbarItemObject,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> QuickbarItemMaterializationStatus {
-    [primary, secondary]
-        .into_iter()
-        .filter_map(|item| quickbar_item_missing_state_status(item, materialization))
-        .find(|status| *status != QuickbarItemMaterializationStatus::Unknown)
-        .unwrap_or(QuickbarItemMaterializationStatus::Unknown)
+    for status in
+        quickbar_item_button_missing_state_object_statuses(primary, secondary, materialization)
+            .into_iter()
+            .flatten()
+    {
+        match status {
+            QuickbarItemMaterializationStatus::ClearedByItemDelete
+            | QuickbarItemMaterializationStatus::ClearedByAreaReset => return status,
+            QuickbarItemMaterializationStatus::Unknown => {}
+            QuickbarItemMaterializationStatus::Proven(_) => {}
+        }
+    }
+    QuickbarItemMaterializationStatus::Unknown
 }
 
-fn quickbar_item_missing_state_status(
+pub(super) fn quickbar_item_button_missing_state_object_statuses(
+    primary: &QuickbarItemObject,
+    secondary: &QuickbarItemObject,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> [Option<QuickbarItemMaterializationStatus>; 2] {
+    [
+        quickbar_item_materialization_candidate_status(primary, materialization),
+        quickbar_item_materialization_candidate_status(secondary, materialization),
+    ]
+}
+
+fn quickbar_item_materialization_candidate_status(
     item: &QuickbarItemObject,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> Option<QuickbarItemMaterializationStatus> {
@@ -398,12 +417,7 @@ fn quickbar_item_missing_state_status(
     let status = materialization
         .map(|materialization| materialization.item_object_materialization_status(item.object_id))
         .unwrap_or(QuickbarItemMaterializationStatus::Unknown);
-    match status {
-        QuickbarItemMaterializationStatus::Proven(_) => None,
-        QuickbarItemMaterializationStatus::ClearedByItemDelete
-        | QuickbarItemMaterializationStatus::ClearedByAreaReset
-        | QuickbarItemMaterializationStatus::Unknown => Some(status),
-    }
+    Some(status)
 }
 
 fn write_quickbar_item_object(
