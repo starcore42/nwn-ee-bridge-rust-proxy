@@ -6,7 +6,9 @@
 
 use crate::{
     packet::Direction,
-    translate::{VerifiedFamily, player_list::PlayerListObjectIds},
+    translate::{
+        VerifiedFamily, player_list::PlayerListObjectIds, quickbar::QuickbarValidatedSlotProfile,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -149,8 +151,13 @@ pub(crate) struct LiveObjectPlaceableState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum QuickbarEvent {
-    Verified { observed: ObservedHighLevel },
-    Placeholder { observed: ObservedHighLevel },
+    Verified {
+        observed: ObservedHighLevel,
+        profile: Option<QuickbarValidatedSlotProfile>,
+    },
+    Placeholder {
+        observed: ObservedHighLevel,
+    },
 }
 
 #[derive(Debug, Clone)]

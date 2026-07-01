@@ -9,6 +9,7 @@ use crate::{
     packet::{Direction, m::HighLevel},
     translate::{
         VerifiedFamily, VerifiedProof, area, gameplay_stream, live_object_update, player_list,
+        quickbar,
     },
 };
 
@@ -127,9 +128,10 @@ fn observe_family_payload(
                 object_ids,
             })
         }
-        VerifiedFamily::GuiQuickbar => {
-            ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed })
-        }
+        VerifiedFamily::GuiQuickbar => ProtocolEvent::Quickbar(QuickbarEvent::Verified {
+            observed,
+            profile: quickbar::validated_set_all_buttons_slot_profile(payload),
+        }),
         VerifiedFamily::GuiQuickbarPlaceholder => {
             ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed })
         }
@@ -211,9 +213,29 @@ fn apply_event(
                 );
             }
         }
-        ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed }) => {
+        ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed, profile }) => {
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
             state.ui.last_quickbar_family = Some(observed.family);
+            if let Some(profile) = profile {
+                state.ui.last_committed_quickbar_profile = Some(*profile);
+                tracing::info!(
+                    slot_records = profile.slot_records,
+                    blank_slots = profile.blank_slots,
+                    item_slots = profile.item_slots,
+                    spell_slots = profile.spell_slots,
+                    general_slots = profile.general_slots,
+                    first_page_visible_slots = profile.first_page_visible_slots,
+                    first_page_item_slots = profile.first_page_item_slots,
+                    first_page_spell_slots = profile.first_page_spell_slots,
+                    "semantic state observed committed GuiQuickbar slot profile"
+                );
+            } else {
+                tracing::warn!(
+                    payload_len = observed.payload_len,
+                    declared_len = observed.declared_len,
+                    "verified GuiQuickbar payload did not expose an exact EE slot profile"
+                );
+            }
         }
         ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed }) => {
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
@@ -422,6 +444,45 @@ mod fixture_free_tests {
             !state.objects.has_active_object_id(second_item_id),
             "deferred Feature-25 refs must not become active lifecycle materialization"
         );
+    }
+
+    #[test]
+    fn committed_quickbar_profile_survives_placeholder_events() {
+        let payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &payload,
+        );
+
+        let profile = state
+            .ui
+            .last_committed_quickbar_profile
+            .expect("committed quickbar should record an exact slot profile");
+        assert_eq!(profile.slot_records, 36);
+        assert_eq!(profile.blank_slots, 36);
+        assert_eq!(profile.item_slots, 0);
+        assert_eq!(profile.spell_slots, 0);
+        assert_eq!(state.ui.quickbar_packets, 1);
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbarPlaceholder),
+            &payload,
+        );
+
+        assert_eq!(
+            state.ui.last_committed_quickbar_profile,
+            Some(profile),
+            "placeholder frames must not replace the last committed quickbar slot profile"
+        );
+        assert_eq!(state.ui.quickbar_packets, 2);
+        assert_eq!(state.ui.quickbar_placeholders, 1);
     }
 }
 

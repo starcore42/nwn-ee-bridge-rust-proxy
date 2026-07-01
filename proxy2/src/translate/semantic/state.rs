@@ -22,6 +22,7 @@ use crate::translate::{
     },
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
+    quickbar::QuickbarValidatedSlotProfile,
 };
 
 use super::event::{
@@ -1831,6 +1832,7 @@ pub(crate) struct UiState {
     pub(crate) quickbar_placeholders: u64,
     pub(crate) inventory_packets: u64,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
+    pub(crate) last_committed_quickbar_profile: Option<QuickbarValidatedSlotProfile>,
 }
 
 #[derive(Debug, Default)]

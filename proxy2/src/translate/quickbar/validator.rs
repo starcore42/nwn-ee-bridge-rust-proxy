@@ -13,6 +13,13 @@ pub(crate) fn ee_set_all_buttons_payload_shape_valid(payload: &[u8]) -> bool {
     ee_set_all_buttons_slot_types_if_valid(payload).is_some()
 }
 
+pub(crate) fn validated_set_all_buttons_slot_profile(
+    payload: &[u8],
+) -> Option<QuickbarValidatedSlotProfile> {
+    let slot_types = ee_set_all_buttons_slot_types_if_valid(payload)?;
+    Some(QuickbarValidatedSlotProfile::from_slot_types(&slot_types))
+}
+
 pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
     payload: &[u8],
 ) -> Option<Vec<u8>> {
@@ -296,5 +303,21 @@ mod tests {
             !ee_set_all_buttons_payload_shape_valid(&payload),
             "unused quickbar fragment padding bits are not owned by EE's SetAllButtons reader"
         );
+    }
+
+    #[test]
+    fn validated_quickbar_slot_profile_counts_exact_ee_slots() {
+        let payload = build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar placeholder should build");
+
+        let profile = validated_set_all_buttons_slot_profile(&payload)
+            .expect("blank quickbar should expose an exact slot profile");
+
+        assert_eq!(profile.slot_records, 36);
+        assert_eq!(profile.blank_slots, 36);
+        assert_eq!(profile.item_slots, 0);
+        assert_eq!(profile.spell_slots, 0);
+        assert_eq!(profile.general_slots, 0);
+        assert_eq!(profile.first_page_visible_slots, 0);
     }
 }

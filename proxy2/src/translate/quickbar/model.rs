@@ -137,6 +137,46 @@ pub struct QuickbarRewriteSummary {
     pub item_objects_preserved_by_feature25_legacy_tail: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct QuickbarValidatedSlotProfile {
+    pub(crate) slot_records: u32,
+    pub(crate) blank_slots: u32,
+    pub(crate) item_slots: u32,
+    pub(crate) spell_slots: u32,
+    pub(crate) general_slots: u32,
+    pub(crate) first_page_visible_slots: u32,
+    pub(crate) first_page_item_slots: u32,
+    pub(crate) first_page_spell_slots: u32,
+}
+
+impl QuickbarValidatedSlotProfile {
+    pub(in crate::translate::quickbar) fn from_slot_types(slot_types: &[u8]) -> Self {
+        let mut profile = Self {
+            slot_records: u32::try_from(slot_types.len()).unwrap_or(u32::MAX),
+            ..Self::default()
+        };
+        for (index, slot_type) in slot_types.iter().copied().enumerate() {
+            match slot_type {
+                0 => profile.blank_slots = profile.blank_slots.saturating_add(1),
+                1 => profile.item_slots = profile.item_slots.saturating_add(1),
+                2 => profile.spell_slots = profile.spell_slots.saturating_add(1),
+                _ => profile.general_slots = profile.general_slots.saturating_add(1),
+            }
+            if index < 12 && slot_type != 0 {
+                profile.first_page_visible_slots =
+                    profile.first_page_visible_slots.saturating_add(1);
+                if slot_type == 1 {
+                    profile.first_page_item_slots = profile.first_page_item_slots.saturating_add(1);
+                } else if slot_type == 2 {
+                    profile.first_page_spell_slots =
+                        profile.first_page_spell_slots.saturating_add(1);
+                }
+            }
+        }
+        profile
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::translate::quickbar) struct QuickbarParse {
     pub(in crate::translate::quickbar) envelope: u8,

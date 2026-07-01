@@ -62,7 +62,9 @@ pub(crate) use facade::{
 };
 pub(crate) use model::{
     QuickbarItemMaterializationProof, QuickbarItemMaterializationStatus,
-    QuickbarMaterializationContext,
+    QuickbarMaterializationContext, QuickbarValidatedSlotProfile,
 };
-pub(crate) use validator::ee_set_all_buttons_payload_shape_valid;
+pub(crate) use validator::{
+    ee_set_all_buttons_payload_shape_valid, validated_set_all_buttons_slot_profile,
+};
 pub use writer::build_blank_set_all_buttons_payload;
