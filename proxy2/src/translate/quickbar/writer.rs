@@ -260,6 +260,32 @@ pub(super) enum QuickbarItemMaterializationRejectReason {
     MissingStateProof,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QuickbarItemObjectShapeStatus {
+    Absent,
+    InvalidObjectId,
+    MissingActiveProperties,
+    UnsupportedAppearanceType,
+    AppearanceShape,
+    Valid,
+}
+
+impl QuickbarItemObjectShapeStatus {
+    fn materialization_reject_reason(self) -> Option<QuickbarItemMaterializationRejectReason> {
+        match self {
+            Self::Absent | Self::Valid => None,
+            Self::InvalidObjectId => Some(QuickbarItemMaterializationRejectReason::InvalidObjectId),
+            Self::MissingActiveProperties => {
+                Some(QuickbarItemMaterializationRejectReason::MissingActiveProperties)
+            }
+            Self::UnsupportedAppearanceType => {
+                Some(QuickbarItemMaterializationRejectReason::UnsupportedAppearanceType)
+            }
+            Self::AppearanceShape => Some(QuickbarItemMaterializationRejectReason::AppearanceShape),
+        }
+    }
+}
+
 pub(super) fn quickbar_item_button_materialization_decision(
     primary: &QuickbarItemObject,
     secondary: &QuickbarItemObject,
@@ -336,22 +362,14 @@ fn quickbar_item_object_verified_materialization_proof(
     materialization: Option<&QuickbarMaterializationContext<'_>>,
     requirement: QuickbarItemMaterializationRequirement,
 ) -> Result<Option<QuickbarItemMaterializationProof>, QuickbarItemMaterializationRejectReason> {
-    if !item.present {
-        return Ok(None);
-    }
-    if item.object_id == NWN_OBJECT_INVALID {
-        return Err(QuickbarItemMaterializationRejectReason::InvalidObjectId);
-    }
-    if item.active_props.is_none() {
-        return Err(QuickbarItemMaterializationRejectReason::MissingActiveProperties);
-    }
-    let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
-        return Err(QuickbarItemMaterializationRejectReason::UnsupportedAppearanceType);
-    };
-    if item.appearance_bytes.len() != expected_legacy
-        || read_u32_le(&item.appearance_bytes, 0) != Some(item.base_item)
-    {
-        return Err(QuickbarItemMaterializationRejectReason::AppearanceShape);
+    match quickbar_item_object_shape_status(item) {
+        QuickbarItemObjectShapeStatus::Absent => return Ok(None),
+        QuickbarItemObjectShapeStatus::Valid => {}
+        status => {
+            return Err(status
+                .materialization_reject_reason()
+                .expect("invalid quickbar item shape should map to reject reason"));
+        }
     }
     match requirement {
         QuickbarItemMaterializationRequirement::AllowExplicitSelfMaterialization => Ok(Some(
@@ -401,17 +419,34 @@ pub(super) fn quickbar_item_button_missing_state_object_statuses(
     ]
 }
 
+pub(super) fn quickbar_item_object_shape_status(
+    item: &QuickbarItemObject,
+) -> QuickbarItemObjectShapeStatus {
+    if !item.present {
+        return QuickbarItemObjectShapeStatus::Absent;
+    }
+    if item.object_id == NWN_OBJECT_INVALID {
+        return QuickbarItemObjectShapeStatus::InvalidObjectId;
+    }
+    if item.active_props.is_none() {
+        return QuickbarItemObjectShapeStatus::MissingActiveProperties;
+    }
+    let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
+        return QuickbarItemObjectShapeStatus::UnsupportedAppearanceType;
+    };
+    if item.appearance_bytes.len() != expected_legacy
+        || read_u32_le(&item.appearance_bytes, 0) != Some(item.base_item)
+    {
+        return QuickbarItemObjectShapeStatus::AppearanceShape;
+    }
+    QuickbarItemObjectShapeStatus::Valid
+}
+
 fn quickbar_item_materialization_candidate_status(
     item: &QuickbarItemObject,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> Option<QuickbarItemMaterializationStatus> {
-    if !item.present
-        || item.object_id == NWN_OBJECT_INVALID
-        || item.active_props.is_none()
-        || legacy_item_appearance_read_size(item.appearance_type).is_none()
-        || item.appearance_bytes.len() != legacy_item_appearance_read_size(item.appearance_type)?
-        || read_u32_le(&item.appearance_bytes, 0) != Some(item.base_item)
-    {
+    if quickbar_item_object_shape_status(item) != QuickbarItemObjectShapeStatus::Valid {
         return None;
     }
     let status = materialization
@@ -820,6 +855,15 @@ mod tests {
     fn quickbar_item_materialization_reports_reject_reason_buckets() {
         let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
         assert_eq!(
+            quickbar_item_object_shape_status(&item),
+            QuickbarItemObjectShapeStatus::Valid
+        );
+        assert_eq!(
+            quickbar_item_object_shape_status(&QuickbarItemObject::default()),
+            QuickbarItemObjectShapeStatus::Absent,
+            "absent secondary items are valid no-payload BOOL branches"
+        );
+        assert_eq!(
             quickbar_item_button_materialization_decision(
                 &item,
                 &QuickbarItemObject::default(),
@@ -856,6 +900,10 @@ mod tests {
         let mut invalid_id = item.clone();
         invalid_id.object_id = NWN_OBJECT_INVALID;
         assert_eq!(
+            quickbar_item_object_shape_status(&invalid_id),
+            QuickbarItemObjectShapeStatus::InvalidObjectId
+        );
+        assert_eq!(
             quickbar_item_button_materialization_decision(
                 &invalid_id,
                 &QuickbarItemObject::default(),
@@ -868,6 +916,10 @@ mod tests {
 
         let mut missing_props = item.clone();
         missing_props.active_props = None;
+        assert_eq!(
+            quickbar_item_object_shape_status(&missing_props),
+            QuickbarItemObjectShapeStatus::MissingActiveProperties
+        );
         assert_eq!(
             quickbar_item_button_materialization_decision(
                 &missing_props,
@@ -882,6 +934,10 @@ mod tests {
         let mut unsupported_appearance = item.clone();
         unsupported_appearance.appearance_type = 9;
         assert_eq!(
+            quickbar_item_object_shape_status(&unsupported_appearance),
+            QuickbarItemObjectShapeStatus::UnsupportedAppearanceType
+        );
+        assert_eq!(
             quickbar_item_button_materialization_decision(
                 &unsupported_appearance,
                 &QuickbarItemObject::default(),
@@ -894,6 +950,10 @@ mod tests {
 
         let mut shifted_appearance = item;
         shifted_appearance.appearance_bytes[0] ^= 1;
+        assert_eq!(
+            quickbar_item_object_shape_status(&shifted_appearance),
+            QuickbarItemObjectShapeStatus::AppearanceShape
+        );
         assert_eq!(
             quickbar_item_button_materialization_decision(
                 &shifted_appearance,

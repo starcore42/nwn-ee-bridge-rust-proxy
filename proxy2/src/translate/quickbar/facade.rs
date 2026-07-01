@@ -845,6 +845,16 @@ fn trace_quickbar_item_button_decisions(
             quickbar_item_object_registry_status_label(secondary, materialization);
         let primary_shape = quickbar_item_object_shape_label(primary);
         let secondary_shape = quickbar_item_object_shape_label(secondary);
+        let primary_active_property_count = primary
+            .active_props
+            .as_ref()
+            .map(|active_props| active_props.properties.len())
+            .unwrap_or(0);
+        let secondary_active_property_count = secondary
+            .active_props
+            .as_ref()
+            .map(|active_props| active_props.properties.len())
+            .unwrap_or(0);
         tracing::info!(
             path,
             trace_role = trace_role.as_str(),
@@ -857,11 +867,21 @@ fn trace_quickbar_item_button_decisions(
             primary_present = primary.present,
             primary_object_id = %format_args!("0x{:08X}", primary.object_id),
             primary_shape,
+            primary_base_item = %format_args!("0x{:08X}", primary.base_item),
+            primary_appearance_type = primary.appearance_type,
+            primary_appearance_len = primary.appearance_bytes.len(),
+            primary_active_properties_present = primary.active_props.is_some(),
+            primary_active_property_count,
             primary_status,
             primary_proof,
             secondary_present = secondary.present,
             secondary_object_id = %format_args!("0x{:08X}", secondary.object_id),
             secondary_shape,
+            secondary_base_item = %format_args!("0x{:08X}", secondary.base_item),
+            secondary_appearance_type = secondary.appearance_type,
+            secondary_appearance_len = secondary.appearance_bytes.len(),
+            secondary_active_properties_present = secondary.active_props.is_some(),
+            secondary_active_property_count,
             secondary_status,
             secondary_proof,
             "server GuiQuickbar_SetAllButtons item materialization decision"
@@ -948,24 +968,18 @@ fn quickbar_item_object_registry_status_label(
 }
 
 fn quickbar_item_object_shape_label(item: &QuickbarItemObject) -> &'static str {
-    if !item.present {
-        return "absent";
+    match super::writer::quickbar_item_object_shape_status(item) {
+        super::writer::QuickbarItemObjectShapeStatus::Absent => "absent",
+        super::writer::QuickbarItemObjectShapeStatus::InvalidObjectId => "invalid_object_id",
+        super::writer::QuickbarItemObjectShapeStatus::MissingActiveProperties => {
+            "missing_active_properties"
+        }
+        super::writer::QuickbarItemObjectShapeStatus::UnsupportedAppearanceType => {
+            "unsupported_appearance_type"
+        }
+        super::writer::QuickbarItemObjectShapeStatus::AppearanceShape => "appearance_shape",
+        super::writer::QuickbarItemObjectShapeStatus::Valid => "valid",
     }
-    if item.object_id == NWN_OBJECT_INVALID {
-        return "invalid_object_id";
-    }
-    if item.active_props.is_none() {
-        return "missing_active_properties";
-    }
-    let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
-        return "unsupported_appearance_type";
-    };
-    if item.appearance_bytes.len() != expected_legacy
-        || read_le_u32(&item.appearance_bytes, 0) != Some(item.base_item)
-    {
-        return "appearance_shape";
-    }
-    "valid"
 }
 
 fn dump_quickbar_payload(label: &str, payload: &[u8]) {
