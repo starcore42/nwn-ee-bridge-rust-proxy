@@ -33,6 +33,7 @@ mod live_update;
 mod local_ack;
 mod login_waypoint;
 mod parse_window;
+mod quickbar_materialization;
 mod quickbar_stream;
 mod reassembly;
 mod sequence;

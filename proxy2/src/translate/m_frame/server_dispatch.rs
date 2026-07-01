@@ -17,7 +17,10 @@ use crate::{
     },
 };
 
-use super::{deferred_module_resources, live_update, parse_window};
+use super::{
+    deferred_module_resources, live_update, parse_window,
+    quickbar_materialization::{self, QuickbarRewriteMode},
+};
 use std::{
     collections::BTreeSet,
     fs,
@@ -3316,70 +3319,16 @@ fn translate_quickbar_with_registry(
     payload: &mut Vec<u8>,
     object_registry: Option<&semantic::ObjectRegistry>,
 ) -> ServerTranslatorOutcome {
-    let Some(registry) = object_registry else {
-        return translate_quickbar(payload, None, SemanticScope::DeflatedReassembly, None);
-    };
-    let item_object_status = |object_id| {
-        quickbar_materialization_status_from_registry(
-            registry.inventory_item_object_status(object_id),
-        )
-    };
-    let materialization =
-        quickbar::QuickbarMaterializationContext::new_with_status(&item_object_status);
-    if quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
+    if quickbar_materialization::rewrite_payload_with_registry_if_possible(
         payload,
-        Some(&materialization),
+        object_registry,
+        QuickbarRewriteMode::Committed,
     )
     .is_some()
-        || quickbar::rewrite_simple_quickbar_payload_with_context_if_possible(
-            payload,
-            Some(&materialization),
-        )
-        .is_some()
     {
         claimed()
     } else {
         ServerTranslatorOutcome::None
-    }
-}
-
-fn quickbar_materialization_status_from_registry(
-    status: semantic::InventoryItemObjectStatus,
-) -> quickbar::QuickbarItemMaterializationStatus {
-    match status {
-        semantic::InventoryItemObjectStatus::Proven(proof) => {
-            quickbar::QuickbarItemMaterializationStatus::Proven(
-                quickbar_materialization_proof_from_registry(proof),
-            )
-        }
-        semantic::InventoryItemObjectStatus::ClearedByItemDelete => {
-            quickbar::QuickbarItemMaterializationStatus::ClearedByItemDelete
-        }
-        semantic::InventoryItemObjectStatus::ClearedByAreaReset => {
-            quickbar::QuickbarItemMaterializationStatus::ClearedByAreaReset
-        }
-        semantic::InventoryItemObjectStatus::Unknown => {
-            quickbar::QuickbarItemMaterializationStatus::Unknown
-        }
-    }
-}
-
-fn quickbar_materialization_proof_from_registry(
-    proof: semantic::InventoryItemObjectProof,
-) -> quickbar::QuickbarItemMaterializationProof {
-    match proof {
-        semantic::InventoryItemObjectProof::ActiveObject => {
-            quickbar::QuickbarItemMaterializationProof::ActiveObject
-        }
-        semantic::InventoryItemObjectProof::Feature25FirstList => {
-            quickbar::QuickbarItemMaterializationProof::InventoryFeature25FirstList
-        }
-        semantic::InventoryItemObjectProof::Feature25SecondList => {
-            quickbar::QuickbarItemMaterializationProof::InventoryFeature25SecondList
-        }
-        semantic::InventoryItemObjectProof::Feature25LegacyTail => {
-            quickbar::QuickbarItemMaterializationProof::InventoryFeature25LegacyTail
-        }
     }
 }
 

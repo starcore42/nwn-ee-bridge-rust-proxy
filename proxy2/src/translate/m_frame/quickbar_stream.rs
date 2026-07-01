@@ -6,7 +6,7 @@
 
 use crate::{
     packet::m::HighLevel,
-    translate::{ContinuationOwner, Emit, VerifiedFamily, quickbar, semantic},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, quickbar},
 };
 use std::{
     env, fs,
@@ -16,6 +16,7 @@ use std::{
 use super::{
     CNW_LENGTH_BYTES, SessionState,
     deflate::deflate_zlib,
+    quickbar_materialization::{self, QuickbarRewriteMode},
     reassembly::{
         CompletedDeflatedReplay, ServerDeflatedReassembly, build_server_deflated_output_frames,
         emit_family_packets_with_interleaved, remember_completed_server_stream_window,
@@ -58,75 +59,14 @@ fn build_blank_quickbar_placeholder_frames(
 
 fn rewrite_quickbar_payload_for_stream(
     payload: &mut Vec<u8>,
-    object_registry: Option<&semantic::ObjectRegistry>,
+    object_registry: Option<&crate::translate::semantic::ObjectRegistry>,
+    mode: QuickbarRewriteMode,
 ) -> Option<quickbar::QuickbarRewriteSummary> {
-    if let Some(registry) = object_registry {
-        let item_object_status = |object_id| {
-            quickbar_materialization_status_from_registry(
-                registry.inventory_item_object_status(object_id),
-            )
-        };
-        let materialization =
-            quickbar::QuickbarMaterializationContext::new_with_status(&item_object_status);
-        if let Some((_, summary)) =
-            quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
-                payload,
-                Some(&materialization),
-            )
-        {
-            return Some(summary);
-        }
-        return quickbar::rewrite_simple_quickbar_payload_with_context_if_possible(
-            payload,
-            Some(&materialization),
-        );
-    }
-    if let Some((_, summary)) =
-        quickbar::normalize_and_rewrite_quickbar_payload_if_possible(payload)
-    {
-        return Some(summary);
-    }
-    quickbar::rewrite_simple_quickbar_payload_if_possible(payload)
-}
-
-fn quickbar_materialization_status_from_registry(
-    status: semantic::InventoryItemObjectStatus,
-) -> quickbar::QuickbarItemMaterializationStatus {
-    match status {
-        semantic::InventoryItemObjectStatus::Proven(proof) => {
-            quickbar::QuickbarItemMaterializationStatus::Proven(
-                quickbar_materialization_proof_from_registry(proof),
-            )
-        }
-        semantic::InventoryItemObjectStatus::ClearedByItemDelete => {
-            quickbar::QuickbarItemMaterializationStatus::ClearedByItemDelete
-        }
-        semantic::InventoryItemObjectStatus::ClearedByAreaReset => {
-            quickbar::QuickbarItemMaterializationStatus::ClearedByAreaReset
-        }
-        semantic::InventoryItemObjectStatus::Unknown => {
-            quickbar::QuickbarItemMaterializationStatus::Unknown
-        }
-    }
-}
-
-fn quickbar_materialization_proof_from_registry(
-    proof: semantic::InventoryItemObjectProof,
-) -> quickbar::QuickbarItemMaterializationProof {
-    match proof {
-        semantic::InventoryItemObjectProof::ActiveObject => {
-            quickbar::QuickbarItemMaterializationProof::ActiveObject
-        }
-        semantic::InventoryItemObjectProof::Feature25FirstList => {
-            quickbar::QuickbarItemMaterializationProof::InventoryFeature25FirstList
-        }
-        semantic::InventoryItemObjectProof::Feature25SecondList => {
-            quickbar::QuickbarItemMaterializationProof::InventoryFeature25SecondList
-        }
-        semantic::InventoryItemObjectProof::Feature25LegacyTail => {
-            quickbar::QuickbarItemMaterializationProof::InventoryFeature25LegacyTail
-        }
-    }
+    quickbar_materialization::rewrite_payload_with_registry_if_possible(
+        payload,
+        object_registry,
+        mode,
+    )
 }
 
 pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
@@ -146,7 +86,11 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         let target_length = quickbar::full_set_all_buttons_target_length(bytes);
         if target_length.is_none() {
             let mut probe = bytes.to_vec();
-            match rewrite_quickbar_payload_for_stream(&mut probe, Some(&state.semantic.objects)) {
+            match rewrite_quickbar_payload_for_stream(
+                &mut probe,
+                Some(&state.semantic.objects),
+                QuickbarRewriteMode::StreamProbe,
+            ) {
                 Some(summary) => {
                     if !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary) {
                         return Ok(None);
@@ -275,6 +219,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         let rewrite = rewrite_quickbar_payload_for_stream(
             &mut rewritten_payload,
             Some(&state.semantic.objects),
+            QuickbarRewriteMode::StreamProbe,
         );
         let under_wait_budget = pending.chunks < MAX_PENDING_QUICKBAR_STREAM_CHUNKS
             && pending.payload.len() < MAX_PENDING_QUICKBAR_STREAM_BYTES;
@@ -338,7 +283,12 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
         && pending.duplicate_replays >= MAX_PENDING_QUICKBAR_DUPLICATE_REPLAYS_BEFORE_CLAIM
         && {
             let mut probe = pending.payload.clone();
-            rewrite_quickbar_payload_for_stream(&mut probe, Some(&state.semantic.objects)).is_some()
+            rewrite_quickbar_payload_for_stream(
+                &mut probe,
+                Some(&state.semantic.objects),
+                QuickbarRewriteMode::StreamProbe,
+            )
+            .is_some()
         };
     tracing::warn!(
         first_sequence = pending.first_sequence,
@@ -440,8 +390,11 @@ fn flush_pending_server_quickbar_stream(
     } else {
         pending.payload.clone()
     };
-    let quickbar_rewrite =
-        rewrite_quickbar_payload_for_stream(&mut quickbar_payload, Some(&state.semantic.objects));
+    let quickbar_rewrite = rewrite_quickbar_payload_for_stream(
+        &mut quickbar_payload,
+        Some(&state.semantic.objects),
+        QuickbarRewriteMode::Committed,
+    );
     let trailing_bytes = pending
         .target_length
         .map(|target_length| pending.payload.len().saturating_sub(target_length))

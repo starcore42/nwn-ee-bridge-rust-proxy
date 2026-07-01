@@ -26,9 +26,16 @@ pub fn rewrite_simple_quickbar_payload_if_possible(
 pub(crate) fn rewrite_simple_quickbar_payload_for_stream_probe_if_possible(
     payload: &mut Vec<u8>,
 ) -> Option<QuickbarRewriteSummary> {
+    rewrite_simple_quickbar_payload_with_context_for_stream_probe_if_possible(payload, None)
+}
+
+pub(crate) fn rewrite_simple_quickbar_payload_with_context_for_stream_probe_if_possible(
+    payload: &mut Vec<u8>,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Option<QuickbarRewriteSummary> {
     rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
         payload,
-        None,
+        materialization,
         QuickbarRewriteTraceRole::StreamProbe,
     )
 }
@@ -104,9 +111,16 @@ pub fn normalize_and_rewrite_quickbar_payload_if_possible(
 pub(crate) fn normalize_and_rewrite_quickbar_payload_for_stream_probe_if_possible(
     payload: &mut Vec<u8>,
 ) -> Option<(PrefixedFragmentsNormalizeSummary, QuickbarRewriteSummary)> {
+    normalize_and_rewrite_quickbar_payload_with_context_for_stream_probe_if_possible(payload, None)
+}
+
+pub(crate) fn normalize_and_rewrite_quickbar_payload_with_context_for_stream_probe_if_possible(
+    payload: &mut Vec<u8>,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Option<(PrefixedFragmentsNormalizeSummary, QuickbarRewriteSummary)> {
     normalize_and_rewrite_quickbar_payload_with_context_and_trace_if_possible(
         payload,
-        None,
+        materialization,
         QuickbarRewriteTraceRole::StreamProbe,
     )
 }
