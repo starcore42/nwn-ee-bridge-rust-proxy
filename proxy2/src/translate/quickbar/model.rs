@@ -98,6 +98,7 @@ pub struct QuickbarRewriteSummary {
     pub final_cursor: usize,
     pub trailing_read_bytes: usize,
     pub direct_opcode_stream: bool,
+    pub slot_records_owned: u32,
     pub item_buttons_seen: u32,
     pub item_buttons_source_explicit: u32,
     pub item_buttons_source_compact: u32,

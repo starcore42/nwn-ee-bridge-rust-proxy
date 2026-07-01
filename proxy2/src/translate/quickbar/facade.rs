@@ -186,6 +186,7 @@ pub fn rewrite_summary_needs_more_quickbar_bytes(summary: &QuickbarRewriteSummar
             read_size = summary.read_size,
             final_cursor = summary.final_cursor,
             trailing_read_bytes = summary.trailing_read_bytes,
+            slot_records_owned = summary.slot_records_owned,
             fragment_size = summary.fragment_size,
             spells_preserved = summary.spells_preserved,
             item_buttons_blanked = summary.item_buttons_blanked,
@@ -502,6 +503,11 @@ fn summarize_quickbar_rewrite(
         .iter()
         .filter(|button| matches!(button.kind, QuickbarButtonKind::Unsupported))
         .count() as u32;
+    let slot_records_owned = parsed
+        .buttons
+        .iter()
+        .filter(|button| !matches!(button.kind, QuickbarButtonKind::Unsupported))
+        .count() as u32;
     QuickbarRewriteSummary {
         old_payload_length,
         new_payload_length,
@@ -512,6 +518,7 @@ fn summarize_quickbar_rewrite(
         final_cursor: parsed.final_cursor,
         trailing_read_bytes: parsed.read_size.saturating_sub(parsed.final_cursor),
         direct_opcode_stream: parsed.direct_opcode_stream,
+        slot_records_owned,
         item_buttons_seen: item_buttons_total,
         item_buttons_source_explicit,
         item_buttons_source_compact,
@@ -754,6 +761,7 @@ fn trace_quickbar_rewrite_summary(
         final_cursor = summary.final_cursor,
         trailing_read_bytes = summary.trailing_read_bytes,
         direct_opcode_stream = summary.direct_opcode_stream,
+        slot_records_owned = summary.slot_records_owned,
         item_buttons_seen = summary.item_buttons_seen,
         item_buttons_source_explicit = summary.item_buttons_source_explicit,
         item_buttons_source_compact = summary.item_buttons_source_compact,
