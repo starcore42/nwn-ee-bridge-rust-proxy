@@ -66,6 +66,7 @@ fn rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
         read_le_u32(&rewritten, HIGH_LEVEL_HEADER_BYTES).unwrap_or(old_declared),
         materialization,
     );
+    trace_quickbar_item_button_decisions("simple", &parsed, materialization, trace_role);
     trace_quickbar_rewrite_summary("simple", &summary, trace_role);
     dump_quickbar_payload("simple_after", &rewritten);
     *payload = rewritten;
@@ -143,6 +144,7 @@ fn normalize_and_rewrite_quickbar_payload_with_context_and_trace_if_possible(
         new_declared,
         materialization,
     );
+    trace_quickbar_item_button_decisions("normalized", &parsed, materialization, trace_role);
     trace_quickbar_rewrite_summary("normalized", &summary, trace_role);
     dump_quickbar_payload("normalized_after", &rewritten);
     *payload = rewritten;
@@ -795,6 +797,175 @@ fn trace_quickbar_rewrite_summary(
             summary.item_objects_preserved_by_feature25_legacy_tail,
         "server GuiQuickbar_SetAllButtons rewrite summary"
     );
+}
+
+fn trace_quickbar_item_button_decisions(
+    path: &str,
+    parsed: &QuickbarParse,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+    trace_role: QuickbarRewriteTraceRole,
+) {
+    for (slot_index, button) in parsed.buttons.iter().enumerate() {
+        let QuickbarButtonKind::Item {
+            primary,
+            secondary,
+            source,
+            recovered_type_tag,
+        } = &button.kind
+        else {
+            continue;
+        };
+        let decision = super::writer::quickbar_item_button_materialization_decision(
+            primary,
+            secondary,
+            *source,
+            *recovered_type_tag,
+            materialization,
+        );
+        let accepted = decision.is_ok();
+        let reject_reason = decision
+            .as_ref()
+            .err()
+            .copied()
+            .map(quickbar_item_reject_reason_label)
+            .unwrap_or("none");
+        let proofs = decision.ok();
+        let primary_proof = proofs
+            .as_ref()
+            .and_then(|proofs| proofs[0])
+            .map(quickbar_materialization_proof_label)
+            .unwrap_or("none");
+        let secondary_proof = proofs
+            .as_ref()
+            .and_then(|proofs| proofs[1])
+            .map(quickbar_materialization_proof_label)
+            .unwrap_or("none");
+        let primary_status = quickbar_item_object_registry_status_label(primary, materialization);
+        let secondary_status =
+            quickbar_item_object_registry_status_label(secondary, materialization);
+        let primary_shape = quickbar_item_object_shape_label(primary);
+        let secondary_shape = quickbar_item_object_shape_label(secondary);
+        tracing::info!(
+            path,
+            trace_role = trace_role.as_str(),
+            committed = trace_role.is_committed(),
+            slot_index,
+            source = quickbar_item_source_label(*source),
+            recovered_type_tag,
+            accepted,
+            reject_reason,
+            primary_present = primary.present,
+            primary_object_id = %format_args!("0x{:08X}", primary.object_id),
+            primary_shape,
+            primary_status,
+            primary_proof,
+            secondary_present = secondary.present,
+            secondary_object_id = %format_args!("0x{:08X}", secondary.object_id),
+            secondary_shape,
+            secondary_status,
+            secondary_proof,
+            "server GuiQuickbar_SetAllButtons item materialization decision"
+        );
+    }
+}
+
+fn quickbar_item_source_label(source: QuickbarItemSource) -> &'static str {
+    match source {
+        QuickbarItemSource::ExplicitTypeAndFragmentBits => "explicit_type_fragment_bits",
+        QuickbarItemSource::CompactByteOwnedWithSourceType => "compact_byte_owned_source_type",
+        QuickbarItemSource::RecoveredMissingType => "recovered_missing_type",
+    }
+}
+
+fn quickbar_item_reject_reason_label(
+    reason: super::writer::QuickbarItemMaterializationRejectReason,
+) -> &'static str {
+    match reason {
+        super::writer::QuickbarItemMaterializationRejectReason::RecoveredTypeTag => {
+            "recovered_type_tag"
+        }
+        super::writer::QuickbarItemMaterializationRejectReason::MissingTypeSource => {
+            "missing_type_source"
+        }
+        super::writer::QuickbarItemMaterializationRejectReason::NoPresentItem => "no_present_item",
+        super::writer::QuickbarItemMaterializationRejectReason::InvalidObjectId => {
+            "invalid_object_id"
+        }
+        super::writer::QuickbarItemMaterializationRejectReason::MissingActiveProperties => {
+            "missing_active_properties"
+        }
+        super::writer::QuickbarItemMaterializationRejectReason::UnsupportedAppearanceType => {
+            "unsupported_appearance_type"
+        }
+        super::writer::QuickbarItemMaterializationRejectReason::AppearanceShape => {
+            "appearance_shape"
+        }
+        super::writer::QuickbarItemMaterializationRejectReason::MissingStateProof => {
+            "missing_state_proof"
+        }
+    }
+}
+
+fn quickbar_materialization_proof_label(proof: QuickbarItemMaterializationProof) -> &'static str {
+    match proof {
+        QuickbarItemMaterializationProof::ExplicitSelfMaterialization => {
+            "explicit_self_materialization"
+        }
+        QuickbarItemMaterializationProof::ActiveObject => "active_object",
+        QuickbarItemMaterializationProof::InventoryFeature25FirstList => {
+            "inventory_feature25_first_list"
+        }
+        QuickbarItemMaterializationProof::InventoryFeature25SecondList => {
+            "inventory_feature25_second_list"
+        }
+        QuickbarItemMaterializationProof::InventoryFeature25LegacyTail => {
+            "inventory_feature25_legacy_tail"
+        }
+    }
+}
+
+fn quickbar_item_object_registry_status_label(
+    item: &QuickbarItemObject,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> &'static str {
+    if !item.present {
+        return "absent";
+    }
+    if item.object_id == NWN_OBJECT_INVALID {
+        return "invalid_object_id";
+    }
+    match materialization
+        .map(|materialization| materialization.item_object_materialization_status(item.object_id))
+        .unwrap_or(QuickbarItemMaterializationStatus::Unknown)
+    {
+        QuickbarItemMaterializationStatus::Proven(proof) => {
+            quickbar_materialization_proof_label(proof)
+        }
+        QuickbarItemMaterializationStatus::ClearedByItemDelete => "cleared_by_item_delete",
+        QuickbarItemMaterializationStatus::ClearedByAreaReset => "cleared_by_area_reset",
+        QuickbarItemMaterializationStatus::Unknown => "unknown",
+    }
+}
+
+fn quickbar_item_object_shape_label(item: &QuickbarItemObject) -> &'static str {
+    if !item.present {
+        return "absent";
+    }
+    if item.object_id == NWN_OBJECT_INVALID {
+        return "invalid_object_id";
+    }
+    if item.active_props.is_none() {
+        return "missing_active_properties";
+    }
+    let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
+        return "unsupported_appearance_type";
+    };
+    if item.appearance_bytes.len() != expected_legacy
+        || read_le_u32(&item.appearance_bytes, 0) != Some(item.base_item)
+    {
+        return "appearance_shape";
+    }
+    "valid"
 }
 
 fn dump_quickbar_payload(label: &str, payload: &[u8]) {
