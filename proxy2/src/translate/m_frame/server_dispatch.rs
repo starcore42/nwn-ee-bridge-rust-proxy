@@ -960,16 +960,26 @@ fn rewrite_split_inflated_payload_for_ee(
 ) -> InflatedPayloadRewrite {
     let mut rewrite = InflatedPayloadRewrite::default();
     let mut translated_units = Vec::with_capacity(units.len());
+    let mut split_area_context = latest_area_placeables.cloned();
+    let mut split_shadow_state = object_registry.map(|registry| semantic::SemanticSessionState {
+        objects: registry.clone(),
+        ..semantic::SemanticSessionState::default()
+    });
 
     for unit in units {
         match unit {
             OwnedGameplayUnit::HighLevel(mut unit_payload) => {
+                let unit_area_context = split_area_context.as_ref().or(latest_area_placeables);
+                let unit_object_registry = split_shadow_state
+                    .as_ref()
+                    .map(|state| &state.objects)
+                    .or(object_registry);
                 let unit_rewrite = rewrite_single_inflated_payload_for_ee(
                     &mut unit_payload,
-                    latest_area_placeables,
+                    unit_area_context,
                     scope,
                     module_resource_runtime,
-                    object_registry,
+                    unit_object_registry,
                     None,
                 );
                 if unit_rewrite.should_quarantine() || !unit_rewrite.any_rewrite() {
@@ -993,11 +1003,21 @@ fn rewrite_split_inflated_payload_for_ee(
                 rewrite.unit_families.extend(unit_families);
                 if unit_rewrite.area_rewrite.is_some() {
                     rewrite.area_rewrite = unit_rewrite.area_rewrite;
+                    split_area_context = rewrite
+                        .area_rewrite
+                        .as_ref()
+                        .map(|summary| summary.placeable_context.clone());
                 }
                 if unit_rewrite.module_info_candidate_offset.is_some() {
                     rewrite.module_info_candidate_offset =
                         unit_rewrite.module_info_candidate_offset;
                 }
+                observe_split_unit_shadow_state(
+                    &mut split_shadow_state,
+                    unit_family,
+                    &unit_payload,
+                    split_area_context.as_ref(),
+                );
                 translated_units.push(gameplay_stream::TranslatedGameplayUnit::Owned {
                     family: unit_family,
                     bytes: unit_payload,
@@ -1036,6 +1056,24 @@ fn rewrite_split_inflated_payload_for_ee(
         rewrite.quarantine_reason = Some("split-unit-rejoin-failed");
     }
     rewrite
+}
+
+fn observe_split_unit_shadow_state(
+    split_shadow_state: &mut Option<semantic::SemanticSessionState>,
+    family: VerifiedFamily,
+    payload: &[u8],
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+) {
+    let Some(shadow_state) = split_shadow_state.as_mut() else {
+        return;
+    };
+    crate::translate::semantic::observe_verified_payload_with_area_context(
+        shadow_state,
+        crate::packet::Direction::ServerToClient,
+        &VerifiedProof::family(family),
+        payload,
+        latest_area_placeables,
+    );
 }
 
 fn rewrite_single_inflated_payload_for_ee(
@@ -5153,6 +5191,61 @@ mod exact_claim_trace_tests {
         assert_eq!(
             registry_trace.inventory_owner_feature25_legacy_tail_materialized_object_refs,
             1
+        );
+    }
+}
+
+#[cfg(test)]
+mod split_shadow_state_tests {
+    use super::*;
+
+    fn synthetic_verified_area_client_area_payload() -> Vec<u8> {
+        let mut payload = vec![b'P', 0x04, 0x01];
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.resize(3 + 4 + 4 + 4 * 4 + 4, 0);
+        payload[3 + 4 + 4 + 4 * 4..3 + 4 + 4 + 4 * 4 + 4]
+            .copy_from_slice(&0x8000_0001u32.to_le_bytes());
+        payload
+    }
+
+    #[test]
+    fn split_shadow_state_observes_area_reset_without_mutating_source_registry() {
+        let item_object_id = 0x8000_0102;
+        let mut registry = semantic::ObjectRegistry::default();
+        registry.observe_materialized_item_object_ids(&[item_object_id]);
+        assert_eq!(
+            registry.inventory_item_object_status(item_object_id),
+            semantic::InventoryItemObjectStatus::Proven(
+                semantic::InventoryItemObjectProof::ActiveObject
+            )
+        );
+
+        let mut split_shadow_state = Some(semantic::SemanticSessionState {
+            objects: registry.clone(),
+            ..semantic::SemanticSessionState::default()
+        });
+        observe_split_unit_shadow_state(
+            &mut split_shadow_state,
+            VerifiedFamily::AreaClientArea,
+            &synthetic_verified_area_client_area_payload(),
+            None,
+        );
+
+        let shadow_registry = &split_shadow_state
+            .as_ref()
+            .expect("shadow state should remain available")
+            .objects;
+        assert_eq!(
+            shadow_registry.inventory_item_object_status(item_object_id),
+            semantic::InventoryItemObjectStatus::ClearedByAreaReset,
+            "same-buffer Area_ClientArea observation should clear previous item proof"
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(item_object_id),
+            semantic::InventoryItemObjectStatus::Proven(
+                semantic::InventoryItemObjectProof::ActiveObject
+            ),
+            "split rewriting must shadow state locally; accepted-payload reduction owns the real session update"
         );
     }
 }

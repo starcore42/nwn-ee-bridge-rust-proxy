@@ -116,7 +116,7 @@ enum InventoryItemObjectClearReason {
     AreaReset,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ObjectRegistry {
     pub(crate) live_object_packets: u64,
     pub(crate) known: BTreeMap<u32, KnownObjectState>,
@@ -1216,7 +1216,7 @@ fn valid_inventory_item_context_id(object_id: u32) -> bool {
     object_id != 0 && object_id != 0x7F00_0000 && object_id != u32::MAX
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct KnownObjectState {
     pub(crate) object_id: u32,
     pub(crate) object_type: u8,
