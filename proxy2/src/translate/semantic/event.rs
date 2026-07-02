@@ -7,7 +7,9 @@
 use crate::{
     packet::Direction,
     translate::{
-        VerifiedFamily, player_list::PlayerListObjectIds, quickbar::QuickbarValidatedSlotProfile,
+        VerifiedFamily, client_input::ClientInputClaimSummary,
+        client_quickbar::ClientQuickbarClaimSummary, player_list::PlayerListObjectIds,
+        quickbar::QuickbarValidatedSlotProfile,
     },
 };
 
@@ -34,6 +36,7 @@ pub(crate) enum ProtocolEvent {
     Quickbar(QuickbarEvent),
     Inventory(InventoryEvent),
     ClientInput(ClientInputEvent),
+    ClientQuickbar(ClientQuickbarEvent),
     Login(LoginEvent),
     Chat(ChatEvent),
     Other(ObservedHighLevel),
@@ -171,6 +174,13 @@ pub(crate) struct InventoryEvent {
 #[derive(Debug, Clone)]
 pub(crate) struct ClientInputEvent {
     pub(crate) observed: ObservedHighLevel,
+    pub(crate) claim: Option<ClientInputClaimSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientQuickbarEvent {
+    pub(crate) observed: ObservedHighLevel,
+    pub(crate) claim: Option<ClientQuickbarClaimSummary>,
 }
 
 #[derive(Debug, Clone)]

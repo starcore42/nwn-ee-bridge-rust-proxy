@@ -299,6 +299,26 @@ not as standalone workaround targets.
   drive or instrument a client/harness action that should provoke a committed
   `GuiQuickbar_SetAllButtons` refresh after this pending window, then compare
   the accepted/rejected item decision counters against these event buckets.
+- 2026-07-03 quickbar client-action bucket slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at
+  `2026-07-03T08:13:49+10:00`, the newest gameplay packet was about 17 hours
+  old and gameplay reached. Semantic pending-refresh state now carries exact
+  client action claims from the decompile-backed `ClientInput` and
+  `ClientQuickbar` parsers, splitting client input into UseItem, UseObject,
+  ChangeDoorState, and other, and splitting client quickbar SetButton into
+  item vs other. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-client-action-buckets-automation-20260703-0813`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe registry-context summaries, and 1
+  committed quickbar summary. The pending Feature-25-only post-context window
+  still spans 265 verified events and 5 compact item-emission proof objects,
+  but the single client input in that window is now proven to be
+  `Input_WalkToWaypoint` (`client_input_other=1`), with 0 UseItem, 0
+  ClientQuickbar SetButton, and 0 item SetButton events. Two client
+  `GuiQuickbar_SetButton` actions were observed before the pending window, so
+  the next useful harness work is specifically to provoke UseItem or
+  item-bearing client quickbar SetButton after the pending Feature-25-only item
+  proof window, then look for the later committed server `SetAllButtons`.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.

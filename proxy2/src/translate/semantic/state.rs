@@ -73,6 +73,23 @@ impl SemanticSessionState {
             area_events_since_pending_refresh = summary.event_breakdown.area_events,
             inventory_events_since_pending_refresh = summary.event_breakdown.inventory_events,
             client_input_events_since_pending_refresh = summary.event_breakdown.client_input_events,
+            client_input_use_item_events_since_pending_refresh =
+                summary.event_breakdown.client_input_use_item_events,
+            client_input_use_object_events_since_pending_refresh =
+                summary.event_breakdown.client_input_use_object_events,
+            client_input_change_door_state_events_since_pending_refresh = summary
+                .event_breakdown
+                .client_input_change_door_state_events,
+            client_input_other_events_since_pending_refresh =
+                summary.event_breakdown.client_input_other_events,
+            client_quickbar_events_since_pending_refresh =
+                summary.event_breakdown.client_quickbar_events,
+            client_quickbar_item_set_button_events_since_pending_refresh = summary
+                .event_breakdown
+                .client_quickbar_item_set_button_events,
+            client_quickbar_other_set_button_events_since_pending_refresh = summary
+                .event_breakdown
+                .client_quickbar_other_set_button_events,
             chat_events_since_pending_refresh = summary.event_breakdown.chat_events,
             other_events_since_pending_refresh = summary.event_breakdown.other_events,
             pending_item_refresh_proof_class = proof_class,
@@ -296,6 +313,13 @@ pub(crate) struct QuickbarItemRefreshEventBreakdown {
     pub(crate) area_events: u64,
     pub(crate) inventory_events: u64,
     pub(crate) client_input_events: u64,
+    pub(crate) client_input_use_item_events: u64,
+    pub(crate) client_input_use_object_events: u64,
+    pub(crate) client_input_change_door_state_events: u64,
+    pub(crate) client_input_other_events: u64,
+    pub(crate) client_quickbar_events: u64,
+    pub(crate) client_quickbar_item_set_button_events: u64,
+    pub(crate) client_quickbar_other_set_button_events: u64,
     pub(crate) chat_events: u64,
     pub(crate) other_events: u64,
 }
@@ -2130,6 +2154,7 @@ impl KnownObjectState {
 pub(crate) struct UiState {
     pub(crate) quickbar_packets: u64,
     pub(crate) quickbar_placeholders: u64,
+    pub(crate) client_quickbar_packets: u64,
     pub(crate) inventory_packets: u64,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
     pub(crate) last_committed_quickbar_profile: Option<QuickbarValidatedSlotProfile>,

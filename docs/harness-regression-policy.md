@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-03 07:13 +10: the current
+Latest known live HG status, as of 2026-07-03 08:13 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
@@ -41,7 +41,7 @@ packet files, and packet window
 `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
 Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
 HG `P/05/01` live-object traffic, and in-game chat/reset messages; at the
-2026-07-03 07:13 +10 gate, the newest gameplay packet was about 16 hours old
+2026-07-03 08:13 +10 gate, the newest gameplay packet was about 17 hours old
 and still inside the 24-hour freshness window. The first
 strict proxy2 replay
 `C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
@@ -384,6 +384,23 @@ live-object, 0 quickbar, 0 area, 0 inventory, 1 client input, 4 chat, and 133
 other. The next useful step is harness/client control that deliberately
 provokes a later committed `GuiQuickbar_SetAllButtons` after this pending
 window.
+
+Update as of 2026-07-03 08:24 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-client-action-buckets-automation-20260703-0813`
+against the same fresh gameplay capture stayed at 0 quarantines, 414 strict
+allows, 27 exact live-object rewrites, 147 lifecycle claims, 39 stream-probe
+registry-context summaries, and 1 committed quickbar summary. Semantic
+pending-refresh diagnostics now export exact client-action buckets from the
+verified `ClientInput` and `ClientQuickbar` parsers. The pending
+Feature-25-only window still has no later committed quickbar or item buttons;
+it reports 265 verified events, 127 live-object, 0 server quickbar, 0
+inventory, 1 client input, 0 client UseItem, 0 client UseObject, 0 client
+ChangeDoorState, 1 other client input (`Input_WalkToWaypoint`), 0 client
+quickbar SetButton, 4 chat, and 133 other. The capture also has two client
+`GuiQuickbar_SetButton` actions before the pending item-proof window. The next
+useful harness action is to deliberately provoke UseItem or item-bearing client
+quickbar SetButton after the pending Feature-25-only proof appears, then check
+whether HG emits a later committed `GuiQuickbar_SetAllButtons`.
 
 ## Successful live HG capture contract
 
