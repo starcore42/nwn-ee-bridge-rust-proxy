@@ -22,6 +22,6 @@ pub(crate) use state::{
     AreaState, AreaStaticPlaceableConflictRecordObservation,
     AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
     AuthState, InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectStatus,
-    KnownObjectState, ModuleState, ObjectRegistry, QuickbarItemContextSource, ResourceState,
-    SemanticSessionState, SyntheticState, UiState,
+    KnownObjectState, ModuleState, ObjectRegistry, QuickbarItemContextSource,
+    QuickbarItemRefreshOutcome, ResourceState, SemanticSessionState, SyntheticState, UiState,
 };

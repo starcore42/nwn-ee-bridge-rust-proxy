@@ -18,8 +18,8 @@ use super::{
     LiveObjectEvent, LiveObjectInventoryFeature25Reference, LiveObjectMention,
     LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectOrientationVector,
     LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
-    PlayerListEvent, ProtocolEvent, QuickbarEvent, QuickbarItemContextSource, SemanticSessionState,
-    ServerStatusEvent,
+    PlayerListEvent, ProtocolEvent, QuickbarEvent, QuickbarItemContextSource,
+    QuickbarItemRefreshOutcome, SemanticSessionState, ServerStatusEvent,
 };
 
 #[cfg(test)]
@@ -236,6 +236,8 @@ fn apply_event(
                 let pending_item_refresh_updates = state
                     .ui
                     .post_committed_quickbar_item_refresh_pending_updates;
+                let pending_item_refresh_outcome =
+                    committed_quickbar_item_refresh_outcome(pending_item_refresh, profile);
                 let (best_item_context, best_item_context_source) =
                     best_committed_quickbar_item_context(
                         *materialization_context,
@@ -257,6 +259,8 @@ fn apply_event(
                     .ui
                     .last_committed_quickbar_item_refresh_pending_updates =
                     pending_item_refresh_updates;
+                state.ui.last_committed_quickbar_item_refresh_outcome =
+                    pending_item_refresh_outcome;
                 state.ui.last_committed_quickbar_best_item_context = best_item_context;
                 state.ui.last_committed_quickbar_best_item_context_source =
                     best_item_context_source;
@@ -349,6 +353,7 @@ fn apply_event(
                         previous_post_item_context.cleared_inventory_item_object_ids,
                     pending_item_refresh_before_commit = pending_item_refresh,
                     pending_item_refresh_updates_before_commit = pending_item_refresh_updates,
+                    pending_item_refresh_outcome = pending_item_refresh_outcome.as_str(),
                     best_item_context_known,
                     best_item_context_source,
                     best_direct_item_proof_objects = best_item_context.direct_item_proof_objects,
@@ -422,6 +427,20 @@ fn best_committed_quickbar_item_context(
         return (Some(prior), Some(QuickbarItemContextSource::Prior));
     }
     (None, None)
+}
+
+fn committed_quickbar_item_refresh_outcome(
+    pending_item_refresh: bool,
+    profile: &quickbar::QuickbarValidatedSlotProfile,
+) -> QuickbarItemRefreshOutcome {
+    if !pending_item_refresh {
+        return QuickbarItemRefreshOutcome::NoPendingRefresh;
+    }
+    if profile.item_slots == 0 {
+        QuickbarItemRefreshOutcome::PendingRefreshStillBlank
+    } else {
+        QuickbarItemRefreshOutcome::PendingRefreshEmittedItemSlots
+    }
 }
 
 fn remember_quickbar_item_context_if_relevant(
@@ -1027,6 +1046,11 @@ mod fixture_free_tests {
             "empty best-context snapshots should not report a source"
         );
         assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_outcome,
+            QuickbarItemRefreshOutcome::NoPendingRefresh,
+            "the first committed quickbar has no pending item-refresh window"
+        );
+        assert_eq!(
             state
                 .ui
                 .inventory_item_context_after_committed_quickbar_updates,
@@ -1127,6 +1151,11 @@ mod fixture_free_tests {
             "live registry proof current at commit should win over the saved previous-post copy"
         );
         assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_outcome,
+            QuickbarItemRefreshOutcome::PendingRefreshStillBlank,
+            "a pending compact item refresh followed by a zero-item quickbar should remain distinguishable"
+        );
+        assert_eq!(
             state
                 .ui
                 .last_inventory_item_context_after_committed_quickbar,
@@ -1148,6 +1177,38 @@ mod fixture_free_tests {
                 .ui
                 .post_committed_quickbar_item_refresh_pending_updates,
             0
+        );
+    }
+
+    #[test]
+    fn committed_quickbar_item_refresh_outcome_classifies_profile_slots() {
+        let blank_profile = quickbar::QuickbarValidatedSlotProfile {
+            slot_records: 36,
+            blank_slots: 36,
+            ..Default::default()
+        };
+        let item_profile = quickbar::QuickbarValidatedSlotProfile {
+            slot_records: 36,
+            item_slots: 1,
+            first_page_visible_slots: 1,
+            first_page_item_slots: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            committed_quickbar_item_refresh_outcome(false, &item_profile),
+            QuickbarItemRefreshOutcome::NoPendingRefresh,
+            "item slots without a pending post-quickbar proof window are not a pending-refresh outcome"
+        );
+        assert_eq!(
+            committed_quickbar_item_refresh_outcome(true, &blank_profile),
+            QuickbarItemRefreshOutcome::PendingRefreshStillBlank,
+            "a pending compact item refresh followed by a zero-item profile should stay distinguishable"
+        );
+        assert_eq!(
+            committed_quickbar_item_refresh_outcome(true, &item_profile),
+            QuickbarItemRefreshOutcome::PendingRefreshEmittedItemSlots,
+            "a pending compact item refresh followed by item slots should be marked realized"
         );
     }
 

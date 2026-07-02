@@ -327,6 +327,21 @@ pending counter is 0 while post-context pending is 37 updates and 5 compact
 proof objects, all Feature-25-only. The next useful capture remains a later
 item-bearing `GuiQuickbar_SetAllButtons` after those pending Feature-25 refs.
 
+Update as of 2026-07-03 04:20 +10: live-data gate reused
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; newest gameplay
+packet was about 13 hours old, and gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-refresh-outcome-automation-20260703-0418`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe registry-context summaries, and 1 committed
+quickbar summary. Semantic committed-quickbar traces now export pending-refresh
+outcomes: no pending window, pending but still blank, or pending emitted item
+slots. This capture still reports only
+`QuickbarSemanticPendingItemRefreshOutcomeNoPending=1` before the post-quickbar
+Feature-25 proof window; no later blank or item-slot refresh outcome exists yet.
+Post-context remains 37 updates and 5 compact proof objects, all
+Feature-25-only. The next useful capture remains a later committed
+`GuiQuickbar_SetAllButtons` after those pending Feature-25 refs.
+
 ## Successful live HG capture contract
 
 A successful live HG capture requires all of the following:
