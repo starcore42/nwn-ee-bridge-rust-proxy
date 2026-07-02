@@ -229,6 +229,12 @@ fn apply_event(
                 state.ui.last_committed_quickbar_materialization_context =
                     Some(*materialization_context);
                 state.ui.last_committed_quickbar_prior_item_context = prior_item_context;
+                state
+                    .ui
+                    .last_inventory_item_context_after_committed_quickbar = None;
+                state
+                    .ui
+                    .inventory_item_context_after_committed_quickbar_updates = 0;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
                 tracing::info!(
@@ -310,31 +316,71 @@ fn remember_quickbar_item_context_if_relevant(
     source: &'static str,
 ) {
     let item_context = state.objects.inventory_item_context_summary();
-    if !item_context.has_quickbar_item_context_evidence()
-        || state.ui.last_inventory_item_context_before_quickbar == Some(item_context)
-    {
+    if !item_context.has_quickbar_item_context_evidence() {
         return;
     }
 
-    state.ui.last_inventory_item_context_before_quickbar = Some(item_context);
-    tracing::debug!(
-        source,
-        direct_item_proof_objects = item_context.direct_item_proof_objects,
-        feature25_item_proof_objects = item_context.feature25_item_proof_objects,
-        compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
-        compact_item_emission_direct_only_proof_objects =
-            item_context.compact_item_emission_direct_only_proof_objects,
-        compact_item_emission_feature25_only_proof_objects =
-            item_context.compact_item_emission_feature25_only_proof_objects,
-        compact_item_emission_shared_proof_objects =
-            item_context.compact_item_emission_shared_proof_objects,
-        inventory_feature25_first_item_refs = item_context.inventory_feature25_first_item_refs,
-        inventory_feature25_second_item_refs = item_context.inventory_feature25_second_item_refs,
-        inventory_feature25_legacy_tail_item_refs =
-            item_context.inventory_feature25_legacy_tail_item_refs,
-        cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
-        "semantic state retained inventory item context for next GuiQuickbar"
-    );
+    if state.ui.last_inventory_item_context_before_quickbar != Some(item_context) {
+        state.ui.last_inventory_item_context_before_quickbar = Some(item_context);
+        tracing::debug!(
+            source,
+            direct_item_proof_objects = item_context.direct_item_proof_objects,
+            feature25_item_proof_objects = item_context.feature25_item_proof_objects,
+            compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
+            compact_item_emission_direct_only_proof_objects =
+                item_context.compact_item_emission_direct_only_proof_objects,
+            compact_item_emission_feature25_only_proof_objects =
+                item_context.compact_item_emission_feature25_only_proof_objects,
+            compact_item_emission_shared_proof_objects =
+                item_context.compact_item_emission_shared_proof_objects,
+            inventory_feature25_first_item_refs = item_context.inventory_feature25_first_item_refs,
+            inventory_feature25_second_item_refs =
+                item_context.inventory_feature25_second_item_refs,
+            inventory_feature25_legacy_tail_item_refs =
+                item_context.inventory_feature25_legacy_tail_item_refs,
+            cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
+            "semantic state retained inventory item context for next GuiQuickbar"
+        );
+    }
+
+    if state.ui.last_committed_quickbar_profile.is_some()
+        && state
+            .ui
+            .last_inventory_item_context_after_committed_quickbar
+            != Some(item_context)
+    {
+        state
+            .ui
+            .last_inventory_item_context_after_committed_quickbar = Some(item_context);
+        state
+            .ui
+            .inventory_item_context_after_committed_quickbar_updates = state
+            .ui
+            .inventory_item_context_after_committed_quickbar_updates
+            .saturating_add(1);
+        tracing::info!(
+            source,
+            updates_since_committed_quickbar = state
+                .ui
+                .inventory_item_context_after_committed_quickbar_updates,
+            direct_item_proof_objects = item_context.direct_item_proof_objects,
+            feature25_item_proof_objects = item_context.feature25_item_proof_objects,
+            compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
+            compact_item_emission_direct_only_proof_objects =
+                item_context.compact_item_emission_direct_only_proof_objects,
+            compact_item_emission_feature25_only_proof_objects =
+                item_context.compact_item_emission_feature25_only_proof_objects,
+            compact_item_emission_shared_proof_objects =
+                item_context.compact_item_emission_shared_proof_objects,
+            inventory_feature25_first_item_refs = item_context.inventory_feature25_first_item_refs,
+            inventory_feature25_second_item_refs =
+                item_context.inventory_feature25_second_item_refs,
+            inventory_feature25_legacy_tail_item_refs =
+                item_context.inventory_feature25_legacy_tail_item_refs,
+            cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
+            "semantic state retained inventory item context after committed GuiQuickbar"
+        );
+    }
 }
 
 fn observed_high_level(
@@ -710,6 +756,91 @@ mod fixture_free_tests {
                 .expect("committed quickbar should snapshot current registry context")
                 .cleared_inventory_item_object_ids,
             2
+        );
+    }
+
+    #[test]
+    fn item_context_after_committed_quickbar_is_tracked_until_next_profile() {
+        let owner_id = 0x8000_0010u32;
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0101u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&first_item_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&second_item_id.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+
+        assert_eq!(
+            state
+                .ui
+                .last_inventory_item_context_after_committed_quickbar,
+            None,
+            "a committed quickbar opens a fresh post-quickbar item-context window"
+        );
+        assert_eq!(
+            state
+                .ui
+                .inventory_item_context_after_committed_quickbar_updates,
+            0
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+
+        let post_context = state
+            .ui
+            .last_inventory_item_context_after_committed_quickbar
+            .expect("later Feature-25 refs should be retained after the committed quickbar");
+        assert_eq!(post_context.feature25_item_proof_objects, 2);
+        assert_eq!(post_context.compact_item_emission_proof_objects, 2);
+        assert_eq!(
+            state
+                .ui
+                .inventory_item_context_after_committed_quickbar_updates,
+            1
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+
+        assert_eq!(
+            state.ui.last_committed_quickbar_prior_item_context,
+            Some(post_context),
+            "the second committed quickbar should consume the post-quickbar context as prior evidence"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_inventory_item_context_after_committed_quickbar,
+            None,
+            "a new committed quickbar starts a new after-context window"
+        );
+        assert_eq!(
+            state
+                .ui
+                .inventory_item_context_after_committed_quickbar_updates,
+            0
         );
     }
 }
