@@ -65,6 +65,14 @@ impl SemanticSessionState {
             .proof_class
             .map(QuickbarItemRefreshProofClass::as_str)
             .unwrap_or("none");
+        let first_followup_event = summary
+            .first_followup_event
+            .map(QuickbarItemRefreshEventKind::as_str)
+            .unwrap_or("none");
+        let first_client_action = summary
+            .first_client_action
+            .map(QuickbarItemRefreshEventKind::as_str)
+            .unwrap_or("none");
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
@@ -93,6 +101,8 @@ impl SemanticSessionState {
             chat_events_since_pending_refresh = summary.event_breakdown.chat_events,
             other_events_since_pending_refresh = summary.event_breakdown.other_events,
             pending_item_refresh_proof_class = proof_class,
+            first_followup_event,
+            first_client_action,
             direct_item_proof_objects = summary.item_context.direct_item_proof_objects,
             feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects =
@@ -298,12 +308,61 @@ impl QuickbarItemRefreshProofClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshEventKind {
+    LiveObject,
+    ServerQuickbar,
+    Area,
+    Inventory,
+    ClientInputUseItem,
+    ClientInputUseObject,
+    ClientInputChangeDoorState,
+    ClientInputOther,
+    ClientQuickbarItemSetButton,
+    ClientQuickbarOtherSetButton,
+    Chat,
+    Other,
+}
+
+impl QuickbarItemRefreshEventKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::LiveObject => "live_object",
+            Self::ServerQuickbar => "server_quickbar",
+            Self::Area => "area",
+            Self::Inventory => "inventory",
+            Self::ClientInputUseItem => "client_input_use_item",
+            Self::ClientInputUseObject => "client_input_use_object",
+            Self::ClientInputChangeDoorState => "client_input_change_door_state",
+            Self::ClientInputOther => "client_input_other",
+            Self::ClientQuickbarItemSetButton => "client_quickbar_item_set_button",
+            Self::ClientQuickbarOtherSetButton => "client_quickbar_other_set_button",
+            Self::Chat => "chat",
+            Self::Other => "other",
+        }
+    }
+
+    pub(crate) fn is_client_action(self) -> bool {
+        matches!(
+            self,
+            Self::ClientInputUseItem
+                | Self::ClientInputUseObject
+                | Self::ClientInputChangeDoorState
+                | Self::ClientInputOther
+                | Self::ClientQuickbarItemSetButton
+                | Self::ClientQuickbarOtherSetButton
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) item_context: InventoryItemContextSummary,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
+    pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
+    pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2171,6 +2230,10 @@ pub(crate) struct UiState {
         QuickbarItemRefreshEventBreakdown,
     pub(crate) post_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
+    pub(crate) post_committed_quickbar_item_refresh_first_followup_event:
+        Option<QuickbarItemRefreshEventKind>,
+    pub(crate) post_committed_quickbar_item_refresh_first_client_action:
+        Option<QuickbarItemRefreshEventKind>,
     pub(crate) last_committed_quickbar_previous_post_item_context:
         Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
@@ -2182,6 +2245,10 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
     pub(crate) last_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
+    pub(crate) last_committed_quickbar_item_refresh_first_followup_event:
+        Option<QuickbarItemRefreshEventKind>,
+    pub(crate) last_committed_quickbar_item_refresh_first_client_action:
+        Option<QuickbarItemRefreshEventKind>,
     pub(crate) last_committed_quickbar_best_item_context: Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_best_item_context_source: Option<QuickbarItemContextSource>,
 }
@@ -2200,6 +2267,8 @@ impl UiState {
             events_since_pending_refresh: self.post_committed_quickbar_item_refresh_pending_events,
             event_breakdown: self.post_committed_quickbar_item_refresh_pending_event_breakdown,
             proof_class: self.post_committed_quickbar_item_refresh_proof_class,
+            first_followup_event: self.post_committed_quickbar_item_refresh_first_followup_event,
+            first_client_action: self.post_committed_quickbar_item_refresh_first_client_action,
         })
     }
 }

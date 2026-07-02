@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-03 08:13 +10: the current
+Latest known live HG status, as of 2026-07-03 09:13 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
@@ -41,7 +41,7 @@ packet files, and packet window
 `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
 Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
 HG `P/05/01` live-object traffic, and in-game chat/reset messages; at the
-2026-07-03 08:13 +10 gate, the newest gameplay packet was about 17 hours old
+2026-07-03 09:13 +10 gate, the newest gameplay packet was about 18 hours old
 and still inside the 24-hour freshness window. The first
 strict proxy2 replay
 `C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
@@ -57,7 +57,8 @@ quarantine files, 27 live-object exact shape/rewrite matches, 147 exact
 lifecycle claim matches, 39 stream-probe quickbar summaries, and 1 committed
 quickbar rewrite summary. The committed quickbar still has 0 item buttons, 29
 blank slots, 5 spell slots, and 2 preserved general buttons; the next useful
-capture pressure remains item-bearing quickbar materialization or the next
+capture pressure remains a post-proof UseItem or item-bearing client quickbar
+SetButton that provokes item-bearing quickbar materialization, or the next
 fresh live-object exact-shape gap.
 
 Update as of 2026-07-01 11:45 +10: strict replay
@@ -401,6 +402,21 @@ quickbar SetButton, 4 chat, and 133 other. The capture also has two client
 useful harness action is to deliberately provoke UseItem or item-bearing client
 quickbar SetButton after the pending Feature-25-only proof appears, then check
 whether HG emits a later committed `GuiQuickbar_SetAllButtons`.
+
+Update as of 2026-07-03 09:29 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-first-trigger-automation-20260703-0929`
+against the same fresh gameplay capture stayed at 0 quarantines with 289 strict
+allows, 19 exact live-object rewrites, 93 lifecycle claims, 39 stream-probe
+registry-context summaries, and 1 committed quickbar summary. Semantic
+pending-refresh diagnostics now export the first follow-up event after the
+proof-opening row and the first client action after the pending window opens.
+This replay still has 0 quickbar item buttons, 0 post-proof UseItem, and 0
+post-proof item `GuiQuickbar_SetButton`; post-context first-follow-up evidence
+was mostly live-object traffic (`first_followup_live_object=21`), and the only
+first client actions were generic input (`first_client_action_other_input=2`).
+The next useful harness action remains a deliberate post-proof UseItem or
+item-bearing client quickbar SetButton, now with first-trigger counters to
+verify the action landed in the correct pending window.
 
 ## Successful live HG capture contract
 

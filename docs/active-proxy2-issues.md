@@ -319,6 +319,23 @@ not as standalone workaround targets.
   the next useful harness work is specifically to provoke UseItem or
   item-bearing client quickbar SetButton after the pending Feature-25-only item
   proof window, then look for the later committed server `SetAllButtons`.
+- 2026-07-03 quickbar first-trigger slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at
+  `2026-07-03T09:13:21+10:00`, the newest gameplay packet was about 18 hours
+  old and gameplay reached. Semantic pending-refresh state now records the
+  first follow-up event after the proof-opening row and the first client action
+  after the pending window opens, while preserving the existing aggregate event
+  counters. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-first-trigger-automation-20260703-0929`
+  stayed at 0 quarantines. This capture still has 0 quickbar item buttons and
+  no post-proof UseItem or item-bearing client `GuiQuickbar_SetButton`; the
+  post-context first-follow-up evidence is mostly live-object traffic
+  (`first_followup_live_object=21`), and the only first client actions were
+  generic input (`first_client_action_other_input=2`). Next production path:
+  adjust harness/client control to deliberately perform UseItem or item-bearing
+  quickbar SetButton after Feature-25-only proof opens, then use the new
+  first-trigger counters to decide whether HG emits a later committed
+  `SetAllButtons`.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
@@ -338,8 +355,9 @@ not as standalone workaround targets.
 - Immediate automation target: while the 2026-07-02 live HG capture remains
   fresh, use harness/client control to provoke or capture a later committed
   `GuiQuickbar_SetAllButtons` after the Feature-25-only pending item-proof
-  window. If that cannot be provoked, instrument the client action path needed
-  to force a quickbar refresh before widening compact item-slot emission.
+  window. Prefer a post-proof UseItem or item-bearing client quickbar SetButton;
+  the current first-trigger counters prove ordinary live-object traffic and
+  generic client input do not yet produce an item-bearing refresh.
 - 2026-06-28 live-data gate satisfied by
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`: probe window
   `2026-06-28 00:05:38.124 -> 00:07:37.612`, 119 packet files, gameplay reached
