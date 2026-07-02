@@ -143,6 +143,9 @@ pub(crate) struct ObjectRegistry {
 pub(crate) struct InventoryItemContextSummary {
     pub(crate) active_item_objects: usize,
     pub(crate) materialized_item_objects: usize,
+    pub(crate) direct_item_proof_objects: usize,
+    pub(crate) feature25_item_proof_objects: usize,
+    pub(crate) compact_item_emission_proof_objects: usize,
     pub(crate) inventory_feature25_first_item_refs: usize,
     pub(crate) inventory_feature25_second_item_refs: usize,
     pub(crate) inventory_feature25_legacy_tail_item_refs: usize,
@@ -905,13 +908,30 @@ impl ObjectRegistry {
     }
 
     pub(crate) fn inventory_item_context_summary(&self) -> InventoryItemContextSummary {
+        let active_item_objects = self
+            .known
+            .values()
+            .filter(|object| object.active && object.object_type == ITEM_OBJECT_TYPE)
+            .map(|object| object.object_id)
+            .collect::<BTreeSet<_>>();
+        let mut direct_item_proof_objects = self.materialized_item_object_ids.clone();
+        direct_item_proof_objects.extend(active_item_objects.iter().copied());
+        let mut feature25_item_proof_objects = self.inventory_feature25_first_item_refs.clone();
+        feature25_item_proof_objects
+            .extend(self.inventory_feature25_second_item_refs.iter().copied());
+        feature25_item_proof_objects.extend(
+            self.inventory_feature25_legacy_tail_item_refs
+                .iter()
+                .copied(),
+        );
+        let mut compact_item_emission_proof_objects = direct_item_proof_objects.clone();
+        compact_item_emission_proof_objects.extend(feature25_item_proof_objects.iter().copied());
         InventoryItemContextSummary {
-            active_item_objects: self
-                .known
-                .values()
-                .filter(|object| object.active && object.object_type == ITEM_OBJECT_TYPE)
-                .count(),
+            active_item_objects: active_item_objects.len(),
             materialized_item_objects: self.materialized_item_object_ids.len(),
+            direct_item_proof_objects: direct_item_proof_objects.len(),
+            feature25_item_proof_objects: feature25_item_proof_objects.len(),
+            compact_item_emission_proof_objects: compact_item_emission_proof_objects.len(),
             inventory_feature25_first_item_refs: self.inventory_feature25_first_item_refs.len(),
             inventory_feature25_second_item_refs: self.inventory_feature25_second_item_refs.len(),
             inventory_feature25_legacy_tail_item_refs: self
@@ -4056,6 +4076,18 @@ mod tests {
         let summary = registry.inventory_item_context_summary();
         assert_eq!(summary.active_item_objects, 1);
         assert_eq!(summary.materialized_item_objects, 1);
+        assert_eq!(
+            summary.direct_item_proof_objects, 2,
+            "active live item and GUI-materialized item ids are distinct direct proofs"
+        );
+        assert_eq!(
+            summary.feature25_item_proof_objects, 5,
+            "Feature-25 proof inventory is the unique union of first, second, and legacy-tail refs"
+        );
+        assert_eq!(
+            summary.compact_item_emission_proof_objects, 5,
+            "Feature-25 refs already include the two direct-proof ids in this fixture"
+        );
         assert_eq!(summary.inventory_feature25_first_item_refs, 2);
         assert_eq!(summary.inventory_feature25_second_item_refs, 2);
         assert_eq!(summary.inventory_feature25_legacy_tail_item_refs, 1);

@@ -111,6 +111,9 @@ impl<'a> QuickbarMaterializationContext<'a> {
 pub struct QuickbarMaterializationContextSummary {
     pub active_item_objects: usize,
     pub materialized_item_objects: usize,
+    pub direct_item_proof_objects: usize,
+    pub feature25_item_proof_objects: usize,
+    pub compact_item_emission_proof_objects: usize,
     pub inventory_feature25_first_item_refs: usize,
     pub inventory_feature25_second_item_refs: usize,
     pub inventory_feature25_legacy_tail_item_refs: usize,
