@@ -237,6 +237,8 @@ fn apply_event(
                 let pending_item_refresh_updates = state
                     .ui
                     .post_committed_quickbar_item_refresh_pending_updates;
+                let pending_item_refresh_events =
+                    state.ui.post_committed_quickbar_item_refresh_pending_events;
                 let pending_item_refresh_proof_class =
                     state.ui.post_committed_quickbar_item_refresh_proof_class;
                 let pending_item_refresh_outcome =
@@ -262,6 +264,8 @@ fn apply_event(
                     .ui
                     .last_committed_quickbar_item_refresh_pending_updates =
                     pending_item_refresh_updates;
+                state.ui.last_committed_quickbar_item_refresh_pending_events =
+                    pending_item_refresh_events;
                 state.ui.last_committed_quickbar_item_refresh_outcome =
                     pending_item_refresh_outcome;
                 state.ui.last_committed_quickbar_item_refresh_proof_class =
@@ -279,6 +283,7 @@ fn apply_event(
                 state
                     .ui
                     .post_committed_quickbar_item_refresh_pending_updates = 0;
+                state.ui.post_committed_quickbar_item_refresh_pending_events = 0;
                 state.ui.post_committed_quickbar_item_refresh_proof_class = None;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
@@ -362,6 +367,7 @@ fn apply_event(
                         previous_post_item_context.cleared_inventory_item_object_ids,
                     pending_item_refresh_before_commit = pending_item_refresh,
                     pending_item_refresh_updates_before_commit = pending_item_refresh_updates,
+                    pending_item_refresh_events_before_commit = pending_item_refresh_events,
                     pending_item_refresh_proof_class,
                     pending_item_refresh_outcome = pending_item_refresh_outcome.as_str(),
                     best_item_context_known,
@@ -411,6 +417,7 @@ fn apply_event(
         }
         ProtocolEvent::Chat(_) | ProtocolEvent::Other(_) => {}
     }
+    record_pending_quickbar_item_refresh_event(state);
     state.remember_event(event);
 }
 
@@ -530,6 +537,9 @@ fn remember_quickbar_item_context_if_relevant(
         } else {
             0
         };
+        if !pending_item_refresh {
+            state.ui.post_committed_quickbar_item_refresh_pending_events = 0;
+        }
         state.ui.post_committed_quickbar_item_refresh_proof_class =
             pending_item_refresh_proof_class;
         let pending_item_refresh_proof_class = pending_item_refresh_proof_class
@@ -544,6 +554,8 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_updates = state
                 .ui
                 .post_committed_quickbar_item_refresh_pending_updates,
+            pending_item_refresh_events =
+                state.ui.post_committed_quickbar_item_refresh_pending_events,
             pending_item_refresh_proof_class,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
@@ -563,6 +575,16 @@ fn remember_quickbar_item_context_if_relevant(
             "semantic state retained inventory item context after committed GuiQuickbar"
         );
     }
+}
+
+fn record_pending_quickbar_item_refresh_event(state: &mut SemanticSessionState) {
+    if !state.ui.post_committed_quickbar_item_refresh_pending {
+        return;
+    }
+    state.ui.post_committed_quickbar_item_refresh_pending_events = state
+        .ui
+        .post_committed_quickbar_item_refresh_pending_events
+        .saturating_add(1);
 }
 
 fn observed_high_level(
@@ -1154,6 +1176,21 @@ mod fixture_free_tests {
             Some(QuickbarItemRefreshProofClass::Feature25Only),
             "the pending post-quickbar proof should preserve its Feature-25-only class"
         );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_pending_events, 1,
+            "the live-object event that creates pending item proof should count as unresolved pending traffic"
+        );
+        let unresolved = state
+            .ui
+            .unresolved_pending_item_refresh()
+            .expect("pending proof should expose an unresolved refresh summary");
+        assert_eq!(unresolved.item_context, post_context);
+        assert_eq!(unresolved.updates_since_committed_quickbar, 1);
+        assert_eq!(unresolved.events_since_pending_refresh, 1);
+        assert_eq!(
+            unresolved.proof_class,
+            Some(QuickbarItemRefreshProofClass::Feature25Only)
+        );
 
         observe_verified_payload(
             &mut state,
@@ -1187,6 +1224,10 @@ mod fixture_free_tests {
                 .ui
                 .last_committed_quickbar_item_refresh_pending_updates,
             1
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_pending_events, 1,
+            "the resolving committed quickbar should snapshot unresolved pending event count"
         );
         assert_eq!(
             state.ui.last_committed_quickbar_best_item_context,
@@ -1234,6 +1275,15 @@ mod fixture_free_tests {
         assert_eq!(
             state.ui.post_committed_quickbar_item_refresh_proof_class, None,
             "the next committed quickbar consumes and clears the pending proof class"
+        );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_pending_events, 0,
+            "a new committed quickbar should clear the active pending event count"
+        );
+        assert_eq!(
+            state.ui.unresolved_pending_item_refresh(),
+            None,
+            "resolved pending proof should no longer expose an unresolved summary"
         );
     }
 
@@ -1377,6 +1427,15 @@ mod fixture_free_tests {
         assert_eq!(
             state.ui.post_committed_quickbar_item_refresh_proof_class, None,
             "cleared post-quickbar state must also clear the pending proof class"
+        );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_pending_events, 0,
+            "cleared post-quickbar state should also clear pending event accounting"
+        );
+        assert_eq!(
+            state.ui.unresolved_pending_item_refresh(),
+            None,
+            "area-reset-cleared proof should not remain an unresolved pending refresh"
         );
 
         observe_verified_payload(

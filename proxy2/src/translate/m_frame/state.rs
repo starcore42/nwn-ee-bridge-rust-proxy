@@ -133,12 +133,31 @@ impl SessionState {
         synthesize_area_loadbar: bool,
     ) -> Self {
         Self {
+            deflate: DeflateState::default(),
+            quickbar: QuickbarStreamState::default(),
+            live_object: LiveObjectStreamState::default(),
+            sequence: SequenceState::default(),
+            client_ack: ClientAckSessionState::default(),
+            login_waypoint: LoginWaypointState::default(),
             module_resources,
             synthetic_area: SyntheticAreaState {
                 synthesize_loadbar: synthesize_area_loadbar,
-                ..SyntheticAreaState::default()
+                pending_server_to_client_packets: Vec::new(),
+                pending_area_loaded: None,
+                in_flight_area_loaded: None,
+                completed_area_loaded: None,
+                server_hold_gate: None,
+                held_server_to_client_packets: Vec::new(),
             },
-            ..Self::default()
+            deferred_module_resources: DeferredModuleResourcesSessionState::default(),
+            area_context: AreaContextState::default(),
+            semantic: semantic::SemanticSessionState::default(),
         }
+    }
+}
+
+impl Drop for SessionState {
+    fn drop(&mut self) {
+        self.semantic.trace_unresolved_quickbar_item_refresh();
     }
 }

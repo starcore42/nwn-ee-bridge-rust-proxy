@@ -262,6 +262,24 @@ not as standalone workaround targets.
   drive a later committed `GuiQuickbar_SetAllButtons` after this
   Feature-25-only pending window, then use the proof-class and outcome counters
   to decide whether Feature-25-only proof can safely emit compact item slots.
+- 2026-07-03 quickbar pending event-window slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at
+  `2026-07-03T06:12:14.9858139+10:00` the newest gameplay packet was about
+  15 hours old and gameplay reached. Semantic quickbar state now counts
+  verified events that pass while a post-committed-quickbar item refresh is
+  pending, snapshots that count into the next committed quickbar, and exposes
+  an unresolved pending-refresh summary for graceful session shutdown. Strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-unresolved-refresh-automation-20260703-062111`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe registry-context summaries, and 1
+  committed quickbar summary. This capture still has one no-pending committed
+  quickbar and no later item-bearing refresh; after the Feature-25-only
+  post-context window, `QuickbarSemanticPostItemRefreshPendingEvents=265`,
+  proving substantial later verified traffic without a second committed
+  quickbar. Next production path: drive or capture a later committed
+  `GuiQuickbar_SetAllButtons` after the Feature-25-only pending window, or
+  instrument the harness/client action needed to provoke that refresh.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.

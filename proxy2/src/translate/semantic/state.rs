@@ -56,6 +56,43 @@ impl SemanticSessionState {
         }
         self.recent_events.push_back(event);
     }
+
+    pub(crate) fn trace_unresolved_quickbar_item_refresh(&self) -> bool {
+        let Some(summary) = self.ui.unresolved_pending_item_refresh() else {
+            return false;
+        };
+        let proof_class = summary
+            .proof_class
+            .map(QuickbarItemRefreshProofClass::as_str)
+            .unwrap_or("none");
+        tracing::warn!(
+            updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
+            events_since_pending_refresh = summary.events_since_pending_refresh,
+            pending_item_refresh_proof_class = proof_class,
+            direct_item_proof_objects = summary.item_context.direct_item_proof_objects,
+            feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
+            compact_item_emission_proof_objects =
+                summary.item_context.compact_item_emission_proof_objects,
+            compact_item_emission_direct_only_proof_objects = summary
+                .item_context
+                .compact_item_emission_direct_only_proof_objects,
+            compact_item_emission_feature25_only_proof_objects = summary
+                .item_context
+                .compact_item_emission_feature25_only_proof_objects,
+            compact_item_emission_shared_proof_objects = summary
+                .item_context
+                .compact_item_emission_shared_proof_objects,
+            inventory_feature25_first_item_refs =
+                summary.item_context.inventory_feature25_first_item_refs,
+            inventory_feature25_second_item_refs =
+                summary.item_context.inventory_feature25_second_item_refs,
+            inventory_feature25_legacy_tail_item_refs = summary
+                .item_context
+                .inventory_feature25_legacy_tail_item_refs,
+            "semantic state ended with unresolved pending GuiQuickbar item refresh"
+        );
+        true
+    }
 }
 
 #[derive(Debug, Default)]
@@ -234,6 +271,14 @@ impl QuickbarItemRefreshProofClass {
             Self::Mixed => "mixed",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuickbarPendingItemRefreshSummary {
+    pub(crate) item_context: InventoryItemContextSummary,
+    pub(crate) updates_since_committed_quickbar: u64,
+    pub(crate) events_since_pending_refresh: u64,
+    pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
 }
 
 impl ObjectRegistry {
@@ -2077,6 +2122,7 @@ pub(crate) struct UiState {
     pub(crate) inventory_item_context_after_committed_quickbar_updates: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending: bool,
     pub(crate) post_committed_quickbar_item_refresh_pending_updates: u64,
+    pub(crate) post_committed_quickbar_item_refresh_pending_events: u64,
     pub(crate) post_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
     pub(crate) last_committed_quickbar_previous_post_item_context:
@@ -2084,11 +2130,29 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
     pub(crate) last_committed_quickbar_item_refresh_pending: bool,
     pub(crate) last_committed_quickbar_item_refresh_pending_updates: u64,
+    pub(crate) last_committed_quickbar_item_refresh_pending_events: u64,
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
     pub(crate) last_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
     pub(crate) last_committed_quickbar_best_item_context: Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_best_item_context_source: Option<QuickbarItemContextSource>,
+}
+
+impl UiState {
+    pub(crate) fn unresolved_pending_item_refresh(
+        &self,
+    ) -> Option<QuickbarPendingItemRefreshSummary> {
+        if !self.post_committed_quickbar_item_refresh_pending {
+            return None;
+        }
+        Some(QuickbarPendingItemRefreshSummary {
+            item_context: self.last_inventory_item_context_after_committed_quickbar?,
+            updates_since_committed_quickbar: self
+                .inventory_item_context_after_committed_quickbar_updates,
+            events_since_pending_refresh: self.post_committed_quickbar_item_refresh_pending_events,
+            proof_class: self.post_committed_quickbar_item_refresh_proof_class,
+        })
+    }
 }
 
 #[derive(Debug, Default)]
