@@ -139,6 +139,26 @@ pub(crate) struct ObjectRegistry {
     pub(crate) inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InventoryItemContextSummary {
+    pub(crate) active_item_objects: usize,
+    pub(crate) materialized_item_objects: usize,
+    pub(crate) inventory_feature25_first_item_refs: usize,
+    pub(crate) inventory_feature25_second_item_refs: usize,
+    pub(crate) inventory_feature25_legacy_tail_item_refs: usize,
+    pub(crate) cleared_inventory_item_object_ids: usize,
+    pub(crate) inventory_feature25_reference_records: u64,
+    pub(crate) inventory_feature25_first_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_tail_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_materialized_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_deferred_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_materialized_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_deferred_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_tail_materialized_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
+}
+
 impl ObjectRegistry {
     pub(crate) fn reset_for_area(&mut self) {
         if !self.known.is_empty()
@@ -882,6 +902,42 @@ impl ObjectRegistry {
             .get(&object_id)
             .map(|object| object.active && object.object_type == ITEM_OBJECT_TYPE)
             .unwrap_or(false)
+    }
+
+    pub(crate) fn inventory_item_context_summary(&self) -> InventoryItemContextSummary {
+        InventoryItemContextSummary {
+            active_item_objects: self
+                .known
+                .values()
+                .filter(|object| object.active && object.object_type == ITEM_OBJECT_TYPE)
+                .count(),
+            materialized_item_objects: self.materialized_item_object_ids.len(),
+            inventory_feature25_first_item_refs: self.inventory_feature25_first_item_refs.len(),
+            inventory_feature25_second_item_refs: self.inventory_feature25_second_item_refs.len(),
+            inventory_feature25_legacy_tail_item_refs: self
+                .inventory_feature25_legacy_tail_item_refs
+                .len(),
+            cleared_inventory_item_object_ids: self.cleared_inventory_item_object_ids.len(),
+            inventory_feature25_reference_records: self.inventory_feature25_reference_records,
+            inventory_feature25_first_item_ref_mentions: self
+                .inventory_feature25_first_item_ref_mentions,
+            inventory_feature25_second_item_ref_mentions: self
+                .inventory_feature25_second_item_ref_mentions,
+            inventory_feature25_legacy_tail_item_ref_mentions: self
+                .inventory_feature25_legacy_tail_item_ref_mentions,
+            inventory_feature25_first_materialized_item_ref_mentions: self
+                .inventory_feature25_first_materialized_item_ref_mentions,
+            inventory_feature25_first_deferred_item_ref_mentions: self
+                .inventory_feature25_first_deferred_item_ref_mentions,
+            inventory_feature25_second_materialized_item_ref_mentions: self
+                .inventory_feature25_second_materialized_item_ref_mentions,
+            inventory_feature25_second_deferred_item_ref_mentions: self
+                .inventory_feature25_second_deferred_item_ref_mentions,
+            inventory_feature25_legacy_tail_materialized_item_ref_mentions: self
+                .inventory_feature25_legacy_tail_materialized_item_ref_mentions,
+            inventory_feature25_legacy_tail_deferred_item_ref_mentions: self
+                .inventory_feature25_legacy_tail_deferred_item_ref_mentions,
+        }
     }
 
     pub(crate) fn has_active_object_id(&self, object_id: u32) -> bool {
@@ -3995,6 +4051,31 @@ mod tests {
         assert_eq!(
             registry.inventory_item_object_proof(legacy_tail_deferred_item_id),
             Some(InventoryItemObjectProof::Feature25LegacyTail)
+        );
+
+        let summary = registry.inventory_item_context_summary();
+        assert_eq!(summary.active_item_objects, 1);
+        assert_eq!(summary.materialized_item_objects, 1);
+        assert_eq!(summary.inventory_feature25_first_item_refs, 2);
+        assert_eq!(summary.inventory_feature25_second_item_refs, 2);
+        assert_eq!(summary.inventory_feature25_legacy_tail_item_refs, 1);
+        assert_eq!(summary.inventory_feature25_reference_records, 1);
+        assert_eq!(summary.inventory_feature25_first_item_ref_mentions, 2);
+        assert_eq!(
+            summary.inventory_feature25_first_materialized_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            summary.inventory_feature25_first_deferred_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            summary.inventory_feature25_second_materialized_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            summary.inventory_feature25_second_deferred_item_ref_mentions,
+            1
         );
     }
 

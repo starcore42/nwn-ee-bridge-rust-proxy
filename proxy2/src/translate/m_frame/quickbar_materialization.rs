@@ -13,6 +13,19 @@ pub(super) enum QuickbarRewriteMode {
     StreamProbe,
 }
 
+impl QuickbarRewriteMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Committed => "committed",
+            Self::StreamProbe => "stream_probe",
+        }
+    }
+
+    fn is_committed(self) -> bool {
+        matches!(self, Self::Committed)
+    }
+}
+
 pub(super) fn rewrite_payload_with_registry_if_possible(
     payload: &mut Vec<u8>,
     object_registry: Option<&semantic::ObjectRegistry>,
@@ -23,7 +36,12 @@ pub(super) fn rewrite_payload_with_registry_if_possible(
             |object_id| quickbar_materialization_status_from_registry(registry, object_id);
         let materialization =
             quickbar::QuickbarMaterializationContext::new_with_status(&item_object_status);
-        return rewrite_payload_with_context_if_possible(payload, Some(&materialization), mode);
+        let result =
+            rewrite_payload_with_context_if_possible(payload, Some(&materialization), mode);
+        if let Some(summary) = result.as_ref() {
+            trace_quickbar_registry_materialization_context(registry, mode, summary);
+        }
+        return result;
     }
     rewrite_payload_with_context_if_possible(payload, None, mode)
 }
@@ -105,4 +123,45 @@ fn quickbar_materialization_proof_from_registry(
             quickbar::QuickbarItemMaterializationProof::InventoryFeature25LegacyTail
         }
     }
+}
+
+fn trace_quickbar_registry_materialization_context(
+    registry: &semantic::ObjectRegistry,
+    mode: QuickbarRewriteMode,
+    summary: &quickbar::QuickbarRewriteSummary,
+) {
+    let context = registry.inventory_item_context_summary();
+    tracing::info!(
+        trace_role = mode.as_str(),
+        committed = mode.is_committed(),
+        item_buttons_seen = summary.item_buttons_seen,
+        item_buttons_preserved = summary.item_buttons_preserved,
+        active_item_objects = context.active_item_objects,
+        materialized_item_objects = context.materialized_item_objects,
+        inventory_feature25_first_item_refs = context.inventory_feature25_first_item_refs,
+        inventory_feature25_second_item_refs = context.inventory_feature25_second_item_refs,
+        inventory_feature25_legacy_tail_item_refs =
+            context.inventory_feature25_legacy_tail_item_refs,
+        cleared_inventory_item_object_ids = context.cleared_inventory_item_object_ids,
+        inventory_feature25_reference_records = context.inventory_feature25_reference_records,
+        inventory_feature25_first_item_ref_mentions =
+            context.inventory_feature25_first_item_ref_mentions,
+        inventory_feature25_second_item_ref_mentions =
+            context.inventory_feature25_second_item_ref_mentions,
+        inventory_feature25_legacy_tail_item_ref_mentions =
+            context.inventory_feature25_legacy_tail_item_ref_mentions,
+        inventory_feature25_first_materialized_item_ref_mentions =
+            context.inventory_feature25_first_materialized_item_ref_mentions,
+        inventory_feature25_first_deferred_item_ref_mentions =
+            context.inventory_feature25_first_deferred_item_ref_mentions,
+        inventory_feature25_second_materialized_item_ref_mentions =
+            context.inventory_feature25_second_materialized_item_ref_mentions,
+        inventory_feature25_second_deferred_item_ref_mentions =
+            context.inventory_feature25_second_deferred_item_ref_mentions,
+        inventory_feature25_legacy_tail_materialized_item_ref_mentions =
+            context.inventory_feature25_legacy_tail_materialized_item_ref_mentions,
+        inventory_feature25_legacy_tail_deferred_item_ref_mentions =
+            context.inventory_feature25_legacy_tail_deferred_item_ref_mentions,
+        "server GuiQuickbar_SetAllButtons registry materialization context"
+    );
 }
