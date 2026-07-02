@@ -1983,6 +1983,7 @@ pub(crate) struct UiState {
     pub(crate) inventory_packets: u64,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
     pub(crate) last_committed_quickbar_profile: Option<QuickbarValidatedSlotProfile>,
+    pub(crate) last_committed_quickbar_materialization_context: Option<InventoryItemContextSummary>,
 }
 
 #[derive(Debug, Default)]

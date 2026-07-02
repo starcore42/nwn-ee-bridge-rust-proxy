@@ -11,6 +11,8 @@ use crate::{
     },
 };
 
+use super::state::InventoryItemContextSummary;
+
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedHighLevel {
     pub(crate) direction: Direction,
@@ -154,6 +156,7 @@ pub(crate) enum QuickbarEvent {
     Verified {
         observed: ObservedHighLevel,
         profile: Option<QuickbarValidatedSlotProfile>,
+        materialization_context: InventoryItemContextSummary,
     },
     Placeholder {
         observed: ObservedHighLevel,

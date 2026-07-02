@@ -131,6 +131,7 @@ fn observe_family_payload(
         VerifiedFamily::GuiQuickbar => ProtocolEvent::Quickbar(QuickbarEvent::Verified {
             observed,
             profile: quickbar::validated_set_all_buttons_slot_profile(payload),
+            materialization_context: state.objects.inventory_item_context_summary(),
         }),
         VerifiedFamily::GuiQuickbarPlaceholder => {
             ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed })
@@ -213,11 +214,17 @@ fn apply_event(
                 );
             }
         }
-        ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed, profile }) => {
+        ProtocolEvent::Quickbar(QuickbarEvent::Verified {
+            observed,
+            profile,
+            materialization_context,
+        }) => {
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
             state.ui.last_quickbar_family = Some(observed.family);
             if let Some(profile) = profile {
                 state.ui.last_committed_quickbar_profile = Some(*profile);
+                state.ui.last_committed_quickbar_materialization_context =
+                    Some(*materialization_context);
                 tracing::info!(
                     slot_records = profile.slot_records,
                     blank_slots = profile.blank_slots,
@@ -227,6 +234,16 @@ fn apply_event(
                     first_page_visible_slots = profile.first_page_visible_slots,
                     first_page_item_slots = profile.first_page_item_slots,
                     first_page_spell_slots = profile.first_page_spell_slots,
+                    active_item_objects = materialization_context.active_item_objects,
+                    direct_item_proof_objects = materialization_context.direct_item_proof_objects,
+                    feature25_item_proof_objects =
+                        materialization_context.feature25_item_proof_objects,
+                    compact_item_emission_proof_objects =
+                        materialization_context.compact_item_emission_proof_objects,
+                    inventory_feature25_first_item_refs =
+                        materialization_context.inventory_feature25_first_item_refs,
+                    inventory_feature25_second_item_refs =
+                        materialization_context.inventory_feature25_second_item_refs,
                     "semantic state observed committed GuiQuickbar slot profile"
                 );
             } else {
@@ -483,6 +500,62 @@ mod fixture_free_tests {
         );
         assert_eq!(state.ui.quickbar_packets, 2);
         assert_eq!(state.ui.quickbar_placeholders, 1);
+    }
+
+    #[test]
+    fn committed_quickbar_records_registry_materialization_context() {
+        let owner_id = 0x8000_0010u32;
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0101u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&first_item_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&second_item_id.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+
+        let context = state
+            .ui
+            .last_committed_quickbar_materialization_context
+            .expect("committed quickbar should snapshot registry item context");
+        assert_eq!(context.active_item_objects, 0);
+        assert_eq!(context.direct_item_proof_objects, 0);
+        assert_eq!(context.feature25_item_proof_objects, 2);
+        assert_eq!(context.compact_item_emission_proof_objects, 2);
+        assert_eq!(context.inventory_feature25_first_item_refs, 1);
+        assert_eq!(context.inventory_feature25_second_item_refs, 1);
+        assert_eq!(context.inventory_feature25_reference_records, 1);
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbarPlaceholder),
+            &quickbar_payload,
+        );
+
+        assert_eq!(
+            state.ui.last_committed_quickbar_materialization_context,
+            Some(context),
+            "placeholder frames must not replace the last committed quickbar materialization context"
+        );
     }
 }
 
