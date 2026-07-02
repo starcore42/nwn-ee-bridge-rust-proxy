@@ -182,6 +182,7 @@ fn apply_event(
             state.area.last_client_area_declared_len = observed.declared_len;
             state.area.current_area_object_id = *area_object_id;
             state.objects.reset_for_area();
+            remember_quickbar_item_context_if_relevant(state, "area-reset");
         }
         ProtocolEvent::Area(AreaEvent::AreaLoaded { .. }) => {
             state.area.area_loaded_packets = state.area.area_loaded_packets.saturating_add(1);
@@ -202,6 +203,7 @@ fn apply_event(
             state
                 .objects
                 .observe_inventory_feature25_references(&event.inventory_feature25_references);
+            remember_quickbar_item_context_if_relevant(state, "live-object");
         }
         ProtocolEvent::PlayerList(event) => {
             state
@@ -222,9 +224,13 @@ fn apply_event(
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
             state.ui.last_quickbar_family = Some(observed.family);
             if let Some(profile) = profile {
+                let prior_item_context = state.ui.last_inventory_item_context_before_quickbar;
                 state.ui.last_committed_quickbar_profile = Some(*profile);
                 state.ui.last_committed_quickbar_materialization_context =
                     Some(*materialization_context);
+                state.ui.last_committed_quickbar_prior_item_context = prior_item_context;
+                let prior_item_context_known = prior_item_context.is_some();
+                let prior_item_context = prior_item_context.unwrap_or_default();
                 tracing::info!(
                     slot_records = profile.slot_records,
                     blank_slots = profile.blank_slots,
@@ -250,6 +256,26 @@ fn apply_event(
                         materialization_context.inventory_feature25_first_item_refs,
                     inventory_feature25_second_item_refs =
                         materialization_context.inventory_feature25_second_item_refs,
+                    prior_item_context_known,
+                    prior_direct_item_proof_objects = prior_item_context.direct_item_proof_objects,
+                    prior_feature25_item_proof_objects =
+                        prior_item_context.feature25_item_proof_objects,
+                    prior_compact_item_emission_proof_objects =
+                        prior_item_context.compact_item_emission_proof_objects,
+                    prior_compact_item_emission_direct_only_proof_objects =
+                        prior_item_context.compact_item_emission_direct_only_proof_objects,
+                    prior_compact_item_emission_feature25_only_proof_objects =
+                        prior_item_context.compact_item_emission_feature25_only_proof_objects,
+                    prior_compact_item_emission_shared_proof_objects =
+                        prior_item_context.compact_item_emission_shared_proof_objects,
+                    prior_inventory_feature25_first_item_refs =
+                        prior_item_context.inventory_feature25_first_item_refs,
+                    prior_inventory_feature25_second_item_refs =
+                        prior_item_context.inventory_feature25_second_item_refs,
+                    prior_inventory_feature25_legacy_tail_item_refs =
+                        prior_item_context.inventory_feature25_legacy_tail_item_refs,
+                    prior_cleared_inventory_item_object_ids =
+                        prior_item_context.cleared_inventory_item_object_ids,
                     "semantic state observed committed GuiQuickbar slot profile"
                 );
             } else {
@@ -277,6 +303,38 @@ fn apply_event(
         ProtocolEvent::Chat(_) | ProtocolEvent::Other(_) => {}
     }
     state.remember_event(event);
+}
+
+fn remember_quickbar_item_context_if_relevant(
+    state: &mut SemanticSessionState,
+    source: &'static str,
+) {
+    let item_context = state.objects.inventory_item_context_summary();
+    if !item_context.has_quickbar_item_context_evidence()
+        || state.ui.last_inventory_item_context_before_quickbar == Some(item_context)
+    {
+        return;
+    }
+
+    state.ui.last_inventory_item_context_before_quickbar = Some(item_context);
+    tracing::debug!(
+        source,
+        direct_item_proof_objects = item_context.direct_item_proof_objects,
+        feature25_item_proof_objects = item_context.feature25_item_proof_objects,
+        compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
+        compact_item_emission_direct_only_proof_objects =
+            item_context.compact_item_emission_direct_only_proof_objects,
+        compact_item_emission_feature25_only_proof_objects =
+            item_context.compact_item_emission_feature25_only_proof_objects,
+        compact_item_emission_shared_proof_objects =
+            item_context.compact_item_emission_shared_proof_objects,
+        inventory_feature25_first_item_refs = item_context.inventory_feature25_first_item_refs,
+        inventory_feature25_second_item_refs = item_context.inventory_feature25_second_item_refs,
+        inventory_feature25_legacy_tail_item_refs =
+            item_context.inventory_feature25_legacy_tail_item_refs,
+        cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
+        "semantic state retained inventory item context for next GuiQuickbar"
+    );
 }
 
 fn observed_high_level(
@@ -542,6 +600,10 @@ mod fixture_free_tests {
             .ui
             .last_committed_quickbar_materialization_context
             .expect("committed quickbar should snapshot registry item context");
+        let prior_context = state
+            .ui
+            .last_committed_quickbar_prior_item_context
+            .expect("committed quickbar should snapshot prior item context");
         assert_eq!(context.active_item_objects, 0);
         assert_eq!(context.direct_item_proof_objects, 0);
         assert_eq!(context.feature25_item_proof_objects, 2);
@@ -555,6 +617,10 @@ mod fixture_free_tests {
         assert_eq!(context.inventory_feature25_first_item_refs, 1);
         assert_eq!(context.inventory_feature25_second_item_refs, 1);
         assert_eq!(context.inventory_feature25_reference_records, 1);
+        assert_eq!(
+            prior_context, context,
+            "a committed quickbar should retain the latest proof-bearing item context"
+        );
 
         observe_verified_payload(
             &mut state,
@@ -567,6 +633,83 @@ mod fixture_free_tests {
             state.ui.last_committed_quickbar_materialization_context,
             Some(context),
             "placeholder frames must not replace the last committed quickbar materialization context"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_prior_item_context,
+            Some(prior_context),
+            "placeholder frames must not replace the prior-context snapshot"
+        );
+    }
+
+    #[test]
+    fn committed_quickbar_records_prior_cleared_item_context_after_area_reset() {
+        let owner_id = 0x8000_0010u32;
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0101u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&first_item_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&second_item_id.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_inventory_item_context_before_quickbar
+                .expect("Feature-25 item refs should retain prior context")
+                .compact_item_emission_proof_objects,
+            2
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::AreaClientArea),
+            &[],
+        );
+
+        let cleared_context = state
+            .ui
+            .last_inventory_item_context_before_quickbar
+            .expect("area reset should retain cleared prior context");
+        assert_eq!(cleared_context.compact_item_emission_proof_objects, 0);
+        assert_eq!(cleared_context.feature25_item_proof_objects, 0);
+        assert_eq!(
+            cleared_context.cleared_inventory_item_object_ids, 2,
+            "area reset should explain why the prior Feature-25 refs are no longer usable"
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+
+        assert_eq!(
+            state.ui.last_committed_quickbar_prior_item_context,
+            Some(cleared_context),
+            "committed quickbar diagnostics should keep the last relevant cleared context"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_materialization_context
+                .expect("committed quickbar should snapshot current registry context")
+                .cleared_inventory_item_object_ids,
+            2
         );
     }
 }

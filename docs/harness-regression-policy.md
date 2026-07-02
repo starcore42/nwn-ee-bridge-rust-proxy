@@ -234,6 +234,22 @@ item buttons and all three partition counters remain 0 at quickbar
 probe/rewrite time, so the next useful capture remains an item-bearing
 `SetAllButtons` stream with nonzero partitioned proof context.
 
+Update as of 2026-07-02 22:17 +10: live-data gate reused the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest packet about 7 hours old at replay time, and gameplay reached. Strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-prior-context-automation-20260702-2218`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe quickbar summaries, and 1 committed quickbar
+summary. Semantic quickbar state now records and summarizes the last relevant
+inventory item context before committed quickbar profiles. In this capture the
+committed quickbar still occurs before the later retained Feature-25 item
+context, so `QuickbarSemanticPriorItemContextKnown=0`, all prior proof counters
+are 0, and the next useful capture remains a later item-bearing
+`SetAllButtons` after those Feature-25 refs.
+
 ## Successful live HG capture contract
 
 A successful live HG capture requires all of the following:

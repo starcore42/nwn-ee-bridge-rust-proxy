@@ -165,6 +165,14 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
 }
 
+impl InventoryItemContextSummary {
+    pub(crate) fn has_quickbar_item_context_evidence(&self) -> bool {
+        self.direct_item_proof_objects != 0
+            || self.feature25_item_proof_objects != 0
+            || self.cleared_inventory_item_object_ids != 0
+    }
+}
+
 impl ObjectRegistry {
     pub(crate) fn reset_for_area(&mut self) {
         if !self.known.is_empty()
@@ -1999,6 +2007,8 @@ pub(crate) struct UiState {
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
     pub(crate) last_committed_quickbar_profile: Option<QuickbarValidatedSlotProfile>,
     pub(crate) last_committed_quickbar_materialization_context: Option<InventoryItemContextSummary>,
+    pub(crate) last_inventory_item_context_before_quickbar: Option<InventoryItemContextSummary>,
+    pub(crate) last_committed_quickbar_prior_item_context: Option<InventoryItemContextSummary>,
 }
 
 #[derive(Debug, Default)]

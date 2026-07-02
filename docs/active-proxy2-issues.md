@@ -124,6 +124,22 @@ not as standalone workaround targets.
   quickbar probe/rewrite time. Next production path: drive or capture an
   item-bearing `SetAllButtons` and use the partition counters to decide whether
   Feature-25-only proof is sufficient for compact item-slot emission.
+- 2026-07-02 quickbar prior-context slice: live-data gate reused the same
+  gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; newest packet was
+  about 7 hours old at replay time. The semantic reducer now retains the last
+  proof-bearing or cleared inventory item context before a committed
+  `GuiQuickbar_SetAllButtons`, and the replay summary exports those prior
+  context fields. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-prior-context-automation-20260702-2218`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe quickbar summaries, and 1 committed
+  quickbar summary. This capture's committed quickbar still had 0 item buttons
+  and `QuickbarSemanticPriorItemContextKnown=0`; later live-object processing
+  retained deferred Feature-25 item context after the quickbar, reaching 5
+  compact proof objects. Next production path: capture or drive a later
+  item-bearing `SetAllButtons` after those retained Feature-25 refs, then use
+  the prior/current context fields to decide compact item emission policy.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
