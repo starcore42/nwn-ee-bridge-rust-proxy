@@ -280,6 +280,25 @@ not as standalone workaround targets.
   quickbar. Next production path: drive or capture a later committed
   `GuiQuickbar_SetAllButtons` after the Feature-25-only pending window, or
   instrument the harness/client action needed to provoke that refresh.
+- 2026-07-03 quickbar pending event-breakdown slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, packet window
+  `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`;
+  at `2026-07-03T07:13:01+10:00` the newest gameplay packet was about 16
+  hours old and gameplay reached. Semantic quickbar state now buckets pending
+  post-committed item-refresh traffic by verified family, and the replay
+  summary exports those buckets for committed, post-context, and unresolved
+  pending windows. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-event-breakdown-automation-20260703-071923`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe registry-context summaries, and 1
+  committed quickbar summary. This capture still has no later committed
+  quickbar or item buttons; the pending Feature-25-only post-context window
+  spans 265 verified events: 127 live-object, 0 quickbar, 0 area, 0 inventory,
+  1 client input, 4 chat, and 133 other. It still reaches 5 compact
+  item-emission proof objects, all Feature-25-only. Next production path:
+  drive or instrument a client/harness action that should provoke a committed
+  `GuiQuickbar_SetAllButtons` refresh after this pending window, then compare
+  the accepted/rejected item decision counters against these event buckets.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
@@ -296,11 +315,11 @@ not as standalone workaround targets.
   the auto-character path tried PRE_PLAYMOD selection while the entry list was
   still empty (`entries=0 count=0`). Treat this as the next harness production
   target if gameplay replay cannot be obtained manually.
-- Immediate automation target: either produce a gameplay-level live HG or local
-  harness replay for the current fixed-width `A/09` residual carrier evidence,
-  or fix the Diamond auto-character/refresh retry path so the replay can run
-  unattended. Only after that evidence should another `U/09` carrier emission
-  rule be widened.
+- Immediate automation target: while the 2026-07-02 live HG capture remains
+  fresh, use harness/client control to provoke or capture a later committed
+  `GuiQuickbar_SetAllButtons` after the Feature-25-only pending item-proof
+  window. If that cannot be provoked, instrument the client action path needed
+  to force a quickbar refresh before widening compact item-slot emission.
 - 2026-06-28 live-data gate satisfied by
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`: probe window
   `2026-06-28 00:05:38.124 -> 00:07:37.612`, 119 packet files, gameplay reached

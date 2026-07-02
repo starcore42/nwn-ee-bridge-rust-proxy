@@ -68,6 +68,13 @@ impl SemanticSessionState {
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
+            live_object_events_since_pending_refresh = summary.event_breakdown.live_object_events,
+            quickbar_events_since_pending_refresh = summary.event_breakdown.quickbar_events,
+            area_events_since_pending_refresh = summary.event_breakdown.area_events,
+            inventory_events_since_pending_refresh = summary.event_breakdown.inventory_events,
+            client_input_events_since_pending_refresh = summary.event_breakdown.client_input_events,
+            chat_events_since_pending_refresh = summary.event_breakdown.chat_events,
+            other_events_since_pending_refresh = summary.event_breakdown.other_events,
             pending_item_refresh_proof_class = proof_class,
             direct_item_proof_objects = summary.item_context.direct_item_proof_objects,
             feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
@@ -278,7 +285,19 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) item_context: InventoryItemContextSummary,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
+    pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct QuickbarItemRefreshEventBreakdown {
+    pub(crate) live_object_events: u64,
+    pub(crate) quickbar_events: u64,
+    pub(crate) area_events: u64,
+    pub(crate) inventory_events: u64,
+    pub(crate) client_input_events: u64,
+    pub(crate) chat_events: u64,
+    pub(crate) other_events: u64,
 }
 
 impl ObjectRegistry {
@@ -2123,6 +2142,8 @@ pub(crate) struct UiState {
     pub(crate) post_committed_quickbar_item_refresh_pending: bool,
     pub(crate) post_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_events: u64,
+    pub(crate) post_committed_quickbar_item_refresh_pending_event_breakdown:
+        QuickbarItemRefreshEventBreakdown,
     pub(crate) post_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
     pub(crate) last_committed_quickbar_previous_post_item_context:
@@ -2131,6 +2152,8 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_item_refresh_pending: bool,
     pub(crate) last_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) last_committed_quickbar_item_refresh_pending_events: u64,
+    pub(crate) last_committed_quickbar_item_refresh_pending_event_breakdown:
+        QuickbarItemRefreshEventBreakdown,
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
     pub(crate) last_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
@@ -2150,6 +2173,7 @@ impl UiState {
             updates_since_committed_quickbar: self
                 .inventory_item_context_after_committed_quickbar_updates,
             events_since_pending_refresh: self.post_committed_quickbar_item_refresh_pending_events,
+            event_breakdown: self.post_committed_quickbar_item_refresh_pending_event_breakdown,
             proof_class: self.post_committed_quickbar_item_refresh_proof_class,
         })
     }

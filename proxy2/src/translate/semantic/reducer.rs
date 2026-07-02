@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-use super::state::QuickbarItemRefreshProofClass;
+use super::state::{QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshProofClass};
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, InventoryItemContextSummary,
     LiveObjectEvent, LiveObjectInventoryFeature25Reference, LiveObjectMention,
@@ -239,6 +239,9 @@ fn apply_event(
                     .post_committed_quickbar_item_refresh_pending_updates;
                 let pending_item_refresh_events =
                     state.ui.post_committed_quickbar_item_refresh_pending_events;
+                let pending_item_refresh_event_breakdown = state
+                    .ui
+                    .post_committed_quickbar_item_refresh_pending_event_breakdown;
                 let pending_item_refresh_proof_class =
                     state.ui.post_committed_quickbar_item_refresh_proof_class;
                 let pending_item_refresh_outcome =
@@ -266,6 +269,10 @@ fn apply_event(
                     pending_item_refresh_updates;
                 state.ui.last_committed_quickbar_item_refresh_pending_events =
                     pending_item_refresh_events;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_pending_event_breakdown =
+                    pending_item_refresh_event_breakdown;
                 state.ui.last_committed_quickbar_item_refresh_outcome =
                     pending_item_refresh_outcome;
                 state.ui.last_committed_quickbar_item_refresh_proof_class =
@@ -284,6 +291,10 @@ fn apply_event(
                     .ui
                     .post_committed_quickbar_item_refresh_pending_updates = 0;
                 state.ui.post_committed_quickbar_item_refresh_pending_events = 0;
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_pending_event_breakdown =
+                    QuickbarItemRefreshEventBreakdown::default();
                 state.ui.post_committed_quickbar_item_refresh_proof_class = None;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
@@ -368,6 +379,20 @@ fn apply_event(
                     pending_item_refresh_before_commit = pending_item_refresh,
                     pending_item_refresh_updates_before_commit = pending_item_refresh_updates,
                     pending_item_refresh_events_before_commit = pending_item_refresh_events,
+                    pending_item_refresh_live_object_events_before_commit =
+                        pending_item_refresh_event_breakdown.live_object_events,
+                    pending_item_refresh_quickbar_events_before_commit =
+                        pending_item_refresh_event_breakdown.quickbar_events,
+                    pending_item_refresh_area_events_before_commit =
+                        pending_item_refresh_event_breakdown.area_events,
+                    pending_item_refresh_inventory_events_before_commit =
+                        pending_item_refresh_event_breakdown.inventory_events,
+                    pending_item_refresh_client_input_events_before_commit =
+                        pending_item_refresh_event_breakdown.client_input_events,
+                    pending_item_refresh_chat_events_before_commit =
+                        pending_item_refresh_event_breakdown.chat_events,
+                    pending_item_refresh_other_events_before_commit =
+                        pending_item_refresh_event_breakdown.other_events,
                     pending_item_refresh_proof_class,
                     pending_item_refresh_outcome = pending_item_refresh_outcome.as_str(),
                     best_item_context_known,
@@ -417,7 +442,7 @@ fn apply_event(
         }
         ProtocolEvent::Chat(_) | ProtocolEvent::Other(_) => {}
     }
-    record_pending_quickbar_item_refresh_event(state);
+    record_pending_quickbar_item_refresh_event(state, &event);
     state.remember_event(event);
 }
 
@@ -539,6 +564,10 @@ fn remember_quickbar_item_context_if_relevant(
         };
         if !pending_item_refresh {
             state.ui.post_committed_quickbar_item_refresh_pending_events = 0;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown =
+                QuickbarItemRefreshEventBreakdown::default();
         }
         state.ui.post_committed_quickbar_item_refresh_proof_class =
             pending_item_refresh_proof_class;
@@ -556,6 +585,34 @@ fn remember_quickbar_item_context_if_relevant(
                 .post_committed_quickbar_item_refresh_pending_updates,
             pending_item_refresh_events =
                 state.ui.post_committed_quickbar_item_refresh_pending_events,
+            pending_item_refresh_live_object_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .live_object_events,
+            pending_item_refresh_quickbar_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .quickbar_events,
+            pending_item_refresh_area_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .area_events,
+            pending_item_refresh_inventory_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .inventory_events,
+            pending_item_refresh_client_input_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .client_input_events,
+            pending_item_refresh_chat_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .chat_events,
+            pending_item_refresh_other_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .other_events,
             pending_item_refresh_proof_class,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
@@ -577,7 +634,10 @@ fn remember_quickbar_item_context_if_relevant(
     }
 }
 
-fn record_pending_quickbar_item_refresh_event(state: &mut SemanticSessionState) {
+fn record_pending_quickbar_item_refresh_event(
+    state: &mut SemanticSessionState,
+    event: &ProtocolEvent,
+) {
     if !state.ui.post_committed_quickbar_item_refresh_pending {
         return;
     }
@@ -585,6 +645,36 @@ fn record_pending_quickbar_item_refresh_event(state: &mut SemanticSessionState) 
         .ui
         .post_committed_quickbar_item_refresh_pending_events
         .saturating_add(1);
+    let breakdown = &mut state
+        .ui
+        .post_committed_quickbar_item_refresh_pending_event_breakdown;
+    match event {
+        ProtocolEvent::LiveObject(_) => {
+            breakdown.live_object_events = breakdown.live_object_events.saturating_add(1);
+        }
+        ProtocolEvent::Quickbar(_) => {
+            breakdown.quickbar_events = breakdown.quickbar_events.saturating_add(1);
+        }
+        ProtocolEvent::Area(_) => {
+            breakdown.area_events = breakdown.area_events.saturating_add(1);
+        }
+        ProtocolEvent::Inventory(_) => {
+            breakdown.inventory_events = breakdown.inventory_events.saturating_add(1);
+        }
+        ProtocolEvent::ClientInput(_) => {
+            breakdown.client_input_events = breakdown.client_input_events.saturating_add(1);
+        }
+        ProtocolEvent::Chat(_) => {
+            breakdown.chat_events = breakdown.chat_events.saturating_add(1);
+        }
+        ProtocolEvent::ModuleInfo(_)
+        | ProtocolEvent::ServerStatus(_)
+        | ProtocolEvent::PlayerList(_)
+        | ProtocolEvent::Login(_)
+        | ProtocolEvent::Other(_) => {
+            breakdown.other_events = breakdown.other_events.saturating_add(1);
+        }
+    }
 }
 
 fn observed_high_level(
@@ -1180,13 +1270,55 @@ mod fixture_free_tests {
             state.ui.post_committed_quickbar_item_refresh_pending_events, 1,
             "the live-object event that creates pending item proof should count as unresolved pending traffic"
         );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .live_object_events,
+            1,
+            "the event breakdown should classify the proof-creating live-object event"
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Inventory),
+            &[],
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Chat),
+            &[],
+        );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_pending_events, 3,
+            "all later verified traffic should keep the pending refresh window accountable"
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .inventory_events,
+            1
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .chat_events,
+            1
+        );
         let unresolved = state
             .ui
             .unresolved_pending_item_refresh()
             .expect("pending proof should expose an unresolved refresh summary");
         assert_eq!(unresolved.item_context, post_context);
         assert_eq!(unresolved.updates_since_committed_quickbar, 1);
-        assert_eq!(unresolved.events_since_pending_refresh, 1);
+        assert_eq!(unresolved.events_since_pending_refresh, 3);
+        assert_eq!(unresolved.event_breakdown.live_object_events, 1);
+        assert_eq!(unresolved.event_breakdown.inventory_events, 1);
+        assert_eq!(unresolved.event_breakdown.chat_events, 1);
         assert_eq!(
             unresolved.proof_class,
             Some(QuickbarItemRefreshProofClass::Feature25Only)
@@ -1226,8 +1358,29 @@ mod fixture_free_tests {
             1
         );
         assert_eq!(
-            state.ui.last_committed_quickbar_item_refresh_pending_events, 1,
+            state.ui.last_committed_quickbar_item_refresh_pending_events, 3,
             "the resolving committed quickbar should snapshot unresolved pending event count"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_event_breakdown
+                .live_object_events,
+            1
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_event_breakdown
+                .inventory_events,
+            1
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_event_breakdown
+                .chat_events,
+            1
         );
         assert_eq!(
             state.ui.last_committed_quickbar_best_item_context,
@@ -1279,6 +1432,13 @@ mod fixture_free_tests {
         assert_eq!(
             state.ui.post_committed_quickbar_item_refresh_pending_events, 0,
             "a new committed quickbar should clear the active pending event count"
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown,
+            Default::default(),
+            "a new committed quickbar should clear the active pending event breakdown"
         );
         assert_eq!(
             state.ui.unresolved_pending_item_refresh(),
@@ -1431,6 +1591,13 @@ mod fixture_free_tests {
         assert_eq!(
             state.ui.post_committed_quickbar_item_refresh_pending_events, 0,
             "cleared post-quickbar state should also clear pending event accounting"
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown,
+            Default::default(),
+            "cleared post-quickbar state should also clear pending event buckets"
         );
         assert_eq!(
             state.ui.unresolved_pending_item_refresh(),
