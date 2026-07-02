@@ -240,6 +240,12 @@ fn apply_event(
                         materialization_context.feature25_item_proof_objects,
                     compact_item_emission_proof_objects =
                         materialization_context.compact_item_emission_proof_objects,
+                    compact_item_emission_direct_only_proof_objects =
+                        materialization_context.compact_item_emission_direct_only_proof_objects,
+                    compact_item_emission_feature25_only_proof_objects =
+                        materialization_context.compact_item_emission_feature25_only_proof_objects,
+                    compact_item_emission_shared_proof_objects =
+                        materialization_context.compact_item_emission_shared_proof_objects,
                     inventory_feature25_first_item_refs =
                         materialization_context.inventory_feature25_first_item_refs,
                     inventory_feature25_second_item_refs =
@@ -540,6 +546,12 @@ mod fixture_free_tests {
         assert_eq!(context.direct_item_proof_objects, 0);
         assert_eq!(context.feature25_item_proof_objects, 2);
         assert_eq!(context.compact_item_emission_proof_objects, 2);
+        assert_eq!(context.compact_item_emission_direct_only_proof_objects, 0);
+        assert_eq!(
+            context.compact_item_emission_feature25_only_proof_objects,
+            2
+        );
+        assert_eq!(context.compact_item_emission_shared_proof_objects, 0);
         assert_eq!(context.inventory_feature25_first_item_refs, 1);
         assert_eq!(context.inventory_feature25_second_item_refs, 1);
         assert_eq!(context.inventory_feature25_reference_records, 1);

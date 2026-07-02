@@ -33,33 +33,206 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-01 08:45 +10: the current
+Latest known live HG status, as of 2026-07-02 15:09 +10: the current
 gameplay-reaching capture is
-`C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`, with packet dumps
-under `diamond-client-packets`, probe log `diamond-client-probe.log`, 165
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
+under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
 packet files, and packet window
-`2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`. Gameplay was reached through
-character/module entry and in-area HG gameplay messages including "You are now
-in a No PVP area" and "You are now in Docks of Ascension (No PVP)." At the
-latest live-data gate the newest packet was about two hours old. The strict
-proxy2 replay
-`C:\nwnbridge\codex-proxy2-replay-quickbar-committed-summary-automation-20260701-0849`
-reported 0 quarantines, 223 strict allows, 79 captured direct live-object
-frames, 14 exact live-object rewrite matches, 60 exact lifecycle claim
-summaries, 10 area rewrites, 1 committed quickbar rewrite summary, 0 quickbar
-item buttons, 29 blank quickbar slots, 5 spell slots, 2 preserved general
-buttons, 0 general blanks, 0 unsupported blanked slots, 0 strict quarantine
-decisions, and 0 fixed-width/live-object residuals. Inventory Feature-25
-evidence in this shorter fresh capture showed 13 typed Feature-25 claims, 6/6
-first-list refs materialized, 1/11 second-list refs materialized, 10/11
-second-list refs not yet materialized at reference time, 33 second-list BOOL
-bits, and 0 legacy-tail refs. Quickbar rewrite logs now mark stream-splitter
-probes separately from committed translation with `trace_role` and `committed`;
-the replay summary intentionally aggregates only committed quickbar rewrites.
-The current production rule keeps Feature-25 refs as deferred item-context
-proof, clears GUI-materialized and Feature-25 quickbar item proof when an exact
-`D/06` live-object delete is observed, and reports true type-0 blank quickbar
-slots separately from item/spell/general slot buckets.
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
+Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
+HG `P/05/01` live-object traffic, and in-game chat/reset messages. The first
+strict proxy2 replay
+`C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
+reported 414 strict allows, 0 strict quarantines, but 1 semantic quarantine and
+2 live-object quarantine bins from sequence 179: a mixed inventory Feature-25,
+placeable add, and terminal all-bits `U/09 0xFFFFFFF7` placeable update stream.
+The 2026-07-02 production fix teaches the compact tail9 door/placeable updater
+to remove the exact terminal six legacy packed-name fragment bits only after
+the bounded tail9 name payload is proven. Confirming strict replay
+`C:\nwnbridge\codex-proxy2-replay-fresh-live-fixed-20260702-153427` reported
+414 strict allows, 0 strict quarantines, 0 semantic quarantine matches, 0
+quarantine files, 27 live-object exact shape/rewrite matches, 147 exact
+lifecycle claim matches, 39 stream-probe quickbar summaries, and 1 committed
+quickbar rewrite summary. The committed quickbar still has 0 item buttons, 29
+blank slots, 5 spell slots, and 2 preserved general buttons; the next useful
+capture pressure remains item-bearing quickbar materialization or the next
+fresh live-object exact-shape gap.
+
+Update as of 2026-07-01 11:45 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
+against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79
+direct live-object frames, 19 exact live-object rewrites, 98 exact lifecycle
+claim summaries, 10 area rewrites, and 1 committed quickbar rewrite summary.
+Production quickbar logs now emit a committed item materialization decision
+trace for every parsed item button, and the replay summary exports
+`QuickbarItemDecisionTraceMatches`, `QuickbarItemDecisionsAccepted`, and
+`QuickbarItemDecisionsRejected`. This capture still carries no committed
+quickbar item buttons, so all three new decision counters were 0.
+
+Update as of 2026-07-01 12:45 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-shape-status-automation-20260701-124219`
+against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79
+direct live-object frames, 19 exact live-object rewrites, 98 exact lifecycle
+claim summaries, 10 area rewrites, and 1 committed quickbar rewrite summary.
+The production quickbar writer now uses one typed item-object shape classifier
+for emission, missing-state diagnostics, and item-decision trace labels. The
+item-decision trace also records base item, appearance type/length, and
+active-property presence/count for primary and secondary item objects. This
+capture still carries no committed quickbar item buttons, so item-decision
+counts remain 0 until an item-bearing `SetAllButtons` stream is captured or
+replayed.
+
+Update as of 2026-07-01 13:47 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-materialization-helper-automation-20260701-1350`
+against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79
+direct live-object frames, 19 exact live-object rewrites, 98 exact lifecycle
+claim summaries, 10 area rewrites, and 1 committed quickbar rewrite summary.
+The M-frame quickbar materialization helper now shares semantic item-proof
+status/proof mapping between direct dispatch and buffered zlib-stream handling.
+Context-aware quickbar stream probes logged 39 `committed=false` summaries, and
+only the final emitted quickbar rewrite logged `committed=true`. The committed
+quickbar still has 0 item buttons, 29 blank slots, 5 spell slots, and 2
+preserved general buttons, so the next useful capture remains an item-bearing
+`SetAllButtons` stream after verified Feature-25 refs.
+
+Update as of 2026-07-01 14:48 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-probe-counters-automation-20260701-1448`
+against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79
+direct live-object frames, 19 exact live-object rewrites, 98 exact lifecycle
+claim summaries, 10 area rewrites, 39 stream-probe quickbar summaries, and 1
+committed quickbar rewrite summary. Quickbar summaries now include
+`slot_records_owned`, and the replay harness exports stream-probe counters
+separately from committed counters. The committed rewrite owned all 36 slot
+records and still had 0 item buttons, 29 blank slots, 5 spell slots, and 2
+preserved general buttons; stream probes also saw 0 item buttons. The next
+useful capture remains an item-bearing `SetAllButtons` stream after verified
+Feature-25 refs.
+
+Update as of 2026-07-01 16:14 +10: live-data gate used the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`; packet window
+`2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`, with the newest packet about
+9h04m old at gate time and gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-split-shadow-state-automation-20260701-161120`
+stayed at 0 quarantines, 308 strict allows, 79 direct live-object frames, 19
+exact live-object rewrites, 98 exact lifecycle claim summaries, 10 area
+rewrites, 39 stream-probe quickbar summaries, and 1 committed quickbar summary.
+The committed quickbar still had 0 item buttons, 29 blank slots, 5 spell slots,
+and 2 preserved general buttons. Split inflated stream rewriting now shadows
+semantic object state and refreshed area context between claimed units, so an
+earlier same-buffer area reset or state-bearing unit can affect later quickbar
+or live-object translation without mutating the real session state before the
+accepted-payload reducer runs.
+
+Update as of 2026-07-01 16:48 +10: live-data gate used the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`; packet window
+`2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`, with the newest packet about
+10h13m old at replay time and gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-slot-profile-state-automation-20260701-1649`
+stayed at 0 quarantines, 308 strict allows, 79 direct live-object frames, 19
+exact live-object rewrites, 98 exact lifecycle claim summaries, 10 area
+rewrites, 39 stream-probe quickbar summaries, and 1 committed quickbar
+summary. Committed quickbar semantic state now stores an exact-reader slot
+profile separately from placeholder frames; this replay recorded 36 slots, 29
+blanks, 5 spells, 2 general buttons, 0 items, and 7 visible first-page slots.
+The capture still carries no committed item buttons, so the next useful live or
+local evidence remains an item-bearing `SetAllButtons` stream after verified
+Feature-25 refs.
+
+Update as of 2026-07-02 16:17 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-feature25-materialization-state-automation-20260702-1605`
+against the current fresh capture stayed at 0 quarantines, 414 strict allows,
+27 exact live-object rewrites, 147 exact lifecycle claim summaries, 39
+stream-probe quickbar summaries, and 1 committed quickbar summary. Semantic
+item-proof state now logs whether exact Feature-25 refs were already backed by
+item materialization before the Feature-25 proof is inserted. In this capture,
+the generic live-object exact trace counted 17 first-list refs and 1 second-list
+ref as materialized, but the item-specific semantic trace counted 17 first-list
+and 21 second-list refs as deferred item refs. The committed quickbar still has
+0 item buttons, so the next useful capture remains an item-bearing
+`SetAllButtons` stream that can prove or disprove relying on deferred
+Feature-25 refs for compact item-slot emission.
+
+Update as of 2026-07-02 17:23 +10: live-data gate reused the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest packet about 2h15m old at gate time, gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-registry-context-automation-20260702-171938`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+exact lifecycle claims, 39 stream-probe quickbar summaries, and 1 committed
+quickbar summary. Proxy2 now logs the semantic registry item-proof context
+beside registry-backed `GuiQuickbar_SetAllButtons` materialization, and the
+replay summary exports those counters. This replay recorded 1 committed
+registry-context summary, 0 stream-probe registry-context summaries, 0
+committed quickbar item buttons, and 0 active/materialized/Feature-25 item refs
+in the registry at committed rewrite time. The next useful capture remains an
+item-bearing `SetAllButtons` stream with non-empty registry item context.
+
+Update as of 2026-07-02 18:16 +10: live-data gate reused the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest packet about 3 hours old at gate time, gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-split-context-automation-20260702-1816`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+exact lifecycle claims, 39 stream-probe quickbar summaries, 39 stream-probe
+registry-context summaries, and 1 committed quickbar summary. Split-time
+`GuiQuickbar` probes now receive the same registry-backed materialization
+context used by committed rewrites, so the replay harness can report registry
+item context before a stream is finally claimed. This capture still has 0
+committed or stream-probe item buttons and 0 active/materialized/Feature-25 item
+refs at quickbar probe/rewrite time; the next useful capture remains an
+item-bearing `SetAllButtons` stream with non-empty registry item context.
+
+Update as of 2026-07-02 19:12 +10: live-data gate reused the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest packet about 4 hours old at gate time, gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-proof-summary-automation-20260702-191159`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+exact lifecycle claims, 39 stream-probe quickbar summaries, 39 stream-probe
+registry-context summaries, and 1 committed quickbar summary. Proxy2 now emits
+unique direct item-proof objects, unique Feature-25 item-proof objects, and
+their compact item-emission proof union in the quickbar registry-context trace;
+the replay summary exports committed and stream-probe max counters for those
+fields. This capture still has 0 quickbar item buttons and 0 compact
+item-emission proof objects at quickbar probe/rewrite time, so the next useful
+capture remains an item-bearing `SetAllButtons` stream with nonzero proof
+context.
+
+Update as of 2026-07-02 20:15 +10: live-data gate reused the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest packet about 5 hours old at replay time, gameplay reached. Strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-ui-context-automation-20260702-2007`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe registry-context summaries, and 1 committed
+registry-context summary. Committed quickbar semantic state now records the
+registry item-proof context alongside the exact slot profile; this capture
+still recorded 36 slots, 29 blanks, 5 spells, 2 general buttons, 0 item slots,
+and 0 compact item-emission proof objects. The next useful capture remains an
+item-bearing `SetAllButtons` stream with nonzero committed proof context.
+
+Update as of 2026-07-02 21:19 +10: live-data gate reused the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest packet about 6 hours old at replay time, and gameplay reached. Strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-proof-partition-automation-20260702-2119`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe registry-context summaries, and 1 committed
+registry-context summary. Quickbar registry-context traces and
+`replay-summary.json` now expose direct-only, Feature-25-only, and shared
+compact item-emission proof object counters. This capture still has 0 quickbar
+item buttons and all three partition counters remain 0 at quickbar
+probe/rewrite time, so the next useful capture remains an item-bearing
+`SetAllButtons` stream with nonzero partitioned proof context.
 
 ## Successful live HG capture contract
 

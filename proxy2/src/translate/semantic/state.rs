@@ -146,6 +146,9 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) direct_item_proof_objects: usize,
     pub(crate) feature25_item_proof_objects: usize,
     pub(crate) compact_item_emission_proof_objects: usize,
+    pub(crate) compact_item_emission_direct_only_proof_objects: usize,
+    pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
+    pub(crate) compact_item_emission_shared_proof_objects: usize,
     pub(crate) inventory_feature25_first_item_refs: usize,
     pub(crate) inventory_feature25_second_item_refs: usize,
     pub(crate) inventory_feature25_legacy_tail_item_refs: usize,
@@ -926,12 +929,24 @@ impl ObjectRegistry {
         );
         let mut compact_item_emission_proof_objects = direct_item_proof_objects.clone();
         compact_item_emission_proof_objects.extend(feature25_item_proof_objects.iter().copied());
+        let compact_item_emission_direct_only_proof_objects = direct_item_proof_objects
+            .difference(&feature25_item_proof_objects)
+            .count();
+        let compact_item_emission_feature25_only_proof_objects = feature25_item_proof_objects
+            .difference(&direct_item_proof_objects)
+            .count();
+        let compact_item_emission_shared_proof_objects = direct_item_proof_objects
+            .intersection(&feature25_item_proof_objects)
+            .count();
         InventoryItemContextSummary {
             active_item_objects: active_item_objects.len(),
             materialized_item_objects: self.materialized_item_object_ids.len(),
             direct_item_proof_objects: direct_item_proof_objects.len(),
             feature25_item_proof_objects: feature25_item_proof_objects.len(),
             compact_item_emission_proof_objects: compact_item_emission_proof_objects.len(),
+            compact_item_emission_direct_only_proof_objects,
+            compact_item_emission_feature25_only_proof_objects,
+            compact_item_emission_shared_proof_objects,
             inventory_feature25_first_item_refs: self.inventory_feature25_first_item_refs.len(),
             inventory_feature25_second_item_refs: self.inventory_feature25_second_item_refs.len(),
             inventory_feature25_legacy_tail_item_refs: self
@@ -4088,6 +4103,18 @@ mod tests {
         assert_eq!(
             summary.compact_item_emission_proof_objects, 5,
             "Feature-25 refs already include the two direct-proof ids in this fixture"
+        );
+        assert_eq!(
+            summary.compact_item_emission_direct_only_proof_objects, 0,
+            "both direct-proof ids are also present in Feature-25 refs"
+        );
+        assert_eq!(
+            summary.compact_item_emission_feature25_only_proof_objects, 3,
+            "three deferred Feature-25 refs have no direct item materialization"
+        );
+        assert_eq!(
+            summary.compact_item_emission_shared_proof_objects, 2,
+            "direct and Feature-25 proof overlap should stay explicit for quickbar policy"
         );
         assert_eq!(summary.inventory_feature25_first_item_refs, 2);
         assert_eq!(summary.inventory_feature25_second_item_refs, 2);

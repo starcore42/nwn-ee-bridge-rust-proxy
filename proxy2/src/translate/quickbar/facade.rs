@@ -833,6 +833,12 @@ fn trace_quickbar_materialization_context(
         direct_item_proof_objects = context.direct_item_proof_objects,
         feature25_item_proof_objects = context.feature25_item_proof_objects,
         compact_item_emission_proof_objects = context.compact_item_emission_proof_objects,
+        compact_item_emission_direct_only_proof_objects =
+            context.compact_item_emission_direct_only_proof_objects,
+        compact_item_emission_feature25_only_proof_objects =
+            context.compact_item_emission_feature25_only_proof_objects,
+        compact_item_emission_shared_proof_objects =
+            context.compact_item_emission_shared_proof_objects,
         inventory_feature25_first_item_refs = context.inventory_feature25_first_item_refs,
         inventory_feature25_second_item_refs = context.inventory_feature25_second_item_refs,
         inventory_feature25_legacy_tail_item_refs =
