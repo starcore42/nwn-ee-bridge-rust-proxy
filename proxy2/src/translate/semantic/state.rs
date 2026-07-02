@@ -131,6 +131,12 @@ pub(crate) struct ObjectRegistry {
     pub(crate) inventory_feature25_first_item_ref_mentions: u64,
     pub(crate) inventory_feature25_second_item_ref_mentions: u64,
     pub(crate) inventory_feature25_legacy_tail_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_materialized_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_deferred_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_materialized_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_deferred_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_tail_materialized_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
 }
 
 impl ObjectRegistry {
@@ -743,6 +749,18 @@ impl ObjectRegistry {
         for reference in references {
             self.inventory_feature25_reference_records =
                 self.inventory_feature25_reference_records.saturating_add(1);
+            let first_observation =
+                classify_inventory_feature25_item_refs(&reference.first_object_ids, |object_id| {
+                    self.has_known_inventory_item_object_id(object_id)
+                });
+            let second_observation =
+                classify_inventory_feature25_item_refs(&reference.second_object_ids, |object_id| {
+                    self.has_known_inventory_item_object_id(object_id)
+                });
+            let legacy_tail_observation = classify_inventory_feature25_item_refs(
+                &reference.legacy_tail_object_ids,
+                |object_id| self.has_known_inventory_item_object_id(object_id),
+            );
             let first_refs = observe_inventory_feature25_item_refs(
                 &mut self.inventory_feature25_first_item_refs,
                 &mut self.cleared_inventory_item_object_ids,
@@ -758,6 +776,9 @@ impl ObjectRegistry {
                 &mut self.cleared_inventory_item_object_ids,
                 &reference.legacy_tail_object_ids,
             );
+            debug_assert_eq!(first_refs, first_observation.accepted);
+            debug_assert_eq!(second_refs, second_observation.accepted);
+            debug_assert_eq!(legacy_tail_refs, legacy_tail_observation.accepted);
             self.inventory_feature25_first_item_ref_mentions = self
                 .inventory_feature25_first_item_ref_mentions
                 .saturating_add(first_refs);
@@ -767,13 +788,37 @@ impl ObjectRegistry {
             self.inventory_feature25_legacy_tail_item_ref_mentions = self
                 .inventory_feature25_legacy_tail_item_ref_mentions
                 .saturating_add(legacy_tail_refs);
-            if second_refs != 0 {
+            self.inventory_feature25_first_materialized_item_ref_mentions = self
+                .inventory_feature25_first_materialized_item_ref_mentions
+                .saturating_add(first_observation.materialized);
+            self.inventory_feature25_first_deferred_item_ref_mentions = self
+                .inventory_feature25_first_deferred_item_ref_mentions
+                .saturating_add(first_observation.deferred);
+            self.inventory_feature25_second_materialized_item_ref_mentions = self
+                .inventory_feature25_second_materialized_item_ref_mentions
+                .saturating_add(second_observation.materialized);
+            self.inventory_feature25_second_deferred_item_ref_mentions = self
+                .inventory_feature25_second_deferred_item_ref_mentions
+                .saturating_add(second_observation.deferred);
+            self.inventory_feature25_legacy_tail_materialized_item_ref_mentions = self
+                .inventory_feature25_legacy_tail_materialized_item_ref_mentions
+                .saturating_add(legacy_tail_observation.materialized);
+            self.inventory_feature25_legacy_tail_deferred_item_ref_mentions = self
+                .inventory_feature25_legacy_tail_deferred_item_ref_mentions
+                .saturating_add(legacy_tail_observation.deferred);
+            if first_refs != 0 || second_refs != 0 || legacy_tail_refs != 0 {
                 tracing::debug!(
                     owner_id = format_args!("0x{:08X}", reference.owner_id),
                     mask = format_args!("0x{:04X}", reference.mask),
                     first_refs,
+                    first_materialized_refs = first_observation.materialized,
+                    first_deferred_refs = first_observation.deferred,
                     second_refs,
+                    second_materialized_refs = second_observation.materialized,
+                    second_deferred_refs = second_observation.deferred,
                     legacy_tail_refs,
+                    legacy_tail_materialized_refs = legacy_tail_observation.materialized,
+                    legacy_tail_deferred_refs = legacy_tail_observation.deferred,
                     "semantic object registry observed deferred inventory Feature-25 item references"
                 );
             }
@@ -1207,6 +1252,35 @@ fn observe_inventory_feature25_item_refs(
         accepted = accepted.saturating_add(1);
     }
     accepted
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct InventoryFeature25ItemRefObservation {
+    accepted: u64,
+    materialized: u64,
+    deferred: u64,
+}
+
+fn classify_inventory_feature25_item_refs<F>(
+    object_ids: &[u32],
+    mut materialized: F,
+) -> InventoryFeature25ItemRefObservation
+where
+    F: FnMut(u32) -> bool,
+{
+    let mut observation = InventoryFeature25ItemRefObservation::default();
+    for object_id in object_ids.iter().copied() {
+        if !valid_inventory_feature25_item_ref(object_id) {
+            continue;
+        }
+        observation.accepted = observation.accepted.saturating_add(1);
+        if materialized(object_id) {
+            observation.materialized = observation.materialized.saturating_add(1);
+        } else {
+            observation.deferred = observation.deferred.saturating_add(1);
+        }
+    }
+    observation
 }
 
 fn valid_inventory_feature25_item_ref(object_id: u32) -> bool {
@@ -3847,6 +3921,80 @@ mod tests {
             registry.inventory_item_object_proof(survivor_item_id),
             Some(InventoryItemObjectProof::Feature25FirstList),
             "other refs in the same Feature-25 claim remain usable evidence"
+        );
+    }
+
+    #[test]
+    fn feature25_reference_metrics_separate_materialized_and_deferred_item_refs() {
+        let mut registry = ObjectRegistry::default();
+        let gui_materialized_item_id = 0x8000_0201;
+        let active_item_id = 0x8000_0202;
+        let first_deferred_item_id = 0x8000_0203;
+        let second_deferred_item_id = 0x8000_0204;
+        let legacy_tail_deferred_item_id = 0x8000_0205;
+
+        registry.observe_materialized_item_object_ids(&[gui_materialized_item_id]);
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: ITEM_OBJECT_TYPE,
+            object_id: active_item_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+        registry.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
+            owner_id: 0xFFFF_FFEC,
+            mask: 0x2E00,
+            first_object_ids: vec![gui_materialized_item_id, first_deferred_item_id],
+            second_object_ids: vec![active_item_id, second_deferred_item_id],
+            legacy_tail_object_ids: vec![legacy_tail_deferred_item_id],
+        }]);
+
+        assert_eq!(registry.inventory_feature25_first_item_ref_mentions, 2);
+        assert_eq!(
+            registry.inventory_feature25_first_materialized_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            registry.inventory_feature25_first_deferred_item_ref_mentions,
+            1
+        );
+        assert_eq!(registry.inventory_feature25_second_item_ref_mentions, 2);
+        assert_eq!(
+            registry.inventory_feature25_second_materialized_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            registry.inventory_feature25_second_deferred_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            registry.inventory_feature25_legacy_tail_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            registry.inventory_feature25_legacy_tail_materialized_item_ref_mentions,
+            0
+        );
+        assert_eq!(
+            registry.inventory_feature25_legacy_tail_deferred_item_ref_mentions,
+            1
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(first_deferred_item_id),
+            Some(InventoryItemObjectProof::Feature25FirstList),
+            "deferred Feature-25 refs remain existing quickbar proof until a later evidence audit changes policy"
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(second_deferred_item_id),
+            Some(InventoryItemObjectProof::Feature25SecondList)
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(legacy_tail_deferred_item_id),
+            Some(InventoryItemObjectProof::Feature25LegacyTail)
         );
     }
 
