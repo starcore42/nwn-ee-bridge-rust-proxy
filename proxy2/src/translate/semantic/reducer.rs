@@ -14,11 +14,12 @@ use crate::{
 };
 
 use super::{
-    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent,
-    LiveObjectInventoryFeature25Reference, LiveObjectMention, LiveObjectOrientation,
-    LiveObjectOrientationSource, LiveObjectOrientationVector, LiveObjectPlaceableState,
-    LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel, PlayerListEvent,
-    ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
+    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, InventoryItemContextSummary,
+    LiveObjectEvent, LiveObjectInventoryFeature25Reference, LiveObjectMention,
+    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectOrientationVector,
+    LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
+    PlayerListEvent, ProtocolEvent, QuickbarEvent, QuickbarItemContextSource, SemanticSessionState,
+    ServerStatusEvent,
 };
 
 #[cfg(test)]
@@ -231,6 +232,12 @@ fn apply_event(
                 let previous_post_item_context_updates = state
                     .ui
                     .inventory_item_context_after_committed_quickbar_updates;
+                let (best_item_context, best_item_context_source) =
+                    best_committed_quickbar_item_context(
+                        *materialization_context,
+                        prior_item_context,
+                        previous_post_item_context,
+                    );
                 state.ui.last_committed_quickbar_profile = Some(*profile);
                 state.ui.last_committed_quickbar_materialization_context =
                     Some(*materialization_context);
@@ -241,6 +248,9 @@ fn apply_event(
                     .ui
                     .last_committed_quickbar_previous_post_item_context_updates =
                     previous_post_item_context_updates;
+                state.ui.last_committed_quickbar_best_item_context = best_item_context;
+                state.ui.last_committed_quickbar_best_item_context_source =
+                    best_item_context_source;
                 state
                     .ui
                     .last_inventory_item_context_after_committed_quickbar = None;
@@ -251,6 +261,11 @@ fn apply_event(
                 let prior_item_context = prior_item_context.unwrap_or_default();
                 let previous_post_item_context_known = previous_post_item_context.is_some();
                 let previous_post_item_context = previous_post_item_context.unwrap_or_default();
+                let best_item_context_known = best_item_context.is_some();
+                let best_item_context_source = best_item_context_source
+                    .map(QuickbarItemContextSource::as_str)
+                    .unwrap_or("none");
+                let best_item_context = best_item_context.unwrap_or_default();
                 tracing::info!(
                     slot_records = profile.slot_records,
                     blank_slots = profile.blank_slots,
@@ -319,6 +334,27 @@ fn apply_event(
                         previous_post_item_context.inventory_feature25_legacy_tail_item_refs,
                     previous_post_cleared_inventory_item_object_ids =
                         previous_post_item_context.cleared_inventory_item_object_ids,
+                    best_item_context_known,
+                    best_item_context_source,
+                    best_direct_item_proof_objects = best_item_context.direct_item_proof_objects,
+                    best_feature25_item_proof_objects =
+                        best_item_context.feature25_item_proof_objects,
+                    best_compact_item_emission_proof_objects =
+                        best_item_context.compact_item_emission_proof_objects,
+                    best_compact_item_emission_direct_only_proof_objects =
+                        best_item_context.compact_item_emission_direct_only_proof_objects,
+                    best_compact_item_emission_feature25_only_proof_objects =
+                        best_item_context.compact_item_emission_feature25_only_proof_objects,
+                    best_compact_item_emission_shared_proof_objects =
+                        best_item_context.compact_item_emission_shared_proof_objects,
+                    best_inventory_feature25_first_item_refs =
+                        best_item_context.inventory_feature25_first_item_refs,
+                    best_inventory_feature25_second_item_refs =
+                        best_item_context.inventory_feature25_second_item_refs,
+                    best_inventory_feature25_legacy_tail_item_refs =
+                        best_item_context.inventory_feature25_legacy_tail_item_refs,
+                    best_cleared_inventory_item_object_ids =
+                        best_item_context.cleared_inventory_item_object_ids,
                     "semantic state observed committed GuiQuickbar slot profile"
                 );
             } else {
@@ -346,6 +382,31 @@ fn apply_event(
         ProtocolEvent::Chat(_) | ProtocolEvent::Other(_) => {}
     }
     state.remember_event(event);
+}
+
+fn best_committed_quickbar_item_context(
+    current: InventoryItemContextSummary,
+    prior: Option<InventoryItemContextSummary>,
+    previous_post: Option<InventoryItemContextSummary>,
+) -> (
+    Option<InventoryItemContextSummary>,
+    Option<QuickbarItemContextSource>,
+) {
+    if current.has_quickbar_item_context_evidence() {
+        return (Some(current), Some(QuickbarItemContextSource::Current));
+    }
+    if let Some(previous_post) =
+        previous_post.filter(|context| context.has_quickbar_item_context_evidence())
+    {
+        return (
+            Some(previous_post),
+            Some(QuickbarItemContextSource::PreviousPost),
+        );
+    }
+    if let Some(prior) = prior.filter(|context| context.has_quickbar_item_context_evidence()) {
+        return (Some(prior), Some(QuickbarItemContextSource::Prior));
+    }
+    (None, None)
 }
 
 fn remember_quickbar_item_context_if_relevant(
@@ -573,6 +634,81 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn committed_quickbar_best_item_context_prefers_current_then_previous_post_then_prior() {
+        let prior_context = InventoryItemContextSummary {
+            feature25_item_proof_objects: 1,
+            compact_item_emission_proof_objects: 1,
+            compact_item_emission_feature25_only_proof_objects: 1,
+            inventory_feature25_first_item_refs: 1,
+            ..Default::default()
+        };
+        let previous_post_context = InventoryItemContextSummary {
+            feature25_item_proof_objects: 2,
+            compact_item_emission_proof_objects: 2,
+            compact_item_emission_feature25_only_proof_objects: 2,
+            inventory_feature25_second_item_refs: 2,
+            ..Default::default()
+        };
+        let current_context = InventoryItemContextSummary {
+            direct_item_proof_objects: 1,
+            compact_item_emission_proof_objects: 1,
+            compact_item_emission_direct_only_proof_objects: 1,
+            ..Default::default()
+        };
+        let cleared_current_context = InventoryItemContextSummary {
+            cleared_inventory_item_object_ids: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            best_committed_quickbar_item_context(Default::default(), None, None),
+            (None, None),
+            "empty current/prior/post windows should not invent quickbar item evidence"
+        );
+        assert_eq!(
+            best_committed_quickbar_item_context(Default::default(), Some(prior_context), None),
+            (Some(prior_context), Some(QuickbarItemContextSource::Prior)),
+            "older prior context remains useful if no newer proof window exists"
+        );
+        assert_eq!(
+            best_committed_quickbar_item_context(
+                Default::default(),
+                Some(prior_context),
+                Some(previous_post_context),
+            ),
+            (
+                Some(previous_post_context),
+                Some(QuickbarItemContextSource::PreviousPost),
+            ),
+            "post-quickbar proof is more specific than an older prior snapshot"
+        );
+        assert_eq!(
+            best_committed_quickbar_item_context(
+                current_context,
+                Some(prior_context),
+                Some(previous_post_context),
+            ),
+            (
+                Some(current_context),
+                Some(QuickbarItemContextSource::Current)
+            ),
+            "current registry proof at commit is the strongest writer-facing evidence"
+        );
+        assert_eq!(
+            best_committed_quickbar_item_context(
+                cleared_current_context,
+                Some(prior_context),
+                Some(previous_post_context),
+            ),
+            (
+                Some(cleared_current_context),
+                Some(QuickbarItemContextSource::Current),
+            ),
+            "current cleared-state evidence must override stale proof windows"
+        );
+    }
+
+    #[test]
     fn live_object_feature25_references_feed_deferred_inventory_state() {
         let owner_id = 0x8000_0010u32;
         let first_item_id = 0x8000_0100u32;
@@ -704,6 +840,16 @@ mod fixture_free_tests {
             prior_context, context,
             "a committed quickbar should retain the latest proof-bearing item context"
         );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context,
+            Some(context),
+            "committed quickbar should expose the strongest item-proof context"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context_source,
+            Some(QuickbarItemContextSource::Current),
+            "current registry context is strongest when it already contains item proof"
+        );
 
         observe_verified_payload(
             &mut state,
@@ -721,6 +867,11 @@ mod fixture_free_tests {
             state.ui.last_committed_quickbar_prior_item_context,
             Some(prior_context),
             "placeholder frames must not replace the prior-context snapshot"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context,
+            Some(context),
+            "placeholder frames must not replace the best-context snapshot"
         );
     }
 
@@ -794,6 +945,16 @@ mod fixture_free_tests {
                 .cleared_inventory_item_object_ids,
             2
         );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context,
+            Some(cleared_context),
+            "current cleared context should be the best quickbar item evidence"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context_source,
+            Some(QuickbarItemContextSource::Current),
+            "cleared current state must override stale proof windows"
+        );
     }
 
     #[test]
@@ -826,6 +987,14 @@ mod fixture_free_tests {
                 .last_inventory_item_context_after_committed_quickbar,
             None,
             "a committed quickbar opens a fresh post-quickbar item-context window"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context, None,
+            "a committed quickbar with no current/prior/post item evidence should stay unmarked"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context_source, None,
+            "empty best-context snapshots should not report a source"
         );
         assert_eq!(
             state
@@ -886,6 +1055,16 @@ mod fixture_free_tests {
                 .ui
                 .last_committed_quickbar_previous_post_item_context_updates,
             1
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context,
+            Some(post_context),
+            "the second committed quickbar should expose the Feature-25 proof window"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_best_item_context_source,
+            Some(QuickbarItemContextSource::Current),
+            "live registry proof current at commit should win over the saved previous-post copy"
         );
         assert_eq!(
             state

@@ -173,6 +173,23 @@ impl InventoryItemContextSummary {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemContextSource {
+    Current,
+    Prior,
+    PreviousPost,
+}
+
+impl QuickbarItemContextSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Prior => "prior",
+            Self::PreviousPost => "previous_post",
+        }
+    }
+}
+
 impl ObjectRegistry {
     pub(crate) fn reset_for_area(&mut self) {
         if !self.known.is_empty()
@@ -2015,6 +2032,8 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_previous_post_item_context:
         Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
+    pub(crate) last_committed_quickbar_best_item_context: Option<InventoryItemContextSummary>,
+    pub(crate) last_committed_quickbar_best_item_context_source: Option<QuickbarItemContextSource>,
 }
 
 #[derive(Debug, Default)]

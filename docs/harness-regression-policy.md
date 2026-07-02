@@ -298,6 +298,21 @@ classes, so `ExplicitSelfMaterialization` cannot satisfy compact byte-owned
 item slots. The next useful capture remains a later item-bearing
 `GuiQuickbar_SetAllButtons` after those Feature-25 refs.
 
+Update as of 2026-07-03 02:18 +10: live-data gate reused
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest gameplay packet about 11 hours old, and gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-best-context-automation-20260703-0218`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe registry-context summaries, and 1 committed
+quickbar summary. Semantic committed-quickbar traces now export the best
+available item-proof context at commit time and its source. In this capture the
+single committed quickbar still occurs before item proof, so
+`QuickbarSemanticBestItemContextKnown=0`; post-quickbar context still reaches 5
+compact item-emission proof objects, all Feature-25-only. The next useful
+capture remains a later item-bearing `GuiQuickbar_SetAllButtons` after those
+Feature-25 refs.
+
 ## Successful live HG capture contract
 
 A successful live HG capture requires all of the following:

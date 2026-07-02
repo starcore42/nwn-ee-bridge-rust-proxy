@@ -190,6 +190,23 @@ not as standalone workaround targets.
   Feature-25-only. Next production path: capture or drive a later item-bearing
   `GuiQuickbar_SetAllButtons` after those Feature-25 refs and verify compact
   item emission consumes only registry-state proof classes.
+- 2026-07-03 quickbar best-context slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+  `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+  newest gameplay packet about 11 hours old at gate time, and gameplay reached.
+  Committed `GuiQuickbar_SetAllButtons` semantic state now snapshots the best
+  available item-proof context at commit time: current registry evidence first,
+  then previous post-quickbar window, then older prior context, with current
+  cleared-state evidence overriding stale proof. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-best-context-automation-20260703-0218`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe registry-context summaries, and 1
+  committed quickbar summary. This capture still has a single committed
+  quickbar before item proof, so `QuickbarSemanticBestItemContextKnown=0`;
+  later post-context still reaches 5 compact proof objects, all Feature-25-only.
+  Next production path: capture or drive a later item-bearing committed
+  quickbar and compare accepted/rejected item decisions with the new
+  best-context source and counters.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
