@@ -383,8 +383,21 @@ fn quickbar_item_object_verified_materialization_proof(
             .and_then(|materialization| {
                 materialization.item_object_materialization_proof(item.object_id)
             })
+            .and_then(registry_state_quickbar_item_materialization_proof)
             .map(Some)
             .ok_or(QuickbarItemMaterializationRejectReason::MissingStateProof),
+    }
+}
+
+fn registry_state_quickbar_item_materialization_proof(
+    proof: QuickbarItemMaterializationProof,
+) -> Option<QuickbarItemMaterializationProof> {
+    match proof {
+        QuickbarItemMaterializationProof::ExplicitSelfMaterialization => None,
+        QuickbarItemMaterializationProof::ActiveObject
+        | QuickbarItemMaterializationProof::InventoryFeature25FirstList
+        | QuickbarItemMaterializationProof::InventoryFeature25SecondList
+        | QuickbarItemMaterializationProof::InventoryFeature25LegacyTail => Some(proof),
     }
 }
 
@@ -813,6 +826,29 @@ mod tests {
             )
             .is_none(),
             "byte-owned compact item bodies need session-state proof"
+        );
+    }
+
+    #[test]
+    fn compact_item_materialization_rejects_self_materialization_as_registry_proof() {
+        let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+        let item_object_id = item.object_id;
+        let item_object_proof = |object_id| {
+            (object_id == item_object_id)
+                .then_some(QuickbarItemMaterializationProof::ExplicitSelfMaterialization)
+        };
+        let materialization = QuickbarMaterializationContext::new_with_proof(&item_object_proof);
+
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &item,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::CompactByteOwnedWithSourceType,
+                false,
+                Some(&materialization),
+            ),
+            Err(QuickbarItemMaterializationRejectReason::MissingStateProof),
+            "compact byte-owned item bodies require registry state, not EE self-materialization"
         );
     }
 

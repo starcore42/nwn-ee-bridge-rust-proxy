@@ -283,6 +283,21 @@ committed quickbar, so previous-post counters stay 0 while post-context remains
 next useful capture remains an item-bearing later `SetAllButtons` after those
 post-quickbar Feature-25 refs.
 
+Update as of 2026-07-03 01:13 +10: live-data gate reused
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at
+`2026-07-03T01:09:21+10:00`, the newest gameplay packet was about 10 hours old
+and gameplay had been reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-proof-class-automation-20260703-0113`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe quickbar summaries, 39 stream-probe
+registry-context summaries, and 1 committed quickbar summary. The committed
+quickbar still has 0 item buttons; post-quickbar context remains 37 updates and
+5 compact item-emission proof objects, all Feature-25-only. The proxy2 writer
+now keeps compact quickbar item emission bounded to registry-state proof
+classes, so `ExplicitSelfMaterialization` cannot satisfy compact byte-owned
+item slots. The next useful capture remains a later item-bearing
+`GuiQuickbar_SetAllButtons` after those Feature-25 refs.
+
 ## Successful live HG capture contract
 
 A successful live HG capture requires all of the following:

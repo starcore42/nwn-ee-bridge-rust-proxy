@@ -175,6 +175,21 @@ not as standalone workaround targets.
   `GuiQuickbar_SetAllButtons` after post-quickbar Feature-25 refs, then use
   prior/current/previous-post/post context fields to decide compact item-slot
   emission policy.
+- 2026-07-03 quickbar proof-class slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at
+  `2026-07-03T01:09:21+10:00`, the newest gameplay packet was about 10 hours
+  old and gameplay had been reached. The quickbar writer now treats
+  `ExplicitSelfMaterialization` as valid only for explicit type-1 item bodies;
+  compact byte-owned item slots must receive registry state proof from active
+  item objects, GUI item-create, or inventory Feature-25 refs. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-proof-class-automation-20260703-0113`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe quickbar summaries, and 1 committed
+  quickbar summary. This capture still has 0 item buttons; post-quickbar
+  context still reaches 5 compact item-emission proof objects, all
+  Feature-25-only. Next production path: capture or drive a later item-bearing
+  `GuiQuickbar_SetAllButtons` after those Feature-25 refs and verify compact
+  item emission consumes only registry-state proof classes.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
