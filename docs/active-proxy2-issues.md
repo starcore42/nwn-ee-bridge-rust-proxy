@@ -156,6 +156,25 @@ not as standalone workaround targets.
   or drive a later item-bearing `SetAllButtons` after these post-quickbar
   Feature-25 refs, then decide whether Feature-25-only proof is sufficient for
   compact item-slot emission.
+- 2026-07-03 quickbar previous-post-context slice: live-data gate reused the
+  same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+  `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+  newest packet about 9 hours old at gate time, and gameplay reached.
+  Committed `GuiQuickbar_SetAllButtons` semantic state now snapshots the
+  previous post-quickbar item-context window before resetting it for the newly
+  committed profile, and the replay summary exports those previous-post
+  counters. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-previous-post-context-automation-20260703-0018`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe registry-context summaries, and 1
+  committed quickbar summary. This capture still has only one committed
+  quickbar, so previous-post counters remain 0 while the current post-context
+  still reaches 5 compact item-emission proof objects, all Feature-25-only.
+  Next production path: capture or drive a later item-bearing
+  `GuiQuickbar_SetAllButtons` after post-quickbar Feature-25 refs, then use
+  prior/current/previous-post/post context fields to decide compact item-slot
+  emission policy.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.

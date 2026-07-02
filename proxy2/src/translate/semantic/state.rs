@@ -2012,6 +2012,9 @@ pub(crate) struct UiState {
     pub(crate) last_inventory_item_context_after_committed_quickbar:
         Option<InventoryItemContextSummary>,
     pub(crate) inventory_item_context_after_committed_quickbar_updates: u64,
+    pub(crate) last_committed_quickbar_previous_post_item_context:
+        Option<InventoryItemContextSummary>,
+    pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
 }
 
 #[derive(Debug, Default)]

@@ -266,6 +266,23 @@ buttons, but the new post-context summary reports 37 post-quickbar updates and
 capture remains a later item-bearing `SetAllButtons` after those post-quickbar
 Feature-25 refs.
 
+Update as of 2026-07-03 00:18 +10: live-data gate reused the same
+gameplay-reaching HG capture
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest packet about 9 hours old at gate time, and gameplay reached. Strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-previous-post-context-automation-20260703-0018`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe registry-context summaries, and 1 committed
+quickbar summary. Semantic quickbar state now snapshots the previous
+post-quickbar item-context window when a later committed quickbar arrives, and
+the replay summary exports previous-post counters. This capture still has one
+committed quickbar, so previous-post counters stay 0 while post-context remains
+37 updates and 5 compact item-emission proof objects, all Feature-25-only. The
+next useful capture remains an item-bearing later `SetAllButtons` after those
+post-quickbar Feature-25 refs.
+
 ## Successful live HG capture contract
 
 A successful live HG capture requires all of the following:

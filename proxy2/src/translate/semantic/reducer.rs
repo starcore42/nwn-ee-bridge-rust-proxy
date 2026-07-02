@@ -225,10 +225,22 @@ fn apply_event(
             state.ui.last_quickbar_family = Some(observed.family);
             if let Some(profile) = profile {
                 let prior_item_context = state.ui.last_inventory_item_context_before_quickbar;
+                let previous_post_item_context = state
+                    .ui
+                    .last_inventory_item_context_after_committed_quickbar;
+                let previous_post_item_context_updates = state
+                    .ui
+                    .inventory_item_context_after_committed_quickbar_updates;
                 state.ui.last_committed_quickbar_profile = Some(*profile);
                 state.ui.last_committed_quickbar_materialization_context =
                     Some(*materialization_context);
                 state.ui.last_committed_quickbar_prior_item_context = prior_item_context;
+                state.ui.last_committed_quickbar_previous_post_item_context =
+                    previous_post_item_context;
+                state
+                    .ui
+                    .last_committed_quickbar_previous_post_item_context_updates =
+                    previous_post_item_context_updates;
                 state
                     .ui
                     .last_inventory_item_context_after_committed_quickbar = None;
@@ -237,6 +249,8 @@ fn apply_event(
                     .inventory_item_context_after_committed_quickbar_updates = 0;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
+                let previous_post_item_context_known = previous_post_item_context.is_some();
+                let previous_post_item_context = previous_post_item_context.unwrap_or_default();
                 tracing::info!(
                     slot_records = profile.slot_records,
                     blank_slots = profile.blank_slots,
@@ -282,6 +296,29 @@ fn apply_event(
                         prior_item_context.inventory_feature25_legacy_tail_item_refs,
                     prior_cleared_inventory_item_object_ids =
                         prior_item_context.cleared_inventory_item_object_ids,
+                    previous_post_item_context_known,
+                    previous_post_context_updates = previous_post_item_context_updates,
+                    previous_post_direct_item_proof_objects =
+                        previous_post_item_context.direct_item_proof_objects,
+                    previous_post_feature25_item_proof_objects =
+                        previous_post_item_context.feature25_item_proof_objects,
+                    previous_post_compact_item_emission_proof_objects =
+                        previous_post_item_context.compact_item_emission_proof_objects,
+                    previous_post_compact_item_emission_direct_only_proof_objects =
+                        previous_post_item_context.compact_item_emission_direct_only_proof_objects,
+                    previous_post_compact_item_emission_feature25_only_proof_objects =
+                        previous_post_item_context
+                            .compact_item_emission_feature25_only_proof_objects,
+                    previous_post_compact_item_emission_shared_proof_objects =
+                        previous_post_item_context.compact_item_emission_shared_proof_objects,
+                    previous_post_inventory_feature25_first_item_refs =
+                        previous_post_item_context.inventory_feature25_first_item_refs,
+                    previous_post_inventory_feature25_second_item_refs =
+                        previous_post_item_context.inventory_feature25_second_item_refs,
+                    previous_post_inventory_feature25_legacy_tail_item_refs =
+                        previous_post_item_context.inventory_feature25_legacy_tail_item_refs,
+                    previous_post_cleared_inventory_item_object_ids =
+                        previous_post_item_context.cleared_inventory_item_object_ids,
                     "semantic state observed committed GuiQuickbar slot profile"
                 );
             } else {
@@ -796,6 +833,16 @@ mod fixture_free_tests {
                 .inventory_item_context_after_committed_quickbar_updates,
             0
         );
+        assert_eq!(
+            state.ui.last_committed_quickbar_previous_post_item_context, None,
+            "the first committed quickbar has no previous post-context window"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_previous_post_item_context_updates,
+            0
+        );
 
         observe_verified_payload(
             &mut state,
@@ -828,6 +875,17 @@ mod fixture_free_tests {
             state.ui.last_committed_quickbar_prior_item_context,
             Some(post_context),
             "the second committed quickbar should consume the post-quickbar context as prior evidence"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_previous_post_item_context,
+            Some(post_context),
+            "the second committed quickbar should preserve that prior evidence as previous-post context"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_previous_post_item_context_updates,
+            1
         );
         assert_eq!(
             state
