@@ -40,6 +40,7 @@ pub(crate) enum QuickbarItemMaterializationStatus {
 pub struct QuickbarMaterializationContext<'a> {
     item_object_proof: Option<&'a dyn Fn(u32) -> Option<QuickbarItemMaterializationProof>>,
     item_object_status: Option<&'a dyn Fn(u32) -> QuickbarItemMaterializationStatus>,
+    context_summary: Option<QuickbarMaterializationContextSummary>,
 }
 
 impl<'a> QuickbarMaterializationContext<'a> {
@@ -49,6 +50,7 @@ impl<'a> QuickbarMaterializationContext<'a> {
         Self {
             item_object_proof: Some(item_object_proof),
             item_object_status: None,
+            context_summary: None,
         }
     }
 
@@ -58,6 +60,18 @@ impl<'a> QuickbarMaterializationContext<'a> {
         Self {
             item_object_proof: None,
             item_object_status: Some(item_object_status),
+            context_summary: None,
+        }
+    }
+
+    pub fn new_with_status_and_summary(
+        item_object_status: &'a dyn Fn(u32) -> QuickbarItemMaterializationStatus,
+        context_summary: QuickbarMaterializationContextSummary,
+    ) -> Self {
+        Self {
+            item_object_proof: None,
+            item_object_status: Some(item_object_status),
+            context_summary: Some(context_summary),
         }
     }
 
@@ -85,6 +99,32 @@ impl<'a> QuickbarMaterializationContext<'a> {
             .map(QuickbarItemMaterializationStatus::Proven)
             .unwrap_or(QuickbarItemMaterializationStatus::Unknown)
     }
+
+    pub(in crate::translate::quickbar) fn context_summary(
+        &self,
+    ) -> Option<QuickbarMaterializationContextSummary> {
+        self.context_summary
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuickbarMaterializationContextSummary {
+    pub active_item_objects: usize,
+    pub materialized_item_objects: usize,
+    pub inventory_feature25_first_item_refs: usize,
+    pub inventory_feature25_second_item_refs: usize,
+    pub inventory_feature25_legacy_tail_item_refs: usize,
+    pub cleared_inventory_item_object_ids: usize,
+    pub inventory_feature25_reference_records: u64,
+    pub inventory_feature25_first_item_ref_mentions: u64,
+    pub inventory_feature25_second_item_ref_mentions: u64,
+    pub inventory_feature25_legacy_tail_item_ref_mentions: u64,
+    pub inventory_feature25_first_materialized_item_ref_mentions: u64,
+    pub inventory_feature25_first_deferred_item_ref_mentions: u64,
+    pub inventory_feature25_second_materialized_item_ref_mentions: u64,
+    pub inventory_feature25_second_deferred_item_ref_mentions: u64,
+    pub inventory_feature25_legacy_tail_materialized_item_ref_mentions: u64,
+    pub inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
 }
 
 #[derive(Debug, Clone)]

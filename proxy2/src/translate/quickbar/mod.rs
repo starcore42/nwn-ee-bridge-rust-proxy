@@ -55,14 +55,13 @@ pub use facade::{
     rewrite_summary_needs_more_quickbar_bytes,
 };
 pub(crate) use facade::{
-    normalize_and_rewrite_quickbar_payload_for_stream_probe_if_possible,
     normalize_and_rewrite_quickbar_payload_with_context_for_stream_probe_if_possible,
-    rewrite_simple_quickbar_payload_for_stream_probe_if_possible,
     rewrite_simple_quickbar_payload_with_context_for_stream_probe_if_possible,
 };
 pub(crate) use model::{
     QuickbarItemMaterializationProof, QuickbarItemMaterializationStatus,
-    QuickbarMaterializationContext, QuickbarValidatedSlotProfile,
+    QuickbarMaterializationContext, QuickbarMaterializationContextSummary,
+    QuickbarValidatedSlotProfile,
 };
 pub(crate) use validator::{
     ee_set_all_buttons_payload_shape_valid, validated_set_all_buttons_slot_profile,

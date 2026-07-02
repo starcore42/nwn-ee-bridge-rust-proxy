@@ -887,7 +887,15 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     preclaimed_family: Option<(&'static str, VerifiedFamily)>,
 ) -> InflatedPayloadRewrite {
     let split_units = {
-        let split = gameplay_stream::split_inflated_gameplay(payload);
+        let split = quickbar_materialization::with_registry_materialization_context(
+            object_registry,
+            |materialization| {
+                gameplay_stream::split_inflated_gameplay_with_quickbar_materialization(
+                    payload,
+                    materialization,
+                )
+            },
+        );
         if !split.complete {
             tracing::debug!(
                 units = split.units.len(),

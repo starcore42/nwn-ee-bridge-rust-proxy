@@ -23,12 +23,6 @@ pub fn rewrite_simple_quickbar_payload_if_possible(
     rewrite_simple_quickbar_payload_with_context_if_possible(payload, None)
 }
 
-pub(crate) fn rewrite_simple_quickbar_payload_for_stream_probe_if_possible(
-    payload: &mut Vec<u8>,
-) -> Option<QuickbarRewriteSummary> {
-    rewrite_simple_quickbar_payload_with_context_for_stream_probe_if_possible(payload, None)
-}
-
 pub(crate) fn rewrite_simple_quickbar_payload_with_context_for_stream_probe_if_possible(
     payload: &mut Vec<u8>,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
@@ -75,6 +69,7 @@ fn rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
     );
     trace_quickbar_item_button_decisions("simple", &parsed, materialization, trace_role);
     trace_quickbar_rewrite_summary("simple", &summary, trace_role);
+    trace_quickbar_materialization_context("simple", materialization, &summary, trace_role);
     dump_quickbar_payload("simple_after", &rewritten);
     *payload = rewritten;
     Some(summary)
@@ -106,12 +101,6 @@ pub fn normalize_and_rewrite_quickbar_payload_if_possible(
     payload: &mut Vec<u8>,
 ) -> Option<(PrefixedFragmentsNormalizeSummary, QuickbarRewriteSummary)> {
     normalize_and_rewrite_quickbar_payload_with_context_if_possible(payload, None)
-}
-
-pub(crate) fn normalize_and_rewrite_quickbar_payload_for_stream_probe_if_possible(
-    payload: &mut Vec<u8>,
-) -> Option<(PrefixedFragmentsNormalizeSummary, QuickbarRewriteSummary)> {
-    normalize_and_rewrite_quickbar_payload_with_context_for_stream_probe_if_possible(payload, None)
 }
 
 pub(crate) fn normalize_and_rewrite_quickbar_payload_with_context_for_stream_probe_if_possible(
@@ -160,6 +149,7 @@ fn normalize_and_rewrite_quickbar_payload_with_context_and_trace_if_possible(
     );
     trace_quickbar_item_button_decisions("normalized", &parsed, materialization, trace_role);
     trace_quickbar_rewrite_summary("normalized", &summary, trace_role);
+    trace_quickbar_materialization_context("normalized", materialization, &summary, trace_role);
     dump_quickbar_payload("normalized_after", &rewritten);
     *payload = rewritten;
     Some((normalize, summary))
@@ -818,6 +808,53 @@ fn trace_quickbar_rewrite_summary(
         item_objects_preserved_by_feature25_legacy_tail =
             summary.item_objects_preserved_by_feature25_legacy_tail,
         "server GuiQuickbar_SetAllButtons rewrite summary"
+    );
+}
+
+fn trace_quickbar_materialization_context(
+    path: &str,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+    summary: &QuickbarRewriteSummary,
+    trace_role: QuickbarRewriteTraceRole,
+) {
+    let Some(context) =
+        materialization.and_then(|materialization| materialization.context_summary())
+    else {
+        return;
+    };
+    tracing::info!(
+        path,
+        trace_role = trace_role.as_str(),
+        committed = trace_role.is_committed(),
+        item_buttons_seen = summary.item_buttons_seen,
+        item_buttons_preserved = summary.item_buttons_preserved,
+        active_item_objects = context.active_item_objects,
+        materialized_item_objects = context.materialized_item_objects,
+        inventory_feature25_first_item_refs = context.inventory_feature25_first_item_refs,
+        inventory_feature25_second_item_refs = context.inventory_feature25_second_item_refs,
+        inventory_feature25_legacy_tail_item_refs =
+            context.inventory_feature25_legacy_tail_item_refs,
+        cleared_inventory_item_object_ids = context.cleared_inventory_item_object_ids,
+        inventory_feature25_reference_records = context.inventory_feature25_reference_records,
+        inventory_feature25_first_item_ref_mentions =
+            context.inventory_feature25_first_item_ref_mentions,
+        inventory_feature25_second_item_ref_mentions =
+            context.inventory_feature25_second_item_ref_mentions,
+        inventory_feature25_legacy_tail_item_ref_mentions =
+            context.inventory_feature25_legacy_tail_item_ref_mentions,
+        inventory_feature25_first_materialized_item_ref_mentions =
+            context.inventory_feature25_first_materialized_item_ref_mentions,
+        inventory_feature25_first_deferred_item_ref_mentions =
+            context.inventory_feature25_first_deferred_item_ref_mentions,
+        inventory_feature25_second_materialized_item_ref_mentions =
+            context.inventory_feature25_second_materialized_item_ref_mentions,
+        inventory_feature25_second_deferred_item_ref_mentions =
+            context.inventory_feature25_second_deferred_item_ref_mentions,
+        inventory_feature25_legacy_tail_materialized_item_ref_mentions =
+            context.inventory_feature25_legacy_tail_materialized_item_ref_mentions,
+        inventory_feature25_legacy_tail_deferred_item_ref_mentions =
+            context.inventory_feature25_legacy_tail_deferred_item_ref_mentions,
+        "server GuiQuickbar_SetAllButtons registry materialization context"
     );
 }
 
