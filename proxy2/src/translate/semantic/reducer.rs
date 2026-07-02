@@ -13,6 +13,7 @@ use crate::{
     },
 };
 
+use super::state::QuickbarItemRefreshProofClass;
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, InventoryItemContextSummary,
     LiveObjectEvent, LiveObjectInventoryFeature25Reference, LiveObjectMention,
@@ -236,6 +237,8 @@ fn apply_event(
                 let pending_item_refresh_updates = state
                     .ui
                     .post_committed_quickbar_item_refresh_pending_updates;
+                let pending_item_refresh_proof_class =
+                    state.ui.post_committed_quickbar_item_refresh_proof_class;
                 let pending_item_refresh_outcome =
                     committed_quickbar_item_refresh_outcome(pending_item_refresh, profile);
                 let (best_item_context, best_item_context_source) =
@@ -261,6 +264,8 @@ fn apply_event(
                     pending_item_refresh_updates;
                 state.ui.last_committed_quickbar_item_refresh_outcome =
                     pending_item_refresh_outcome;
+                state.ui.last_committed_quickbar_item_refresh_proof_class =
+                    pending_item_refresh_proof_class;
                 state.ui.last_committed_quickbar_best_item_context = best_item_context;
                 state.ui.last_committed_quickbar_best_item_context_source =
                     best_item_context_source;
@@ -274,6 +279,7 @@ fn apply_event(
                 state
                     .ui
                     .post_committed_quickbar_item_refresh_pending_updates = 0;
+                state.ui.post_committed_quickbar_item_refresh_proof_class = None;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
                 let previous_post_item_context_known = previous_post_item_context.is_some();
@@ -283,6 +289,9 @@ fn apply_event(
                     .map(QuickbarItemContextSource::as_str)
                     .unwrap_or("none");
                 let best_item_context = best_item_context.unwrap_or_default();
+                let pending_item_refresh_proof_class = pending_item_refresh_proof_class
+                    .map(QuickbarItemRefreshProofClass::as_str)
+                    .unwrap_or("none");
                 tracing::info!(
                     slot_records = profile.slot_records,
                     blank_slots = profile.blank_slots,
@@ -353,6 +362,7 @@ fn apply_event(
                         previous_post_item_context.cleared_inventory_item_object_ids,
                     pending_item_refresh_before_commit = pending_item_refresh,
                     pending_item_refresh_updates_before_commit = pending_item_refresh_updates,
+                    pending_item_refresh_proof_class,
                     pending_item_refresh_outcome = pending_item_refresh_outcome.as_str(),
                     best_item_context_known,
                     best_item_context_source,
@@ -443,6 +453,24 @@ fn committed_quickbar_item_refresh_outcome(
     }
 }
 
+fn quickbar_item_refresh_proof_class(
+    item_context: InventoryItemContextSummary,
+) -> Option<QuickbarItemRefreshProofClass> {
+    if !item_context.has_compact_quickbar_item_proof() {
+        return None;
+    }
+
+    let direct_only = item_context.compact_item_emission_direct_only_proof_objects != 0;
+    let feature25_only = item_context.compact_item_emission_feature25_only_proof_objects != 0;
+    let shared = item_context.compact_item_emission_shared_proof_objects != 0;
+    match (direct_only, feature25_only, shared) {
+        (true, false, false) => Some(QuickbarItemRefreshProofClass::DirectOnly),
+        (false, true, false) => Some(QuickbarItemRefreshProofClass::Feature25Only),
+        (false, false, true) => Some(QuickbarItemRefreshProofClass::Shared),
+        _ => Some(QuickbarItemRefreshProofClass::Mixed),
+    }
+}
+
 fn remember_quickbar_item_context_if_relevant(
     state: &mut SemanticSessionState,
     source: &'static str,
@@ -490,7 +518,8 @@ fn remember_quickbar_item_context_if_relevant(
             .ui
             .inventory_item_context_after_committed_quickbar_updates
             .saturating_add(1);
-        let pending_item_refresh = item_context.has_compact_quickbar_item_proof();
+        let pending_item_refresh_proof_class = quickbar_item_refresh_proof_class(item_context);
+        let pending_item_refresh = pending_item_refresh_proof_class.is_some();
         state.ui.post_committed_quickbar_item_refresh_pending = pending_item_refresh;
         state
             .ui
@@ -501,6 +530,11 @@ fn remember_quickbar_item_context_if_relevant(
         } else {
             0
         };
+        state.ui.post_committed_quickbar_item_refresh_proof_class =
+            pending_item_refresh_proof_class;
+        let pending_item_refresh_proof_class = pending_item_refresh_proof_class
+            .map(QuickbarItemRefreshProofClass::as_str)
+            .unwrap_or("none");
         tracing::info!(
             source,
             updates_since_committed_quickbar = state
@@ -510,6 +544,7 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_updates = state
                 .ui
                 .post_committed_quickbar_item_refresh_pending_updates,
+            pending_item_refresh_proof_class,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
@@ -1051,6 +1086,10 @@ mod fixture_free_tests {
             "the first committed quickbar has no pending item-refresh window"
         );
         assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_proof_class, None,
+            "a no-pending committed quickbar should not report a proof class"
+        );
+        assert_eq!(
             state
                 .ui
                 .inventory_item_context_after_committed_quickbar_updates,
@@ -1065,6 +1104,10 @@ mod fixture_free_tests {
                 .ui
                 .post_committed_quickbar_item_refresh_pending_updates,
             0
+        );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_proof_class, None,
+            "a new post-quickbar window has no pending proof class"
         );
         assert_eq!(
             state.ui.last_committed_quickbar_previous_post_item_context, None,
@@ -1105,6 +1148,11 @@ mod fixture_free_tests {
                 .ui
                 .post_committed_quickbar_item_refresh_pending_updates,
             1
+        );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_proof_class,
+            Some(QuickbarItemRefreshProofClass::Feature25Only),
+            "the pending post-quickbar proof should preserve its Feature-25-only class"
         );
 
         observe_verified_payload(
@@ -1156,6 +1204,11 @@ mod fixture_free_tests {
             "a pending compact item refresh followed by a zero-item quickbar should remain distinguishable"
         );
         assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_proof_class,
+            Some(QuickbarItemRefreshProofClass::Feature25Only),
+            "the consumed pending refresh should retain the proof class seen after the prior quickbar"
+        );
+        assert_eq!(
             state
                 .ui
                 .last_inventory_item_context_after_committed_quickbar,
@@ -1177,6 +1230,53 @@ mod fixture_free_tests {
                 .ui
                 .post_committed_quickbar_item_refresh_pending_updates,
             0
+        );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_proof_class, None,
+            "the next committed quickbar consumes and clears the pending proof class"
+        );
+    }
+
+    #[test]
+    fn quickbar_item_refresh_proof_class_uses_compact_proof_partition() {
+        assert_eq!(
+            quickbar_item_refresh_proof_class(Default::default()),
+            None,
+            "empty context should not create a pending proof class"
+        );
+        assert_eq!(
+            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_proof_objects: 1,
+                compact_item_emission_direct_only_proof_objects: 1,
+                ..Default::default()
+            }),
+            Some(QuickbarItemRefreshProofClass::DirectOnly)
+        );
+        assert_eq!(
+            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_proof_objects: 1,
+                compact_item_emission_feature25_only_proof_objects: 1,
+                ..Default::default()
+            }),
+            Some(QuickbarItemRefreshProofClass::Feature25Only)
+        );
+        assert_eq!(
+            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_proof_objects: 1,
+                compact_item_emission_shared_proof_objects: 1,
+                ..Default::default()
+            }),
+            Some(QuickbarItemRefreshProofClass::Shared)
+        );
+        assert_eq!(
+            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_proof_objects: 2,
+                compact_item_emission_direct_only_proof_objects: 1,
+                compact_item_emission_feature25_only_proof_objects: 1,
+                ..Default::default()
+            }),
+            Some(QuickbarItemRefreshProofClass::Mixed),
+            "multiple compact proof classes should stay distinguishable"
         );
     }
 
@@ -1274,6 +1374,10 @@ mod fixture_free_tests {
                 .post_committed_quickbar_item_refresh_pending_updates,
             0
         );
+        assert_eq!(
+            state.ui.post_committed_quickbar_item_refresh_proof_class, None,
+            "cleared post-quickbar state must also clear the pending proof class"
+        );
 
         observe_verified_payload(
             &mut state,
@@ -1295,6 +1399,10 @@ mod fixture_free_tests {
                 .ui
                 .last_committed_quickbar_item_refresh_pending_updates,
             0
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_proof_class, None,
+            "the later committed quickbar should not inherit a stale pending proof class"
         );
     }
 }

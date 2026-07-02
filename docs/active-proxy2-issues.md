@@ -244,6 +244,24 @@ not as standalone workaround targets.
   later committed `GuiQuickbar_SetAllButtons` after the pending Feature-25-only
   proof window, then use the outcome counter to distinguish an emitted item
   refresh from a later still-blank profile.
+- 2026-07-03 quickbar pending proof-class slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+  `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+  newest gameplay packet about 14 hours old at gate time, and gameplay reached.
+  Semantic quickbar state now snapshots the pending post-quickbar compact item
+  proof class as `direct_only`, `feature25_only`, `shared`, or `mixed`, and the
+  replay summary exports both committed and post-context proof-class counters.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-pending-proof-class-automation-20260703-051647`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe registry-context summaries, and 1
+  committed quickbar summary. This capture still has one no-pending committed
+  quickbar (`pending_item_refresh_proof_class="none"`); all 37 later pending
+  post-context updates are `feature25_only`, with 5 compact item-emission proof
+  objects and 0 direct/shared proof objects. Next production path: capture or
+  drive a later committed `GuiQuickbar_SetAllButtons` after this
+  Feature-25-only pending window, then use the proof-class and outcome counters
+  to decide whether Feature-25-only proof can safely emit compact item slots.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.

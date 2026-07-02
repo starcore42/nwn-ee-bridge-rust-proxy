@@ -217,6 +217,25 @@ impl QuickbarItemRefreshOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshProofClass {
+    DirectOnly,
+    Feature25Only,
+    Shared,
+    Mixed,
+}
+
+impl QuickbarItemRefreshProofClass {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectOnly => "direct_only",
+            Self::Feature25Only => "feature25_only",
+            Self::Shared => "shared",
+            Self::Mixed => "mixed",
+        }
+    }
+}
+
 impl ObjectRegistry {
     pub(crate) fn reset_for_area(&mut self) {
         if !self.known.is_empty()
@@ -2058,12 +2077,16 @@ pub(crate) struct UiState {
     pub(crate) inventory_item_context_after_committed_quickbar_updates: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending: bool,
     pub(crate) post_committed_quickbar_item_refresh_pending_updates: u64,
+    pub(crate) post_committed_quickbar_item_refresh_proof_class:
+        Option<QuickbarItemRefreshProofClass>,
     pub(crate) last_committed_quickbar_previous_post_item_context:
         Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
     pub(crate) last_committed_quickbar_item_refresh_pending: bool,
     pub(crate) last_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
+    pub(crate) last_committed_quickbar_item_refresh_proof_class:
+        Option<QuickbarItemRefreshProofClass>,
     pub(crate) last_committed_quickbar_best_item_context: Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_best_item_context_source: Option<QuickbarItemContextSource>,
 }
