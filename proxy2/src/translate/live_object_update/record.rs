@@ -26,6 +26,7 @@ use crate::translate::area::{
 use crate::translate::area::{AreaPlaceableContextRowKind, format_area_placeable_context_row};
 
 const MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES: usize = 64;
+const LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS: usize = 6;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RecordRewrite {
@@ -70,6 +71,7 @@ struct CompactDoorPlaceableTail9UpdateClaim {
     tail_offset: usize,
     tail: reader::LegacyNamedUpdateTail,
     following_payload_ready: bool,
+    extra_legacy_name_fragment_bits: usize,
     translated_mask: u32,
     fragment_source_mask: u32,
     orientation_rewrite: OrientationFragmentRewrite,
@@ -78,6 +80,11 @@ struct CompactDoorPlaceableTail9UpdateClaim {
 impl CompactDoorPlaceableTail9UpdateClaim {
     fn tail_needs_empty_name(self) -> bool {
         !self.following_payload_ready
+    }
+
+    fn source_bits_consumed(self) -> usize {
+        low_prefix_door_placeable_update_source_fragment_bits(self.fragment_source_mask)
+            .saturating_add(self.extra_legacy_name_fragment_bits)
     }
 }
 
@@ -358,6 +365,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     let mut low_prefix_interleaved_fragment_span_begin = None;
     let mut fragment_source_mask = raw_mask;
     let mut legacy_low_tail_fragment_bits_to_remove = 0usize;
+    let mut tail9_legacy_name_fragment_bits_to_remove = 0usize;
     let mut low_tail_zero_fragment_bits_to_insert = 0usize;
     let mut orientation_fragment_rewrite =
         if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
@@ -465,7 +473,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     } else if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
         && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
     {
-        if let Some(claim) = parse_compact_door_placeable_tail9_update_claim(
+        if let Some(mut claim) = parse_compact_door_placeable_tail9_update_claim(
             live_bytes,
             record_offset,
             *record_end,
@@ -493,6 +501,27 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             // before the compact inline-name repair is considered.
             tail_ready = true;
             tail_needs_empty_name = claim.tail_needs_empty_name();
+            let base_source_bits =
+                low_prefix_door_placeable_update_source_fragment_bits(claim.fragment_source_mask);
+            if *record_end == live_bytes.len()
+                && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
+                && bits.len().saturating_sub(*bit_cursor)
+                    == base_source_bits.saturating_add(LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS)
+                && reader::legacy_name_tail_ready(
+                    live_bytes,
+                    claim.tail_offset.saturating_add(9),
+                    *record_end,
+                )
+            {
+                // Diamond's legacy tail9 name branch can leave the byte-aligned
+                // CExoString in the read buffer while six CExoString
+                // length/control bits remain in the CNW fragment stream. EE's
+                // generic door/placeable update reader has no legacy name bit,
+                // so remove this exact terminal six-bit source tail only after
+                // the bounded tail9 bytes and name payload are proven.
+                claim.extra_legacy_name_fragment_bits = LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS;
+                tail9_legacy_name_fragment_bits_to_remove = LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS;
+            }
             translated_mask = claim.translated_mask;
             fragment_source_mask = claim.fragment_source_mask;
             orientation_fragment_rewrite = claim.orientation_rewrite;
@@ -1298,14 +1327,17 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     };
 
     // The tail9 converter owns the legacy name BOOL and EE's inserted scalar/
-    // state bits only; a terminal extra bit has no following record to claim it.
+    // state bits. Some Diamond tail9 name branches also leave exactly six
+    // packed CExoString control bits after the byte-aligned name payload; any
+    // other terminal residual still has no following record to claim it.
     if let Some((rewritten_bits, rewritten_bit_cursor, _)) = bit_rewrite_candidate.as_ref() {
         if *record_end == live_bytes.len()
             && tail_ready
             && matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
             && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
             && (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0
-            && *rewritten_bit_cursor != rewritten_bits.len()
+            && rewritten_bit_cursor.checked_add(tail9_legacy_name_fragment_bits_to_remove)
+                != Some(rewritten_bits.len())
         {
             debug_update_record_reject(
                 "terminal-door-placeable-tail9-residual-fragment-bits",
@@ -1444,6 +1476,29 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
 
     if let Some((mut rewritten_bits, rewritten_bit_cursor, mut bit_rewrite)) = bit_rewrite_candidate
     {
+        if tail9_legacy_name_fragment_bits_to_remove != 0 {
+            if bits::erase_msb_bits(
+                &mut rewritten_bits,
+                rewritten_bit_cursor,
+                tail9_legacy_name_fragment_bits_to_remove,
+            )
+            .is_none()
+            {
+                debug_update_record_reject(
+                    "tail9-name-fragment-bit-remove-failed",
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    raw_mask,
+                    translated_mask,
+                    *bit_cursor,
+                );
+                return None;
+            }
+            bit_rewrite.bits_removed = bit_rewrite.bits_removed.saturating_add(
+                u32::try_from(tail9_legacy_name_fragment_bits_to_remove).unwrap_or(u32::MAX),
+            );
+        }
         if legacy_low_tail_fragment_bits_to_remove != 0 {
             if bits::erase_msb_bits(
                 &mut rewritten_bits,
@@ -1499,9 +1554,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
 
     if tail_ready
         && let Some(claim) = compact_tail9_claim
-        && let Ok(source_bits_consumed) = u32::try_from(
-            low_prefix_door_placeable_update_source_fragment_bits(claim.fragment_source_mask),
-        )
+        && let Ok(source_bits_consumed) = u32::try_from(claim.source_bits_consumed())
     {
         rewrite.bit_claim = Some(RecordRewriteBitClaim {
             source_mask: claim.fragment_source_mask,
@@ -2119,6 +2172,7 @@ fn parse_compact_door_placeable_tail9_update_claim(
         tail_offset,
         tail,
         following_payload_ready,
+        extra_legacy_name_fragment_bits: 0,
         translated_mask: claim_translated_mask,
         fragment_source_mask,
         orientation_rewrite,

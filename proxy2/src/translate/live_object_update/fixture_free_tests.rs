@@ -1,5 +1,11 @@
 //! Fixture-free live-object update regression anchors.
 
+fn bytes_from_hex(hex: &str) -> Vec<u8> {
+    hex.split_whitespace()
+        .map(|part| u8::from_str_radix(part, 16).expect("test hex byte"))
+        .collect()
+}
+
 fn live_gui_character_sheet_payload(mask: u32, body: &[u8], owned_bits: Vec<bool>) -> Vec<u8> {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'G', b'S']);
@@ -7608,6 +7614,60 @@ fn creature_update_span_promoter_keeps_following_top_level_add_out_of_storage() 
         .expect("rewritten U/5 followed by top-level A/5 should exact-claim");
     assert_eq!(claim.creature_update_records, 1);
     assert_eq!(claim.add_records, 1);
+}
+
+#[test]
+fn hg_live_mixed_inventory_placeable_stream_rewrites_to_exact_shape() {
+    // Fresh HG live capture 2026-07-02 sequence 179: inventory Feature-25
+    // rows, placeable add, and same-object all-bits placeable update in one
+    // live-object stream. The candidate rewrite must be proven by the exact EE
+    // reader instead of quarantining after the add/update visual-map pass.
+    let mut payload = bytes_from_hex(
+        "50 05 01 E5 01 00 00 49 D2 FF FF FF 00 20 00 00 \
+         00 00 01 00 00 00 CC 64 01 80 41 05 CC 64 01 80 \
+         18 B8 0D 42 FA 7F 0A 42 00 40 9F BB F0 04 35 3F \
+         F6 04 35 3F 00 00 00 00 00 00 50 05 CC 64 01 80 \
+         FF FF 07 00 00 00 5A 75 67 20 5A 75 67 00 00 00 \
+         00 05 00 00 00 08 00 00 00 00 00 00 00 00 22 87 \
+         01 01 13 01 01 01 01 01 01 01 01 00 01 01 01 02 \
+         01 00 00 01 01 00 72 00 FF FF FF FF 07 44 00 00 \
+         00 7F 02 00 00 00 44 00 00 00 7F 01 00 00 00 44 \
+         00 00 00 7F 20 00 00 00 44 00 00 00 7F 10 00 00 \
+         00 44 00 00 00 7F 40 00 00 00 41 CD 64 01 80 02 \
+         00 00 00 10 00 00 00 07 07 04 04 5D 5D 0A 2B 99 \
+         9E 0C 0C 99 99 0D 0D 03 03 00 03 2D 33 03 07 37 \
+         03 00 13 00 00 00 48 69 64 65 20 6F 66 20 74 68 \
+         65 20 53 74 65 70 70 65 73 0F 00 00 00 01 00 00 \
+         00 00 00 FF 00 00 00 00 00 00 00 00 41 CE 64 01 \
+         80 10 00 00 00 0A 00 00 00 22 22 2C 00 10 00 00 \
+         00 48 61 6C 62 65 72 64 20 6F 66 20 4D 69 67 68 \
+         74 14 00 00 00 01 00 00 00 00 00 FF 00 00 00 00 \
+         00 00 00 00 55 05 CC 64 01 80 67 39 00 00 D6 0D \
+         86 0D 0E 0F C4 86 00 00 00 80 3F 00 00 00 00 00 \
+         FD FF 00 00 00 00 00 00 00 00 00 00 00 00 00 05 \
+         00 00 00 00 00 00 00 00 00 00 32 00 00 00 01 00 \
+         01 00 00 00 7F 00 00 41 09 DA 34 00 80 21 00 00 \
+         00 4D 65 73 73 61 67 65 73 20 46 72 6F 6D 20 74 \
+         68 65 20 44 75 6E 67 65 6F 6E 20 4D 61 73 74 65 \
+         72 73 05 9C 0B 00 00 55 09 DA 34 00 80 F7 FF FF \
+         FF EB 1B 31 18 0F 0F 70 00 00 00 00 80 3F 00 00 \
+         21 00 00 00 4D 65 73 73 61 67 65 73 20 46 72 6F \
+         6D 20 74 68 65 20 44 75 6E 67 65 6F 6E 20 4D 61 \
+         73 74 65 72 73 6A 49 20 E0 2B 88 78 C9",
+    );
+
+    let attempt =
+        super::rewrite_update_records_payload_with_area_context_attempt(&mut payload, None);
+    assert!(
+        attempt.summary.is_some(),
+        "mixed live-object stream should rewrite; failure={:?}",
+        attempt.failure
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .unwrap_or_else(|| panic!("rewritten mixed stream should exact-claim: {payload:02X?}"));
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.add_records, 2);
+    assert_eq!(claim.update_records, 1);
 }
 
 #[test]

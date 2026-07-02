@@ -8773,26 +8773,30 @@ mod hg_mixed_door_placeable_translation_tests {
     }
 
     #[test]
-    fn hg_door_transition_ascension_west_mixed_payload_leaves_terminal_tail9_residual_unclaimed() {
+    fn hg_door_transition_ascension_west_mixed_payload_rewrites_terminal_tail9_name_bits() {
         let mut payload = include_bytes!(
             "../../fixtures/live_object/hg_door_transition_ascension_west_mixed_liveobject.bin"
         )
         .to_vec();
 
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let visual_summary =
-            rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None).expect(
-                "compact transition placeable add should receive an EE visual-transform map",
-            );
-        assert_eq!(visual_summary.maps_inserted, 1);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        assert!(
-            live_update::claim_payload_if_verified(&payload).is_none(),
-            "door-transition Ascension West mixed live-object burst still carries unowned terminal U/9 tail9 fragment bits"
+        let summary = live_update::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("mixed transition placeable stream should rewrite in the update pass");
+        assert_eq!(
+            summary.bytes_inserted, 8,
+            "compact transition placeable add should receive its EE visual-transform map"
         );
+        assert_eq!(
+            summary.bits_removed, 7,
+            "terminal tail9 update should remove the legacy name BOOL plus six packed name bits"
+        );
+        assert!(
+            rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None).is_none(),
+            "the update pass already widened the compact placeable add"
+        );
+        let claim = live_update::claim_payload_if_verified(&payload)
+            .expect("door-transition Ascension West mixed burst should exact-claim");
+        assert!(claim.add_records > 0);
+        assert!(claim.update_records > 0);
     }
 
     #[test]
