@@ -313,6 +313,20 @@ compact item-emission proof objects, all Feature-25-only. The next useful
 capture remains a later item-bearing `GuiQuickbar_SetAllButtons` after those
 Feature-25 refs.
 
+Update as of 2026-07-03 03:18 +10: live-data gate reused
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; packet window
+`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`,
+newest gameplay packet about 12 hours old, and gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-pending-refresh-automation-20260703-031344`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, 39 stream-probe registry-context summaries, and 1 committed
+quickbar summary. Semantic quickbar state now explicitly records whether
+post-committed compact item proof is pending a later item-bearing quickbar;
+this capture has one committed quickbar before item proof, so the pre-commit
+pending counter is 0 while post-context pending is 37 updates and 5 compact
+proof objects, all Feature-25-only. The next useful capture remains a later
+item-bearing `GuiQuickbar_SetAllButtons` after those pending Feature-25 refs.
+
 ## Successful live HG capture contract
 
 A successful live HG capture requires all of the following:

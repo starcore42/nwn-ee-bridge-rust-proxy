@@ -171,6 +171,10 @@ impl InventoryItemContextSummary {
             || self.feature25_item_proof_objects != 0
             || self.cleared_inventory_item_object_ids != 0
     }
+
+    pub(crate) fn has_compact_quickbar_item_proof(&self) -> bool {
+        self.compact_item_emission_proof_objects != 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2029,9 +2033,13 @@ pub(crate) struct UiState {
     pub(crate) last_inventory_item_context_after_committed_quickbar:
         Option<InventoryItemContextSummary>,
     pub(crate) inventory_item_context_after_committed_quickbar_updates: u64,
+    pub(crate) post_committed_quickbar_item_refresh_pending: bool,
+    pub(crate) post_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) last_committed_quickbar_previous_post_item_context:
         Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
+    pub(crate) last_committed_quickbar_item_refresh_pending: bool,
+    pub(crate) last_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) last_committed_quickbar_best_item_context: Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_best_item_context_source: Option<QuickbarItemContextSource>,
 }

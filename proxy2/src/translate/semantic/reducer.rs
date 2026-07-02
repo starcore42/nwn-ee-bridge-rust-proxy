@@ -232,6 +232,10 @@ fn apply_event(
                 let previous_post_item_context_updates = state
                     .ui
                     .inventory_item_context_after_committed_quickbar_updates;
+                let pending_item_refresh = state.ui.post_committed_quickbar_item_refresh_pending;
+                let pending_item_refresh_updates = state
+                    .ui
+                    .post_committed_quickbar_item_refresh_pending_updates;
                 let (best_item_context, best_item_context_source) =
                     best_committed_quickbar_item_context(
                         *materialization_context,
@@ -248,6 +252,11 @@ fn apply_event(
                     .ui
                     .last_committed_quickbar_previous_post_item_context_updates =
                     previous_post_item_context_updates;
+                state.ui.last_committed_quickbar_item_refresh_pending = pending_item_refresh;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_pending_updates =
+                    pending_item_refresh_updates;
                 state.ui.last_committed_quickbar_best_item_context = best_item_context;
                 state.ui.last_committed_quickbar_best_item_context_source =
                     best_item_context_source;
@@ -257,6 +266,10 @@ fn apply_event(
                 state
                     .ui
                     .inventory_item_context_after_committed_quickbar_updates = 0;
+                state.ui.post_committed_quickbar_item_refresh_pending = false;
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_pending_updates = 0;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
                 let previous_post_item_context_known = previous_post_item_context.is_some();
@@ -334,6 +347,8 @@ fn apply_event(
                         previous_post_item_context.inventory_feature25_legacy_tail_item_refs,
                     previous_post_cleared_inventory_item_object_ids =
                         previous_post_item_context.cleared_inventory_item_object_ids,
+                    pending_item_refresh_before_commit = pending_item_refresh,
+                    pending_item_refresh_updates_before_commit = pending_item_refresh_updates,
                     best_item_context_known,
                     best_item_context_source,
                     best_direct_item_proof_objects = best_item_context.direct_item_proof_objects,
@@ -456,11 +471,26 @@ fn remember_quickbar_item_context_if_relevant(
             .ui
             .inventory_item_context_after_committed_quickbar_updates
             .saturating_add(1);
+        let pending_item_refresh = item_context.has_compact_quickbar_item_proof();
+        state.ui.post_committed_quickbar_item_refresh_pending = pending_item_refresh;
+        state
+            .ui
+            .post_committed_quickbar_item_refresh_pending_updates = if pending_item_refresh {
+            state
+                .ui
+                .inventory_item_context_after_committed_quickbar_updates
+        } else {
+            0
+        };
         tracing::info!(
             source,
             updates_since_committed_quickbar = state
                 .ui
                 .inventory_item_context_after_committed_quickbar_updates,
+            pending_item_refresh,
+            pending_item_refresh_updates = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_updates,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
@@ -1002,6 +1032,16 @@ mod fixture_free_tests {
                 .inventory_item_context_after_committed_quickbar_updates,
             0
         );
+        assert!(
+            !state.ui.post_committed_quickbar_item_refresh_pending,
+            "a committed quickbar starts with no pending post-context item refresh"
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_updates,
+            0
+        );
         assert_eq!(
             state.ui.last_committed_quickbar_previous_post_item_context, None,
             "the first committed quickbar has no previous post-context window"
@@ -1032,6 +1072,16 @@ mod fixture_free_tests {
                 .inventory_item_context_after_committed_quickbar_updates,
             1
         );
+        assert!(
+            state.ui.post_committed_quickbar_item_refresh_pending,
+            "post-quickbar compact item proof should mark the committed profile as awaiting a later item-bearing refresh"
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_updates,
+            1
+        );
 
         observe_verified_payload(
             &mut state,
@@ -1056,6 +1106,16 @@ mod fixture_free_tests {
                 .last_committed_quickbar_previous_post_item_context_updates,
             1
         );
+        assert!(
+            state.ui.last_committed_quickbar_item_refresh_pending,
+            "the later committed quickbar should report that a post-quickbar item proof window was pending"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_updates,
+            1
+        );
         assert_eq!(
             state.ui.last_committed_quickbar_best_item_context,
             Some(post_context),
@@ -1077,6 +1137,102 @@ mod fixture_free_tests {
             state
                 .ui
                 .inventory_item_context_after_committed_quickbar_updates,
+            0
+        );
+        assert!(
+            !state.ui.post_committed_quickbar_item_refresh_pending,
+            "a new committed quickbar consumes and clears the pending refresh window"
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_updates,
+            0
+        );
+    }
+
+    #[test]
+    fn cleared_context_after_committed_quickbar_cancels_pending_item_refresh() {
+        let owner_id = 0x8000_0010u32;
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0101u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&first_item_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&second_item_id.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+
+        assert!(state.ui.post_committed_quickbar_item_refresh_pending);
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::AreaClientArea),
+            &[],
+        );
+
+        let cleared_context = state
+            .ui
+            .last_inventory_item_context_after_committed_quickbar
+            .expect("area reset should retain cleared post-quickbar context");
+        assert_eq!(cleared_context.compact_item_emission_proof_objects, 0);
+        assert_eq!(cleared_context.cleared_inventory_item_object_ids, 2);
+        assert_eq!(
+            state
+                .ui
+                .inventory_item_context_after_committed_quickbar_updates,
+            2,
+            "the cleared context is still a post-quickbar update"
+        );
+        assert!(
+            !state.ui.post_committed_quickbar_item_refresh_pending,
+            "cleared post-quickbar state must cancel stale compact item proof"
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_updates,
+            0
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+
+        assert_eq!(
+            state.ui.last_committed_quickbar_previous_post_item_context,
+            Some(cleared_context)
+        );
+        assert!(
+            !state.ui.last_committed_quickbar_item_refresh_pending,
+            "the next committed quickbar should not report stale proof as pending"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_updates,
             0
         );
     }
