@@ -98,6 +98,20 @@ allows. If a future live probe reports this stream-probe no-hint reason, treat
 the next harness/proxy target as quickbar stream commitment, not UseItem
 injection.
 
+As of 2026-07-03 18:41 +10, the quickbar stream commitment target has a
+production fix: the buffered quickbar stream flush now observes the verified
+`GuiQuickbar_SetAllButtons` payload through the semantic UI observer after the
+rewritten frames are built. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-stream-commit-observe-20260703-184037`
+against the current Diamond capture stayed at 0 quarantines, 304 strict
+allows, one committed quickbar semantic profile, 39 stream-probe summaries, and
+a pending hint for candidate `0x80015DAA` with recommended UseItem payload
+`7006090C000000AA5D018000C0`. The next live auto-UseItem probe should verify
+whether HG now emits a pending hint instead of
+`stream_probe_quickbar_item_candidates_without_committed_profile`; if it does,
+drive the recommended UseItem payload and inspect the following committed
+quickbar state.
+
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
 against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79

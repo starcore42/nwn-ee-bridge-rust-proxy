@@ -6,7 +6,7 @@
 
 use crate::{
     packet::m::HighLevel,
-    translate::{ContinuationOwner, Emit, VerifiedFamily, quickbar},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, quickbar},
 };
 use std::{
     env, fs,
@@ -78,6 +78,18 @@ fn observe_quickbar_stream_probe_summary(
         .semantic
         .ui
         .observe_quickbar_stream_probe(summary, materialization_context);
+    super::update_quickbar_item_refresh_hint(state);
+}
+
+fn observe_committed_quickbar_stream_payload(state: &mut SessionState, payload: &[u8]) {
+    let proof = VerifiedProof::family(VerifiedFamily::GuiQuickbar);
+    crate::translate::semantic::observe_verified_payload_with_area_context(
+        &mut state.semantic,
+        crate::packet::Direction::ServerToClient,
+        &proof,
+        payload,
+        Some(&state.area_context.latest_area_placeables),
+    );
     super::update_quickbar_item_refresh_hint(state);
 }
 
@@ -463,6 +475,7 @@ fn flush_pending_server_quickbar_stream(
         super::pre_shift_current_server_packets(state, &mut outputs)?;
         super::record_extra_deflated_output_sequence_shift(state, reassembly, outputs.len())?;
     }
+    observe_committed_quickbar_stream_payload(state, &quickbar_payload);
     remember_completed_server_stream_window(
         state,
         reassembly,
@@ -590,4 +603,48 @@ fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationO
             state.deflate.server_zlib_stream_epoch.saturating_add(1);
     }
     state.deflate.server_zlib_stream_owner = Some(owner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::translate::module_resources;
+
+    #[test]
+    fn committed_quickbar_stream_payload_updates_semantic_profile() {
+        let mut state = SessionState::new(
+            module_resources::ModuleResourceRuntime::default(),
+            true,
+            None,
+        );
+        let payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should be exact EE shape");
+
+        assert_eq!(
+            state
+                .semantic
+                .ui
+                .quickbar_item_refresh_harness_idle_reason(),
+            "no_committed_quickbar_profile"
+        );
+
+        observe_committed_quickbar_stream_payload(&mut state, &payload);
+
+        assert_eq!(state.semantic.ui.quickbar_packets, 1);
+        let profile = state
+            .semantic
+            .ui
+            .last_committed_quickbar_profile
+            .expect("committed stream payload should update quickbar profile");
+        assert_eq!(profile.slot_records, 36);
+        assert_eq!(profile.blank_slots, 36);
+        assert_eq!(profile.item_slots, 0);
+        assert_eq!(
+            state
+                .semantic
+                .ui
+                .quickbar_item_refresh_harness_idle_reason(),
+            "no_post_committed_item_context"
+        );
+    }
 }

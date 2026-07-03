@@ -489,6 +489,23 @@ not as standalone workaround targets.
   why live stream-probe quickbar units never become a committed profile, then
   either repair the splitter/stream commitment rule or drive the client action
   only after a committed profile exists.
+- 2026-07-03 quickbar stream-flush semantic commit slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516`; at
+  `2026-07-03T18:27:44+10:00`, the newest gameplay packet was about 3h09m old
+  and gameplay reached. The buffered quickbar stream flush now observes the
+  verified `GuiQuickbar_SetAllButtons` payload through the normal semantic UI
+  observer after the rewritten frames are built, so streamed committed quickbar
+  payloads update `last_committed_quickbar_profile` and refresh the
+  item-refresh hint state. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-stream-commit-observe-20260703-184037`
+  stayed at 0 quarantines, 304 strict allows, one committed quickbar semantic
+  profile, 39 stream-probe summaries, and a pending hint for candidate
+  `0x80015DAA` (`feature25_second_list`, Feature-25-only) with payload
+  `7006090C000000AA5D018000C0`. Next production path: rerun the live
+  auto-UseItem probe with this commit; if live still reports no committed
+  quickbar profile, inspect why the stream flush is not reaching the verified
+  commit observer, otherwise drive the emitted UseItem payload and watch for a
+  later item-bearing committed `GuiQuickbar_SetAllButtons`.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
@@ -506,11 +523,10 @@ not as standalone workaround targets.
   still empty (`entries=0 count=0`). Treat this as the next harness production
   target if gameplay replay cannot be obtained manually.
 - Immediate automation target: while the 2026-07-03 live HG capture remains
-  fresh, rerun the live auto-UseItem probe only after inspecting why the live
-  quickbar stream probes never produce a committed quickbar profile. If the
-  idle hint reports
-  `stream_probe_quickbar_item_candidates_without_committed_profile`, the next
-  code path is splitter/stream commitment state; once a pending hint is
+  fresh, rerun the live auto-UseItem probe with the quickbar stream-flush
+  semantic commit fix. If live still reports
+  `stream_probe_quickbar_item_candidates_without_committed_profile`, inspect
+  the stream flush/verified commit observer path. Once a pending hint is
   emitted, use its `recommended_use_item_payload_hex` for a post-proof UseItem,
   or drive an item-bearing client quickbar SetButton, then check whether HG
   emits a later item-bearing committed `GuiQuickbar_SetAllButtons`.
