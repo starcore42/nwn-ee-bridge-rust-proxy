@@ -27,6 +27,7 @@ use crate::{crc::read_le_u32, packet::m::HighLevel};
 
 const QUICKBAR_MAJOR: u8 = 0x1E;
 const SET_BUTTON_MINOR: u8 = 0x02;
+const CLIENT_QUICKBAR_ENVELOPE: u8 = 0x70;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
@@ -45,6 +46,9 @@ const SINGLE_FRAGMENT_BYTE: usize = 1;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const MAX_REASONABLE_QUICKBAR_STRING_BYTES: usize = 4096;
 const MAX_REASONABLE_SPELL_ID: u32 = 10_000;
+pub(crate) const ITEM_SET_BUTTON_TYPE: u8 = 1;
+pub(crate) const ITEM_SET_BUTTON_DEFAULT_INT_PARAM: i32 = -1;
+const INVALID_OBJECT_ID: u32 = 0x7F00_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientQuickbarClaimSummary {
@@ -95,6 +99,36 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientQuickbarClaimSu
         item_object_id: parsed.item_object_id,
         target_object_id: parsed.target_object_id,
     })
+}
+
+pub fn build_item_set_button_payload(
+    slot: u8,
+    item_object_id: u32,
+    target_object_id: Option<u32>,
+) -> Option<Vec<u8>> {
+    if slot >= QUICKBAR_SLOT_COUNT || item_object_id == INVALID_OBJECT_ID {
+        return None;
+    }
+
+    let body_len = OBJECT_ID_BYTES
+        .checked_add(INT_BYTES)?
+        .checked_add(BOOL_WIRE_BYTES)?
+        .checked_add(target_object_id.map_or(0, |_| OBJECT_ID_BYTES))?;
+    let declared = SET_BUTTON_BODY_OFFSET.checked_add(body_len)?;
+    let mut payload = Vec::with_capacity(declared.checked_add(SINGLE_FRAGMENT_BYTE)?);
+    payload.extend_from_slice(&[CLIENT_QUICKBAR_ENVELOPE, QUICKBAR_MAJOR, SET_BUTTON_MINOR]);
+    payload.extend_from_slice(&(u32::try_from(declared).ok()?).to_le_bytes());
+    payload.push(slot);
+    payload.push(ITEM_SET_BUTTON_TYPE);
+    payload.extend_from_slice(&item_object_id.to_le_bytes());
+    payload.extend_from_slice(&ITEM_SET_BUTTON_DEFAULT_INT_PARAM.to_le_bytes());
+    payload.push(u8::from(target_object_id.is_some()));
+    if let Some(target_object_id) = target_object_id {
+        payload.extend_from_slice(&target_object_id.to_le_bytes());
+    }
+    payload.push(0x60);
+    claim_payload_if_verified(&payload)?;
+    Some(payload)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +443,42 @@ mod tests {
         assert_eq!(summary.body_kind, ClientQuickbarSetButtonKind::Item);
         assert_eq!(summary.item_object_id, Some(0x8001_2345));
         assert_eq!(summary.target_object_id, None);
+    }
+
+    #[test]
+    fn builds_exact_item_set_button_without_target() {
+        let payload = build_item_set_button_payload(5, 0x8000_0100, None)
+            .expect("item SetButton payload should build");
+
+        assert_eq!(
+            payload,
+            [
+                0x70, 0x1E, 0x02, 0x12, 0x00, 0x00, 0x00, 0x05, 0x01, 0x00, 0x01, 0x00, 0x80, 0xFF,
+                0xFF, 0xFF, 0xFF, 0x00, 0x60,
+            ]
+        );
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("built item SetButton should satisfy the focused verifier");
+        assert_eq!(summary.slot, 5);
+        assert_eq!(summary.button_type, ITEM_SET_BUTTON_TYPE);
+        assert_eq!(summary.body_kind, ClientQuickbarSetButtonKind::Item);
+        assert_eq!(summary.item_object_id, Some(0x8000_0100));
+        assert_eq!(summary.target_object_id, None);
+    }
+
+    #[test]
+    fn builds_exact_item_set_button_with_target_object() {
+        let payload = build_item_set_button_payload(3, 0x8000_0100, Some(0xFFFF_FFFD))
+            .expect("targeted item SetButton payload should build");
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("built targeted item SetButton should satisfy the focused verifier");
+        assert_eq!(summary.slot, 3);
+        assert_eq!(summary.button_type, ITEM_SET_BUTTON_TYPE);
+        assert_eq!(summary.body_kind, ClientQuickbarSetButtonKind::Item);
+        assert_eq!(summary.item_object_id, Some(0x8000_0100));
+        assert_eq!(summary.target_object_id, Some(0xFFFF_FFFD));
     }
 
     #[test]

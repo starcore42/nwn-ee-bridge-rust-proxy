@@ -190,6 +190,8 @@ pub(crate) struct QuickbarValidatedSlotProfile {
     pub(crate) item_slots: u32,
     pub(crate) spell_slots: u32,
     pub(crate) general_slots: u32,
+    pub(crate) first_blank_slot: Option<u8>,
+    pub(crate) first_item_slot: Option<u8>,
     pub(crate) first_page_visible_slots: u32,
     pub(crate) first_page_item_slots: u32,
     pub(crate) first_page_spell_slots: u32,
@@ -203,8 +205,18 @@ impl QuickbarValidatedSlotProfile {
         };
         for (index, slot_type) in slot_types.iter().copied().enumerate() {
             match slot_type {
-                0 => profile.blank_slots = profile.blank_slots.saturating_add(1),
-                1 => profile.item_slots = profile.item_slots.saturating_add(1),
+                0 => {
+                    profile.blank_slots = profile.blank_slots.saturating_add(1);
+                    if profile.first_blank_slot.is_none() {
+                        profile.first_blank_slot = u8::try_from(index).ok();
+                    }
+                }
+                1 => {
+                    profile.item_slots = profile.item_slots.saturating_add(1);
+                    if profile.first_item_slot.is_none() {
+                        profile.first_item_slot = u8::try_from(index).ok();
+                    }
+                }
                 2 => profile.spell_slots = profile.spell_slots.saturating_add(1),
                 _ => profile.general_slots = profile.general_slots.saturating_add(1),
             }

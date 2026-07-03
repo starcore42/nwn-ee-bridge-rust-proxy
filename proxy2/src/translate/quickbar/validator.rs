@@ -318,6 +318,8 @@ mod tests {
         assert_eq!(profile.item_slots, 0);
         assert_eq!(profile.spell_slots, 0);
         assert_eq!(profile.general_slots, 0);
+        assert_eq!(profile.first_blank_slot, Some(0));
+        assert_eq!(profile.first_item_slot, None);
         assert_eq!(profile.first_page_visible_slots, 0);
     }
 }

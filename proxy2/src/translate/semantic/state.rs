@@ -20,7 +20,7 @@ use crate::translate::{
         AreaPlaceableContextStateConflict, AreaPlaceableObservedOrientationSource,
         AreaPlaceableObservedState,
     },
-    client_quickbar::ClientQuickbarSetButtonKind,
+    client_quickbar::{self, ClientQuickbarSetButtonKind},
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
     quickbar::{QuickbarRewriteSummary, QuickbarValidatedSlotProfile},
@@ -33,6 +33,7 @@ use super::event::{
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
+const QUICKBAR_ITEM_REFRESH_SET_BUTTON_FALLBACK_SLOT: u8 = 0;
 const ITEM_OBJECT_TYPE: u8 = 0x06;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
 const PLACEABLE_POSITION_EPSILON: f32 = 0.01;
@@ -549,6 +550,8 @@ impl QuickbarStreamProbeSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) candidate: InventoryItemContextCandidate,
+    pub(crate) recommended_set_button_slot: u8,
+    pub(crate) recommended_set_button_slot_source: &'static str,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
@@ -576,6 +579,16 @@ impl QuickbarItemRefreshHarnessHint {
             );
         let recommended_use_item_payload_available = recommended_use_item_payload.is_some();
         let recommended_use_item_payload_hex = recommended_use_item_payload
+            .as_deref()
+            .map(hex_encode_upper)
+            .unwrap_or_default();
+        let recommended_set_button_payload = client_quickbar::build_item_set_button_payload(
+            self.recommended_set_button_slot,
+            self.candidate.object_id,
+            None,
+        );
+        let recommended_set_button_payload_available = recommended_set_button_payload.is_some();
+        let recommended_set_button_payload_hex = recommended_set_button_payload
             .as_deref()
             .map(hex_encode_upper)
             .unwrap_or_default();
@@ -631,6 +644,16 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"recommended_use_item_target_legacy_rewrite_object_id\": {},\n",
                 "  \"recommended_use_item_target_legacy_rewrite_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"recommended_use_item_has_position\": false,\n",
+                "  \"recommended_client_quickbar_set_button_payload_available\": {},\n",
+                "  \"recommended_client_quickbar_set_button_payload_kind\": \"GuiQuickbar_SetButton\",\n",
+                "  \"recommended_client_quickbar_set_button_payload_hex\": \"{}\",\n",
+                "  \"recommended_client_quickbar_set_button_slot\": {},\n",
+                "  \"recommended_client_quickbar_set_button_slot_source\": \"{}\",\n",
+                "  \"recommended_client_quickbar_set_button_button_type\": {},\n",
+                "  \"recommended_client_quickbar_set_button_item_object_id\": {},\n",
+                "  \"recommended_client_quickbar_set_button_item_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"recommended_client_quickbar_set_button_int_param\": {},\n",
+                "  \"recommended_client_quickbar_set_button_has_target_object\": false,\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
@@ -694,6 +717,14 @@ impl QuickbarItemRefreshHarnessHint {
             crate::translate::client_input::EE_SELF_OBJECT_ID,
             crate::translate::client_input::INVALID_OBJECT_ID,
             crate::translate::client_input::INVALID_OBJECT_ID,
+            recommended_set_button_payload_available,
+            recommended_set_button_payload_hex,
+            self.recommended_set_button_slot,
+            self.recommended_set_button_slot_source,
+            client_quickbar::ITEM_SET_BUTTON_TYPE,
+            self.candidate.object_id,
+            self.candidate.object_id,
+            client_quickbar::ITEM_SET_BUTTON_DEFAULT_INT_PARAM,
             self.updates_since_committed_quickbar,
             self.events_since_pending_refresh,
             self.proof_class
@@ -2966,8 +2997,12 @@ impl UiState {
     ) -> Option<QuickbarItemRefreshHarnessHint> {
         let summary = self.unresolved_pending_item_refresh()?;
         let candidate = summary.item_context.compact_item_emission_candidate?;
+        let (recommended_set_button_slot, recommended_set_button_slot_source) =
+            self.quickbar_item_refresh_set_button_slot();
         Some(QuickbarItemRefreshHarnessHint {
             candidate,
+            recommended_set_button_slot,
+            recommended_set_button_slot_source,
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
             events_since_pending_refresh: summary.events_since_pending_refresh,
             event_breakdown: summary.event_breakdown,
@@ -2994,6 +3029,21 @@ impl UiState {
                 .item_context
                 .compact_item_emission_shared_proof_objects,
         })
+    }
+
+    fn quickbar_item_refresh_set_button_slot(&self) -> (u8, &'static str) {
+        if let Some(profile) = self.last_committed_quickbar_profile {
+            if let Some(slot) = profile.first_blank_slot {
+                return (slot, "first_blank_committed_slot");
+            }
+            if let Some(slot) = profile.first_item_slot {
+                return (slot, "first_item_committed_slot");
+            }
+        }
+        (
+            QUICKBAR_ITEM_REFRESH_SET_BUTTON_FALLBACK_SLOT,
+            "fallback_slot_zero",
+        )
     }
 }
 
@@ -5235,6 +5285,15 @@ mod tests {
             inventory_feature25_second_item_refs: 1,
             ..InventoryItemContextSummary::default()
         };
+        ui.last_committed_quickbar_profile =
+            Some(crate::translate::quickbar::QuickbarValidatedSlotProfile {
+                slot_records: 36,
+                blank_slots: 34,
+                item_slots: 2,
+                first_blank_slot: Some(5),
+                first_item_slot: Some(2),
+                ..crate::translate::quickbar::QuickbarValidatedSlotProfile::default()
+            });
         ui.last_inventory_item_context_after_committed_quickbar = Some(item_context);
         ui.inventory_item_context_after_committed_quickbar_updates = 7;
         ui.post_committed_quickbar_item_refresh_pending_events = 11;
@@ -5310,6 +5369,30 @@ mod tests {
             "\"recommended_use_item_target_legacy_rewrite_object_id_hex\": \"0x7F000000\""
         ));
         assert!(json.contains("\"recommended_use_item_has_position\": false"));
+        assert!(
+            json.contains("\"recommended_client_quickbar_set_button_payload_available\": true")
+        );
+        assert!(json.contains(
+            "\"recommended_client_quickbar_set_button_payload_kind\": \"GuiQuickbar_SetButton\""
+        ));
+        assert!(json.contains(
+            "\"recommended_client_quickbar_set_button_payload_hex\": \"701E0212000000050100010080FFFFFFFF0060\""
+        ));
+        assert!(json.contains("\"recommended_client_quickbar_set_button_slot\": 5"));
+        assert!(json.contains(
+            "\"recommended_client_quickbar_set_button_slot_source\": \"first_blank_committed_slot\""
+        ));
+        assert!(json.contains("\"recommended_client_quickbar_set_button_button_type\": 1"));
+        assert!(
+            json.contains("\"recommended_client_quickbar_set_button_item_object_id\": 2147483904")
+        );
+        assert!(json.contains(
+            "\"recommended_client_quickbar_set_button_item_object_id_hex\": \"0x80000100\""
+        ));
+        assert!(json.contains("\"recommended_client_quickbar_set_button_int_param\": -1"));
+        assert!(
+            json.contains("\"recommended_client_quickbar_set_button_has_target_object\": false")
+        );
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
         assert!(json.contains("\"first_client_action\": \"client_input_other\""));
