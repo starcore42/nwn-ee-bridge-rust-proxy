@@ -275,6 +275,27 @@ pub struct UseItem {
     pub position: Option<(f32, f32, f32)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UseItemPayloadSpec {
+    pub item_object_id: u32,
+    pub active_property_subtype: u8,
+    pub optional_byte: Option<u8>,
+    pub target_object_id: Option<u32>,
+    pub position: Option<(f32, f32, f32)>,
+}
+
+impl UseItemPayloadSpec {
+    pub fn minimal(item_object_id: u32) -> Self {
+        Self {
+            item_object_id,
+            active_property_subtype: 0,
+            optional_byte: None,
+            target_object_id: None,
+            position: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToggleMode {
     pub mode: u8,
@@ -906,6 +927,55 @@ pub fn parse_use_item(payload: &[u8]) -> Option<UseItem> {
     })
 }
 
+pub fn build_minimal_use_item_payload(item_object_id: u32) -> Option<Vec<u8>> {
+    build_use_item_payload(UseItemPayloadSpec::minimal(item_object_id))
+}
+
+pub fn build_use_item_payload(spec: UseItemPayloadSpec) -> Option<Vec<u8>> {
+    if spec.item_object_id == INVALID_OBJECT_ID {
+        return None;
+    }
+    if spec
+        .position
+        .is_some_and(|(x, y, z)| !x.is_finite() || !y.is_finite() || !z.is_finite())
+    {
+        return None;
+    }
+
+    let mut body = Vec::with_capacity(
+        USE_ITEM_BASE_READ_BODY_BYTES
+            + spec.optional_byte.map(|_| BYTE_BYTES).unwrap_or(0)
+            + spec.target_object_id.map(|_| OBJECT_ID_BYTES).unwrap_or(0)
+            + spec.position.map(|_| 3 * FLOAT_BYTES).unwrap_or(0),
+    );
+    body.extend_from_slice(&spec.item_object_id.to_le_bytes());
+    body.push(spec.active_property_subtype);
+    if let Some(optional_byte) = spec.optional_byte {
+        body.push(optional_byte);
+    }
+    if let Some(target_object_id) = spec.target_object_id {
+        body.extend_from_slice(&target_object_id.to_le_bytes());
+    }
+    if let Some((x, y, z)) = spec.position {
+        body.extend_from_slice(&x.to_le_bytes());
+        body.extend_from_slice(&y.to_le_bytes());
+        body.extend_from_slice(&z.to_le_bytes());
+    }
+
+    let declared = READ_CURSOR_START.checked_add(body.len())?;
+    let mut payload = Vec::with_capacity(declared + ONE_FRAGMENT_BYTE);
+    payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, USE_ITEM_MINOR]);
+    payload.extend_from_slice(&u32::try_from(declared).ok()?.to_le_bytes());
+    payload.extend_from_slice(&body);
+    payload.push(fragment_tail_byte(&[
+        spec.optional_byte.is_some(),
+        spec.target_object_id.is_some(),
+        spec.position.is_some(),
+    ])?);
+    parse_use_item(&payload)?;
+    Some(payload)
+}
+
 pub fn parse_toggle_mode(payload: &[u8]) -> Option<ToggleMode> {
     let high = HighLevel::parse(payload)?;
     if high.major != INPUT_MAJOR || high.minor != TOGGLE_MODE_MINOR {
@@ -1108,6 +1178,28 @@ fn read_fragment_bool(fragments: &[u8], data_bit_index: usize) -> Option<bool> {
     Some(((fragment >> shift) & 1) != 0)
 }
 
+fn fragment_tail_byte(data_bits: &[bool]) -> Option<u8> {
+    let final_fragment_bits = FRAGMENT_HEADER_BITS.checked_add(data_bits.len())?;
+    if final_fragment_bits > 7 {
+        return None;
+    }
+
+    let mut fragment = 0u8;
+    for header_bit in 0..3 {
+        if ((final_fragment_bits >> (2 - header_bit)) & 1) != 0 {
+            fragment |= 1 << (7 - header_bit);
+        }
+    }
+
+    for (data_bit_index, bit) in data_bits.iter().enumerate() {
+        if *bit {
+            let bit_index = FRAGMENT_HEADER_BITS.checked_add(data_bit_index)?;
+            fragment |= 1 << 7usize.checked_sub(bit_index)?;
+        }
+    }
+    Some(fragment)
+}
+
 fn read_u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
     let pair = bytes.get(offset..offset.checked_add(2)?)?;
     Some(u16::from_le_bytes([pair[0], pair[1]]))
@@ -1120,6 +1212,84 @@ fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
 fn read_f32_at(bytes: &[u8], offset: usize) -> Option<f32> {
     let raw = read_u32_at(bytes, offset)?;
     Some(f32::from_bits(raw))
+}
+
+#[cfg(test)]
+mod public_tests {
+    use super::*;
+
+    #[test]
+    fn use_item_builder_emits_minimal_false_optional_bool_shape() {
+        let payload = build_minimal_use_item_payload(0x8001_6012)
+            .expect("valid item id should build a minimal UseItem");
+        assert_eq!(
+            payload,
+            [
+                0x70, 0x06, 0x09, 0x0C, 0x00, 0x00, 0x00, 0x12, 0x60, 0x01, 0x80, 0x00, 0xC0
+            ],
+            "builder must emit EE/Diamond UseItem read-buffer bytes followed by three false BOOLs"
+        );
+
+        let summary = claim_payload_if_verified(&payload).expect("built UseItem should be claimed");
+        let parsed = parse_use_item(&payload).expect("built UseItem should parse");
+        assert_eq!(summary.kind, ClientInputKind::UseItem);
+        assert_eq!(summary.declared, USE_ITEM_MIN_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8001_6012);
+        assert_eq!(parsed.item_object_id, 0x8001_6012);
+        assert_eq!(parsed.active_property_subtype, 0);
+        assert_eq!(parsed.optional_byte, None);
+        assert_eq!(parsed.target_object_id, None);
+        assert_eq!(parsed.position, None);
+    }
+
+    #[test]
+    fn use_item_builder_sets_optional_bools_in_decompile_reader_order() {
+        let payload = build_use_item_payload(UseItemPayloadSpec {
+            item_object_id: 0x8001_6012,
+            active_property_subtype: 0x03,
+            optional_byte: Some(0x44),
+            target_object_id: Some(EE_SELF_OBJECT_ID),
+            position: Some((1.0, 2.0, 3.0)),
+        })
+        .expect("full UseItem variant should build");
+        assert_eq!(payload[3..7], (0x1Du32).to_le_bytes());
+        assert_eq!(
+            *payload.last().expect("fragment tail"),
+            0xDC,
+            "fragment tail is final-bits=6 plus BOOLs optional-byte,target,position"
+        );
+
+        let parsed = parse_use_item(&payload).expect("full UseItem variant should parse");
+        assert_eq!(parsed.item_object_id, 0x8001_6012);
+        assert_eq!(parsed.active_property_subtype, 0x03);
+        assert_eq!(parsed.optional_byte, Some(0x44));
+        assert_eq!(parsed.target_object_id, Some(EE_SELF_OBJECT_ID));
+        assert_eq!(parsed.position, Some((1.0, 2.0, 3.0)));
+
+        let mut rewritten = payload;
+        let summary = claim_or_rewrite_payload_if_verified(&mut rewritten)
+            .expect("UseItem self target should rewrite through exact parser");
+        let rewritten = parse_use_item(&rewritten).expect("rewritten UseItem should parse");
+        assert!(summary.rewritten_self_object_id);
+        assert_eq!(rewritten.target_object_id, Some(INVALID_OBJECT_ID));
+        assert_eq!(rewritten.position, Some((1.0, 2.0, 3.0)));
+    }
+
+    #[test]
+    fn use_item_builder_rejects_invalid_item_id_and_nonfinite_position() {
+        assert!(build_minimal_use_item_payload(INVALID_OBJECT_ID).is_none());
+        assert!(
+            build_use_item_payload(UseItemPayloadSpec {
+                item_object_id: 0x8001_6012,
+                active_property_subtype: 0,
+                optional_byte: None,
+                target_object_id: None,
+                position: Some((f32::NAN, 0.0, 0.0)),
+            })
+            .is_none()
+        );
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]

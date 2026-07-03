@@ -479,6 +479,15 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
 impl QuickbarItemRefreshHarnessHint {
     pub(crate) fn to_json(self) -> String {
         let first_client_action_detail = self.first_client_action_detail;
+        let recommended_use_item_payload =
+            crate::translate::client_input::build_minimal_use_item_payload(
+                self.candidate.object_id,
+            );
+        let recommended_use_item_payload_available = recommended_use_item_payload.is_some();
+        let recommended_use_item_payload_hex = recommended_use_item_payload
+            .as_deref()
+            .map(hex_encode_upper)
+            .unwrap_or_default();
         let first_client_action_has_object_id = first_client_action_detail
             .and_then(|detail| detail.object_id)
             .is_some();
@@ -514,6 +523,15 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"candidate_proof\": \"{}\",\n",
                 "  \"candidate_source\": \"{}\",\n",
                 "  \"recommended_client_action\": \"target_candidate_with_use_item_or_item_quickbar_set_button\",\n",
+                "  \"recommended_use_item_payload_available\": {},\n",
+                "  \"recommended_use_item_payload_kind\": \"Input_UseItem\",\n",
+                "  \"recommended_use_item_payload_hex\": \"{}\",\n",
+                "  \"recommended_use_item_item_object_id\": {},\n",
+                "  \"recommended_use_item_item_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"recommended_use_item_active_property_subtype\": 0,\n",
+                "  \"recommended_use_item_has_optional_byte\": false,\n",
+                "  \"recommended_use_item_has_target_object\": false,\n",
+                "  \"recommended_use_item_has_position\": false,\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
@@ -553,6 +571,10 @@ impl QuickbarItemRefreshHarnessHint {
             self.candidate.object_id,
             self.candidate.proof.as_str(),
             self.candidate.source.as_str(),
+            recommended_use_item_payload_available,
+            recommended_use_item_payload_hex,
+            self.candidate.object_id,
+            self.candidate.object_id,
             self.updates_since_committed_quickbar,
             self.events_since_pending_refresh,
             self.proof_class
@@ -594,6 +616,16 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown.other_events,
         )
     }
+}
+
+fn hex_encode_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    encoded
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4908,6 +4940,16 @@ mod tests {
         assert!(json.contains("\"candidate_object_id_hex\": \"0x80000100\""));
         assert!(json.contains("\"candidate_proof\": \"feature25_second_list\""));
         assert!(json.contains("\"candidate_source\": \"feature25_only\""));
+        assert!(json.contains("\"recommended_use_item_payload_available\": true"));
+        assert!(json.contains("\"recommended_use_item_payload_kind\": \"Input_UseItem\""));
+        assert!(
+            json.contains("\"recommended_use_item_payload_hex\": \"7006090C0000000001008000C0\"")
+        );
+        assert!(json.contains("\"recommended_use_item_item_object_id\": 2147483904"));
+        assert!(json.contains("\"recommended_use_item_item_object_id_hex\": \"0x80000100\""));
+        assert!(json.contains("\"recommended_use_item_has_optional_byte\": false"));
+        assert!(json.contains("\"recommended_use_item_has_target_object\": false"));
+        assert!(json.contains("\"recommended_use_item_has_position\": false"));
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
     }

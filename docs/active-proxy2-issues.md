@@ -404,6 +404,26 @@ not as standalone workaround targets.
   tracked candidate `2147574964`. Next production path: make the live harness
   consume this hint after the post-proof window opens and drive UseItem or an
   item-bearing client quickbar SetButton against the current hinted candidate.
+- 2026-07-03 quickbar UseItem payload hint slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at
+  `2026-07-03T14:15:19+10:00`, the newest gameplay packet was about 23h05m old
+  and gameplay reached. Proxy2 now builds a decompile-backed minimal
+  `Input_UseItem` payload for the current hinted compact item-emission
+  candidate, using the case `0x09` reader order `OBJECTID, BYTE,
+  BOOL+optional BYTE, BOOL+optional OBJECTID, BOOL+optional position` and exact
+  CNW final-fragment bit packing. The quickbar item-refresh hint JSON exposes
+  `recommended_use_item_payload_hex` and the associated item id/branch fields.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-useitem-payload-hint-automation-20260703-1420`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, and 1 committed quickbar summary. The emitted hint was
+  pending for candidate `2147574946` (`0x800164A2`,
+  `feature25_second_list`, Feature-25-only) with payload
+  `7006090C000000A264018000C0`. Next production path: make the live harness or
+  proxy-side client-action driver consume `recommended_use_item_payload_hex`
+  after the post-proof window opens, or drive the equivalent item
+  `GuiQuickbar_SetButton`, then verify whether HG emits a later item-bearing
+  committed `GuiQuickbar_SetAllButtons`.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
@@ -423,9 +443,10 @@ not as standalone workaround targets.
 - Immediate automation target: while the 2026-07-02 live HG capture remains
   fresh, use harness/client control to provoke or capture a later committed
   `GuiQuickbar_SetAllButtons` after the Feature-25-only pending item-proof
-  window. Prefer a post-proof UseItem or item-bearing client quickbar SetButton;
-  the current first-action detail counters prove ordinary live-object traffic
-  and generic client input do not yet produce an item-bearing refresh.
+  window. Prefer the hint's `recommended_use_item_payload_hex` for a post-proof
+  UseItem, or an item-bearing client quickbar SetButton; the current
+  first-action detail counters prove ordinary live-object traffic and generic
+  client input do not yet produce an item-bearing refresh.
 - 2026-06-28 live-data gate satisfied by
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`: probe window
   `2026-06-28 00:05:38.124 -> 00:07:37.612`, 119 packet files, gameplay reached

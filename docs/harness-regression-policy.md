@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-03 13:15 +10: the current
+Latest known live HG status, as of 2026-07-03 14:15 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
@@ -41,7 +41,7 @@ packet files, and packet window
 `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
 Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
 HG `P/05/01` live-object traffic, and in-game chat/reset messages; at the
-2026-07-03 13:15 +10 gate, the newest gameplay packet was about 22h05m old
+2026-07-03 14:15 +10 gate, the newest gameplay packet was about 23h05m old
 and still inside the 24-hour freshness window. The first
 strict proxy2 replay
 `C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
@@ -71,7 +71,19 @@ target the candidate without scraping proxy logs. Strict replay
 reported 414 strict allows, 0 strict quarantines, 0 quarantine files, 27
 live-object exact shape/rewrite matches, 147 exact lifecycle claim matches, and
 emitted a pending hint for candidate `2147574946`
-(`feature25_second_list`, Feature-25-only).
+(`feature25_second_list`, Feature-25-only). As of 2026-07-03 14:20 +10, the
+hint file also includes a decompile-backed minimal `Input_UseItem` payload for
+the current candidate: strict replay
+`C:\nwnbridge\codex-proxy2-replay-useitem-payload-hint-automation-20260703-1420`
+reported 414 strict allows, 0 strict quarantines, 0 quarantine files, 27
+live-object exact shape/rewrite matches, and 147 exact lifecycle claim matches;
+its `quickbar-item-refresh-hint.json` set
+`recommended_use_item_payload_available=true`,
+`recommended_use_item_payload_hex=7006090C000000A264018000C0`, and
+`recommended_use_item_item_object_id_hex=0x800164A2`. The next useful harness
+action is to consume that payload after the post-proof window opens, or drive
+an equivalent item `GuiQuickbar_SetButton`, then check for a later item-bearing
+committed `GuiQuickbar_SetAllButtons`.
 
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
