@@ -58,6 +58,12 @@ impl SemanticSessionState {
         self.recent_events.push_back(event);
     }
 
+    pub(crate) fn quickbar_item_refresh_harness_hint(
+        &self,
+    ) -> Option<QuickbarItemRefreshHarnessHint> {
+        self.ui.quickbar_item_refresh_harness_hint()
+    }
+
     pub(crate) fn trace_unresolved_quickbar_item_refresh(&self) -> bool {
         let Some(summary) = self.ui.unresolved_pending_item_refresh() else {
             return false;
@@ -450,6 +456,144 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuickbarItemRefreshHarnessHint {
+    pub(crate) candidate: InventoryItemContextCandidate,
+    pub(crate) updates_since_committed_quickbar: u64,
+    pub(crate) events_since_pending_refresh: u64,
+    pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
+    pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
+    pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
+    pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
+    pub(crate) first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+    pub(crate) direct_item_proof_objects: usize,
+    pub(crate) feature25_item_proof_objects: usize,
+    pub(crate) compact_item_emission_proof_objects: usize,
+    pub(crate) compact_item_emission_direct_only_proof_objects: usize,
+    pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
+    pub(crate) compact_item_emission_shared_proof_objects: usize,
+}
+
+impl QuickbarItemRefreshHarnessHint {
+    pub(crate) fn to_json(self) -> String {
+        let first_client_action_detail = self.first_client_action_detail;
+        let first_client_action_has_object_id = first_client_action_detail
+            .and_then(|detail| detail.object_id)
+            .is_some();
+        let first_client_action_object_id = first_client_action_detail
+            .and_then(|detail| detail.object_id)
+            .unwrap_or(0);
+        let first_client_action_slot = first_client_action_detail
+            .and_then(|detail| detail.slot)
+            .unwrap_or(0);
+        let first_client_action_button_type = first_client_action_detail
+            .and_then(|detail| detail.button_type)
+            .unwrap_or(0);
+        let first_client_action_body_kind = first_client_action_detail
+            .and_then(|detail| detail.body_kind)
+            .map(ClientQuickbarSetButtonKind::as_str)
+            .unwrap_or("none");
+        let first_client_action_candidate_known = first_client_action_detail
+            .and_then(|detail| detail.candidate_object_id)
+            .is_some();
+        let first_client_action_candidate_object_id = first_client_action_detail
+            .and_then(|detail| detail.candidate_object_id)
+            .unwrap_or(0);
+        let first_client_action_matches_candidate = first_client_action_detail
+            .and_then(|detail| detail.matches_candidate_object)
+            .unwrap_or(false);
+        format!(
+            concat!(
+                "{{\n",
+                "  \"kind\": \"quickbar_item_refresh_candidate\",\n",
+                "  \"pending_item_refresh\": true,\n",
+                "  \"candidate_object_id\": {},\n",
+                "  \"candidate_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"candidate_proof\": \"{}\",\n",
+                "  \"candidate_source\": \"{}\",\n",
+                "  \"recommended_client_action\": \"target_candidate_with_use_item_or_item_quickbar_set_button\",\n",
+                "  \"updates_since_committed_quickbar\": {},\n",
+                "  \"events_since_pending_refresh\": {},\n",
+                "  \"pending_item_refresh_proof_class\": \"{}\",\n",
+                "  \"first_followup_event\": \"{}\",\n",
+                "  \"first_client_action\": \"{}\",\n",
+                "  \"first_client_action_has_object_id\": {},\n",
+                "  \"first_client_action_object_id\": {},\n",
+                "  \"first_client_action_slot\": {},\n",
+                "  \"first_client_action_button_type\": {},\n",
+                "  \"first_client_action_body_kind\": \"{}\",\n",
+                "  \"first_client_action_candidate_known\": {},\n",
+                "  \"first_client_action_candidate_object_id\": {},\n",
+                "  \"first_client_action_matches_candidate\": {},\n",
+                "  \"direct_item_proof_objects\": {},\n",
+                "  \"feature25_item_proof_objects\": {},\n",
+                "  \"compact_item_emission_proof_objects\": {},\n",
+                "  \"compact_item_emission_direct_only_proof_objects\": {},\n",
+                "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
+                "  \"compact_item_emission_shared_proof_objects\": {},\n",
+                "  \"live_object_events_since_pending_refresh\": {},\n",
+                "  \"quickbar_events_since_pending_refresh\": {},\n",
+                "  \"area_events_since_pending_refresh\": {},\n",
+                "  \"inventory_events_since_pending_refresh\": {},\n",
+                "  \"client_input_events_since_pending_refresh\": {},\n",
+                "  \"client_input_use_item_events_since_pending_refresh\": {},\n",
+                "  \"client_input_use_object_events_since_pending_refresh\": {},\n",
+                "  \"client_input_change_door_state_events_since_pending_refresh\": {},\n",
+                "  \"client_input_other_events_since_pending_refresh\": {},\n",
+                "  \"client_quickbar_events_since_pending_refresh\": {},\n",
+                "  \"client_quickbar_item_set_button_events_since_pending_refresh\": {},\n",
+                "  \"client_quickbar_other_set_button_events_since_pending_refresh\": {},\n",
+                "  \"chat_events_since_pending_refresh\": {},\n",
+                "  \"other_events_since_pending_refresh\": {}\n",
+                "}}\n"
+            ),
+            self.candidate.object_id,
+            self.candidate.object_id,
+            self.candidate.proof.as_str(),
+            self.candidate.source.as_str(),
+            self.updates_since_committed_quickbar,
+            self.events_since_pending_refresh,
+            self.proof_class
+                .map(QuickbarItemRefreshProofClass::as_str)
+                .unwrap_or("none"),
+            self.first_followup_event
+                .map(QuickbarItemRefreshEventKind::as_str)
+                .unwrap_or("none"),
+            self.first_client_action
+                .map(QuickbarItemRefreshEventKind::as_str)
+                .unwrap_or("none"),
+            first_client_action_has_object_id,
+            first_client_action_object_id,
+            first_client_action_slot,
+            first_client_action_button_type,
+            first_client_action_body_kind,
+            first_client_action_candidate_known,
+            first_client_action_candidate_object_id,
+            first_client_action_matches_candidate,
+            self.direct_item_proof_objects,
+            self.feature25_item_proof_objects,
+            self.compact_item_emission_proof_objects,
+            self.compact_item_emission_direct_only_proof_objects,
+            self.compact_item_emission_feature25_only_proof_objects,
+            self.compact_item_emission_shared_proof_objects,
+            self.event_breakdown.live_object_events,
+            self.event_breakdown.quickbar_events,
+            self.event_breakdown.area_events,
+            self.event_breakdown.inventory_events,
+            self.event_breakdown.client_input_events,
+            self.event_breakdown.client_input_use_item_events,
+            self.event_breakdown.client_input_use_object_events,
+            self.event_breakdown.client_input_change_door_state_events,
+            self.event_breakdown.client_input_other_events,
+            self.event_breakdown.client_quickbar_events,
+            self.event_breakdown.client_quickbar_item_set_button_events,
+            self.event_breakdown.client_quickbar_other_set_button_events,
+            self.event_breakdown.chat_events,
+            self.event_breakdown.other_events,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2447,6 +2591,37 @@ impl UiState {
                 .post_committed_quickbar_item_refresh_first_client_action_detail,
         })
     }
+
+    pub(crate) fn quickbar_item_refresh_harness_hint(
+        &self,
+    ) -> Option<QuickbarItemRefreshHarnessHint> {
+        let summary = self.unresolved_pending_item_refresh()?;
+        let candidate = summary.item_context.compact_item_emission_candidate?;
+        Some(QuickbarItemRefreshHarnessHint {
+            candidate,
+            updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
+            events_since_pending_refresh: summary.events_since_pending_refresh,
+            event_breakdown: summary.event_breakdown,
+            proof_class: summary.proof_class,
+            first_followup_event: summary.first_followup_event,
+            first_client_action: summary.first_client_action,
+            first_client_action_detail: summary.first_client_action_detail,
+            direct_item_proof_objects: summary.item_context.direct_item_proof_objects,
+            feature25_item_proof_objects: summary.item_context.feature25_item_proof_objects,
+            compact_item_emission_proof_objects: summary
+                .item_context
+                .compact_item_emission_proof_objects,
+            compact_item_emission_direct_only_proof_objects: summary
+                .item_context
+                .compact_item_emission_direct_only_proof_objects,
+            compact_item_emission_feature25_only_proof_objects: summary
+                .item_context
+                .compact_item_emission_feature25_only_proof_objects,
+            compact_item_emission_shared_proof_objects: summary
+                .item_context
+                .compact_item_emission_shared_proof_objects,
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2472,9 +2647,11 @@ mod tests {
         AreaStaticPlaceableConflictRecordObservation,
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
         ITEM_OBJECT_TYPE, InventoryItemContextCandidate, InventoryItemContextCandidateSource,
-        InventoryItemObjectProof, InventoryItemObjectStatus, LiveObjectBounds, LiveObjectMention,
-        LiveObjectOrientation, LiveObjectPlaceableAppearance, LiveObjectPlaceableState,
-        LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
+        InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectStatus,
+        LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
+        QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
+        QuickbarItemRefreshProofClass, UiState,
     };
 
     #[test]
@@ -4661,6 +4838,78 @@ mod tests {
                 source: InventoryItemContextCandidateSource::Feature25Only,
             })
         );
+    }
+
+    #[test]
+    fn quickbar_item_refresh_harness_hint_serializes_pending_candidate() {
+        let mut ui = UiState::default();
+        assert_eq!(
+            ui.quickbar_item_refresh_harness_hint(),
+            None,
+            "no hint should be emitted until a verified pending refresh exists"
+        );
+
+        let item_context = InventoryItemContextSummary {
+            direct_item_proof_objects: 0,
+            feature25_item_proof_objects: 1,
+            compact_item_emission_proof_objects: 1,
+            compact_item_emission_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0100,
+                proof: InventoryItemObjectProof::Feature25SecondList,
+                source: InventoryItemContextCandidateSource::Feature25Only,
+            }),
+            compact_item_emission_feature25_only_proof_objects: 1,
+            inventory_feature25_second_item_refs: 1,
+            ..InventoryItemContextSummary::default()
+        };
+        ui.last_inventory_item_context_after_committed_quickbar = Some(item_context);
+        ui.inventory_item_context_after_committed_quickbar_updates = 7;
+        ui.post_committed_quickbar_item_refresh_pending_events = 11;
+        ui.post_committed_quickbar_item_refresh_pending_event_breakdown =
+            QuickbarItemRefreshEventBreakdown {
+                live_object_events: 7,
+                client_input_other_events: 1,
+                other_events: 3,
+                ..QuickbarItemRefreshEventBreakdown::default()
+            };
+        ui.post_committed_quickbar_item_refresh_proof_class =
+            Some(QuickbarItemRefreshProofClass::Feature25Only);
+        ui.post_committed_quickbar_item_refresh_first_followup_event =
+            Some(QuickbarItemRefreshEventKind::ClientInputOther);
+
+        assert_eq!(
+            ui.quickbar_item_refresh_harness_hint(),
+            None,
+            "candidate evidence alone should not emit a driver hint before the pending bit is set"
+        );
+
+        ui.post_committed_quickbar_item_refresh_pending = true;
+        let hint = ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("pending candidate should expose a harness hint");
+        assert_eq!(hint.candidate.object_id, 0x8000_0100);
+        assert_eq!(
+            hint.candidate.proof,
+            InventoryItemObjectProof::Feature25SecondList
+        );
+        assert_eq!(
+            hint.proof_class,
+            Some(QuickbarItemRefreshProofClass::Feature25Only)
+        );
+        assert_eq!(hint.updates_since_committed_quickbar, 7);
+        assert_eq!(hint.events_since_pending_refresh, 11);
+        assert_eq!(
+            hint.first_followup_event,
+            Some(QuickbarItemRefreshEventKind::ClientInputOther)
+        );
+
+        let json = hint.to_json();
+        assert!(json.contains("\"candidate_object_id\": 2147483904"));
+        assert!(json.contains("\"candidate_object_id_hex\": \"0x80000100\""));
+        assert!(json.contains("\"candidate_proof\": \"feature25_second_list\""));
+        assert!(json.contains("\"candidate_source\": \"feature25_only\""));
+        assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
+        assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
     }
 
     #[test]

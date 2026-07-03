@@ -4,6 +4,8 @@
 //! substate below owns one transport concern, so future packet-family work has
 //! an obvious home instead of casually adding fields to `SessionState`.
 
+use std::path::PathBuf;
+
 use flate2::Decompress;
 
 use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources, semantic};
@@ -125,12 +127,15 @@ pub struct SessionState {
     pub(super) area_context: AreaContextState,
     pub(super) module_resources: module_resources::ModuleResourceRuntime,
     pub(super) semantic: semantic::SemanticSessionState,
+    pub(super) quickbar_item_refresh_hint_path: Option<PathBuf>,
+    pub(super) quickbar_item_refresh_hint_last_body: Option<String>,
 }
 
 impl SessionState {
     pub fn new(
         module_resources: module_resources::ModuleResourceRuntime,
         synthesize_area_loadbar: bool,
+        quickbar_item_refresh_hint_path: Option<PathBuf>,
     ) -> Self {
         Self {
             deflate: DeflateState::default(),
@@ -152,6 +157,8 @@ impl SessionState {
             deferred_module_resources: DeferredModuleResourcesSessionState::default(),
             area_context: AreaContextState::default(),
             semantic: semantic::SemanticSessionState::default(),
+            quickbar_item_refresh_hint_path,
+            quickbar_item_refresh_hint_last_body: None,
         }
     }
 }

@@ -388,6 +388,22 @@ not as standalone workaround targets.
   against candidate `2147574964` after the Feature-25-only post-proof window
   opens, then check whether HG emits a later item-bearing committed
   `GuiQuickbar_SetAllButtons`.
+- 2026-07-03 quickbar harness-hint slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at the gate, the
+  newest gameplay packet was about 22h05m old and gameplay reached. Proxy2 now
+  accepts `--quickbar-item-refresh-hint` and writes a polling JSON hint from
+  verified semantic state whenever a pending post-quickbar item refresh has a
+  compact item-emission candidate. The replay and live HG harness scripts wire
+  the hint path into proxy2, and replay summaries export the parsed hint fields.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-hint-automation-20260703-132844`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, and 1 committed quickbar summary. The hint file was
+  emitted with `pending_item_refresh=true`, final candidate `2147574946`
+  (`feature25_second_list`, Feature-25-only), while earlier hint updates mostly
+  tracked candidate `2147574964`. Next production path: make the live harness
+  consume this hint after the post-proof window opens and drive UseItem or an
+  item-bearing client quickbar SetButton against the current hinted candidate.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.

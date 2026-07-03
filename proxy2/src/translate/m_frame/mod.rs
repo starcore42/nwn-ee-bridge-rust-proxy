@@ -506,6 +506,7 @@ fn observe_verified_server_m_packet(
         payload,
         Some(&state.area_context.latest_area_placeables),
     );
+    update_quickbar_item_refresh_hint(state);
 }
 
 fn observe_verified_client_m_packet(
@@ -526,6 +527,7 @@ fn observe_verified_client_m_packet(
         &proof,
         payload,
     );
+    update_quickbar_item_refresh_hint(state);
 }
 
 fn observe_verified_synthetic_server_m_packet(
@@ -546,6 +548,66 @@ fn observe_verified_synthetic_server_m_packet(
         &proof,
         payload,
         Some(&state.area_context.latest_area_placeables),
+    );
+    update_quickbar_item_refresh_hint(state);
+}
+
+fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
+    let Some(path) = state.quickbar_item_refresh_hint_path.clone() else {
+        return;
+    };
+    let hint = state.semantic.quickbar_item_refresh_harness_hint();
+    let body = match hint {
+        Some(hint) => hint.to_json(),
+        None => {
+            if state.quickbar_item_refresh_hint_last_body.is_none() {
+                return;
+            }
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\",\n  \"pending_item_refresh\": false\n}\n"
+                .to_string()
+        }
+    };
+
+    if state.quickbar_item_refresh_hint_last_body.as_deref() == Some(body.as_str()) {
+        return;
+    }
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(err) = fs::create_dir_all(parent)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "failed to create quickbar item-refresh hint directory"
+        );
+        return;
+    }
+
+    if let Err(err) = fs::write(&path, body.as_bytes()) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "failed to update quickbar item-refresh hint file"
+        );
+        return;
+    }
+
+    state.quickbar_item_refresh_hint_last_body = Some(body);
+    let candidate_object_id = hint.map(|hint| hint.candidate.object_id).unwrap_or(0);
+    let candidate_proof = hint
+        .map(|hint| hint.candidate.proof.as_str())
+        .unwrap_or("none");
+    let candidate_source = hint
+        .map(|hint| hint.candidate.source.as_str())
+        .unwrap_or("none");
+    tracing::info!(
+        path = %path.display(),
+        pending_item_refresh = hint.is_some(),
+        candidate_object_id,
+        candidate_proof,
+        candidate_source,
+        "updated quickbar item-refresh harness hint"
     );
 }
 

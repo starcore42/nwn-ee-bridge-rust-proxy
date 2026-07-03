@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-03 12:14 +10: the current
+Latest known live HG status, as of 2026-07-03 13:15 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
@@ -41,7 +41,7 @@ packet files, and packet window
 `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
 Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
 HG `P/05/01` live-object traffic, and in-game chat/reset messages; at the
-2026-07-03 12:14 +10 gate, the newest gameplay packet was about 21h04m old
+2026-07-03 13:15 +10 gate, the newest gameplay packet was about 22h05m old
 and still inside the 24-hour freshness window. The first
 strict proxy2 replay
 `C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
@@ -59,7 +59,19 @@ quickbar rewrite summary. The committed quickbar still has 0 item buttons, 29
 blank slots, 5 spell slots, and 2 preserved general buttons; the next useful
 capture pressure remains a post-proof UseItem or item-bearing client quickbar
 SetButton that provokes item-bearing quickbar materialization, or the next
-fresh live-object exact-shape gap.
+fresh live-object exact-shape gap. As of 2026-07-03 13:32 +10, proxy2,
+`tools\replay-diamond-client-capture-through-proxy2.ps1`, and
+`tools\test-hg-bridge.ps1` support `--quickbar-item-refresh-hint`, writing
+`quickbar-item-refresh-hint.json` under the run root unless an explicit path is
+provided. The file contains `pending_item_refresh`, the current verified
+compact item-emission candidate object id/proof/source, event counters, and
+the first post-proof client-action comparison so a live harness can poll and
+target the candidate without scraping proxy logs. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-hint-automation-20260703-132844`
+reported 414 strict allows, 0 strict quarantines, 0 quarantine files, 27
+live-object exact shape/rewrite matches, 147 exact lifecycle claim matches, and
+emitted a pending hint for candidate `2147574946`
+(`feature25_second_list`, Feature-25-only).
 
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`

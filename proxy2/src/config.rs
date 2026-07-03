@@ -96,6 +96,13 @@ pub struct Config {
     #[arg(long)]
     pub packet_dump: bool,
 
+    /// Optional JSON file updated with the current pending quickbar item-refresh
+    /// candidate. Harness drivers can poll this to target the exact object id
+    /// proven by verified inventory/live-object state after a committed
+    /// `GuiQuickbar_SetAllButtons`.
+    #[arg(long)]
+    pub quickbar_item_refresh_hint: Option<PathBuf>,
+
     /// Diamond `nwncdkey.ini` used to derive 1.69 public CD-key fields.
     ///
     /// The Starcore5 harness account defaults to `C:\NWN\Config\5.nwncdkey.ini`

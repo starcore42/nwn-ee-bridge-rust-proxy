@@ -331,6 +331,7 @@ pub struct Translator {
     discovery_module_name: &'static str,
     module_resources: module_resources::ModuleResourceRuntime,
     synthetic_area_loadbar: bool,
+    quickbar_item_refresh_hint: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug)]
@@ -366,6 +367,7 @@ impl Translator {
             discovery_module_name: profile.discovery_module_name,
             module_resources: module_resource_runtime,
             synthetic_area_loadbar: config.synthetic_area_loadbar_enabled(),
+            quickbar_item_refresh_hint: config.quickbar_item_refresh_hint.clone(),
         })
     }
 
@@ -376,6 +378,7 @@ impl Translator {
             m_state: m_frame::SessionState::new(
                 self.module_resources.for_new_session(),
                 self.synthetic_area_loadbar,
+                self.quickbar_item_refresh_hint.clone(),
             ),
             legacy_udp_port,
         }
