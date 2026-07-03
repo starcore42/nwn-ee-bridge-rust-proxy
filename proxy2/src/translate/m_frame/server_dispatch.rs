@@ -42,6 +42,9 @@ pub(super) struct InflatedPayloadRewrite {
     pub(super) module_info_candidate_offset: Option<usize>,
     pub(super) quarantine_reason: Option<&'static str>,
     pub(super) live_object_update_failure: Option<live_update::RewriteFailure>,
+    pub(super) quickbar_stream_probe_summary: Option<quickbar::QuickbarRewriteSummary>,
+    pub(super) quickbar_stream_probe_materialization_context:
+        Option<semantic::InventoryItemContextSummary>,
 }
 
 impl InflatedPayloadRewrite {
@@ -886,7 +889,7 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     object_registry: Option<&semantic::ObjectRegistry>,
     preclaimed_family: Option<(&'static str, VerifiedFamily)>,
 ) -> InflatedPayloadRewrite {
-    let split_units = {
+    let (split_units, quickbar_stream_probe_summary) = {
         let split = quickbar_materialization::with_registry_materialization_context(
             object_registry,
             |materialization| {
@@ -903,7 +906,7 @@ pub(super) fn rewrite_inflated_payload_for_ee(
                 "inflated gameplay stream classified as incomplete/non-header continuation"
             );
         }
-        if split.units.len() > 1 {
+        let units = if split.units.len() > 1 {
             Some(
                 split
                     .units
@@ -926,11 +929,15 @@ pub(super) fn rewrite_inflated_payload_for_ee(
             )
         } else {
             None
-        }
+        };
+        (units, split.quickbar_stream_probe_summary)
     };
+    let quickbar_stream_probe_materialization_context = quickbar_stream_probe_summary
+        .as_ref()
+        .and_then(|_| object_registry.map(|registry| registry.inventory_item_context_summary()));
 
     if let Some(units) = split_units {
-        return rewrite_split_inflated_payload_for_ee(
+        let mut rewrite = rewrite_split_inflated_payload_for_ee(
             payload,
             units,
             latest_area_placeables,
@@ -938,16 +945,24 @@ pub(super) fn rewrite_inflated_payload_for_ee(
             module_resource_runtime,
             object_registry,
         );
+        rewrite.quickbar_stream_probe_summary = quickbar_stream_probe_summary;
+        rewrite.quickbar_stream_probe_materialization_context =
+            quickbar_stream_probe_materialization_context;
+        return rewrite;
     }
 
-    rewrite_single_inflated_payload_for_ee(
+    let mut rewrite = rewrite_single_inflated_payload_for_ee(
         payload,
         latest_area_placeables,
         scope,
         module_resource_runtime,
         object_registry,
         preclaimed_family,
-    )
+    );
+    rewrite.quickbar_stream_probe_summary = quickbar_stream_probe_summary;
+    rewrite.quickbar_stream_probe_materialization_context =
+        quickbar_stream_probe_materialization_context;
+    rewrite
 }
 
 #[derive(Debug)]

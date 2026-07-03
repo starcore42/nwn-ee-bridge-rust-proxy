@@ -702,6 +702,7 @@ fn rewrite_coalesced_record_for_ee(
             Some(&state.semantic.objects),
             None,
         );
+        super::observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
         if semantic_rewrite_summary.should_quarantine()
             || !semantic_rewrite_summary.any_rewrite()
             || payload.len() > u16::MAX as usize
@@ -885,6 +886,7 @@ fn rewrite_coalesced_record_for_ee(
         Some(&state.semantic.objects),
         None,
     );
+    super::observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
     if semantic_rewrite_summary.should_quarantine() || !semantic_rewrite_summary.any_rewrite() {
         let reason = semantic_rewrite_summary
             .quarantine_reason

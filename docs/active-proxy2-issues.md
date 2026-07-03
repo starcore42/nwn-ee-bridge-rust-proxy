@@ -462,6 +462,33 @@ not as standalone workaround targets.
   live auto-UseItem probe and use the new `no_hint_reason` file/log field to
   distinguish missing committed quickbar state, missing post-commit item proof,
   and pending proof without a driveable candidate.
+- 2026-07-03 quickbar stream-probe idle classification slice: live-data gate
+  reused `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516`; at
+  `2026-07-03T17:17:04+10:00`, the newest gameplay packet was about 1h58m old
+  and gameplay reached. Live auto-UseItem probe
+  `C:\nwnbridge\codex-live-quickbar-idle-hint-rerun-20260703-1718\harness-proxy-20260703-171923`
+  reached gameplay but wrote an idle hint with
+  `no_hint_reason=no_committed_quickbar_profile`; proxy logs showed repeated
+  stream-probe `GuiQuickbar_SetAllButtons` candidates with compact item buttons
+  (`item_buttons_seen=3`, `item_buttons_source_compact=3`,
+  `item_buttons_rejected_missing_state_proof=3`) and no committed quickbar
+  profile. Proxy2 now records stream-probe quickbar summaries into semantic UI
+  state and exposes the sharper idle reason
+  `stream_probe_quickbar_item_candidates_without_committed_profile`, plus
+  stream-probe item-button/proof counters, without changing quickbar emission
+  policy. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-stream-probe-hint-automation-20260703-1740`
+  stayed at 0 quarantines, 304 strict allows, 39 stream-probe quickbar
+  summaries, and the expected pending hint for candidate `0x80015DAA`.
+  Post-code live probe
+  `C:\nwnbridge\codex-live-quickbar-stream-probe-hint-20260703-1745\harness-proxy-20260703-173957`
+  reached gameplay and wrote
+  `no_hint_reason=stream_probe_quickbar_item_candidates_without_committed_profile`
+  with one stream-probe summary, 36 owned slots, and 18 preserved explicit item
+  buttons but no committed quickbar profile. Next production path: determine
+  why live stream-probe quickbar units never become a committed profile, then
+  either repair the splitter/stream commitment rule or drive the client action
+  only after a committed profile exists.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
@@ -479,11 +506,14 @@ not as standalone workaround targets.
   still empty (`entries=0 count=0`). Treat this as the next harness production
   target if gameplay replay cannot be obtained manually.
 - Immediate automation target: while the 2026-07-03 live HG capture remains
-  fresh, rerun the live auto-UseItem probe and classify the hint file's
-  `no_hint_reason` if no pending hint appears. Once a pending hint is emitted,
-  use its `recommended_use_item_payload_hex` for a post-proof UseItem, or drive
-  an item-bearing client quickbar SetButton, then check whether HG emits a
-  later item-bearing committed `GuiQuickbar_SetAllButtons`.
+  fresh, rerun the live auto-UseItem probe only after inspecting why the live
+  quickbar stream probes never produce a committed quickbar profile. If the
+  idle hint reports
+  `stream_probe_quickbar_item_candidates_without_committed_profile`, the next
+  code path is splitter/stream commitment state; once a pending hint is
+  emitted, use its `recommended_use_item_payload_hex` for a post-proof UseItem,
+  or drive an item-bearing client quickbar SetButton, then check whether HG
+  emits a later item-bearing committed `GuiQuickbar_SetAllButtons`.
 - 2026-06-28 live-data gate satisfied by
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`: probe window
   `2026-06-28 00:05:38.124 -> 00:07:37.612`, 119 packet files, gameplay reached

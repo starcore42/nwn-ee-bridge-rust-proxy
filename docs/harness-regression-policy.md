@@ -80,6 +80,24 @@ allows, and still ended with the expected pending candidate `0x80015DAA`. The
 next live auto-UseItem probe should use the negative hint reason if the pending
 hint is absent.
 
+As of 2026-07-03 17:38 +10, live auto-UseItem probe
+`C:\nwnbridge\codex-live-quickbar-idle-hint-rerun-20260703-1718\harness-proxy-20260703-171923`
+reached gameplay but still had no committed quickbar profile. The hint file
+reported `pending_item_refresh=false` and previously surfaced only
+`no_committed_quickbar_profile`, while proxy logs showed stream-probe
+`GuiQuickbar_SetAllButtons` records with compact item candidates. Proxy2 now
+records those stream-probe summaries into semantic UI state. Post-code live
+probe
+`C:\nwnbridge\codex-live-quickbar-stream-probe-hint-20260703-1745\harness-proxy-20260703-173957`
+reached gameplay and reported
+`stream_probe_quickbar_item_candidates_without_committed_profile` with
+stream-probe item-button/proof counters. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-stream-probe-hint-automation-20260703-1740`
+against the current Diamond capture stayed at 0 quarantines and 304 strict
+allows. If a future live probe reports this stream-probe no-hint reason, treat
+the next harness/proxy target as quickbar stream commitment, not UseItem
+injection.
+
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
 against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79
@@ -520,6 +538,7 @@ work.
 | Strict replay fails before launch with `Access is denied` while replacing `target\debug\hgbridge_proxy2.exe` | A stale replay proxy is still holding the debug executable | List `hgbridge_proxy2.exe` processes, stop only the stale debug replay process, or pass `-ProxyExe` with an isolated build output. Leave unrelated live/public proxy processes alone. |
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
 | Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch | The wrapper selected a stale proxy2 executable, usually `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, before the repo build | Use the resolver that prefers repo builds, checks `--help` for the hint flag, skips stale candidates, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
+| Live auto-UseItem hint reports `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but no accepted committed quickbar profile has reached semantic state | Inspect splitter/stream commitment and quickbar buffering before trying to inject UseItem; the driver should wait for a pending hint or a committed profile. |
 
 Rules:
 

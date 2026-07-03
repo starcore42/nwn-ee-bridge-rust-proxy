@@ -69,6 +69,18 @@ fn rewrite_quickbar_payload_for_stream(
     )
 }
 
+fn observe_quickbar_stream_probe_summary(
+    state: &mut SessionState,
+    summary: &quickbar::QuickbarRewriteSummary,
+) {
+    let materialization_context = state.semantic.objects.inventory_item_context_summary();
+    state
+        .semantic
+        .ui
+        .observe_quickbar_stream_probe(summary, materialization_context);
+    super::update_quickbar_item_refresh_hint(state);
+}
+
 pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
     state: &mut SessionState,
     reassembly: &ServerDeflatedReassembly,
@@ -92,6 +104,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                 QuickbarRewriteMode::StreamProbe,
             ) {
                 Some(summary) => {
+                    observe_quickbar_stream_probe_summary(state, &summary);
                     if !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary) {
                         return Ok(None);
                     }
@@ -216,28 +229,35 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
             )));
         }
     } else {
-        let mut rewritten_payload = pending.payload.clone();
+        let pending_payload = pending.payload.clone();
+        let pending_chunks = pending.chunks;
+        let pending_len = pending.payload.len();
+        let pending_first_sequence = pending.first_sequence;
+        let mut rewritten_payload = pending_payload;
         let rewrite = rewrite_quickbar_payload_for_stream(
             &mut rewritten_payload,
             Some(&state.semantic.objects),
             QuickbarRewriteMode::StreamProbe,
         );
-        let under_wait_budget = pending.chunks < MAX_PENDING_QUICKBAR_STREAM_CHUNKS
-            && pending.payload.len() < MAX_PENDING_QUICKBAR_STREAM_BYTES;
+        let under_wait_budget = pending_chunks < MAX_PENDING_QUICKBAR_STREAM_CHUNKS
+            && pending_len < MAX_PENDING_QUICKBAR_STREAM_BYTES;
         let should_wait = rewrite
             .as_ref()
             .map(|summary| {
                 let claimable_minimum_stream =
-                    pending.chunks >= 3 && summary.trailing_read_bytes == 0;
+                    pending_chunks >= 3 && summary.trailing_read_bytes == 0;
                 quickbar::rewrite_summary_needs_more_quickbar_bytes(summary)
                     && under_wait_budget
                     && !claimable_minimum_stream
             })
             .unwrap_or(under_wait_budget);
+        if let Some(summary) = rewrite.as_ref() {
+            observe_quickbar_stream_probe_summary(state, summary);
+        }
         if should_wait {
-            let buffered = pending.payload.len();
-            let chunks = pending.chunks;
-            let first_sequence = pending.first_sequence;
+            let buffered = pending_len;
+            let chunks = pending_chunks;
+            let first_sequence = pending_first_sequence;
             let outputs = build_blank_quickbar_placeholder_frames(reassembly)?;
             remember_completed_server_stream_window(
                 state,
@@ -280,17 +300,19 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
         return Ok(None);
     }
     pending.duplicate_replays = pending.duplicate_replays.saturating_add(1);
-    let claimable_after_duplicate_grace = pending.chunks >= 3
+    let duplicate_probe_summary = if pending.chunks >= 3
         && pending.duplicate_replays >= MAX_PENDING_QUICKBAR_DUPLICATE_REPLAYS_BEFORE_CLAIM
-        && {
-            let mut probe = pending.payload.clone();
-            rewrite_quickbar_payload_for_stream(
-                &mut probe,
-                Some(&state.semantic.objects),
-                QuickbarRewriteMode::StreamProbe,
-            )
-            .is_some()
-        };
+    {
+        let mut probe = pending.payload.clone();
+        rewrite_quickbar_payload_for_stream(
+            &mut probe,
+            Some(&state.semantic.objects),
+            QuickbarRewriteMode::StreamProbe,
+        )
+    } else {
+        None
+    };
+    let claimable_after_duplicate_grace = duplicate_probe_summary.is_some();
     tracing::warn!(
         first_sequence = pending.first_sequence,
         duplicate_sequence = reassembly.first_sequence,

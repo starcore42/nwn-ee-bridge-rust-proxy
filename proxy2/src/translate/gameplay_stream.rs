@@ -55,6 +55,7 @@ pub enum TranslatedGameplayUnit {
 pub struct SplitResult<T> {
     pub units: T,
     pub complete: bool,
+    pub quickbar_stream_probe_summary: Option<quickbar::QuickbarRewriteSummary>,
 }
 
 pub fn split_inflated_gameplay(bytes: &[u8]) -> SplitResult<Vec<GameplayUnit<'_>>> {
@@ -69,12 +70,14 @@ pub(crate) fn split_inflated_gameplay_with_quickbar_materialization<'bytes>(
         return SplitResult {
             units: Vec::new(),
             complete: true,
+            quickbar_stream_probe_summary: None,
         };
     }
 
     let mut offset = 0usize;
     let mut units = Vec::new();
     let mut complete = true;
+    let mut quickbar_stream_probe_summary = None;
 
     while offset < bytes.len() {
         let Some(high) = HighLevel::parse(&bytes[offset..]) else {
@@ -88,7 +91,13 @@ pub(crate) fn split_inflated_gameplay_with_quickbar_materialization<'bytes>(
             break;
         };
 
-        let Some(end) = high_level_unit_end(bytes, offset, high, quickbar_materialization) else {
+        let Some(end) = high_level_unit_end(
+            bytes,
+            offset,
+            high,
+            quickbar_materialization,
+            &mut quickbar_stream_probe_summary,
+        ) else {
             units.push(GameplayUnit::PendingFragment(&bytes[offset..]));
             complete = false;
             break;
@@ -112,7 +121,11 @@ pub(crate) fn split_inflated_gameplay_with_quickbar_materialization<'bytes>(
         offset = end;
     }
 
-    SplitResult { units, complete }
+    SplitResult {
+        units,
+        complete,
+        quickbar_stream_probe_summary,
+    }
 }
 
 fn high_level_unit_end(
@@ -120,12 +133,14 @@ fn high_level_unit_end(
     offset: usize,
     high: HighLevel,
     quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
+    quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
 ) -> Option<usize> {
     match focused_high_level_unit_end_with_quickbar_materialization(
         bytes,
         offset,
         high,
         quickbar_materialization,
+        quickbar_stream_probe_summary,
     ) {
         FocusedUnitEnd::Exact(end) => return Some(end),
         FocusedUnitEnd::Invalid => return None,
@@ -193,7 +208,14 @@ enum FocusedUnitEnd {
 }
 
 fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
-    focused_high_level_unit_end_with_quickbar_materialization(bytes, offset, high, None)
+    let mut quickbar_stream_probe_summary = None;
+    focused_high_level_unit_end_with_quickbar_materialization(
+        bytes,
+        offset,
+        high,
+        None,
+        &mut quickbar_stream_probe_summary,
+    )
 }
 
 fn focused_high_level_unit_end_with_quickbar_materialization(
@@ -201,6 +223,7 @@ fn focused_high_level_unit_end_with_quickbar_materialization(
     offset: usize,
     high: HighLevel,
     quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
+    quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
 ) -> FocusedUnitEnd {
     match (high.major, high.minor) {
         (0x01, 0x00) => focused_client_server_status_unit_end(bytes, offset),
@@ -237,7 +260,12 @@ fn focused_high_level_unit_end_with_quickbar_materialization(
         (0x22, 0x01) => focused_safe_projectile_unit_end(bytes, offset),
         (0x28, 0x01..=0x08) => focused_ambient_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
-        (0x1E, 0x01) => focused_quickbar_unit_end(bytes, offset, quickbar_materialization),
+        (0x1E, 0x01) => focused_quickbar_unit_end(
+            bytes,
+            offset,
+            quickbar_materialization,
+            quickbar_stream_probe_summary,
+        ),
         (0x1E, 0x02) => focused_client_quickbar_unit_end(bytes, offset),
         (0x2C, 0x01..=0x03) => {
             let Some(declared) = declared_cnw_length(bytes, offset, high) else {
@@ -905,6 +933,7 @@ fn focused_quickbar_unit_end(
     bytes: &[u8],
     offset: usize,
     quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
+    quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
 ) -> FocusedUnitEnd {
     const MAX_QUICKBAR_FRAGMENT_BYTES: usize = 512;
     const QUICKBAR_LEGACY_PREFIX_BYTES: usize = 3 + 4;
@@ -951,8 +980,11 @@ fn focused_quickbar_unit_end(
         let Some(payload) = bytes.get(offset..end) else {
             continue;
         };
-        if quickbar_payload_claims_complete_unit(payload, quickbar_materialization)
-            && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+        if quickbar_payload_claims_complete_unit(
+            payload,
+            quickbar_materialization,
+            quickbar_stream_probe_summary,
+        ) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
         {
             return FocusedUnitEnd::Exact(end);
         }
@@ -964,6 +996,7 @@ fn focused_quickbar_unit_end(
 fn quickbar_payload_claims_complete_unit(
     payload: &[u8],
     quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
+    quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
 ) -> bool {
     if quickbar::ee_set_all_buttons_payload_shape_valid(payload) {
         return true;
@@ -976,6 +1009,7 @@ fn quickbar_payload_claims_complete_unit(
             quickbar_materialization,
         )
     {
+        *quickbar_stream_probe_summary = Some(summary.clone());
         return !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
             && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
     }
@@ -987,6 +1021,7 @@ fn quickbar_payload_claims_complete_unit(
             quickbar_materialization,
         )
     {
+        *quickbar_stream_probe_summary = Some(summary.clone());
         return !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
             && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
     }

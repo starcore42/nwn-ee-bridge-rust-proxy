@@ -611,6 +611,36 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
     );
 }
 
+fn observe_quickbar_stream_probe_from_rewrite(
+    state: &mut SessionState,
+    rewrite: &server_dispatch::InflatedPayloadRewrite,
+) {
+    let (Some(summary), Some(materialization_context)) = (
+        rewrite.quickbar_stream_probe_summary.as_ref(),
+        rewrite.quickbar_stream_probe_materialization_context,
+    ) else {
+        return;
+    };
+    state
+        .semantic
+        .ui
+        .observe_quickbar_stream_probe(summary, materialization_context);
+    tracing::info!(
+        probes = state.semantic.ui.quickbar_stream_probe_summaries,
+        item_buttons_seen = summary.item_buttons_seen,
+        item_buttons_source_compact = summary.item_buttons_source_compact,
+        item_buttons_preserved = summary.item_buttons_preserved,
+        item_buttons_rejected_missing_state_proof =
+            summary.item_buttons_rejected_missing_state_proof,
+        direct_item_proof_objects = materialization_context.direct_item_proof_objects,
+        feature25_item_proof_objects = materialization_context.feature25_item_proof_objects,
+        compact_item_emission_proof_objects =
+            materialization_context.compact_item_emission_proof_objects,
+        "semantic state observed stream-probe GuiQuickbar summary"
+    );
+    update_quickbar_item_refresh_hint(state);
+}
+
 fn observe_client_window_state(state: &mut SessionState, view: &MFrameView) {
     if view.sequence != 0 {
         record_forward_progress(
@@ -2193,6 +2223,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         Some(&state.semantic.objects),
         None,
     );
+    observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
     if semantic_rewrite_summary.should_quarantine() {
         let reason = semantic_rewrite_summary
             .quarantine_reason

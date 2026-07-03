@@ -23,7 +23,7 @@ use crate::translate::{
     client_quickbar::ClientQuickbarSetButtonKind,
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
-    quickbar::QuickbarValidatedSlotProfile,
+    quickbar::{QuickbarRewriteSummary, QuickbarValidatedSlotProfile},
 };
 
 use super::event::{
@@ -464,6 +464,35 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct QuickbarStreamProbeSummary {
+    pub(crate) slot_records_owned: u32,
+    pub(crate) item_buttons_seen: u32,
+    pub(crate) item_buttons_source_compact: u32,
+    pub(crate) item_buttons_preserved: u32,
+    pub(crate) item_buttons_blanked: u32,
+    pub(crate) item_buttons_blanked_candidate: u32,
+    pub(crate) item_buttons_rejected_missing_state_proof: u32,
+    pub(crate) item_buttons_rejected_missing_state_unknown: u32,
+}
+
+impl QuickbarStreamProbeSummary {
+    fn from_rewrite_summary(summary: &QuickbarRewriteSummary) -> Self {
+        Self {
+            slot_records_owned: summary.slot_records_owned,
+            item_buttons_seen: summary.item_buttons_seen,
+            item_buttons_source_compact: summary.item_buttons_source_compact,
+            item_buttons_preserved: summary.item_buttons_preserved,
+            item_buttons_blanked: summary.item_buttons_blanked,
+            item_buttons_blanked_candidate: summary.item_buttons_blanked_candidate,
+            item_buttons_rejected_missing_state_proof: summary
+                .item_buttons_rejected_missing_state_proof,
+            item_buttons_rejected_missing_state_unknown: summary
+                .item_buttons_rejected_missing_state_unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2570,6 +2599,10 @@ pub(crate) struct UiState {
     pub(crate) client_quickbar_packets: u64,
     pub(crate) inventory_packets: u64,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
+    pub(crate) quickbar_stream_probe_summaries: u64,
+    pub(crate) last_quickbar_stream_probe: Option<QuickbarStreamProbeSummary>,
+    pub(crate) last_quickbar_stream_probe_materialization_context:
+        Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_profile: Option<QuickbarValidatedSlotProfile>,
     pub(crate) last_committed_quickbar_materialization_context: Option<InventoryItemContextSummary>,
     pub(crate) last_inventory_item_context_before_quickbar: Option<InventoryItemContextSummary>,
@@ -2612,8 +2645,26 @@ pub(crate) struct UiState {
 }
 
 impl UiState {
+    pub(crate) fn observe_quickbar_stream_probe(
+        &mut self,
+        summary: &QuickbarRewriteSummary,
+        materialization_context: InventoryItemContextSummary,
+    ) {
+        self.quickbar_stream_probe_summaries =
+            self.quickbar_stream_probe_summaries.saturating_add(1);
+        self.last_quickbar_stream_probe =
+            Some(QuickbarStreamProbeSummary::from_rewrite_summary(summary));
+        self.last_quickbar_stream_probe_materialization_context = Some(materialization_context);
+    }
+
     pub(crate) fn quickbar_item_refresh_harness_idle_reason(&self) -> &'static str {
         if self.last_committed_quickbar_profile.is_none() {
+            if let Some(probe) = self.last_quickbar_stream_probe {
+                if probe.item_buttons_seen != 0 {
+                    return "stream_probe_quickbar_item_candidates_without_committed_profile";
+                }
+                return "stream_probe_quickbar_without_committed_profile";
+            }
             return "no_committed_quickbar_profile";
         }
 
@@ -2656,6 +2707,10 @@ impl UiState {
             .post_committed_quickbar_item_refresh_proof_class
             .map(QuickbarItemRefreshProofClass::as_str)
             .unwrap_or("none");
+        let stream_probe = self.last_quickbar_stream_probe.unwrap_or_default();
+        let stream_probe_context = self
+            .last_quickbar_stream_probe_materialization_context
+            .unwrap_or_default();
         format!(
             concat!(
                 "{{\n",
@@ -2663,6 +2718,19 @@ impl UiState {
                 "  \"pending_item_refresh\": false,\n",
                 "  \"no_hint_reason\": \"{}\",\n",
                 "  \"committed_quickbar_seen\": {},\n",
+                "  \"stream_probe_quickbar_seen\": {},\n",
+                "  \"stream_probe_quickbar_summaries\": {},\n",
+                "  \"stream_probe_slot_records_owned\": {},\n",
+                "  \"stream_probe_item_buttons_seen\": {},\n",
+                "  \"stream_probe_item_buttons_source_compact\": {},\n",
+                "  \"stream_probe_item_buttons_preserved\": {},\n",
+                "  \"stream_probe_item_buttons_blanked\": {},\n",
+                "  \"stream_probe_item_buttons_blanked_candidate\": {},\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_proof\": {},\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_unknown\": {},\n",
+                "  \"stream_probe_direct_item_proof_objects\": {},\n",
+                "  \"stream_probe_feature25_item_proof_objects\": {},\n",
+                "  \"stream_probe_compact_item_emission_proof_objects\": {},\n",
                 "  \"post_committed_item_context_known\": {},\n",
                 "  \"post_committed_item_refresh_pending\": {},\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
@@ -2695,6 +2763,19 @@ impl UiState {
             ),
             self.quickbar_item_refresh_harness_idle_reason(),
             self.last_committed_quickbar_profile.is_some(),
+            self.last_quickbar_stream_probe.is_some(),
+            self.quickbar_stream_probe_summaries,
+            stream_probe.slot_records_owned,
+            stream_probe.item_buttons_seen,
+            stream_probe.item_buttons_source_compact,
+            stream_probe.item_buttons_preserved,
+            stream_probe.item_buttons_blanked,
+            stream_probe.item_buttons_blanked_candidate,
+            stream_probe.item_buttons_rejected_missing_state_proof,
+            stream_probe.item_buttons_rejected_missing_state_unknown,
+            stream_probe_context.direct_item_proof_objects,
+            stream_probe_context.feature25_item_proof_objects,
+            stream_probe_context.compact_item_emission_proof_objects,
             self.last_inventory_item_context_after_committed_quickbar
                 .is_some(),
             self.post_committed_quickbar_item_refresh_pending,
@@ -2814,7 +2895,7 @@ mod tests {
         LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
         QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
-        QuickbarItemRefreshProofClass, UiState,
+        QuickbarItemRefreshProofClass, QuickbarStreamProbeSummary, UiState,
     };
 
     #[test]
@@ -5093,6 +5174,35 @@ mod tests {
         assert!(initial.contains("\"pending_item_refresh\": false"));
         assert!(initial.contains("\"no_hint_reason\": \"no_committed_quickbar_profile\""));
         assert!(initial.contains("\"committed_quickbar_seen\": false"));
+        assert!(initial.contains("\"stream_probe_quickbar_seen\": false"));
+
+        ui.quickbar_stream_probe_summaries = 2;
+        ui.last_quickbar_stream_probe = Some(QuickbarStreamProbeSummary {
+            slot_records_owned: 36,
+            item_buttons_seen: 3,
+            item_buttons_source_compact: 3,
+            item_buttons_preserved: 0,
+            item_buttons_blanked: 10,
+            item_buttons_blanked_candidate: 7,
+            item_buttons_rejected_missing_state_proof: 3,
+            item_buttons_rejected_missing_state_unknown: 3,
+        });
+        ui.last_quickbar_stream_probe_materialization_context = Some(InventoryItemContextSummary {
+            direct_item_proof_objects: 1,
+            ..Default::default()
+        });
+        let stream_probe_no_commit = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(stream_probe_no_commit.contains(
+            "\"no_hint_reason\": \"stream_probe_quickbar_item_candidates_without_committed_profile\""
+        ));
+        assert!(stream_probe_no_commit.contains("\"stream_probe_quickbar_seen\": true"));
+        assert!(stream_probe_no_commit.contains("\"stream_probe_quickbar_summaries\": 2"));
+        assert!(stream_probe_no_commit.contains("\"stream_probe_item_buttons_seen\": 3"));
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_buttons_rejected_missing_state_proof\": 3")
+        );
+        assert!(stream_probe_no_commit.contains("\"stream_probe_direct_item_proof_objects\": 1"));
 
         ui.last_committed_quickbar_profile =
             Some(crate::translate::quickbar::QuickbarValidatedSlotProfile {
