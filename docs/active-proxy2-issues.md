@@ -447,6 +447,21 @@ not as standalone workaround targets.
   Next production path: make the live harness/proxy summary classify why the
   live path has item candidates but no pending hint, then drive the UseItem
   action only when the pending hint is actually emitted.
+- 2026-07-03 quickbar idle-hint classification slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516`; at
+  `2026-07-03T16:15:49+10:00`, the newest gameplay packet was about 56 minutes
+  old and gameplay reached. Proxy2 now writes the quickbar item-refresh hint
+  file even when no actionable pending hint exists, with a structured
+  `no_hint_reason` and committed/post-context counters; the replay summary
+  exports that reason, and the bridge driver includes it in its skip reason
+  when `pending_item_refresh=false`. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-idle-hint-automation-20260703-1626`
+  stayed at 0 quarantines, 304 strict allows, and emitted the expected pending
+  hint for candidate `0x80015DAA` (`feature25_second_list`, Feature-25-only)
+  with payload `7006090C000000AA5D018000C0`. Next production path: rerun the
+  live auto-UseItem probe and use the new `no_hint_reason` file/log field to
+  distinguish missing committed quickbar state, missing post-commit item proof,
+  and pending proof without a driveable candidate.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
@@ -463,13 +478,12 @@ not as standalone workaround targets.
   the auto-character path tried PRE_PLAYMOD selection while the entry list was
   still empty (`entries=0 count=0`). Treat this as the next harness production
   target if gameplay replay cannot be obtained manually.
-- Immediate automation target: while the 2026-07-02 live HG capture remains
-  fresh, use harness/client control to provoke or capture a later committed
-  `GuiQuickbar_SetAllButtons` after the Feature-25-only pending item-proof
-  window. Prefer the hint's `recommended_use_item_payload_hex` for a post-proof
-  UseItem, or an item-bearing client quickbar SetButton; the current
-  first-action detail counters prove ordinary live-object traffic and generic
-  client input do not yet produce an item-bearing refresh.
+- Immediate automation target: while the 2026-07-03 live HG capture remains
+  fresh, rerun the live auto-UseItem probe and classify the hint file's
+  `no_hint_reason` if no pending hint appears. Once a pending hint is emitted,
+  use its `recommended_use_item_payload_hex` for a post-proof UseItem, or drive
+  an item-bearing client quickbar SetButton, then check whether HG emits a
+  later item-bearing committed `GuiQuickbar_SetAllButtons`.
 - 2026-06-28 live-data gate satisfied by
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`: probe window
   `2026-06-28 00:05:38.124 -> 00:07:37.612`, 119 packet files, gameplay reached

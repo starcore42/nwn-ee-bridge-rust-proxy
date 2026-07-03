@@ -67,6 +67,19 @@ probe summarize hint absence versus committed/pending quickbar state, then
 drive a post-proof item action only when proxy2 actually emits the pending
 hint.
 
+As of 2026-07-03 16:26 +10, proxy2 writes
+`quickbar-item-refresh-hint.json` even when no actionable quickbar item-refresh
+hint exists. In that case the file has `pending_item_refresh=false`,
+`no_hint_reason`, and committed/post-context counters so the live harness can
+distinguish no committed quickbar profile, missing post-commit item context,
+pending proof without a candidate, cleared proof, or no compact item proof.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-idle-hint-automation-20260703-1626`
+against the current Diamond capture stayed at 0 quarantines and 304 strict
+allows, and still ended with the expected pending candidate `0x80015DAA`. The
+next live auto-UseItem probe should use the negative hint reason if the pending
+hint is absent.
+
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
 against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79

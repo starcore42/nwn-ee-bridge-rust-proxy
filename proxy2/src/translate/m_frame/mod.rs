@@ -557,15 +557,14 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         return;
     };
     let hint = state.semantic.quickbar_item_refresh_harness_hint();
+    let no_hint_reason = if hint.is_some() {
+        "none"
+    } else {
+        state.semantic.quickbar_item_refresh_harness_idle_reason()
+    };
     let body = match hint {
         Some(hint) => hint.to_json(),
-        None => {
-            if state.quickbar_item_refresh_hint_last_body.is_none() {
-                return;
-            }
-            "{\n  \"kind\": \"quickbar_item_refresh_candidate\",\n  \"pending_item_refresh\": false\n}\n"
-                .to_string()
-        }
+        None => state.semantic.quickbar_item_refresh_harness_idle_json(),
     };
 
     if state.quickbar_item_refresh_hint_last_body.as_deref() == Some(body.as_str()) {
@@ -607,6 +606,7 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         candidate_object_id,
         candidate_proof,
         candidate_source,
+        no_hint_reason,
         "updated quickbar item-refresh harness hint"
     );
 }

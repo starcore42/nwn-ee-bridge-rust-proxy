@@ -64,6 +64,14 @@ impl SemanticSessionState {
         self.ui.quickbar_item_refresh_harness_hint()
     }
 
+    pub(crate) fn quickbar_item_refresh_harness_idle_json(&self) -> String {
+        self.ui.quickbar_item_refresh_harness_idle_json()
+    }
+
+    pub(crate) fn quickbar_item_refresh_harness_idle_reason(&self) -> &'static str {
+        self.ui.quickbar_item_refresh_harness_idle_reason()
+    }
+
     pub(crate) fn trace_unresolved_quickbar_item_refresh(&self) -> bool {
         let Some(summary) = self.ui.unresolved_pending_item_refresh() else {
             return false;
@@ -2604,6 +2612,129 @@ pub(crate) struct UiState {
 }
 
 impl UiState {
+    pub(crate) fn quickbar_item_refresh_harness_idle_reason(&self) -> &'static str {
+        if self.last_committed_quickbar_profile.is_none() {
+            return "no_committed_quickbar_profile";
+        }
+
+        let Some(context) = self.last_inventory_item_context_after_committed_quickbar else {
+            return "no_post_committed_item_context";
+        };
+
+        if self.post_committed_quickbar_item_refresh_pending {
+            if context.compact_item_emission_candidate.is_none() {
+                return "pending_refresh_without_candidate";
+            }
+            return "pending_refresh_hint_unavailable";
+        }
+
+        if context.cleared_inventory_item_object_ids != 0 {
+            return "post_context_cleared_item_proof";
+        }
+
+        if context.has_quickbar_item_context_evidence() {
+            return "post_context_without_compact_item_proof";
+        }
+
+        "post_context_without_item_evidence"
+    }
+
+    pub(crate) fn quickbar_item_refresh_harness_idle_json(&self) -> String {
+        let context = self
+            .last_inventory_item_context_after_committed_quickbar
+            .unwrap_or_default();
+        let candidate = context.compact_item_emission_candidate;
+        let candidate_known = candidate.is_some();
+        let candidate_object_id = candidate.map(|candidate| candidate.object_id).unwrap_or(0);
+        let candidate_proof = candidate
+            .map(|candidate| candidate.proof.as_str())
+            .unwrap_or("none");
+        let candidate_source = candidate
+            .map(|candidate| candidate.source.as_str())
+            .unwrap_or("none");
+        let proof_class = self
+            .post_committed_quickbar_item_refresh_proof_class
+            .map(QuickbarItemRefreshProofClass::as_str)
+            .unwrap_or("none");
+        format!(
+            concat!(
+                "{{\n",
+                "  \"kind\": \"quickbar_item_refresh_candidate\",\n",
+                "  \"pending_item_refresh\": false,\n",
+                "  \"no_hint_reason\": \"{}\",\n",
+                "  \"committed_quickbar_seen\": {},\n",
+                "  \"post_committed_item_context_known\": {},\n",
+                "  \"post_committed_item_refresh_pending\": {},\n",
+                "  \"updates_since_committed_quickbar\": {},\n",
+                "  \"events_since_pending_refresh\": {},\n",
+                "  \"pending_item_refresh_proof_class\": \"{}\",\n",
+                "  \"candidate_known\": {},\n",
+                "  \"candidate_object_id\": {},\n",
+                "  \"candidate_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"candidate_proof\": \"{}\",\n",
+                "  \"candidate_source\": \"{}\",\n",
+                "  \"direct_item_proof_objects\": {},\n",
+                "  \"feature25_item_proof_objects\": {},\n",
+                "  \"compact_item_emission_proof_objects\": {},\n",
+                "  \"compact_item_emission_direct_only_proof_objects\": {},\n",
+                "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
+                "  \"compact_item_emission_shared_proof_objects\": {},\n",
+                "  \"inventory_feature25_first_item_refs\": {},\n",
+                "  \"inventory_feature25_second_item_refs\": {},\n",
+                "  \"inventory_feature25_legacy_tail_item_refs\": {},\n",
+                "  \"cleared_inventory_item_object_ids\": {},\n",
+                "  \"live_object_events_since_pending_refresh\": {},\n",
+                "  \"quickbar_events_since_pending_refresh\": {},\n",
+                "  \"area_events_since_pending_refresh\": {},\n",
+                "  \"inventory_events_since_pending_refresh\": {},\n",
+                "  \"client_input_events_since_pending_refresh\": {},\n",
+                "  \"client_quickbar_events_since_pending_refresh\": {},\n",
+                "  \"chat_events_since_pending_refresh\": {},\n",
+                "  \"other_events_since_pending_refresh\": {}\n",
+                "}}\n"
+            ),
+            self.quickbar_item_refresh_harness_idle_reason(),
+            self.last_committed_quickbar_profile.is_some(),
+            self.last_inventory_item_context_after_committed_quickbar
+                .is_some(),
+            self.post_committed_quickbar_item_refresh_pending,
+            self.inventory_item_context_after_committed_quickbar_updates,
+            self.post_committed_quickbar_item_refresh_pending_events,
+            proof_class,
+            candidate_known,
+            candidate_object_id,
+            candidate_object_id,
+            candidate_proof,
+            candidate_source,
+            context.direct_item_proof_objects,
+            context.feature25_item_proof_objects,
+            context.compact_item_emission_proof_objects,
+            context.compact_item_emission_direct_only_proof_objects,
+            context.compact_item_emission_feature25_only_proof_objects,
+            context.compact_item_emission_shared_proof_objects,
+            context.inventory_feature25_first_item_refs,
+            context.inventory_feature25_second_item_refs,
+            context.inventory_feature25_legacy_tail_item_refs,
+            context.cleared_inventory_item_object_ids,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .live_object_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .quickbar_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .area_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .inventory_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .client_input_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .client_quickbar_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .chat_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .other_events,
+        )
+    }
+
     pub(crate) fn unresolved_pending_item_refresh(
         &self,
     ) -> Option<QuickbarPendingItemRefreshSummary> {
@@ -4952,6 +5083,56 @@ mod tests {
         assert!(json.contains("\"recommended_use_item_has_position\": false"));
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
+    }
+
+    #[test]
+    fn quickbar_item_refresh_idle_hint_serializes_absence_reason() {
+        let mut ui = UiState::default();
+
+        let initial = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(initial.contains("\"pending_item_refresh\": false"));
+        assert!(initial.contains("\"no_hint_reason\": \"no_committed_quickbar_profile\""));
+        assert!(initial.contains("\"committed_quickbar_seen\": false"));
+
+        ui.last_committed_quickbar_profile =
+            Some(crate::translate::quickbar::QuickbarValidatedSlotProfile {
+                slot_records: 36,
+                blank_slots: 36,
+                ..Default::default()
+            });
+        let no_post_context = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(no_post_context.contains("\"no_hint_reason\": \"no_post_committed_item_context\""));
+        assert!(no_post_context.contains("\"committed_quickbar_seen\": true"));
+        assert!(no_post_context.contains("\"post_committed_item_context_known\": false"));
+
+        ui.last_inventory_item_context_after_committed_quickbar =
+            Some(InventoryItemContextSummary {
+                direct_item_proof_objects: 1,
+                ..Default::default()
+            });
+        let no_compact_proof = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(
+            no_compact_proof
+                .contains("\"no_hint_reason\": \"post_context_without_compact_item_proof\"")
+        );
+        assert!(no_compact_proof.contains("\"direct_item_proof_objects\": 1"));
+
+        ui.post_committed_quickbar_item_refresh_pending = true;
+        ui.post_committed_quickbar_item_refresh_proof_class =
+            Some(QuickbarItemRefreshProofClass::Feature25Only);
+        ui.last_inventory_item_context_after_committed_quickbar =
+            Some(InventoryItemContextSummary {
+                feature25_item_proof_objects: 1,
+                compact_item_emission_proof_objects: 1,
+                compact_item_emission_feature25_only_proof_objects: 1,
+                ..Default::default()
+            });
+        let no_candidate = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(no_candidate.contains("\"no_hint_reason\": \"pending_refresh_without_candidate\""));
+        assert!(no_candidate.contains("\"post_committed_item_refresh_pending\": true"));
+        assert!(no_candidate.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
+        assert!(no_candidate.contains("\"candidate_known\": false"));
+        assert!(no_candidate.contains("\"compact_item_emission_proof_objects\": 1"));
     }
 
     #[test]
