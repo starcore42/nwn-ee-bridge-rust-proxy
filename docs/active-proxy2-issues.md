@@ -424,6 +424,29 @@ not as standalone workaround targets.
   after the post-proof window opens, or drive the equivalent item
   `GuiQuickbar_SetButton`, then verify whether HG emits a later item-bearing
   committed `GuiQuickbar_SetAllButtons`.
+- 2026-07-03 quickbar UseItem driver slice: live-data gate refreshed Diamond HG
+  evidence with
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516`; 164 packet files,
+  window `2026-07-03T15:16:25.8610376+10:00 ->
+  2026-07-03T15:19:28.1192675+10:00`, gameplay reached through tempclient
+  BIC/PRE_PLAYMOD and repeated live-object traffic. The bridge DLL now has an
+  opt-in driver-only poller for `quickbar-item-refresh-hint.json`; when
+  `pending_item_refresh` and `recommended_use_item_payload_available` are true
+  it validates the full `70 06 09` `Input_UseItem` payload shape and sends the
+  decompile-backed payload once through `CNWMessage::SendPlayerToServerMessage`.
+  `tools\test-hg-bridge.ps1` exposes this as
+  `-AutoQuickbarItemRefreshUseItem` and now skips stale proxy2 binaries that do
+  not support `--quickbar-item-refresh-hint`. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-useitem-driver-20260703-1530`
+  stayed at 0 quarantines and emitted a pending hint for candidate `0x80015DAA`
+  with payload `7006090C000000AA5D018000C0`. Bounded live proxy probe
+  `C:\nwnbridge\codex-live-quickbar-useitem-driver-20260703-1535\harness-proxy-20260703-153052`
+  reached gameplay, but the live proxy path did not write the pending hint and
+  no UseItem dispatch fired; stream-probe quickbar logs showed compact-source
+  item candidates (`item_buttons_seen=1`) without committed preservation.
+  Next production path: make the live harness/proxy summary classify why the
+  live path has item candidates but no pending hint, then drive the UseItem
+  action only when the pending hint is actually emitted.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.

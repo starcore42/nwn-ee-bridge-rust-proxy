@@ -33,57 +33,39 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-03 14:15 +10: the current
-gameplay-reaching capture is
-`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
-under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
+Latest known live HG status, as of 2026-07-03 15:29 +10: the current
+gameplay-reaching Diamond capture is
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516`, with packet dumps
+under `diamond-client-packets`, probe log `diamond-client-probe.log`, 164
 packet files, and packet window
-`2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
-Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
-HG `P/05/01` live-object traffic, and in-game chat/reset messages; at the
-2026-07-03 14:15 +10 gate, the newest gameplay packet was about 23h05m old
-and still inside the 24-hour freshness window. The first
-strict proxy2 replay
-`C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
-reported 414 strict allows, 0 strict quarantines, but 1 semantic quarantine and
-2 live-object quarantine bins from sequence 179: a mixed inventory Feature-25,
-placeable add, and terminal all-bits `U/09 0xFFFFFFF7` placeable update stream.
-The 2026-07-02 production fix teaches the compact tail9 door/placeable updater
-to remove the exact terminal six legacy packed-name fragment bits only after
-the bounded tail9 name payload is proven. Confirming strict replay
-`C:\nwnbridge\codex-proxy2-replay-fresh-live-fixed-20260702-153427` reported
-414 strict allows, 0 strict quarantines, 0 semantic quarantine matches, 0
-quarantine files, 27 live-object exact shape/rewrite matches, 147 exact
-lifecycle claim matches, 39 stream-probe quickbar summaries, and 1 committed
-quickbar rewrite summary. The committed quickbar still has 0 item buttons, 29
-blank slots, 5 spell slots, and 2 preserved general buttons; the next useful
-capture pressure remains a post-proof UseItem or item-bearing client quickbar
-SetButton that provokes item-bearing quickbar materialization, or the next
-fresh live-object exact-shape gap. As of 2026-07-03 13:32 +10, proxy2,
-`tools\replay-diamond-client-capture-through-proxy2.ps1`, and
-`tools\test-hg-bridge.ps1` support `--quickbar-item-refresh-hint`, writing
-`quickbar-item-refresh-hint.json` under the run root unless an explicit path is
-provided. The file contains `pending_item_refresh`, the current verified
-compact item-emission candidate object id/proof/source, event counters, and
-the first post-proof client-action comparison so a live harness can poll and
-target the candidate without scraping proxy logs. Strict replay
-`C:\nwnbridge\codex-proxy2-replay-quickbar-hint-automation-20260703-132844`
-reported 414 strict allows, 0 strict quarantines, 0 quarantine files, 27
-live-object exact shape/rewrite matches, 147 exact lifecycle claim matches, and
-emitted a pending hint for candidate `2147574946`
-(`feature25_second_list`, Feature-25-only). As of 2026-07-03 14:20 +10, the
-hint file also includes a decompile-backed minimal `Input_UseItem` payload for
-the current candidate: strict replay
-`C:\nwnbridge\codex-proxy2-replay-useitem-payload-hint-automation-20260703-1420`
-reported 414 strict allows, 0 strict quarantines, 0 quarantine files, 27
-live-object exact shape/rewrite matches, and 147 exact lifecycle claim matches;
-its `quickbar-item-refresh-hint.json` set
-`recommended_use_item_payload_available=true`,
-`recommended_use_item_payload_hex=7006090C000000A264018000C0`, and
-`recommended_use_item_item_object_id_hex=0x800164A2`. The next useful harness
-action is to consume that payload after the post-proof window opens, or drive
-an equivalent item `GuiQuickbar_SetButton`, then check for a later item-bearing
-committed `GuiQuickbar_SetAllButtons`.
+`2026-07-03T15:16:25.8610376+10:00 -> 2026-07-03T15:19:28.1192675+10:00`.
+Gameplay was reached through tempclient BIC/PRE_PLAYMOD auto-play and repeated
+HG live-object traffic; at the 2026-07-03 15:29 +10 check, the newest packet
+was about 10 minutes old. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-useitem-driver-20260703-1530`
+against this capture reported 164 packet files, 304 strict allows, 0 strict
+quarantines, 0 semantic quarantine matches, and 0 quarantine files. Its
+`quickbar-item-refresh-hint.json` was pending for candidate `0x80015DAA`
+(`feature25_second_list`, Feature-25-only) with
+`recommended_use_item_payload_hex=7006090C000000AA5D018000C0`.
+
+As of 2026-07-03 15:35 +10, `tools\test-hg-bridge.ps1` has an opt-in
+`-AutoQuickbarItemRefreshUseItem` live-driver path. It exports
+`HG_BRIDGE_AUTO_QUICKBAR_ITEM_REFRESH_USEITEM=1`, wires
+`HG_BRIDGE_QUICKBAR_ITEM_REFRESH_HINT_PATH` to the proxy2 hint file, and the
+bridge DLL polls that file from the driver-only server-message hook. The bridge
+validates the full high-level `70 06 09` `Input_UseItem` shape against the
+decompile-backed reader order before sending it once through
+`CNWMessage::SendPlayerToServerMessage`. A bounded live probe
+`C:\nwnbridge\codex-live-quickbar-useitem-driver-20260703-1535\harness-proxy-20260703-153052`
+reached gameplay through proxy2 (`Area_ClientArea` observations at
+2026-07-03 15:31:51 and 15:32:22 +10). That live path did not write a pending
+hint and no UseItem dispatch fired; proxy logs instead showed stream-probe
+quickbar item candidates (`item_buttons_seen=1`, compact source) without a
+committed item-preservation proof. Next useful harness action: make the live
+probe summarize hint absence versus committed/pending quickbar state, then
+drive a post-proof item action only when proxy2 actually emits the pending
+hint.
 
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
@@ -524,6 +506,7 @@ work.
 | HG endpoint is unreachable or the server is down | External live-server blocker | Record the exact network/server failure and retry later; do not claim fresh gameplay evidence. |
 | Strict replay fails before launch with `Access is denied` while replacing `target\debug\hgbridge_proxy2.exe` | A stale replay proxy is still holding the debug executable | List `hgbridge_proxy2.exe` processes, stop only the stale debug replay process, or pass `-ProxyExe` with an isolated build output. Leave unrelated live/public proxy processes alone. |
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
+| Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch | The wrapper selected a stale proxy2 executable, usually `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, before the repo build | Use the resolver that prefers repo builds, checks `--help` for the hint flag, skips stale candidates, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
 
 Rules:
 
