@@ -33,7 +33,39 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-04 00:36 +10: the current
+Latest known live HG proxy status, as of 2026-07-04 05:39 +10: the current
+gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-direction-counters-setbutton-20260704-0535\harness-proxy-20260704-053414`.
+It reached gameplay through `Area_ClientArea` and sustained
+`GameObjUpdate_LiveObject` traffic. The bridge DLL dispatched one validated
+`GuiQuickbar_SetButton` item action for quickbar item-refresh candidate
+`0x800153FD`, using payload
+`701E02120000000501FD530180FFFFFFFF0060`. The final proxy hint recorded
+`first_client_action="client_quickbar_item_set_button"`,
+`first_client_action_matches_candidate=true`,
+`pending_item_refresh_action_outcome="candidate_client_action_no_server_quickbar"`,
+and `first_client_action_timing="delayed_after_pending_followup"`. After that
+first client action, HG/EE traffic continued for 365 verified events: 187
+server-to-client, 178 client-to-server, 114 live-object, 1 inventory, 1 chat,
+and 0 quickbar events. No quarantine artifact files were written. The run did
+log 70 pre-gameplay unclaimed client high-level frame isolations before
+`Area_ClientArea`; this is a client-frame ownership gap to classify later, not
+a harness connection blocker. The immediate next harness/protocol target is
+active-property item radial/menu action semantics, because matched SetButton
+delivery is now proven and HG continues sending non-quickbar traffic afterward.
+
+As of 2026-07-04 05:32 +10, proxy2 also writes server-to-client and
+client-to-server direction totals for pending quickbar item-refresh windows
+into semantic traces, `quickbar-item-refresh-hint.json`, and replay summaries.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-direction-counters-20260704-0532` against
+the current Diamond HG gameplay capture stayed at 164 packet files, 304 strict
+allows, 0 strict quarantines, and 0 quarantine files. The replay hint for
+feature-25-only candidate `0x80015DAA` reported 190 post-proof events split 96
+server-to-client and 94 client-to-server while still
+`awaiting_client_action`.
+
+Previous live HG proxy status, as of 2026-07-04 00:36 +10: the
 gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-quickbar-setbutton-driver-20260704-003119\harness-proxy-20260704-003123`.
 It reached gameplay through `Area_ClientArea` and sustained

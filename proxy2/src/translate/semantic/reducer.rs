@@ -976,6 +976,14 @@ fn remember_quickbar_item_context_if_relevant(
                 .post_committed_quickbar_item_refresh_pending_updates,
             pending_item_refresh_events =
                 state.ui.post_committed_quickbar_item_refresh_pending_events,
+            pending_item_refresh_server_to_client_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_to_client_events,
+            pending_item_refresh_client_to_server_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .client_to_server_events,
             pending_item_refresh_live_object_events = state
                 .ui
                 .post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -1038,6 +1046,14 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_followup_events_before_first_client_action = state
                 .ui
                 .post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
+            pending_item_refresh_server_to_client_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .server_to_client_events,
+            pending_item_refresh_client_to_server_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_to_server_events,
             pending_item_refresh_live_object_events_after_first_client_action = state
                 .ui
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
@@ -1224,6 +1240,14 @@ fn record_quickbar_item_refresh_event_breakdown(
     breakdown: &mut QuickbarItemRefreshEventBreakdown,
     event: &ProtocolEvent,
 ) {
+    match event.observed().direction {
+        Direction::ServerToClient | Direction::ServerToClientSynthetic => {
+            breakdown.server_to_client_events = breakdown.server_to_client_events.saturating_add(1);
+        }
+        Direction::ClientToServer => {
+            breakdown.client_to_server_events = breakdown.client_to_server_events.saturating_add(1);
+        }
+    }
     match event {
         ProtocolEvent::LiveObject(_) => {
             breakdown.live_object_events = breakdown.live_object_events.saturating_add(1);
@@ -2447,6 +2471,8 @@ mod fixture_free_tests {
             "the pending refresh should retain the deterministic object id for the harness action"
         );
         assert_eq!(unresolved.events_since_pending_refresh, 3);
+        assert_eq!(unresolved.event_breakdown.server_to_client_events, 1);
+        assert_eq!(unresolved.event_breakdown.client_to_server_events, 2);
         assert_eq!(unresolved.event_breakdown.live_object_events, 1);
         assert_eq!(unresolved.event_breakdown.client_input_events, 1);
         assert_eq!(unresolved.event_breakdown.client_input_use_item_events, 1);
@@ -2455,6 +2481,18 @@ mod fixture_free_tests {
         assert_eq!(
             unresolved.events_after_first_client_action, 1,
             "post-action counters should exclude the UseItem itself and count later verified traffic"
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .server_to_client_events,
+            0
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .client_to_server_events,
+            1
         );
         assert_eq!(
             unresolved
@@ -2535,6 +2573,8 @@ mod fixture_free_tests {
         let committed_breakdown = state
             .ui
             .last_committed_quickbar_item_refresh_pending_event_breakdown;
+        assert_eq!(committed_breakdown.server_to_client_events, 1);
+        assert_eq!(committed_breakdown.client_to_server_events, 2);
         assert_eq!(committed_breakdown.client_input_events, 1);
         assert_eq!(committed_breakdown.client_input_use_item_events, 1);
         assert_eq!(committed_breakdown.client_quickbar_events, 1);
@@ -2553,6 +2593,20 @@ mod fixture_free_tests {
                 .ui
                 .last_committed_quickbar_item_refresh_followup_events_before_first_client_action,
             0
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .server_to_client_events,
+            0
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_to_server_events,
+            1
         );
         assert_eq!(
             state
@@ -2660,6 +2714,20 @@ mod fixture_free_tests {
             .unresolved_pending_item_refresh()
             .expect("delayed SetButton should leave the pending refresh unresolved");
         assert_eq!(unresolved.events_since_pending_refresh, 4);
+        assert_eq!(unresolved.event_breakdown.server_to_client_events, 3);
+        assert_eq!(unresolved.event_breakdown.client_to_server_events, 1);
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .server_to_client_events,
+            0
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .client_to_server_events,
+            0
+        );
         assert_eq!(
             unresolved.first_followup_event,
             Some(QuickbarItemRefreshEventKind::Inventory),

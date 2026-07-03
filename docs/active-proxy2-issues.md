@@ -17,6 +17,36 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-04 quickbar direction-counter and live SetButton probe: live-data
+  gate first checked the gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-quickbar-setbutton-driver-20260704-003119\harness-proxy-20260704-003123`
+  (proxy log last write `2026-07-04T00:36:53.3320829+10:00`, about 4.9h old
+  at gate time), so ordinary production work could continue. Proxy2 now records
+  server-to-client and client-to-server event totals for pending quickbar
+  item-refresh windows in semantic traces, `quickbar-item-refresh-hint.json`,
+  and replay summaries. Reference setup: strict replay of Diamond HG gameplay
+  traffic for repeatable legacy pending-window evidence, plus a fresh live HG
+  EE driver-only SetButton probe because the open question is HG's live
+  response after a matched client action. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-direction-counters-20260704-0532` stayed at
+  164 packet files, 304 strict allows, 0 strict quarantines, and 0 quarantine
+  files; its pending hint for `0x80015DAA` reported 190 post-proof events split
+  96 server-to-client and 94 client-to-server, still awaiting client action.
+  Fresh live probe
+  `C:\nwnbridge\codex-live-direction-counters-setbutton-20260704-0535\harness-proxy-20260704-053414`
+  reached gameplay through `Area_ClientArea`/live-object traffic, dispatched
+  matched candidate `0x800153FD` with SetButton payload
+  `701E02120000000501FD530180FFFFFFFF0060`, and ended with
+  `candidate_client_action_no_server_quickbar`: 365 post-action events, 187
+  server-to-client, 178 client-to-server, 114 live-object, 1 inventory, 1 chat,
+  and 0 quickbar events. No quarantine artifact files were written, but the
+  run logged 70 pre-gameplay unclaimed client high-level frame isolations before
+  `Area_ClientArea`; track that separately as a generalized client-frame
+  ownership gap, not as a harness connection blocker. Next production path:
+  compare Diamond/EE active-property item radial/action semantics and decide
+  whether the missing behavior is a radial/menu `ClientGuiEvent`/`ClientInput`
+  sequence or another client state transition, since HG is continuing to send
+  server traffic after the current SetButton but no quickbar refresh.
 - 2026-07-04 live SetButton driver probe: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-useitem-self-target-hint-20260703-223120\harness-proxy-20260703-223124`

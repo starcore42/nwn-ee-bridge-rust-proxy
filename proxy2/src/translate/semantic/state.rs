@@ -134,6 +134,10 @@ impl SemanticSessionState {
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
+            server_to_client_events_since_pending_refresh =
+                summary.event_breakdown.server_to_client_events,
+            client_to_server_events_since_pending_refresh =
+                summary.event_breakdown.client_to_server_events,
             live_object_events_since_pending_refresh = summary.event_breakdown.live_object_events,
             quickbar_events_since_pending_refresh = summary.event_breakdown.quickbar_events,
             area_events_since_pending_refresh = summary.event_breakdown.area_events,
@@ -172,6 +176,12 @@ impl SemanticSessionState {
             first_client_action_matches_candidate,
             first_event_after_client_action,
             events_after_first_client_action = summary.events_after_first_client_action,
+            server_to_client_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_to_client_events,
+            client_to_server_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_to_server_events,
             live_object_events_after_first_client_action = summary
                 .event_breakdown_after_first_client_action
                 .live_object_events,
@@ -753,6 +763,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"recommended_client_quickbar_set_button_has_target_object\": false,\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
+                "  \"server_to_client_events_since_pending_refresh\": {},\n",
+                "  \"client_to_server_events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
@@ -769,6 +781,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_client_action_matches_candidate\": {},\n",
                 "  \"first_event_after_client_action\": \"{}\",\n",
                 "  \"events_after_first_client_action\": {},\n",
+                "  \"server_to_client_events_after_first_client_action\": {},\n",
+                "  \"client_to_server_events_after_first_client_action\": {},\n",
                 "  \"live_object_events_after_first_client_action\": {},\n",
                 "  \"quickbar_events_after_first_client_action\": {},\n",
                 "  \"area_events_after_first_client_action\": {},\n",
@@ -827,6 +841,8 @@ impl QuickbarItemRefreshHarnessHint {
             client_quickbar::ITEM_SET_BUTTON_DEFAULT_INT_PARAM,
             self.updates_since_committed_quickbar,
             self.events_since_pending_refresh,
+            self.event_breakdown.server_to_client_events,
+            self.event_breakdown.client_to_server_events,
             self.proof_class
                 .map(QuickbarItemRefreshProofClass::as_str)
                 .unwrap_or("none"),
@@ -849,6 +865,10 @@ impl QuickbarItemRefreshHarnessHint {
             first_client_action_matches_candidate,
             first_event_after_client_action,
             self.events_after_first_client_action,
+            self.event_breakdown_after_first_client_action
+                .server_to_client_events,
+            self.event_breakdown_after_first_client_action
+                .client_to_server_events,
             self.event_breakdown_after_first_client_action
                 .live_object_events,
             self.event_breakdown_after_first_client_action
@@ -921,6 +941,8 @@ pub(crate) struct QuickbarItemRefreshClientActionDetail {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct QuickbarItemRefreshEventBreakdown {
+    pub(crate) server_to_client_events: u64,
+    pub(crate) client_to_server_events: u64,
     pub(crate) live_object_events: u64,
     pub(crate) quickbar_events: u64,
     pub(crate) area_events: u64,
@@ -3002,6 +3024,8 @@ impl UiState {
                 "  \"post_committed_item_refresh_pending\": {},\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
+                "  \"server_to_client_events_since_pending_refresh\": {},\n",
+                "  \"client_to_server_events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
@@ -3051,6 +3075,10 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_pending,
             self.inventory_item_context_after_committed_quickbar_updates,
             self.post_committed_quickbar_item_refresh_pending_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_to_client_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .client_to_server_events,
             proof_class,
             action_outcome,
             first_client_action_timing,
@@ -5432,6 +5460,8 @@ mod tests {
         ui.post_committed_quickbar_item_refresh_pending_events = 11;
         ui.post_committed_quickbar_item_refresh_pending_event_breakdown =
             QuickbarItemRefreshEventBreakdown {
+                server_to_client_events: 10,
+                client_to_server_events: 1,
                 live_object_events: 7,
                 client_input_other_events: 1,
                 other_events: 3,
@@ -5440,6 +5470,8 @@ mod tests {
         ui.post_committed_quickbar_item_refresh_events_after_first_client_action = 2;
         ui.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
             QuickbarItemRefreshEventBreakdown {
+                server_to_client_events: 1,
+                client_to_server_events: 1,
                 live_object_events: 1,
                 other_events: 1,
                 ..QuickbarItemRefreshEventBreakdown::default()
@@ -5485,6 +5517,8 @@ mod tests {
         );
         assert_eq!(hint.updates_since_committed_quickbar, 7);
         assert_eq!(hint.events_since_pending_refresh, 11);
+        assert_eq!(hint.event_breakdown.server_to_client_events, 10);
+        assert_eq!(hint.event_breakdown.client_to_server_events, 1);
         assert_eq!(
             hint.first_followup_event,
             Some(QuickbarItemRefreshEventKind::ClientInputOther)
@@ -5538,6 +5572,8 @@ mod tests {
             json.contains("\"recommended_client_quickbar_set_button_has_target_object\": false")
         );
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
+        assert!(json.contains("\"server_to_client_events_since_pending_refresh\": 10"));
+        assert!(json.contains("\"client_to_server_events_since_pending_refresh\": 1"));
         assert!(json.contains(
             "\"pending_item_refresh_action_outcome\": \"candidate_client_action_no_server_quickbar\""
         ));
@@ -5549,6 +5585,8 @@ mod tests {
         assert!(json.contains("\"first_client_action\": \"client_input_other\""));
         assert!(json.contains("\"first_event_after_client_action\": \"live_object\""));
         assert!(json.contains("\"events_after_first_client_action\": 2"));
+        assert!(json.contains("\"server_to_client_events_after_first_client_action\": 1"));
+        assert!(json.contains("\"client_to_server_events_after_first_client_action\": 1"));
         assert!(json.contains("\"live_object_events_after_first_client_action\": 1"));
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
     }

@@ -42,6 +42,31 @@ pub(crate) enum ProtocolEvent {
     Other(ObservedHighLevel),
 }
 
+impl ProtocolEvent {
+    pub(crate) fn observed(&self) -> &ObservedHighLevel {
+        match self {
+            ProtocolEvent::ModuleInfo(event) => &event.observed,
+            ProtocolEvent::ServerStatus(ServerStatusEvent::ModuleResources { observed })
+            | ProtocolEvent::ServerStatus(ServerStatusEvent::ModuleRunning { observed }) => {
+                observed
+            }
+            ProtocolEvent::Area(AreaEvent::ClientArea { observed, .. })
+            | ProtocolEvent::Area(AreaEvent::AreaLoaded { observed })
+            | ProtocolEvent::Area(AreaEvent::LoadBar { observed }) => observed,
+            ProtocolEvent::LiveObject(event) => &event.observed,
+            ProtocolEvent::PlayerList(event) => &event.observed,
+            ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed, .. })
+            | ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed }) => observed,
+            ProtocolEvent::Inventory(event) => &event.observed,
+            ProtocolEvent::ClientInput(event) => &event.observed,
+            ProtocolEvent::ClientQuickbar(event) => &event.observed,
+            ProtocolEvent::Login(event) => &event.observed,
+            ProtocolEvent::Chat(event) => &event.observed,
+            ProtocolEvent::Other(observed) => observed,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ModuleInfoEvent {
     pub(crate) observed: ObservedHighLevel,
