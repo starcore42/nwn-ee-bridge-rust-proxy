@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-03 10:16 +10: the current
+Latest known live HG status, as of 2026-07-03 11:14 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
@@ -41,7 +41,7 @@ packet files, and packet window
 `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
 Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
 HG `P/05/01` live-object traffic, and in-game chat/reset messages; at the
-2026-07-03 10:16 +10 gate, the newest gameplay packet was about 19h06m old
+2026-07-03 11:14 +10 gate, the newest gameplay packet was about 20h04m old
 and still inside the 24-hour freshness window. The first
 strict proxy2 replay
 `C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
@@ -431,6 +431,21 @@ only generic input with object id `2147497163`, slot/button zero, and body kind
 `none`. The next useful harness action remains deliberately provoking a
 post-proof UseItem or item-bearing client quickbar SetButton, then checking
 whether HG emits a later committed item-bearing `GuiQuickbar_SetAllButtons`.
+
+Update as of 2026-07-03 11:28 +10: live-data gate reused
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; the newest gameplay
+packet was about 20h04m old and gameplay reached. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-candidate-automation-20260703-112533`
+stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites, 147
+lifecycle claims, and 1 committed quickbar summary. Semantic item-context
+traces now expose a deterministic compact item-emission candidate id, source,
+and proof for post-quickbar and pending-refresh windows. This replay reports
+37 post-context candidate observations, max object id `2147574964`, all
+Feature-25-only proof (`34` first-list and `3` second-list observations), with
+0 post-proof UseItem/item SetButton actions and 0 committed quickbar item
+buttons. The next useful harness action is to deliberately drive UseItem or an
+item-bearing client quickbar SetButton using the surfaced candidate after the
+post-proof window opens.
 
 ## Successful live HG capture contract
 

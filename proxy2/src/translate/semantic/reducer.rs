@@ -14,8 +14,8 @@ use crate::{
 };
 
 use super::state::{
-    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
-    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    InventoryItemContextCandidate, QuickbarItemRefreshClientActionDetail,
+    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
 };
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, ClientQuickbarEvent, InventoryEvent,
@@ -366,6 +366,40 @@ fn apply_event(
                 ) = quickbar_item_refresh_client_action_trace_fields(
                     pending_item_refresh_first_client_action_detail,
                 );
+                let (
+                    prior_compact_item_emission_candidate_known,
+                    prior_compact_item_emission_candidate_object_id,
+                    prior_compact_item_emission_candidate_proof,
+                    prior_compact_item_emission_candidate_source,
+                ) = quickbar_item_context_candidate_trace_fields(
+                    prior_item_context.compact_item_emission_candidate,
+                );
+                let (
+                    previous_post_compact_item_emission_candidate_known,
+                    previous_post_compact_item_emission_candidate_object_id,
+                    previous_post_compact_item_emission_candidate_proof,
+                    previous_post_compact_item_emission_candidate_source,
+                ) = quickbar_item_context_candidate_trace_fields(
+                    previous_post_item_context.compact_item_emission_candidate,
+                );
+                let (
+                    pending_item_refresh_candidate_known_before_commit,
+                    pending_item_refresh_candidate_object_id_before_commit,
+                    pending_item_refresh_candidate_proof_before_commit,
+                    pending_item_refresh_candidate_source_before_commit,
+                ) = quickbar_item_context_candidate_trace_fields(if pending_item_refresh {
+                    previous_post_item_context.compact_item_emission_candidate
+                } else {
+                    None
+                });
+                let (
+                    best_compact_item_emission_candidate_known,
+                    best_compact_item_emission_candidate_object_id,
+                    best_compact_item_emission_candidate_proof,
+                    best_compact_item_emission_candidate_source,
+                ) = quickbar_item_context_candidate_trace_fields(
+                    best_item_context.compact_item_emission_candidate,
+                );
                 tracing::info!(
                     slot_records = profile.slot_records,
                     blank_slots = profile.blank_slots,
@@ -397,6 +431,10 @@ fn apply_event(
                         prior_item_context.feature25_item_proof_objects,
                     prior_compact_item_emission_proof_objects =
                         prior_item_context.compact_item_emission_proof_objects,
+                    prior_compact_item_emission_candidate_known,
+                    prior_compact_item_emission_candidate_object_id,
+                    prior_compact_item_emission_candidate_proof,
+                    prior_compact_item_emission_candidate_source,
                     prior_compact_item_emission_direct_only_proof_objects =
                         prior_item_context.compact_item_emission_direct_only_proof_objects,
                     prior_compact_item_emission_feature25_only_proof_objects =
@@ -419,6 +457,10 @@ fn apply_event(
                         previous_post_item_context.feature25_item_proof_objects,
                     previous_post_compact_item_emission_proof_objects =
                         previous_post_item_context.compact_item_emission_proof_objects,
+                    previous_post_compact_item_emission_candidate_known,
+                    previous_post_compact_item_emission_candidate_object_id,
+                    previous_post_compact_item_emission_candidate_proof,
+                    previous_post_compact_item_emission_candidate_source,
                     previous_post_compact_item_emission_direct_only_proof_objects =
                         previous_post_item_context.compact_item_emission_direct_only_proof_objects,
                     previous_post_compact_item_emission_feature25_only_proof_objects =
@@ -474,6 +516,10 @@ fn apply_event(
                     pending_item_refresh_first_client_action_slot,
                     pending_item_refresh_first_client_action_button_type,
                     pending_item_refresh_first_client_action_body_kind,
+                    pending_item_refresh_candidate_known_before_commit,
+                    pending_item_refresh_candidate_object_id_before_commit,
+                    pending_item_refresh_candidate_proof_before_commit,
+                    pending_item_refresh_candidate_source_before_commit,
                     pending_item_refresh_outcome = pending_item_refresh_outcome.as_str(),
                     best_item_context_known,
                     best_item_context_source,
@@ -482,6 +528,10 @@ fn apply_event(
                         best_item_context.feature25_item_proof_objects,
                     best_compact_item_emission_proof_objects =
                         best_item_context.compact_item_emission_proof_objects,
+                    best_compact_item_emission_candidate_known,
+                    best_compact_item_emission_candidate_object_id,
+                    best_compact_item_emission_candidate_proof,
+                    best_compact_item_emission_candidate_source,
                     best_compact_item_emission_direct_only_proof_objects =
                         best_item_context.compact_item_emission_direct_only_proof_objects,
                     best_compact_item_emission_feature25_only_proof_objects =
@@ -728,6 +778,14 @@ fn remember_quickbar_item_context_if_relevant(
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action_detail,
         );
+        let (
+            compact_item_emission_candidate_known,
+            compact_item_emission_candidate_object_id,
+            compact_item_emission_candidate_proof,
+            compact_item_emission_candidate_source,
+        ) = quickbar_item_context_candidate_trace_fields(
+            item_context.compact_item_emission_candidate,
+        );
         tracing::info!(
             source,
             updates_since_committed_quickbar = state
@@ -806,6 +864,10 @@ fn remember_quickbar_item_context_if_relevant(
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
+            compact_item_emission_candidate_known,
+            compact_item_emission_candidate_object_id,
+            compact_item_emission_candidate_proof,
+            compact_item_emission_candidate_source,
             compact_item_emission_direct_only_proof_objects =
                 item_context.compact_item_emission_direct_only_proof_objects,
             compact_item_emission_feature25_only_proof_objects =
@@ -969,6 +1031,20 @@ fn quickbar_item_refresh_client_action_trace_fields(
         .map(client_quickbar::ClientQuickbarSetButtonKind::as_str)
         .unwrap_or("none");
     (has_object_id, object_id, slot, button_type, body_kind)
+}
+
+fn quickbar_item_context_candidate_trace_fields(
+    candidate: Option<InventoryItemContextCandidate>,
+) -> (bool, u32, &'static str, &'static str) {
+    let known = candidate.is_some();
+    let object_id = candidate.map(|candidate| candidate.object_id).unwrap_or(0);
+    let proof = candidate
+        .map(|candidate| candidate.proof.as_str())
+        .unwrap_or("none");
+    let source = candidate
+        .map(|candidate| candidate.source.as_str())
+        .unwrap_or("none");
+    (known, object_id, proof, source)
 }
 
 fn quickbar_item_refresh_event_kind(event: &ProtocolEvent) -> QuickbarItemRefreshEventKind {
@@ -1947,6 +2023,15 @@ mod fixture_free_tests {
             .ui
             .unresolved_pending_item_refresh()
             .expect("pending item proof should remain unresolved before the next server quickbar");
+        assert_eq!(
+            unresolved.item_context.compact_item_emission_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: first_item_id,
+                proof: InventoryItemObjectProof::Feature25FirstList,
+                source: crate::translate::semantic::state::InventoryItemContextCandidateSource::Feature25Only,
+            }),
+            "the pending refresh should retain the deterministic object id for the harness action"
+        );
         assert_eq!(unresolved.events_since_pending_refresh, 3);
         assert_eq!(unresolved.event_breakdown.live_object_events, 1);
         assert_eq!(unresolved.event_breakdown.client_input_events, 1);
@@ -2078,6 +2163,14 @@ mod fixture_free_tests {
             .ui
             .unresolved_pending_item_refresh()
             .expect("client quickbar item action should leave the pending refresh unresolved");
+        assert_eq!(
+            unresolved.item_context.compact_item_emission_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: first_item_id,
+                proof: InventoryItemObjectProof::Feature25FirstList,
+                source: crate::translate::semantic::state::InventoryItemContextCandidateSource::Feature25Only,
+            })
+        );
         assert_eq!(
             unresolved.first_client_action,
             Some(QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton)

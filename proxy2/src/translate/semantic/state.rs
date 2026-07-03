@@ -91,6 +91,17 @@ impl SemanticSessionState {
             .and_then(|detail| detail.body_kind)
             .map(ClientQuickbarSetButtonKind::as_str)
             .unwrap_or("none");
+        let compact_item_emission_candidate = summary.item_context.compact_item_emission_candidate;
+        let compact_item_emission_candidate_known = compact_item_emission_candidate.is_some();
+        let compact_item_emission_candidate_object_id = compact_item_emission_candidate
+            .map(|candidate| candidate.object_id)
+            .unwrap_or(0);
+        let compact_item_emission_candidate_proof = compact_item_emission_candidate
+            .map(|candidate| candidate.proof.as_str())
+            .unwrap_or("none");
+        let compact_item_emission_candidate_source = compact_item_emission_candidate
+            .map(|candidate| candidate.source.as_str())
+            .unwrap_or("none");
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
@@ -130,6 +141,10 @@ impl SemanticSessionState {
             feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects =
                 summary.item_context.compact_item_emission_proof_objects,
+            compact_item_emission_candidate_known,
+            compact_item_emission_candidate_object_id,
+            compact_item_emission_candidate_proof,
+            compact_item_emission_candidate_source,
             compact_item_emission_direct_only_proof_objects = summary
                 .item_context
                 .compact_item_emission_direct_only_proof_objects,
@@ -197,12 +212,47 @@ pub(crate) enum InventoryItemObjectProof {
     Feature25LegacyTail,
 }
 
+impl InventoryItemObjectProof {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ActiveObject => "active_object",
+            Self::Feature25FirstList => "feature25_first_list",
+            Self::Feature25SecondList => "feature25_second_list",
+            Self::Feature25LegacyTail => "feature25_legacy_tail",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InventoryItemObjectStatus {
     Proven(InventoryItemObjectProof),
     ClearedByItemDelete,
     ClearedByAreaReset,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InventoryItemContextCandidateSource {
+    DirectOnly,
+    Shared,
+    Feature25Only,
+}
+
+impl InventoryItemContextCandidateSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectOnly => "direct_only",
+            Self::Shared => "shared",
+            Self::Feature25Only => "feature25_only",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InventoryItemContextCandidate {
+    pub(crate) object_id: u32,
+    pub(crate) proof: InventoryItemObjectProof,
+    pub(crate) source: InventoryItemContextCandidateSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +290,7 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) direct_item_proof_objects: usize,
     pub(crate) feature25_item_proof_objects: usize,
     pub(crate) compact_item_emission_proof_objects: usize,
+    pub(crate) compact_item_emission_candidate: Option<InventoryItemContextCandidate>,
     pub(crate) compact_item_emission_direct_only_proof_objects: usize,
     pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
     pub(crate) compact_item_emission_shared_proof_objects: usize,
@@ -1114,6 +1165,31 @@ impl ObjectRegistry {
         }
     }
 
+    fn inventory_feature25_item_object_proof(
+        &self,
+        object_id: u32,
+    ) -> Option<InventoryItemObjectProof> {
+        if self
+            .inventory_feature25_first_item_refs
+            .contains(&object_id)
+        {
+            return Some(InventoryItemObjectProof::Feature25FirstList);
+        }
+        if self
+            .inventory_feature25_second_item_refs
+            .contains(&object_id)
+        {
+            return Some(InventoryItemObjectProof::Feature25SecondList);
+        }
+        if self
+            .inventory_feature25_legacy_tail_item_refs
+            .contains(&object_id)
+        {
+            return Some(InventoryItemObjectProof::Feature25LegacyTail);
+        }
+        None
+    }
+
     pub(crate) fn inventory_item_object_status(&self, object_id: u32) -> InventoryItemObjectStatus {
         if self.has_known_inventory_item_object_id(object_id) {
             return InventoryItemObjectStatus::Proven(InventoryItemObjectProof::ActiveObject);
@@ -1149,6 +1225,48 @@ impl ObjectRegistry {
             }
             None => InventoryItemObjectStatus::Unknown,
         }
+    }
+
+    fn compact_item_emission_candidate(
+        &self,
+        direct_item_proof_objects: &BTreeSet<u32>,
+        feature25_item_proof_objects: &BTreeSet<u32>,
+    ) -> Option<InventoryItemContextCandidate> {
+        if let Some(object_id) = direct_item_proof_objects
+            .difference(feature25_item_proof_objects)
+            .next()
+            .copied()
+        {
+            return Some(InventoryItemContextCandidate {
+                object_id,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            });
+        }
+
+        if let Some(object_id) = direct_item_proof_objects
+            .intersection(feature25_item_proof_objects)
+            .next()
+            .copied()
+        {
+            return Some(InventoryItemContextCandidate {
+                object_id,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::Shared,
+            });
+        }
+
+        let object_id = feature25_item_proof_objects
+            .difference(direct_item_proof_objects)
+            .next()
+            .copied()?;
+        Some(InventoryItemContextCandidate {
+            object_id,
+            proof: self
+                .inventory_feature25_item_object_proof(object_id)
+                .unwrap_or(InventoryItemObjectProof::Feature25FirstList),
+            source: InventoryItemContextCandidateSource::Feature25Only,
+        })
     }
 
     pub(crate) fn has_known_inventory_item_object_id(&self, object_id: u32) -> bool {
@@ -1189,12 +1307,17 @@ impl ObjectRegistry {
         let compact_item_emission_shared_proof_objects = direct_item_proof_objects
             .intersection(&feature25_item_proof_objects)
             .count();
+        let compact_item_emission_candidate = self.compact_item_emission_candidate(
+            &direct_item_proof_objects,
+            &feature25_item_proof_objects,
+        );
         InventoryItemContextSummary {
             active_item_objects: active_item_objects.len(),
             materialized_item_objects: self.materialized_item_object_ids.len(),
             direct_item_proof_objects: direct_item_proof_objects.len(),
             feature25_item_proof_objects: feature25_item_proof_objects.len(),
             compact_item_emission_proof_objects: compact_item_emission_proof_objects.len(),
+            compact_item_emission_candidate,
             compact_item_emission_direct_only_proof_objects,
             compact_item_emission_feature25_only_proof_objects,
             compact_item_emission_shared_proof_objects,
@@ -2334,9 +2457,10 @@ mod tests {
     use super::{
         AreaStaticPlaceableConflictRecordObservation,
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
-        ITEM_OBJECT_TYPE, InventoryItemObjectProof, InventoryItemObjectStatus, LiveObjectBounds,
-        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
+        ITEM_OBJECT_TYPE, InventoryItemContextCandidate, InventoryItemContextCandidateSource,
+        InventoryItemObjectProof, InventoryItemObjectStatus, LiveObjectBounds, LiveObjectMention,
+        LiveObjectOrientation, LiveObjectPlaceableAppearance, LiveObjectPlaceableState,
+        LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
     };
 
     #[test]
@@ -4427,6 +4551,15 @@ mod tests {
             summary.compact_item_emission_shared_proof_objects, 2,
             "direct and Feature-25 proof overlap should stay explicit for quickbar policy"
         );
+        assert_eq!(
+            summary.compact_item_emission_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: gui_materialized_item_id,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::Shared,
+            }),
+            "the deterministic harness candidate should point at the lowest shared direct/Feature-25 proof when no direct-only proof exists"
+        );
         assert_eq!(summary.inventory_feature25_first_item_refs, 2);
         assert_eq!(summary.inventory_feature25_second_item_refs, 2);
         assert_eq!(summary.inventory_feature25_legacy_tail_item_refs, 1);
@@ -4447,6 +4580,72 @@ mod tests {
         assert_eq!(
             summary.inventory_feature25_second_deferred_item_ref_mentions,
             1
+        );
+    }
+
+    #[test]
+    fn compact_item_emission_candidate_prefers_direct_then_shared_then_feature25() {
+        let mut direct_only = ObjectRegistry::default();
+        direct_only.observe_materialized_item_object_ids(&[0x8000_0100]);
+        direct_only.observe_inventory_feature25_references(&[
+            LiveObjectInventoryFeature25Reference {
+                owner_id: 0xFFFF_FFEC,
+                mask: 0x2000,
+                first_object_ids: vec![0x8000_0200],
+                second_object_ids: vec![],
+                legacy_tail_object_ids: vec![],
+            },
+        ]);
+        assert_eq!(
+            direct_only
+                .inventory_item_context_summary()
+                .compact_item_emission_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0100,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            })
+        );
+
+        let mut shared = ObjectRegistry::default();
+        shared.observe_materialized_item_object_ids(&[0x8000_0100]);
+        shared.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
+            owner_id: 0xFFFF_FFEC,
+            mask: 0x2000,
+            first_object_ids: vec![0x8000_0100, 0x8000_0200],
+            second_object_ids: vec![],
+            legacy_tail_object_ids: vec![],
+        }]);
+        assert_eq!(
+            shared
+                .inventory_item_context_summary()
+                .compact_item_emission_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0100,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::Shared,
+            })
+        );
+
+        let mut feature25_only = ObjectRegistry::default();
+        feature25_only.observe_inventory_feature25_references(&[
+            LiveObjectInventoryFeature25Reference {
+                owner_id: 0xFFFF_FFEC,
+                mask: 0x2000,
+                first_object_ids: vec![],
+                second_object_ids: vec![0x8000_0300],
+                legacy_tail_object_ids: vec![],
+            },
+        ]);
+        assert_eq!(
+            feature25_only
+                .inventory_item_context_summary()
+                .compact_item_emission_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0300,
+                proof: InventoryItemObjectProof::Feature25SecondList,
+                source: InventoryItemContextCandidateSource::Feature25Only,
+            })
         );
     }
 
