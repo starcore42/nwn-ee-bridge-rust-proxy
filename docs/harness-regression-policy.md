@@ -33,26 +33,42 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-04 05:39 +10: the current
+Latest known live HG proxy status, as of 2026-07-04 09:43 +10: the current
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-direction-counters-setbutton-20260704-0535\harness-proxy-20260704-053414`.
+`C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`.
 It reached gameplay through `Area_ClientArea` and sustained
 `GameObjUpdate_LiveObject` traffic. The bridge DLL dispatched one validated
 `GuiQuickbar_SetButton` item action for quickbar item-refresh candidate
-`0x800153FD`, using payload
-`701E02120000000501FD530180FFFFFFFF0060`. The final proxy hint recorded
+`0x8001620D`, using payload
+`701E021200000000010D620180FFFFFFFF0060`. The final proxy hint recorded
 `first_client_action="client_quickbar_item_set_button"`,
 `first_client_action_matches_candidate=true`,
 `pending_item_refresh_action_outcome="candidate_client_action_no_server_quickbar"`,
 and `first_client_action_timing="delayed_after_pending_followup"`. After that
-first client action, HG/EE traffic continued for 365 verified events: 187
-server-to-client, 178 client-to-server, 114 live-object, 1 inventory, 1 chat,
-and 0 quickbar events. No quarantine artifact files were written. The run did
-log 70 pre-gameplay unclaimed client high-level frame isolations before
-`Area_ClientArea`; this is a client-frame ownership gap to classify later, not
-a harness connection blocker. The immediate next harness/protocol target is
+first client action, HG/EE traffic continued for 79 verified events: 44
+server-to-client, 35 client-to-server, 31 live-object, 1 inventory, 1 chat, 0
+quickbar events, and 0 `client_gui_event_notify` events. No quarantine artifact
+files were written. The immediate next harness/protocol target is
 active-property item radial/menu action semantics, because matched SetButton
-delivery is now proven and HG continues sending non-quickbar traffic afterward.
+delivery is now repeatedly proven and HG continues sending non-quickbar traffic
+afterward.
+
+As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
+`GuiEvent_Notify` client payloads semantically while still forwarding only an
+empty Diamond/1.69 compatibility carrier. Pending quickbar item-refresh traces,
+`quickbar-item-refresh-hint.json`, and replay summaries now expose
+`client_gui_event_events_since_pending_refresh`,
+`client_gui_event_events_after_first_client_action`, and
+`client_gui_event_notify` first-follow-up/first-client-action buckets. Strict
+replay `C:\nwnbridge\codex-proxy2-replay-client-gui-event-20260704-0940`
+against the current Diamond capture stayed at 164 packet files, 304 strict
+allows, 0 strict quarantines, and 0 quarantine files; the new GUI-event fields
+were present and zero for that replay's still-`awaiting_client_action` pending
+window. The fresh SetButton live probe above also exposed the fields with zero
+GUI-event counts, so the next live radial/menu probe should treat them as the
+primary evidence for whether the original client action after the pending item
+proof is a GUI/radial event rather than another quickbar SetButton or UseItem
+shape.
 
 As of 2026-07-04 05:32 +10, proxy2 also writes server-to-client and
 client-to-server direction totals for pending quickbar item-refresh windows

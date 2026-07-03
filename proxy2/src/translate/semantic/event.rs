@@ -7,9 +7,9 @@
 use crate::{
     packet::Direction,
     translate::{
-        VerifiedFamily, client_input::ClientInputClaimSummary,
-        client_quickbar::ClientQuickbarClaimSummary, player_list::PlayerListObjectIds,
-        quickbar::QuickbarValidatedSlotProfile,
+        VerifiedFamily, client_gui_event::ClientGuiEventClaimSummary,
+        client_input::ClientInputClaimSummary, client_quickbar::ClientQuickbarClaimSummary,
+        player_list::PlayerListObjectIds, quickbar::QuickbarValidatedSlotProfile,
     },
 };
 
@@ -35,6 +35,7 @@ pub(crate) enum ProtocolEvent {
     PlayerList(PlayerListEvent),
     Quickbar(QuickbarEvent),
     Inventory(InventoryEvent),
+    ClientGuiEvent(ClientGuiEventEvent),
     ClientInput(ClientInputEvent),
     ClientQuickbar(ClientQuickbarEvent),
     Login(LoginEvent),
@@ -58,6 +59,7 @@ impl ProtocolEvent {
             ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed, .. })
             | ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed }) => observed,
             ProtocolEvent::Inventory(event) => &event.observed,
+            ProtocolEvent::ClientGuiEvent(event) => &event.observed,
             ProtocolEvent::ClientInput(event) => &event.observed,
             ProtocolEvent::ClientQuickbar(event) => &event.observed,
             ProtocolEvent::Login(event) => &event.observed,
@@ -194,6 +196,12 @@ pub(crate) enum QuickbarEvent {
 #[derive(Debug, Clone)]
 pub(crate) struct InventoryEvent {
     pub(crate) observed: ObservedHighLevel,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientGuiEventEvent {
+    pub(crate) observed: ObservedHighLevel,
+    pub(crate) claim: Option<ClientGuiEventClaimSummary>,
 }
 
 #[derive(Debug, Clone)]

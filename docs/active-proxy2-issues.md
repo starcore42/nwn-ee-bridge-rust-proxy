@@ -17,6 +17,39 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-04 consumed ClientGuiEvent semantic-observation slice: live-data
+  gate used the gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-direction-counters-setbutton-20260704-0535\harness-proxy-20260704-053414`
+  (`quickbar-item-refresh-hint.json` last write `2026-07-04T05:39:44+10:00`;
+  about 50 minutes old at the start-of-run gate, still under 24h). Gameplay
+  was reached through `Area_ClientArea` and sustained live-object traffic; the
+  hint remained `candidate_client_action_no_server_quickbar` after matched
+  SetButton candidate `0x800153FD`. Proxy2 now keeps the original verified
+  `GuiEvent_Notify` payload as a semantic observation even when the M-frame
+  compatibility layer consumes it into an empty Diamond/1.69 carrier. The
+  pending quickbar item-refresh window now counts `client_gui_event_notify`,
+  can record it as the first client action with object-id/candidate matching,
+  and the replay/hint summaries expose the new GUI-event buckets. Reference
+  setup: fresh live HG proxy evidence for the current SetButton gap plus unit
+  replay-style regressions for the generalized client-frame and semantic-state
+  rules. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-gui-event-20260704-0940` stayed at
+  164 packet files, 304 strict allows, 0 strict quarantines, 0 quarantine
+  files, and exported the new GUI-event summary fields with zero counts for
+  the Diamond replay's still-`awaiting_client_action` pending window. Fresh
+  post-build live probe
+  `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`
+  reached gameplay and wrote `quickbar-item-refresh-hint.json` at
+  `2026-07-04T09:43:34+10:00` with no quarantine files. It observed matched
+  SetButton candidate `0x8001620D`, `client_quickbar_item_set_button`,
+  47 server-to-client and 37 client-to-server events in the pending window, 44
+  server-to-client and 35 client-to-server after the first client action, 31
+  live-object events after the action, 0 quickbar events, and 0
+  `client_gui_event_notify` events. Next
+  production path: run the live radial/menu action probe and check
+  `client_gui_event_events_since_pending_refresh` and
+  `first_client_action="client_gui_event_notify"` before changing the active
+  item action translator rule.
 - 2026-07-04 quickbar direction-counter and live SetButton probe: live-data
   gate first checked the gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-quickbar-setbutton-driver-20260704-003119\harness-proxy-20260704-003123`

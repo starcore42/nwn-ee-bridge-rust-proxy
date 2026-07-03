@@ -142,6 +142,8 @@ impl SemanticSessionState {
             quickbar_events_since_pending_refresh = summary.event_breakdown.quickbar_events,
             area_events_since_pending_refresh = summary.event_breakdown.area_events,
             inventory_events_since_pending_refresh = summary.event_breakdown.inventory_events,
+            client_gui_event_events_since_pending_refresh =
+                summary.event_breakdown.client_gui_event_events,
             client_input_events_since_pending_refresh = summary.event_breakdown.client_input_events,
             client_input_use_item_events_since_pending_refresh =
                 summary.event_breakdown.client_input_use_item_events,
@@ -194,6 +196,9 @@ impl SemanticSessionState {
             inventory_events_after_first_client_action = summary
                 .event_breakdown_after_first_client_action
                 .inventory_events,
+            client_gui_event_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_gui_event_events,
             client_input_events_after_first_client_action = summary
                 .event_breakdown_after_first_client_action
                 .client_input_events,
@@ -559,6 +564,7 @@ pub(crate) enum QuickbarItemRefreshEventKind {
     ServerQuickbar,
     Area,
     Inventory,
+    ClientGuiEventNotify,
     ClientInputUseItem,
     ClientInputUseObject,
     ClientInputChangeDoorState,
@@ -576,6 +582,7 @@ impl QuickbarItemRefreshEventKind {
             Self::ServerQuickbar => "server_quickbar",
             Self::Area => "area",
             Self::Inventory => "inventory",
+            Self::ClientGuiEventNotify => "client_gui_event_notify",
             Self::ClientInputUseItem => "client_input_use_item",
             Self::ClientInputUseObject => "client_input_use_object",
             Self::ClientInputChangeDoorState => "client_input_change_door_state",
@@ -594,6 +601,7 @@ impl QuickbarItemRefreshEventKind {
                 | Self::ClientInputUseObject
                 | Self::ClientInputChangeDoorState
                 | Self::ClientInputOther
+                | Self::ClientGuiEventNotify
                 | Self::ClientQuickbarItemSetButton
                 | Self::ClientQuickbarOtherSetButton
         )
@@ -787,6 +795,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"quickbar_events_after_first_client_action\": {},\n",
                 "  \"area_events_after_first_client_action\": {},\n",
                 "  \"inventory_events_after_first_client_action\": {},\n",
+                "  \"client_gui_event_events_after_first_client_action\": {},\n",
                 "  \"client_input_events_after_first_client_action\": {},\n",
                 "  \"client_input_use_item_events_after_first_client_action\": {},\n",
                 "  \"client_input_use_object_events_after_first_client_action\": {},\n",
@@ -807,6 +816,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"quickbar_events_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
+                "  \"client_gui_event_events_since_pending_refresh\": {},\n",
                 "  \"client_input_events_since_pending_refresh\": {},\n",
                 "  \"client_input_use_item_events_since_pending_refresh\": {},\n",
                 "  \"client_input_use_object_events_since_pending_refresh\": {},\n",
@@ -877,6 +887,8 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown_after_first_client_action
                 .inventory_events,
             self.event_breakdown_after_first_client_action
+                .client_gui_event_events,
+            self.event_breakdown_after_first_client_action
                 .client_input_events,
             self.event_breakdown_after_first_client_action
                 .client_input_use_item_events,
@@ -904,6 +916,7 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown.quickbar_events,
             self.event_breakdown.area_events,
             self.event_breakdown.inventory_events,
+            self.event_breakdown.client_gui_event_events,
             self.event_breakdown.client_input_events,
             self.event_breakdown.client_input_use_item_events,
             self.event_breakdown.client_input_use_object_events,
@@ -947,6 +960,7 @@ pub(crate) struct QuickbarItemRefreshEventBreakdown {
     pub(crate) quickbar_events: u64,
     pub(crate) area_events: u64,
     pub(crate) inventory_events: u64,
+    pub(crate) client_gui_event_events: u64,
     pub(crate) client_input_events: u64,
     pub(crate) client_input_use_item_events: u64,
     pub(crate) client_input_use_object_events: u64,
@@ -2861,6 +2875,7 @@ impl KnownObjectState {
 pub(crate) struct UiState {
     pub(crate) quickbar_packets: u64,
     pub(crate) quickbar_placeholders: u64,
+    pub(crate) client_gui_event_packets: u64,
     pub(crate) client_quickbar_packets: u64,
     pub(crate) inventory_packets: u64,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
@@ -3049,6 +3064,7 @@ impl UiState {
                 "  \"quickbar_events_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
+                "  \"client_gui_event_events_since_pending_refresh\": {},\n",
                 "  \"client_input_events_since_pending_refresh\": {},\n",
                 "  \"client_quickbar_events_since_pending_refresh\": {},\n",
                 "  \"chat_events_since_pending_refresh\": {},\n",
@@ -3106,6 +3122,8 @@ impl UiState {
                 .area_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .inventory_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .client_gui_event_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .client_input_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown

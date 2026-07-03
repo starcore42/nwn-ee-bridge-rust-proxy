@@ -8,8 +8,8 @@
 use crate::{
     packet::{Direction, m::HighLevel},
     translate::{
-        VerifiedFamily, VerifiedProof, area, client_input, client_quickbar, gameplay_stream,
-        live_object_update, player_list, quickbar,
+        VerifiedFamily, VerifiedProof, area, client_gui_event, client_input, client_quickbar,
+        gameplay_stream, live_object_update, player_list, quickbar,
     },
 };
 
@@ -19,12 +19,13 @@ use super::state::{
     QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
 };
 use super::{
-    AreaEvent, ChatEvent, ClientInputEvent, ClientQuickbarEvent, InventoryEvent,
-    InventoryItemContextSummary, LiveObjectEvent, LiveObjectInventoryFeature25Reference,
-    LiveObjectMention, LiveObjectOrientation, LiveObjectOrientationSource,
-    LiveObjectOrientationVector, LiveObjectPlaceableState, LiveObjectPosition, LoginEvent,
-    ModuleInfoEvent, ObservedHighLevel, PlayerListEvent, ProtocolEvent, QuickbarEvent,
-    QuickbarItemContextSource, QuickbarItemRefreshOutcome, SemanticSessionState, ServerStatusEvent,
+    AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent, ClientQuickbarEvent,
+    InventoryEvent, InventoryItemContextSummary, LiveObjectEvent,
+    LiveObjectInventoryFeature25Reference, LiveObjectMention, LiveObjectOrientation,
+    LiveObjectOrientationSource, LiveObjectOrientationVector, LiveObjectPlaceableState,
+    LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel, PlayerListEvent,
+    ProtocolEvent, QuickbarEvent, QuickbarItemContextSource, QuickbarItemRefreshOutcome,
+    SemanticSessionState, ServerStatusEvent,
 };
 
 #[cfg(test)]
@@ -145,6 +146,10 @@ fn observe_family_payload(
         VerifiedFamily::Inventory | VerifiedFamily::ClientGuiInventory => {
             ProtocolEvent::Inventory(InventoryEvent { observed })
         }
+        VerifiedFamily::ClientGuiEvent => ProtocolEvent::ClientGuiEvent(ClientGuiEventEvent {
+            observed,
+            claim: client_gui_event::claim_payload_if_verified(payload),
+        }),
         VerifiedFamily::ClientInput => ProtocolEvent::ClientInput(ClientInputEvent {
             observed,
             claim: client_input::claim_payload_if_verified(payload),
@@ -562,6 +567,8 @@ fn apply_event(
                         pending_item_refresh_event_breakdown.area_events,
                     pending_item_refresh_inventory_events_before_commit =
                         pending_item_refresh_event_breakdown.inventory_events,
+                    pending_item_refresh_client_gui_event_events_before_commit =
+                        pending_item_refresh_event_breakdown.client_gui_event_events,
                     pending_item_refresh_client_input_events_before_commit =
                         pending_item_refresh_event_breakdown.client_input_events,
                     pending_item_refresh_client_input_use_item_events_before_commit =
@@ -596,6 +603,9 @@ fn apply_event(
                     pending_item_refresh_inventory_events_after_first_client_action_before_commit =
                         pending_item_refresh_event_breakdown_after_first_client_action
                             .inventory_events,
+                    pending_item_refresh_client_gui_event_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_gui_event_events,
                     pending_item_refresh_client_input_events_after_first_client_action_before_commit =
                         pending_item_refresh_event_breakdown_after_first_client_action
                             .client_input_events,
@@ -686,6 +696,24 @@ fn apply_event(
         }
         ProtocolEvent::Inventory(_) => {
             state.ui.inventory_packets = state.ui.inventory_packets.saturating_add(1);
+        }
+        ProtocolEvent::ClientGuiEvent(event) => {
+            state.ui.client_gui_event_packets = state.ui.client_gui_event_packets.saturating_add(1);
+            if let Some(claim) = event.claim {
+                tracing::debug!(
+                    event_a = claim.event_a,
+                    event_b = claim.event_b,
+                    object_id = %format_args!("0x{:08X}", claim.object_id),
+                    has_vector = claim.vector.is_some(),
+                    "semantic state observed verified client GuiEvent_Notify action"
+                );
+            } else {
+                tracing::warn!(
+                    payload_len = event.observed.payload_len,
+                    declared_len = event.observed.declared_len,
+                    "verified ClientGuiEvent payload did not expose an exact GuiEvent_Notify claim"
+                );
+            }
         }
         ProtocolEvent::ClientInput(event) => {
             state.auth.client_input_packets = state.auth.client_input_packets.saturating_add(1);
@@ -1000,6 +1028,10 @@ fn remember_quickbar_item_context_if_relevant(
                 .ui
                 .post_committed_quickbar_item_refresh_pending_event_breakdown
                 .inventory_events,
+            pending_item_refresh_client_gui_event_events = state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .client_gui_event_events,
             pending_item_refresh_client_input_events = state
                 .ui
                 .post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -1070,6 +1102,10 @@ fn remember_quickbar_item_context_if_relevant(
                 .ui
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
                 .inventory_events,
+            pending_item_refresh_client_gui_event_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_gui_event_events,
             pending_item_refresh_client_input_events_after_first_client_action = state
                 .ui
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
@@ -1261,6 +1297,9 @@ fn record_quickbar_item_refresh_event_breakdown(
         ProtocolEvent::Inventory(_) => {
             breakdown.inventory_events = breakdown.inventory_events.saturating_add(1);
         }
+        ProtocolEvent::ClientGuiEvent(_) => {
+            breakdown.client_gui_event_events = breakdown.client_gui_event_events.saturating_add(1);
+        }
         ProtocolEvent::ClientInput(event) => {
             breakdown.client_input_events = breakdown.client_input_events.saturating_add(1);
             match event.claim.map(|claim| claim.kind) {
@@ -1325,6 +1364,18 @@ fn quickbar_item_refresh_client_action_detail(
     match event {
         ProtocolEvent::ClientInput(event) => {
             let object_id = event.claim.map(|claim| claim.primary_object_id);
+            QuickbarItemRefreshClientActionDetail {
+                kind,
+                object_id,
+                slot: None,
+                button_type: None,
+                body_kind: None,
+                candidate_object_id,
+                matches_candidate_object: matches_candidate_object(object_id),
+            }
+        }
+        ProtocolEvent::ClientGuiEvent(event) => {
+            let object_id = event.claim.map(|claim| claim.object_id);
             QuickbarItemRefreshClientActionDetail {
                 kind,
                 object_id,
@@ -1411,6 +1462,7 @@ fn quickbar_item_refresh_event_kind(event: &ProtocolEvent) -> QuickbarItemRefres
         ProtocolEvent::Quickbar(_) => QuickbarItemRefreshEventKind::ServerQuickbar,
         ProtocolEvent::Area(_) => QuickbarItemRefreshEventKind::Area,
         ProtocolEvent::Inventory(_) => QuickbarItemRefreshEventKind::Inventory,
+        ProtocolEvent::ClientGuiEvent(_) => QuickbarItemRefreshEventKind::ClientGuiEventNotify,
         ProtocolEvent::ClientInput(event) => match event.claim.map(|claim| claim.kind) {
             Some(client_input::ClientInputKind::UseItem) => {
                 QuickbarItemRefreshEventKind::ClientInputUseItem
@@ -2829,6 +2881,90 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn pending_quickbar_refresh_records_client_gui_event_action_detail() {
+        let owner_id = 0x8000_0010u32;
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0101u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&first_item_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&second_item_id.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let client_gui_event = client_gui_event_notify_payload(first_item_id);
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ClientToServer,
+            &VerifiedProof::Family(VerifiedFamily::ClientGuiEvent),
+            &client_gui_event,
+        );
+
+        let unresolved = state
+            .ui
+            .unresolved_pending_item_refresh()
+            .expect("client GUI event should leave the pending refresh unresolved");
+        assert_eq!(state.ui.client_gui_event_packets, 1);
+        assert_eq!(unresolved.events_since_pending_refresh, 2);
+        assert_eq!(unresolved.event_breakdown.server_to_client_events, 1);
+        assert_eq!(unresolved.event_breakdown.client_to_server_events, 1);
+        assert_eq!(unresolved.event_breakdown.live_object_events, 1);
+        assert_eq!(unresolved.event_breakdown.client_gui_event_events, 1);
+        assert_eq!(
+            unresolved.first_followup_event,
+            Some(QuickbarItemRefreshEventKind::ClientGuiEventNotify)
+        );
+        assert_eq!(
+            unresolved.first_client_action,
+            Some(QuickbarItemRefreshEventKind::ClientGuiEventNotify)
+        );
+        assert_eq!(
+            unresolved.first_client_action_detail,
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientGuiEventNotify,
+                object_id: Some(first_item_id),
+                slot: None,
+                button_type: None,
+                body_kind: None,
+                candidate_object_id: Some(first_item_id),
+                matches_candidate_object: Some(true),
+            }),
+            "the GUI event should preserve its object id and candidate match as the first client action"
+        );
+        assert_eq!(
+            unresolved.action_outcome,
+            QuickbarItemRefreshActionOutcome::CandidateClientActionNoServerQuickbar
+        );
+        assert_eq!(
+            unresolved.events_after_first_client_action, 0,
+            "the GUI event itself is the boundary, not an after-action event"
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .client_gui_event_events,
+            0
+        );
+    }
+
+    #[test]
     fn cleared_context_after_committed_quickbar_cancels_pending_item_refresh() {
         let owner_id = 0x8000_0010u32;
         let first_item_id = 0x8000_0100u32;
@@ -2976,6 +3112,17 @@ mod fixture_free_tests {
         payload.extend_from_slice(&(-1i32).to_le_bytes());
         payload.push(0);
         payload.push(0x60);
+        payload
+    }
+
+    fn client_gui_event_notify_payload(object_id: u32) -> Vec<u8> {
+        const DECLARED: usize = 15;
+        let mut payload = Vec::with_capacity(DECLARED);
+        payload.extend_from_slice(&[0x70, 0x35, 0x01]);
+        payload.extend_from_slice(&(DECLARED as u32).to_le_bytes());
+        payload.extend_from_slice(&2u16.to_le_bytes());
+        payload.extend_from_slice(&3u16.to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
         payload
     }
 }

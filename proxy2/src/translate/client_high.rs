@@ -27,6 +27,7 @@ pub struct ClientHighClaimSummary {
 pub struct ClientHighConsumedSummary {
     pub family_name: &'static str,
     pub packet_name: &'static str,
+    pub verified_family: VerifiedFamily,
     pub reason: &'static str,
 }
 
@@ -50,6 +51,7 @@ pub fn claim_consumed_payload_if_verified(payload: &[u8]) -> Option<ClientHighCo
         return Some(ClientHighConsumedSummary {
             family_name: "ClientGuiEvent",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientGuiEvent,
             reason: "EE-only GuiEvent_Notify has no proven Diamond/1.69 handler",
         });
     }

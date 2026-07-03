@@ -276,7 +276,13 @@ fn translate_client_to_server_packet(
     if translated.elide_client_sequence && origin_client_sequence != 0 {
         record_client_sequence_elision(state, origin_client_sequence);
     }
-    if let Some(packet) = translated.packet.as_ref() {
+    for observation in &translated.semantic_observations {
+        observe_verified_client_payload(state, observation.family, &observation.payload);
+    }
+    let observe_packet = translated.packet.is_some()
+        && !(translated.family == VerifiedFamily::ConsumedEmptyMFrame
+            && !translated.semantic_observations.is_empty());
+    if observe_packet && let Some(packet) = translated.packet.as_ref() {
         observe_verified_client_m_packet(state, translated.family, packet);
     }
     Ok(translated)
@@ -520,6 +526,14 @@ fn observe_verified_client_m_packet(
     let Some(payload) = parse_window::primary_payload(packet, &view) else {
         return;
     };
+    observe_verified_client_payload(state, family, payload);
+}
+
+fn observe_verified_client_payload(
+    state: &mut SessionState,
+    family: VerifiedFamily,
+    payload: &[u8],
+) {
     let proof = VerifiedProof::family(family);
     crate::translate::semantic::observe_verified_payload(
         &mut state.semantic,

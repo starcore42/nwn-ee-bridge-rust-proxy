@@ -23,12 +23,19 @@ const DEVICE_ADVERTISE_PROPERTY_MINOR: u8 = 0x01;
 pub(super) struct ClientFrameTranslation {
     pub family: VerifiedFamily,
     pub packet: Option<Vec<u8>>,
+    pub semantic_observations: Vec<ClientSemanticObservation>,
     /// When the proxy owns an EE-only reliable client frame, it may need to ACK
     /// that frame toward EE immediately instead of waiting for the 1.69 server
     /// to ACK anything. This remains a fallback for frames that cannot be
     /// represented as a server-paced empty data carrier.
     pub proxy_ack_client_sequence: Option<u16>,
     pub elide_client_sequence: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ClientSemanticObservation {
+    pub family: VerifiedFamily,
+    pub payload: Vec<u8>,
 }
 
 pub(super) fn translate_client_frame(
@@ -59,6 +66,7 @@ pub(super) fn translate_client_frame(
             return Ok(ClientFrameTranslation {
                 family: VerifiedFamily::ClientServerAdmin,
                 packet: Some(bytes),
+                semantic_observations: Vec::new(),
                 proxy_ack_client_sequence: None,
                 elide_client_sequence: false,
             });
@@ -78,6 +86,7 @@ pub(super) fn translate_client_frame(
             return Ok(ClientFrameTranslation {
                 family: VerifiedFamily::ConsumedEmptyMFrame,
                 packet: Some(bytes),
+                semantic_observations: Vec::new(),
                 proxy_ack_client_sequence: None,
                 elide_client_sequence: false,
             });
@@ -108,6 +117,7 @@ pub(super) fn translate_client_frame(
     let mut translated_payload = payload.to_vec();
 
     if let Some(summary) = client_high::claim_consumed_payload_if_verified(payload) {
+        let consumed_payload = payload.to_vec();
         tracing::info!(
             family = summary.family_name,
             packet = summary.packet_name,
@@ -118,12 +128,15 @@ pub(super) fn translate_client_frame(
             trailing_payload_len = view.trailing_payload_length,
             "client high-level payload semantically claimed and consumed for Diamond/1.69"
         );
-        return consume_claimed_high_level_as_empty(
-            bytes,
-            view,
-            summary.packet_name,
-            summary.reason,
-        );
+        let mut translated =
+            consume_claimed_high_level_as_empty(bytes, view, summary.packet_name, summary.reason)?;
+        translated
+            .semantic_observations
+            .push(ClientSemanticObservation {
+                family: summary.verified_family,
+                payload: consumed_payload,
+            });
+        return Ok(translated);
     }
 
     if let Some(summary) =
@@ -154,6 +167,7 @@ pub(super) fn translate_client_frame(
         return Ok(ClientFrameTranslation {
             family: summary.verified_family,
             packet: Some(out),
+            semantic_observations: Vec::new(),
             proxy_ack_client_sequence: None,
             elide_client_sequence: false,
         });
@@ -165,6 +179,7 @@ pub(super) fn translate_client_frame(
 struct MixedClientPrimaryPayload {
     payload: Vec<u8>,
     family: Option<VerifiedFamily>,
+    semantic_observations: Vec<ClientSemanticObservation>,
     consumed_units: usize,
     forwarded_units: usize,
     total_units: usize,
@@ -184,6 +199,7 @@ fn translate_mixed_client_primary_payload_if_needed(
                 return Some(MixedClientPrimaryPayload {
                     payload: Vec::new(),
                     family: None,
+                    semantic_observations: Vec::new(),
                     consumed_units: 1,
                     forwarded_units: 0,
                     total_units: 1 + tail_units,
@@ -224,6 +240,7 @@ fn translate_mixed_client_high_level_units(
 ) -> MixedClientPrimaryPayload {
     let mut rewritten = Vec::new();
     let mut family: Option<VerifiedFamily> = None;
+    let mut semantic_observations = Vec::new();
     let mut forwarded_units = 0usize;
 
     for unit in units {
@@ -231,6 +248,7 @@ fn translate_mixed_client_high_level_units(
             return MixedClientPrimaryPayload {
                 payload: Vec::new(),
                 family: None,
+                semantic_observations,
                 consumed_units,
                 forwarded_units,
                 total_units,
@@ -255,6 +273,10 @@ fn translate_mixed_client_high_level_units(
                 unit_len = message.payload.len(),
                 "mixed client primary payload unit semantically claimed and consumed"
             );
+            semantic_observations.push(ClientSemanticObservation {
+                family: summary.verified_family,
+                payload: message.payload.to_vec(),
+            });
             consumed_units = consumed_units.saturating_add(1);
             continue;
         }
@@ -266,6 +288,7 @@ fn translate_mixed_client_high_level_units(
             return MixedClientPrimaryPayload {
                 payload: Vec::new(),
                 family: None,
+                semantic_observations,
                 consumed_units,
                 forwarded_units,
                 total_units,
@@ -286,6 +309,7 @@ fn translate_mixed_client_high_level_units(
                 return MixedClientPrimaryPayload {
                     payload: Vec::new(),
                     family: None,
+                    semantic_observations,
                     consumed_units,
                     forwarded_units,
                     total_units,
@@ -312,6 +336,7 @@ fn translate_mixed_client_high_level_units(
     MixedClientPrimaryPayload {
         payload: rewritten,
         family,
+        semantic_observations,
         consumed_units,
         forwarded_units,
         total_units,
@@ -382,12 +407,14 @@ fn finalize_mixed_client_primary_payload(
             consumed_units = outcome.consumed_units,
             "mixed client primary payload fully consumed as proxy-owned EE-only units"
         );
-        return consume_claimed_high_level_as_empty(
+        let mut translated = consume_claimed_high_level_as_empty(
             bytes,
             view,
             "ClientMixedPrimaryPayload",
             "all mixed primary units are EE-only/proxy-owned",
-        );
+        )?;
+        translated.semantic_observations = outcome.semantic_observations;
+        return Ok(translated);
     }
 
     if view.trailing_payload_length != 0 {
@@ -433,6 +460,7 @@ fn finalize_mixed_client_primary_payload(
     Ok(ClientFrameTranslation {
         family,
         packet: Some(rewritten),
+        semantic_observations: outcome.semantic_observations,
         proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
@@ -461,6 +489,7 @@ pub(super) fn consume_claimed_high_level_as_empty(
     Ok(ClientFrameTranslation {
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet: Some(rewritten),
+        semantic_observations: Vec::new(),
         proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
@@ -503,6 +532,7 @@ fn consume_unclaimed_client_high_level(
     Ok(ClientFrameTranslation {
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet: Some(rewritten),
+        semantic_observations: Vec::new(),
         proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
@@ -540,6 +570,7 @@ fn consume_device_advertise_property(
     Ok(ClientFrameTranslation {
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet: Some(rewritten),
+        semantic_observations: Vec::new(),
         proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
@@ -595,6 +626,17 @@ mod tests {
         payload.push(b'x');
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn client_gui_event_notify_payload(object_id: u32) -> Vec<u8> {
+        const DECLARED: usize = 15;
+        let mut payload = Vec::with_capacity(DECLARED);
+        payload.extend_from_slice(&[0x70, 0x35, 0x01]);
+        payload.extend_from_slice(&(DECLARED as u32).to_le_bytes());
+        payload.extend_from_slice(&2u16.to_le_bytes());
+        payload.extend_from_slice(&3u16.to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
         payload
     }
 
@@ -673,6 +715,33 @@ mod tests {
         assert_eq!(out_view.packetized_sequence, 1);
         assert_eq!(out_view.payload_length, 0);
         assert_eq!(out_view.trailing_payload_length, 0);
+    }
+
+    #[test]
+    fn consumed_client_gui_event_keeps_original_semantic_observation() {
+        let payload = client_gui_event_notify_payload(0x8001_53FD);
+        let packet = build_client_m_frame(0x003A, 0x0005, &payload);
+        let view = MFrameView::parse(&packet).expect("fixture should parse as M frame");
+        let mut state = SemanticSessionState::default();
+
+        let translated = translate_client_frame(packet, &view, &mut state)
+            .expect("verified ClientGuiEvent should be consumed as proxy-owned");
+
+        assert_eq!(translated.family, VerifiedFamily::ConsumedEmptyMFrame);
+        assert_eq!(translated.semantic_observations.len(), 1);
+        assert_eq!(
+            translated.semantic_observations[0].family,
+            VerifiedFamily::ClientGuiEvent
+        );
+        assert_eq!(translated.semantic_observations[0].payload, payload);
+        let out = translated
+            .packet
+            .expect("GUI event should still produce a server-paced empty carrier");
+        let out_view = MFrameView::parse(&out).expect("empty carrier should parse");
+        assert!(out_view.crc_valid);
+        assert_eq!(out_view.sequence, 0x003A);
+        assert_eq!(out_view.ack_sequence, 0x0005);
+        assert_eq!(out_view.payload_length, 0);
     }
 
     #[test]
