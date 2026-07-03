@@ -112,6 +112,22 @@ whether HG now emits a pending hint instead of
 drive the recommended UseItem payload and inspect the following committed
 quickbar state.
 
+As of 2026-07-03 20:29 +10, the driver-side poll/send path is active in
+driver-only mode. The bridge DLL now calls
+`TryDispatchQuickbarItemRefreshUseItem` from
+`HookedServerToPlayerMessageDriverOnly`, matching the non-driver hook. Fresh
+live probe
+`C:\nwnbridge\codex-live-quickbar-useitem-driverhook-20260703-202458\harness-proxy-20260703-202501`
+reached gameplay and wrote a pending hint for candidate `0x800162A4` with
+recommended payload `7006090C000000A462018000C0`. The bridge log shows
+`quickbar item-refresh UseItem dispatch #1` at
+`2026-07-03 20:26:21 +10`; proxy2 then validated and forwarded
+`Input_UseItem` for object `0x800162A4`, and the hint recorded
+`first_client_action="client_input_use_item"` with
+`first_client_action_matches_candidate=true`. The remaining harness/protocol
+question is why no server quickbar refresh followed the matched UseItem action
+in the observed window (`quickbar_events_since_pending_refresh=0`).
+
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
 against the same fresh capture stayed at 0 quarantines, 308 strict allows, 79

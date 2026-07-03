@@ -17,6 +17,26 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-03 driver-only quickbar UseItem hook slice: live-data gate reused
+  gameplay-reaching Diamond HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  (164 packets, newest gameplay packet about 5h01m old at gate time). The
+  proxy-side pending hint from the previous live run was ready, but the C++
+  bridge only called `TryDispatchQuickbarItemRefreshUseItem` from the
+  non-driver server-message hook. The driver-only server-message hook now polls
+  the same hint path. Fresh live probe
+  `C:\nwnbridge\codex-live-quickbar-useitem-driverhook-20260703-202458\harness-proxy-20260703-202501`
+  reached gameplay, committed the 36-slot/18-item quickbar profile, dispatched
+  `Input_UseItem` once for candidate `0x800162A4` at
+  `2026-07-03 20:26:21 +10`, and proxy2 validated/forwarded that
+  `ClientInput` payload (`7006090C000000A462018000C0`). The hint recorded
+  `first_client_action="client_input_use_item"` and
+  `first_client_action_matches_candidate=true`. Remaining issue: no server
+  quickbar refresh followed that action in the observed window
+  (`quickbar_events_since_pending_refresh=0`), so the next production path is
+  HG response/state parity after UseItem: confirm whether the active-property
+  item expects different target flags/timing or a different original-client
+  quickbar action.
 - 2026-07-02 live-data gate refresh: stale prior gameplay capture forced a new
   HG Diamond run
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, packet window
