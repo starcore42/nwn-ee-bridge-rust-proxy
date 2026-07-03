@@ -253,6 +253,12 @@ fn apply_event(
                 let pending_item_refresh_event_breakdown = state
                     .ui
                     .post_committed_quickbar_item_refresh_pending_event_breakdown;
+                let pending_item_refresh_events_after_first_client_action = state
+                    .ui
+                    .post_committed_quickbar_item_refresh_events_after_first_client_action;
+                let pending_item_refresh_event_breakdown_after_first_client_action = state
+                    .ui
+                    .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action;
                 let pending_item_refresh_proof_class =
                     state.ui.post_committed_quickbar_item_refresh_proof_class;
                 let pending_item_refresh_first_followup_event = state
@@ -264,6 +270,9 @@ fn apply_event(
                 let pending_item_refresh_first_client_action_detail = state
                     .ui
                     .post_committed_quickbar_item_refresh_first_client_action_detail;
+                let pending_item_refresh_first_event_after_client_action = state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_event_after_client_action;
                 let pending_item_refresh_outcome =
                     committed_quickbar_item_refresh_outcome(pending_item_refresh, profile);
                 let (best_item_context, best_item_context_source) =
@@ -293,6 +302,14 @@ fn apply_event(
                     .ui
                     .last_committed_quickbar_item_refresh_pending_event_breakdown =
                     pending_item_refresh_event_breakdown;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_events_after_first_client_action =
+                    pending_item_refresh_events_after_first_client_action;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+                    pending_item_refresh_event_breakdown_after_first_client_action;
                 state.ui.last_committed_quickbar_item_refresh_outcome =
                     pending_item_refresh_outcome;
                 state.ui.last_committed_quickbar_item_refresh_proof_class =
@@ -309,6 +326,10 @@ fn apply_event(
                     .ui
                     .last_committed_quickbar_item_refresh_first_client_action_detail =
                     pending_item_refresh_first_client_action_detail;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_first_event_after_client_action =
+                    pending_item_refresh_first_event_after_client_action;
                 state.ui.last_committed_quickbar_best_item_context = best_item_context;
                 state.ui.last_committed_quickbar_best_item_context_source =
                     best_item_context_source;
@@ -327,6 +348,13 @@ fn apply_event(
                     .ui
                     .post_committed_quickbar_item_refresh_pending_event_breakdown =
                     QuickbarItemRefreshEventBreakdown::default();
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_events_after_first_client_action = 0;
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+                    QuickbarItemRefreshEventBreakdown::default();
                 state.ui.post_committed_quickbar_item_refresh_proof_class = None;
                 state
                     .ui
@@ -337,6 +365,9 @@ fn apply_event(
                 state
                     .ui
                     .post_committed_quickbar_item_refresh_first_client_action_detail = None;
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_event_after_client_action = None;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
                 let previous_post_item_context_known = previous_post_item_context.is_some();
@@ -355,6 +386,10 @@ fn apply_event(
                         .unwrap_or("none");
                 let pending_item_refresh_first_client_action =
                     pending_item_refresh_first_client_action
+                        .map(QuickbarItemRefreshEventKind::as_str)
+                        .unwrap_or("none");
+                let pending_item_refresh_first_event_after_client_action =
+                    pending_item_refresh_first_event_after_client_action
                         .map(QuickbarItemRefreshEventKind::as_str)
                         .unwrap_or("none");
                 let (
@@ -511,6 +546,47 @@ fn apply_event(
                         pending_item_refresh_event_breakdown.chat_events,
                     pending_item_refresh_other_events_before_commit =
                         pending_item_refresh_event_breakdown.other_events,
+                    pending_item_refresh_events_after_first_client_action_before_commit =
+                        pending_item_refresh_events_after_first_client_action,
+                    pending_item_refresh_live_object_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .live_object_events,
+                    pending_item_refresh_quickbar_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .quickbar_events,
+                    pending_item_refresh_area_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action.area_events,
+                    pending_item_refresh_inventory_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .inventory_events,
+                    pending_item_refresh_client_input_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_input_events,
+                    pending_item_refresh_client_input_use_item_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_input_use_item_events,
+                    pending_item_refresh_client_input_use_object_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_input_use_object_events,
+                    pending_item_refresh_client_input_change_door_state_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_input_change_door_state_events,
+                    pending_item_refresh_client_input_other_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_input_other_events,
+                    pending_item_refresh_client_quickbar_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_quickbar_events,
+                    pending_item_refresh_client_quickbar_item_set_button_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_quickbar_item_set_button_events,
+                    pending_item_refresh_client_quickbar_other_set_button_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action
+                            .client_quickbar_other_set_button_events,
+                    pending_item_refresh_chat_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action.chat_events,
+                    pending_item_refresh_other_events_after_first_client_action_before_commit =
+                        pending_item_refresh_event_breakdown_after_first_client_action.other_events,
                     pending_item_refresh_proof_class,
                     pending_item_refresh_first_followup_event,
                     pending_item_refresh_first_client_action,
@@ -522,6 +598,7 @@ fn apply_event(
                     pending_item_refresh_first_client_action_candidate_known,
                     pending_item_refresh_first_client_action_candidate_object_id,
                     pending_item_refresh_first_client_action_matches_candidate,
+                    pending_item_refresh_first_event_after_client_action,
                     pending_item_refresh_candidate_known_before_commit,
                     pending_item_refresh_candidate_object_id_before_commit,
                     pending_item_refresh_candidate_proof_before_commit,
@@ -740,6 +817,13 @@ fn remember_quickbar_item_context_if_relevant(
                 QuickbarItemRefreshEventBreakdown::default();
             state
                 .ui
+                .post_committed_quickbar_item_refresh_events_after_first_client_action = 0;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+                QuickbarItemRefreshEventBreakdown::default();
+            state
+                .ui
                 .post_committed_quickbar_item_refresh_first_followup_event = None;
             state
                 .ui
@@ -747,9 +831,19 @@ fn remember_quickbar_item_context_if_relevant(
             state
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action_detail = None;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_event_after_client_action = None;
         } else if !was_pending_item_refresh {
             state
                 .ui
+                .post_committed_quickbar_item_refresh_events_after_first_client_action = 0;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+                QuickbarItemRefreshEventBreakdown::default();
+            state
+                .ui
                 .post_committed_quickbar_item_refresh_first_followup_event = None;
             state
                 .ui
@@ -757,6 +851,9 @@ fn remember_quickbar_item_context_if_relevant(
             state
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action_detail = None;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_event_after_client_action = None;
         }
         state.ui.post_committed_quickbar_item_refresh_proof_class =
             pending_item_refresh_proof_class;
@@ -771,6 +868,11 @@ fn remember_quickbar_item_context_if_relevant(
         let pending_item_refresh_first_client_action = state
             .ui
             .post_committed_quickbar_item_refresh_first_client_action
+            .map(QuickbarItemRefreshEventKind::as_str)
+            .unwrap_or("none");
+        let pending_item_refresh_first_event_after_client_action = state
+            .ui
+            .post_committed_quickbar_item_refresh_first_event_after_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
             .unwrap_or("none");
         let (
@@ -862,6 +964,67 @@ fn remember_quickbar_item_context_if_relevant(
                 .ui
                 .post_committed_quickbar_item_refresh_pending_event_breakdown
                 .other_events,
+            pending_item_refresh_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_events_after_first_client_action,
+            pending_item_refresh_live_object_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .live_object_events,
+            pending_item_refresh_quickbar_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .quickbar_events,
+            pending_item_refresh_area_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .area_events,
+            pending_item_refresh_inventory_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .inventory_events,
+            pending_item_refresh_client_input_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_input_events,
+            pending_item_refresh_client_input_use_item_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_input_use_item_events,
+            pending_item_refresh_client_input_use_object_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_input_use_object_events,
+            pending_item_refresh_client_input_change_door_state_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_input_change_door_state_events,
+            pending_item_refresh_client_input_other_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_input_other_events,
+            pending_item_refresh_client_quickbar_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_quickbar_events,
+            pending_item_refresh_client_quickbar_item_set_button_events_after_first_client_action =
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                    .client_quickbar_item_set_button_events,
+            pending_item_refresh_client_quickbar_other_set_button_events_after_first_client_action =
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                    .client_quickbar_other_set_button_events,
+            pending_item_refresh_chat_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .chat_events,
+            pending_item_refresh_other_events_after_first_client_action = state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .other_events,
             pending_item_refresh_proof_class,
             pending_item_refresh_first_followup_event,
             pending_item_refresh_first_client_action,
@@ -873,6 +1036,7 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_first_client_action_candidate_known,
             pending_item_refresh_first_client_action_candidate_object_id,
             pending_item_refresh_first_client_action_matches_candidate,
+            pending_item_refresh_first_event_after_client_action,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
@@ -910,6 +1074,10 @@ fn record_pending_quickbar_item_refresh_event(
         .post_committed_quickbar_item_refresh_pending_events
         .saturating_add(1);
     let event_kind = quickbar_item_refresh_event_kind(event);
+    let first_client_action_seen_before_event = state
+        .ui
+        .post_committed_quickbar_item_refresh_first_client_action
+        .is_some();
     if pending_before_event {
         if state
             .ui
@@ -940,9 +1108,42 @@ fn record_pending_quickbar_item_refresh_event(
             );
         }
     }
-    let breakdown = &mut state
-        .ui
-        .post_committed_quickbar_item_refresh_pending_event_breakdown;
+    if first_client_action_seen_before_event {
+        state
+            .ui
+            .post_committed_quickbar_item_refresh_events_after_first_client_action = state
+            .ui
+            .post_committed_quickbar_item_refresh_events_after_first_client_action
+            .saturating_add(1);
+        if state
+            .ui
+            .post_committed_quickbar_item_refresh_first_event_after_client_action
+            .is_none()
+        {
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_event_after_client_action =
+                Some(event_kind);
+        }
+        record_quickbar_item_refresh_event_breakdown(
+            &mut state
+                .ui
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            event,
+        );
+    }
+    record_quickbar_item_refresh_event_breakdown(
+        &mut state
+            .ui
+            .post_committed_quickbar_item_refresh_pending_event_breakdown,
+        event,
+    );
+}
+
+fn record_quickbar_item_refresh_event_breakdown(
+    breakdown: &mut QuickbarItemRefreshEventBreakdown,
+    event: &ProtocolEvent,
+) {
     match event {
         ProtocolEvent::LiveObject(_) => {
             breakdown.live_object_events = breakdown.live_object_events.saturating_add(1);
@@ -2092,6 +2293,27 @@ mod fixture_free_tests {
         assert_eq!(unresolved.event_breakdown.client_input_other_events, 0);
         assert_eq!(unresolved.event_breakdown.client_quickbar_events, 1);
         assert_eq!(
+            unresolved.events_after_first_client_action, 1,
+            "post-action counters should exclude the UseItem itself and count later verified traffic"
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .client_input_use_item_events,
+            0,
+            "the first UseItem is the boundary, not an after-action event"
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .client_quickbar_events,
+            1
+        );
+        assert_eq!(
+            unresolved.first_event_after_client_action,
+            Some(QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton)
+        );
+        assert_eq!(
             unresolved.first_followup_event,
             Some(QuickbarItemRefreshEventKind::ClientInputUseItem),
             "the first event after the proof opener should identify the UseItem trigger"
@@ -2143,6 +2365,25 @@ mod fixture_free_tests {
         assert_eq!(
             committed_breakdown.client_quickbar_item_set_button_events,
             1
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_events_after_first_client_action,
+            1
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action
+                .client_quickbar_item_set_button_events,
+            1
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_first_event_after_client_action,
+            Some(QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton)
         );
         assert_eq!(
             state

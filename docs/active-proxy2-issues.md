@@ -17,6 +17,25 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-03 post-UseItem response-counter slice: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-quickbar-useitem-driverhook-20260703-202458\harness-proxy-20260703-202501`
+  (log last write `2026-07-03T20:27:30+10:00`, gameplay reached, under 24h).
+  Proxy2 now tracks pending quickbar item-refresh traffic after the first
+  client action separately from the whole post-proof window, and the
+  `quickbar-item-refresh-hint.json` plus replay summaries expose
+  `events_after_first_client_action`, `first_event_after_client_action`, and
+  after-action family buckets. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-post-useitem-response-counters-20260703-2132`
+  stayed at 164 packet files, 304 strict allows, and 0 quarantines. Fresh live
+  probe
+  `C:\nwnbridge\codex-live-post-useitem-response-counters-20260703-2145\harness-proxy-20260703-213130`
+  reached gameplay, dispatched a matched `Input_UseItem` for candidate
+  `0x800164E0`, and ended with 97 verified events after that client action:
+  32 live-object, 1 inventory, 1 chat, 63 other, and 0 server/client quickbar.
+  Next production path: compare Diamond/EE quickbar or radial use semantics for
+  active-property items and adjust the harness/proxy action shape or timing
+  before trying another item-refresh trigger.
 - 2026-07-03 driver-only quickbar UseItem hook slice: live-data gate reused
   gameplay-reaching Diamond HG capture
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
@@ -37,6 +56,29 @@ not as standalone workaround targets.
   HG response/state parity after UseItem: confirm whether the active-property
   item expects different target flags/timing or a different original-client
   quickbar action.
+- 2026-07-03 declared quickbar split ordering slice: live-data gate used
+  gameplay-reaching Diamond HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  (packet window
+  `2026-07-03T15:16:25.8610376+10:00 -> 2026-07-03T15:19:28.1192675+10:00`,
+  164 packets). Fresh live proxy probe
+  `C:\nwnbridge\harness-proxy-20260703-191931` reached gameplay but still
+  ended with `stream_probe_quickbar_item_candidates_without_committed_profile`;
+  the root cause was the focused quickbar stream splitter mixing normal
+  CNW-declared candidate endpoints with zero-declared legacy-prefix fallback
+  endpoints. Proxy2 now tries declared endpoints first and uses the legacy
+  prefix scan only as fallback, with a regression proving the live-shaped
+  `GuiQuickbar_SetAllButtons` owns the full `old_declared=1321`,
+  `read_size=1314`, `fragment_size=19` payload before a following status
+  packet. Strict replay
+  `C:\nwnbridge\codex-replay-declared-first-20260703-1933` stayed at 0
+  quarantines and produced a pending UseItem hint. Fresh live probe
+  `C:\nwnbridge\harness-proxy-20260703-193410` reached gameplay, committed the
+  36-slot quickbar profile with 18 item buttons and produced a stable pending
+  hint for `0x8001612E` (`active_object`, direct-only), but the EE driver did
+  not emit the recommended `Input_UseItem` during the wait window. Next
+  production path: fix or instrument the driver-side hint consumption/send
+  path now that proxy2 emits the live pending hint.
 - 2026-07-02 live-data gate refresh: stale prior gameplay capture forced a new
   HG Diamond run
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, packet window

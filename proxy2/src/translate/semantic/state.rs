@@ -114,6 +114,10 @@ impl SemanticSessionState {
         let first_client_action_matches_candidate = first_client_action_detail
             .and_then(|detail| detail.matches_candidate_object)
             .unwrap_or(false);
+        let first_event_after_client_action = summary
+            .first_event_after_client_action
+            .map(QuickbarItemRefreshEventKind::as_str)
+            .unwrap_or("none");
         let compact_item_emission_candidate = summary.item_context.compact_item_emission_candidate;
         let compact_item_emission_candidate_known = compact_item_emission_candidate.is_some();
         let compact_item_emission_candidate_object_id = compact_item_emission_candidate
@@ -163,6 +167,50 @@ impl SemanticSessionState {
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
+            first_event_after_client_action,
+            events_after_first_client_action = summary.events_after_first_client_action,
+            live_object_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .live_object_events,
+            quickbar_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .quickbar_events,
+            area_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .area_events,
+            inventory_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .inventory_events,
+            client_input_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_input_events,
+            client_input_use_item_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_input_use_item_events,
+            client_input_use_object_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_input_use_object_events,
+            client_input_change_door_state_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_input_change_door_state_events,
+            client_input_other_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_input_other_events,
+            client_quickbar_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_quickbar_events,
+            client_quickbar_item_set_button_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_quickbar_item_set_button_events,
+            client_quickbar_other_set_button_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .client_quickbar_other_set_button_events,
+            chat_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .chat_events,
+            other_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .other_events,
             direct_item_proof_objects = summary.item_context.direct_item_proof_objects,
             feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects =
@@ -460,10 +508,13 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
+    pub(crate) events_after_first_client_action: u64,
+    pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+    pub(crate) first_event_after_client_action: Option<QuickbarItemRefreshEventKind>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -501,10 +552,13 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
+    pub(crate) events_after_first_client_action: u64,
+    pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+    pub(crate) first_event_after_client_action: Option<QuickbarItemRefreshEventKind>,
     pub(crate) direct_item_proof_objects: usize,
     pub(crate) feature25_item_proof_objects: usize,
     pub(crate) compact_item_emission_proof_objects: usize,
@@ -550,6 +604,10 @@ impl QuickbarItemRefreshHarnessHint {
         let first_client_action_matches_candidate = first_client_action_detail
             .and_then(|detail| detail.matches_candidate_object)
             .unwrap_or(false);
+        let first_event_after_client_action = self
+            .first_event_after_client_action
+            .map(QuickbarItemRefreshEventKind::as_str)
+            .unwrap_or("none");
         format!(
             concat!(
                 "{{\n",
@@ -582,6 +640,22 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_client_action_candidate_known\": {},\n",
                 "  \"first_client_action_candidate_object_id\": {},\n",
                 "  \"first_client_action_matches_candidate\": {},\n",
+                "  \"first_event_after_client_action\": \"{}\",\n",
+                "  \"events_after_first_client_action\": {},\n",
+                "  \"live_object_events_after_first_client_action\": {},\n",
+                "  \"quickbar_events_after_first_client_action\": {},\n",
+                "  \"area_events_after_first_client_action\": {},\n",
+                "  \"inventory_events_after_first_client_action\": {},\n",
+                "  \"client_input_events_after_first_client_action\": {},\n",
+                "  \"client_input_use_item_events_after_first_client_action\": {},\n",
+                "  \"client_input_use_object_events_after_first_client_action\": {},\n",
+                "  \"client_input_change_door_state_events_after_first_client_action\": {},\n",
+                "  \"client_input_other_events_after_first_client_action\": {},\n",
+                "  \"client_quickbar_events_after_first_client_action\": {},\n",
+                "  \"client_quickbar_item_set_button_events_after_first_client_action\": {},\n",
+                "  \"client_quickbar_other_set_button_events_after_first_client_action\": {},\n",
+                "  \"chat_events_after_first_client_action\": {},\n",
+                "  \"other_events_after_first_client_action\": {},\n",
                 "  \"direct_item_proof_objects\": {},\n",
                 "  \"feature25_item_proof_objects\": {},\n",
                 "  \"compact_item_emission_proof_objects\": {},\n",
@@ -631,6 +705,33 @@ impl QuickbarItemRefreshHarnessHint {
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
+            first_event_after_client_action,
+            self.events_after_first_client_action,
+            self.event_breakdown_after_first_client_action
+                .live_object_events,
+            self.event_breakdown_after_first_client_action
+                .quickbar_events,
+            self.event_breakdown_after_first_client_action.area_events,
+            self.event_breakdown_after_first_client_action
+                .inventory_events,
+            self.event_breakdown_after_first_client_action
+                .client_input_events,
+            self.event_breakdown_after_first_client_action
+                .client_input_use_item_events,
+            self.event_breakdown_after_first_client_action
+                .client_input_use_object_events,
+            self.event_breakdown_after_first_client_action
+                .client_input_change_door_state_events,
+            self.event_breakdown_after_first_client_action
+                .client_input_other_events,
+            self.event_breakdown_after_first_client_action
+                .client_quickbar_events,
+            self.event_breakdown_after_first_client_action
+                .client_quickbar_item_set_button_events,
+            self.event_breakdown_after_first_client_action
+                .client_quickbar_other_set_button_events,
+            self.event_breakdown_after_first_client_action.chat_events,
+            self.event_breakdown_after_first_client_action.other_events,
             self.direct_item_proof_objects,
             self.feature25_item_proof_objects,
             self.compact_item_emission_proof_objects,
@@ -2615,6 +2716,9 @@ pub(crate) struct UiState {
     pub(crate) post_committed_quickbar_item_refresh_pending_events: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_event_breakdown:
         QuickbarItemRefreshEventBreakdown,
+    pub(crate) post_committed_quickbar_item_refresh_events_after_first_client_action: u64,
+    pub(crate) post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action:
+        QuickbarItemRefreshEventBreakdown,
     pub(crate) post_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
     pub(crate) post_committed_quickbar_item_refresh_first_followup_event:
@@ -2623,6 +2727,8 @@ pub(crate) struct UiState {
         Option<QuickbarItemRefreshEventKind>,
     pub(crate) post_committed_quickbar_item_refresh_first_client_action_detail:
         Option<QuickbarItemRefreshClientActionDetail>,
+    pub(crate) post_committed_quickbar_item_refresh_first_event_after_client_action:
+        Option<QuickbarItemRefreshEventKind>,
     pub(crate) last_committed_quickbar_previous_post_item_context:
         Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
@@ -2630,6 +2736,9 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) last_committed_quickbar_item_refresh_pending_events: u64,
     pub(crate) last_committed_quickbar_item_refresh_pending_event_breakdown:
+        QuickbarItemRefreshEventBreakdown,
+    pub(crate) last_committed_quickbar_item_refresh_events_after_first_client_action: u64,
+    pub(crate) last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action:
         QuickbarItemRefreshEventBreakdown,
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
     pub(crate) last_committed_quickbar_item_refresh_proof_class:
@@ -2640,6 +2749,8 @@ pub(crate) struct UiState {
         Option<QuickbarItemRefreshEventKind>,
     pub(crate) last_committed_quickbar_item_refresh_first_client_action_detail:
         Option<QuickbarItemRefreshClientActionDetail>,
+    pub(crate) last_committed_quickbar_item_refresh_first_event_after_client_action:
+        Option<QuickbarItemRefreshEventKind>,
     pub(crate) last_committed_quickbar_best_item_context: Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_best_item_context_source: Option<QuickbarItemContextSource>,
 }
@@ -2828,11 +2939,17 @@ impl UiState {
                 .inventory_item_context_after_committed_quickbar_updates,
             events_since_pending_refresh: self.post_committed_quickbar_item_refresh_pending_events,
             event_breakdown: self.post_committed_quickbar_item_refresh_pending_event_breakdown,
+            events_after_first_client_action: self
+                .post_committed_quickbar_item_refresh_events_after_first_client_action,
+            event_breakdown_after_first_client_action: self
+                .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             proof_class: self.post_committed_quickbar_item_refresh_proof_class,
             first_followup_event: self.post_committed_quickbar_item_refresh_first_followup_event,
             first_client_action: self.post_committed_quickbar_item_refresh_first_client_action,
             first_client_action_detail: self
                 .post_committed_quickbar_item_refresh_first_client_action_detail,
+            first_event_after_client_action: self
+                .post_committed_quickbar_item_refresh_first_event_after_client_action,
         })
     }
 
@@ -2846,10 +2963,14 @@ impl UiState {
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
             events_since_pending_refresh: summary.events_since_pending_refresh,
             event_breakdown: summary.event_breakdown,
+            events_after_first_client_action: summary.events_after_first_client_action,
+            event_breakdown_after_first_client_action: summary
+                .event_breakdown_after_first_client_action,
             proof_class: summary.proof_class,
             first_followup_event: summary.first_followup_event,
             first_client_action: summary.first_client_action,
             first_client_action_detail: summary.first_client_action_detail,
+            first_event_after_client_action: summary.first_event_after_client_action,
             direct_item_proof_objects: summary.item_context.direct_item_proof_objects,
             feature25_item_proof_objects: summary.item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects: summary
@@ -5116,10 +5237,21 @@ mod tests {
                 other_events: 3,
                 ..QuickbarItemRefreshEventBreakdown::default()
             };
+        ui.post_committed_quickbar_item_refresh_events_after_first_client_action = 2;
+        ui.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+            QuickbarItemRefreshEventBreakdown {
+                live_object_events: 1,
+                other_events: 1,
+                ..QuickbarItemRefreshEventBreakdown::default()
+            };
         ui.post_committed_quickbar_item_refresh_proof_class =
             Some(QuickbarItemRefreshProofClass::Feature25Only);
         ui.post_committed_quickbar_item_refresh_first_followup_event =
             Some(QuickbarItemRefreshEventKind::ClientInputOther);
+        ui.post_committed_quickbar_item_refresh_first_client_action =
+            Some(QuickbarItemRefreshEventKind::ClientInputOther);
+        ui.post_committed_quickbar_item_refresh_first_event_after_client_action =
+            Some(QuickbarItemRefreshEventKind::LiveObject);
 
         assert_eq!(
             ui.quickbar_item_refresh_harness_hint(),
@@ -5164,6 +5296,11 @@ mod tests {
         assert!(json.contains("\"recommended_use_item_has_position\": false"));
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
+        assert!(json.contains("\"first_client_action\": \"client_input_other\""));
+        assert!(json.contains("\"first_event_after_client_action\": \"live_object\""));
+        assert!(json.contains("\"events_after_first_client_action\": 2"));
+        assert!(json.contains("\"live_object_events_after_first_client_action\": 1"));
+        assert!(json.contains("\"other_events_after_first_client_action\": 1"));
     }
 
     #[test]

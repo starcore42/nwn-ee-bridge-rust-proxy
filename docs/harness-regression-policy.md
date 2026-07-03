@@ -33,6 +33,17 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
+Latest known live HG proxy status, as of 2026-07-03 21:33 +10: the current
+gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-post-useitem-response-counters-20260703-2145\harness-proxy-20260703-213130`.
+It reached gameplay through `Area_ClientArea` and live-object traffic, wrote
+`quickbar-item-refresh-hint.json`, and had 0 quarantine files. The run
+dispatched a matched `Input_UseItem` for quickbar item-refresh candidate
+`0x800164E0`; proxy2 then recorded 97 verified events after that first client
+action: 32 live-object, 1 inventory, 1 chat, 63 other, and 0 server/client
+quickbar events. The immediate next harness/protocol target is active-property
+item action shape/timing, not another proof that the driver can send UseItem.
+
 Latest known live HG status, as of 2026-07-03 15:29 +10: the current
 gameplay-reaching Diamond capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516`, with packet dumps
@@ -112,6 +123,25 @@ whether HG now emits a pending hint instead of
 drive the recommended UseItem payload and inspect the following committed
 quickbar state.
 
+As of 2026-07-03 19:40 +10, fresh live probe
+`C:\nwnbridge\harness-proxy-20260703-191931` reached gameplay but still ended
+with `stream_probe_quickbar_item_candidates_without_committed_profile`. Proxy2
+now splits focused quickbar streams by trying normal CNW-declared quickbar
+endpoints before the zero-declared legacy-prefix fallback scan; strict replay
+`C:\nwnbridge\codex-replay-declared-first-20260703-1933` against the current
+Diamond capture stayed at 0 quarantines and produced a pending UseItem hint for
+candidate `0x80015DAA`. A fresh live auto-UseItem probe
+`C:\nwnbridge\harness-proxy-20260703-193410` reached gameplay, committed the
+36-slot `GuiQuickbar_SetAllButtons` profile (`old_declared=1321`,
+`read_size=1314`, `fragment_size=19`, 18 item buttons preserved), then wrote a
+stable pending hint for candidate `0x8001612E` with proof `active_object`,
+source `direct_only`, and
+`recommended_use_item_payload_hex=7006090C0000002E61018000C0`. During the
+observed wait window the proxy log still showed no client `Input_UseItem` and
+the hint kept `first_client_action="none"`. The next harness target is the
+driver-side poll/send path for this ready hint, not proxy-side quickbar
+commitment.
+
 As of 2026-07-03 20:29 +10, the driver-side poll/send path is active in
 driver-only mode. The bridge DLL now calls
 `TryDispatchQuickbarItemRefreshUseItem` from
@@ -127,6 +157,19 @@ recommended payload `7006090C000000A462018000C0`. The bridge log shows
 `first_client_action_matches_candidate=true`. The remaining harness/protocol
 question is why no server quickbar refresh followed the matched UseItem action
 in the observed window (`quickbar_events_since_pending_refresh=0`).
+
+As of 2026-07-03 21:33 +10, proxy2 writes post-action pending-refresh counters
+to the live hint and replay summaries. The hint now exposes
+`first_event_after_client_action`, `events_after_first_client_action`, and
+after-action family buckets. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-post-useitem-response-counters-20260703-2132`
+against the current Diamond capture stayed at 0 quarantines and 304 strict
+allows. Fresh live probe
+`C:\nwnbridge\codex-live-post-useitem-response-counters-20260703-2145\harness-proxy-20260703-213130`
+reached gameplay, matched and forwarded candidate `0x800164E0`
+(`7006090C000000E064018000C0`), then observed no quickbar refresh across 97
+post-UseItem events. Future probes should use these counters to distinguish
+server response traffic from missing or mistimed client action traffic.
 
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`
