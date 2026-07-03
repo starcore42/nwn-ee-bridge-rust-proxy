@@ -571,7 +571,7 @@ impl QuickbarItemRefreshHarnessHint {
     pub(crate) fn to_json(self) -> String {
         let first_client_action_detail = self.first_client_action_detail;
         let recommended_use_item_payload =
-            crate::translate::client_input::build_minimal_use_item_payload(
+            crate::translate::client_input::build_self_target_use_item_payload(
                 self.candidate.object_id,
             );
         let recommended_use_item_payload_available = recommended_use_item_payload.is_some();
@@ -625,7 +625,11 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"recommended_use_item_item_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"recommended_use_item_active_property_subtype\": 0,\n",
                 "  \"recommended_use_item_has_optional_byte\": false,\n",
-                "  \"recommended_use_item_has_target_object\": false,\n",
+                "  \"recommended_use_item_has_target_object\": true,\n",
+                "  \"recommended_use_item_target_object_id\": {},\n",
+                "  \"recommended_use_item_target_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"recommended_use_item_target_legacy_rewrite_object_id\": {},\n",
+                "  \"recommended_use_item_target_legacy_rewrite_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"recommended_use_item_has_position\": false,\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
@@ -686,6 +690,10 @@ impl QuickbarItemRefreshHarnessHint {
             recommended_use_item_payload_hex,
             self.candidate.object_id,
             self.candidate.object_id,
+            crate::translate::client_input::EE_SELF_OBJECT_ID,
+            crate::translate::client_input::EE_SELF_OBJECT_ID,
+            crate::translate::client_input::INVALID_OBJECT_ID,
+            crate::translate::client_input::INVALID_OBJECT_ID,
             self.updates_since_committed_quickbar,
             self.events_since_pending_refresh,
             self.proof_class
@@ -5286,13 +5294,21 @@ mod tests {
         assert!(json.contains("\"candidate_source\": \"feature25_only\""));
         assert!(json.contains("\"recommended_use_item_payload_available\": true"));
         assert!(json.contains("\"recommended_use_item_payload_kind\": \"Input_UseItem\""));
-        assert!(
-            json.contains("\"recommended_use_item_payload_hex\": \"7006090C0000000001008000C0\"")
-        );
+        assert!(json.contains(
+            "\"recommended_use_item_payload_hex\": \"700609100000000001008000FDFFFFFFC8\""
+        ));
         assert!(json.contains("\"recommended_use_item_item_object_id\": 2147483904"));
         assert!(json.contains("\"recommended_use_item_item_object_id_hex\": \"0x80000100\""));
         assert!(json.contains("\"recommended_use_item_has_optional_byte\": false"));
-        assert!(json.contains("\"recommended_use_item_has_target_object\": false"));
+        assert!(json.contains("\"recommended_use_item_has_target_object\": true"));
+        assert!(json.contains("\"recommended_use_item_target_object_id\": 4294967293"));
+        assert!(json.contains("\"recommended_use_item_target_object_id_hex\": \"0xFFFFFFFD\""));
+        assert!(
+            json.contains("\"recommended_use_item_target_legacy_rewrite_object_id\": 2130706432")
+        );
+        assert!(json.contains(
+            "\"recommended_use_item_target_legacy_rewrite_object_id_hex\": \"0x7F000000\""
+        ));
         assert!(json.contains("\"recommended_use_item_has_position\": false"));
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));

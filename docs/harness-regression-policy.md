@@ -33,16 +33,21 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-03 21:33 +10: the current
+Latest known live HG proxy status, as of 2026-07-03 22:34 +10: the current
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-post-useitem-response-counters-20260703-2145\harness-proxy-20260703-213130`.
+`C:\nwnbridge\codex-live-useitem-self-target-hint-20260703-223120\harness-proxy-20260703-223124`.
 It reached gameplay through `Area_ClientArea` and live-object traffic, wrote
 `quickbar-item-refresh-hint.json`, and had 0 quarantine files. The run
-dispatched a matched `Input_UseItem` for quickbar item-refresh candidate
-`0x800164E0`; proxy2 then recorded 97 verified events after that first client
-action: 32 live-object, 1 inventory, 1 chat, 63 other, and 0 server/client
-quickbar events. The immediate next harness/protocol target is active-property
-item action shape/timing, not another proof that the driver can send UseItem.
+committed the 36-slot/18-item quickbar profile, dispatched a matched
+`Input_UseItem` for quickbar item-refresh candidate `0x80016691`, and proxy2
+validated/rewrite-claimed the self-targeted payload
+`700609100000009166018000FDFFFFFFC8` with the EE self target rewritten to
+Diamond's legacy invalid/self target. The final hint recorded 151 verified
+events after that first client action: 52 live-object, 1 inventory, 1 chat, 97
+other, and 0 server/client quickbar events. The immediate next
+harness/protocol target is active-property item client-action semantics and
+timing, including quickbar set-button versus radial/UseItem behavior, not
+another proof that the driver can send a valid UseItem payload.
 
 Latest known live HG status, as of 2026-07-03 15:29 +10: the current
 gameplay-reaching Diamond capture is
@@ -170,6 +175,19 @@ reached gameplay, matched and forwarded candidate `0x800164E0`
 (`7006090C000000E064018000C0`), then observed no quickbar refresh across 97
 post-UseItem events. Future probes should use these counters to distinguish
 server response traffic from missing or mistimed client action traffic.
+
+As of 2026-07-03 22:34 +10, proxy2 recommends a target-present UseItem shape
+for quickbar item-refresh hints. The target is EE's self sentinel
+`0xFFFFFFFD`, which the client-input translator rewrites to Diamond's
+`0x7F000000` legacy invalid/self target before forwarding to HG. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-useitem-self-target-hint-20260703-222818`
+against the current Diamond capture stayed at 0 quarantines and wrote payload
+`70060910000000AA5D018000FDFFFFFFC8` for candidate `0x80015DAA`. Fresh live
+probe
+`C:\nwnbridge\codex-live-useitem-self-target-hint-20260703-223120\harness-proxy-20260703-223124`
+reached gameplay and dispatched the self-targeted candidate `0x80016691`; HG
+continued sending live-object/inventory/chat/other traffic but still sent no
+quickbar refresh after 151 post-action events.
 
 Update as of 2026-07-01 11:45 +10: strict replay
 `C:\nwnbridge\codex-proxy2-replay-quickbar-item-decision-automation-20260701-114413`

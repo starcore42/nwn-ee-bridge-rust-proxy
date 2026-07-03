@@ -17,6 +17,28 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-03 self-target UseItem hint slice: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-post-useitem-response-counters-20260703-2145\harness-proxy-20260703-213130`
+  (log last write `2026-07-03T21:33:37+10:00`, gameplay reached, under 24h).
+  Proxy2 now emits the recommended quickbar item-refresh `Input_UseItem` with a
+  target-present EE self sentinel (`0xFFFFFFFD`) so the existing client-input
+  rewrite maps it to Diamond's legacy invalid/self target (`0x7F000000`).
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-useitem-self-target-hint-20260703-222818`
+  stayed at 164 packet files, 304 strict allows, 0 quarantines, and wrote
+  candidate `0x80015DAA` with payload
+  `70060910000000AA5D018000FDFFFFFFC8`. Fresh live probe
+  `C:\nwnbridge\codex-live-useitem-self-target-hint-20260703-223120\harness-proxy-20260703-223124`
+  reached gameplay, committed the 36-slot/18-item quickbar profile, dispatched
+  a matched candidate `0x80016691`, and proxy2 validated/rewrite-claimed
+  `Input_UseItem` (`700609100000009166018000FDFFFFFFC8`) with
+  `rewritten_self_object_id=true`. The final hint still recorded 0 quickbar
+  events after 151 post-action events (52 live-object, 1 inventory, 1 chat, 97
+  other). Next production path: compare original Diamond/EE active-property
+  item quickbar/radial action semantics and timing, including whether HG needs
+  a quickbar set-button action or a different target/object branch instead of
+  another `Input_UseItem` shape tweak.
 - 2026-07-03 post-UseItem response-counter slice: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-quickbar-useitem-driverhook-20260703-202458\harness-proxy-20260703-202501`

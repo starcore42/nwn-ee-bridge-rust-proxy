@@ -176,8 +176,8 @@ const HIGH_LEVEL_ONLY_INPUT_BYTES: usize = HIGH_LEVEL_HEADER_BYTES;
 const MEMORIZE_SPELL_DECLARED_BYTES: usize = READ_CURSOR_START + MEMORIZE_SPELL_READ_BODY_BYTES;
 const UNMEMORIZE_SPELL_DECLARED_BYTES: usize = READ_CURSOR_START + UNMEMORIZE_SPELL_READ_BODY_BYTES;
 const ONE_FRAGMENT_BYTE: usize = 1;
-const EE_SELF_OBJECT_ID: u32 = 0xFFFF_FFFD;
-const INVALID_OBJECT_ID: u32 = 0x7F00_0000;
+pub const EE_SELF_OBJECT_ID: u32 = 0xFFFF_FFFD;
+pub const INVALID_OBJECT_ID: u32 = 0x7F00_0000;
 const DOOR_OPEN_STATE: u16 = 0x0015;
 const RECENT_TRANSITION_DOOR_OPEN_WINDOW: Duration = Duration::from_secs(45);
 const DOOR_OBJECT_TYPE: u8 = 0x0A;
@@ -285,12 +285,23 @@ pub struct UseItemPayloadSpec {
 }
 
 impl UseItemPayloadSpec {
+    #[cfg(test)]
     pub fn minimal(item_object_id: u32) -> Self {
         Self {
             item_object_id,
             active_property_subtype: 0,
             optional_byte: None,
             target_object_id: None,
+            position: None,
+        }
+    }
+
+    pub fn self_target(item_object_id: u32) -> Self {
+        Self {
+            item_object_id,
+            active_property_subtype: 0,
+            optional_byte: None,
+            target_object_id: Some(EE_SELF_OBJECT_ID),
             position: None,
         }
     }
@@ -927,8 +938,13 @@ pub fn parse_use_item(payload: &[u8]) -> Option<UseItem> {
     })
 }
 
+#[cfg(test)]
 pub fn build_minimal_use_item_payload(item_object_id: u32) -> Option<Vec<u8>> {
     build_use_item_payload(UseItemPayloadSpec::minimal(item_object_id))
+}
+
+pub fn build_self_target_use_item_payload(item_object_id: u32) -> Option<Vec<u8>> {
+    build_use_item_payload(UseItemPayloadSpec::self_target(item_object_id))
 }
 
 pub fn build_use_item_payload(spec: UseItemPayloadSpec) -> Option<Vec<u8>> {
@@ -1274,6 +1290,34 @@ mod public_tests {
         assert!(summary.rewritten_self_object_id);
         assert_eq!(rewritten.target_object_id, Some(INVALID_OBJECT_ID));
         assert_eq!(rewritten.position, Some((1.0, 2.0, 3.0)));
+    }
+
+    #[test]
+    fn use_item_builder_emits_self_target_shape_for_legacy_rewrite() {
+        let payload = build_self_target_use_item_payload(0x8001_6012)
+            .expect("valid item id should build a self-target UseItem");
+        assert_eq!(
+            payload,
+            [
+                0x70, 0x06, 0x09, 0x10, 0x00, 0x00, 0x00, 0x12, 0x60, 0x01, 0x80, 0x00, 0xFD, 0xFF,
+                0xFF, 0xFF, 0xC8
+            ],
+            "target-present true uses EE's self sentinel before proxy-side Diamond sentinel rewrite"
+        );
+
+        let parsed = parse_use_item(&payload).expect("built UseItem should parse");
+        assert_eq!(parsed.item_object_id, 0x8001_6012);
+        assert_eq!(parsed.active_property_subtype, 0);
+        assert_eq!(parsed.optional_byte, None);
+        assert_eq!(parsed.target_object_id, Some(EE_SELF_OBJECT_ID));
+        assert_eq!(parsed.position, None);
+
+        let mut rewritten = payload;
+        let summary = claim_or_rewrite_payload_if_verified(&mut rewritten)
+            .expect("self-target UseItem should claim and rewrite");
+        let rewritten = parse_use_item(&rewritten).expect("rewritten UseItem should parse");
+        assert!(summary.rewritten_self_object_id);
+        assert_eq!(rewritten.target_object_id, Some(INVALID_OBJECT_ID));
     }
 
     #[test]
