@@ -488,6 +488,43 @@ impl QuickbarItemRefreshActionOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshClientActionTiming {
+    AwaitingClientAction,
+    ImmediateAfterProof,
+    DelayedAfterPendingFollowup,
+}
+
+impl Default for QuickbarItemRefreshClientActionTiming {
+    fn default() -> Self {
+        Self::AwaitingClientAction
+    }
+}
+
+impl QuickbarItemRefreshClientActionTiming {
+    pub(crate) fn from_pending_state(
+        first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+        followup_events_before_first_client_action: u64,
+    ) -> Self {
+        if first_client_action_detail.is_none() {
+            return Self::AwaitingClientAction;
+        }
+        if followup_events_before_first_client_action == 0 {
+            Self::ImmediateAfterProof
+        } else {
+            Self::DelayedAfterPendingFollowup
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingClientAction => "awaiting_client_action",
+            Self::ImmediateAfterProof => "immediate_after_proof",
+            Self::DelayedAfterPendingFollowup => "delayed_after_pending_followup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshProofClass {
     DirectOnly,
     Feature25Only,
@@ -562,6 +599,7 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) events_after_first_client_action: u64,
     pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
     pub(crate) action_outcome: QuickbarItemRefreshActionOutcome,
+    pub(crate) followup_events_before_first_client_action: u64,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
@@ -609,6 +647,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) events_after_first_client_action: u64,
     pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
     pub(crate) action_outcome: QuickbarItemRefreshActionOutcome,
+    pub(crate) followup_events_before_first_client_action: u64,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
@@ -674,6 +713,11 @@ impl QuickbarItemRefreshHarnessHint {
             .map(QuickbarItemRefreshEventKind::as_str)
             .unwrap_or("none");
         let action_outcome = self.action_outcome.as_str();
+        let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
+            first_client_action_detail,
+            self.followup_events_before_first_client_action,
+        )
+        .as_str();
         format!(
             concat!(
                 "{{\n",
@@ -711,6 +755,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
+                "  \"first_client_action_timing\": \"{}\",\n",
+                "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"first_followup_event\": \"{}\",\n",
                 "  \"first_client_action\": \"{}\",\n",
                 "  \"first_client_action_has_object_id\": {},\n",
@@ -785,6 +831,8 @@ impl QuickbarItemRefreshHarnessHint {
                 .map(QuickbarItemRefreshProofClass::as_str)
                 .unwrap_or("none"),
             action_outcome,
+            first_client_action_timing,
+            self.followup_events_before_first_client_action,
             self.first_followup_event
                 .map(QuickbarItemRefreshEventKind::as_str)
                 .unwrap_or("none"),
@@ -2813,6 +2861,7 @@ pub(crate) struct UiState {
     pub(crate) post_committed_quickbar_item_refresh_events_after_first_client_action: u64,
     pub(crate) post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action:
         QuickbarItemRefreshEventBreakdown,
+    pub(crate) post_committed_quickbar_item_refresh_followup_events_before_first_client_action: u64,
     pub(crate) post_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
     pub(crate) post_committed_quickbar_item_refresh_first_followup_event:
@@ -2834,6 +2883,7 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_item_refresh_events_after_first_client_action: u64,
     pub(crate) last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action:
         QuickbarItemRefreshEventBreakdown,
+    pub(crate) last_committed_quickbar_item_refresh_followup_events_before_first_client_action: u64,
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
     pub(crate) last_committed_quickbar_item_refresh_action_outcome:
         QuickbarItemRefreshActionOutcome,
@@ -2919,6 +2969,11 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
         )
         .as_str();
+        let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
+            self.post_committed_quickbar_item_refresh_first_client_action_detail,
+            self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
+        )
+        .as_str();
         let stream_probe = self.last_quickbar_stream_probe.unwrap_or_default();
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
@@ -2949,6 +3004,8 @@ impl UiState {
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
+                "  \"first_client_action_timing\": \"{}\",\n",
+                "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"candidate_known\": {},\n",
                 "  \"candidate_object_id\": {},\n",
                 "  \"candidate_object_id_hex\": \"0x{:08X}\",\n",
@@ -2996,6 +3053,8 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_pending_events,
             proof_class,
             action_outcome,
+            first_client_action_timing,
+            self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
             candidate_known,
             candidate_object_id,
             candidate_object_id,
@@ -3050,6 +3109,8 @@ impl UiState {
                 self.post_committed_quickbar_item_refresh_first_client_action_detail,
                 self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             ),
+            followup_events_before_first_client_action: self
+                .post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
             proof_class: self.post_committed_quickbar_item_refresh_proof_class,
             first_followup_event: self.post_committed_quickbar_item_refresh_first_followup_event,
             first_client_action: self.post_committed_quickbar_item_refresh_first_client_action,
@@ -3078,6 +3139,8 @@ impl UiState {
             event_breakdown_after_first_client_action: summary
                 .event_breakdown_after_first_client_action,
             action_outcome: summary.action_outcome,
+            followup_events_before_first_client_action: summary
+                .followup_events_before_first_client_action,
             proof_class: summary.proof_class,
             first_followup_event: summary.first_followup_event,
             first_client_action: summary.first_client_action,
@@ -3142,8 +3205,9 @@ mod tests {
         InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectStatus,
         LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
-        QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
-        QuickbarItemRefreshProofClass, QuickbarStreamProbeSummary, UiState,
+        QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
+        QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass, QuickbarStreamProbeSummary,
+        UiState,
     };
 
     #[test]
@@ -5380,12 +5444,23 @@ mod tests {
                 other_events: 1,
                 ..QuickbarItemRefreshEventBreakdown::default()
             };
+        ui.post_committed_quickbar_item_refresh_followup_events_before_first_client_action = 8;
         ui.post_committed_quickbar_item_refresh_proof_class =
             Some(QuickbarItemRefreshProofClass::Feature25Only);
         ui.post_committed_quickbar_item_refresh_first_followup_event =
             Some(QuickbarItemRefreshEventKind::ClientInputOther);
         ui.post_committed_quickbar_item_refresh_first_client_action =
             Some(QuickbarItemRefreshEventKind::ClientInputOther);
+        ui.post_committed_quickbar_item_refresh_first_client_action_detail =
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientInputOther,
+                object_id: Some(0x8000_0100),
+                slot: None,
+                button_type: None,
+                body_kind: None,
+                candidate_object_id: Some(0x8000_0100),
+                matches_candidate_object: Some(true),
+            });
         ui.post_committed_quickbar_item_refresh_first_event_after_client_action =
             Some(QuickbarItemRefreshEventKind::LiveObject);
 
@@ -5463,6 +5538,13 @@ mod tests {
             json.contains("\"recommended_client_quickbar_set_button_has_target_object\": false")
         );
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
+        assert!(json.contains(
+            "\"pending_item_refresh_action_outcome\": \"candidate_client_action_no_server_quickbar\""
+        ));
+        assert!(
+            json.contains("\"first_client_action_timing\": \"delayed_after_pending_followup\"")
+        );
+        assert!(json.contains("\"followup_events_before_first_client_action\": 8"));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
         assert!(json.contains("\"first_client_action\": \"client_input_other\""));
         assert!(json.contains("\"first_event_after_client_action\": \"live_object\""));

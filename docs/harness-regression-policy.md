@@ -33,6 +33,51 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
+Latest known live HG proxy status, as of 2026-07-04 00:36 +10: the current
+gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-quickbar-setbutton-driver-20260704-003119\harness-proxy-20260704-003123`.
+It reached gameplay through `Area_ClientArea` and sustained
+`GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json`,
+and had no quarantine artifact files. The bridge DLL dispatched one validated
+`GuiQuickbar_SetButton` item action for quickbar item-refresh candidate
+`0x80016A0F` at `2026-07-04 00:33:10 +10`, using payload
+`701E021200000000010F6A0180FFFFFFFF0060`. The proxy hint recorded
+`first_client_action="client_quickbar_item_set_button"`,
+`first_client_action_matches_candidate=true`, 353 verified events after that
+first client action, 113 live-object events after it, and 0 server quickbar
+events. The immediate next harness/protocol target is original-client
+active-property item action semantics and timing beyond UseItem versus
+SetButton dispatch.
+
+As of 2026-07-04 01:35 +10, proxy2 also writes
+`pending_item_refresh_action_outcome` into semantic traces and
+`quickbar-item-refresh-hint.json`. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-action-outcome-20260704-0138` against the
+current Diamond HG gameplay capture stayed at 164 packet files, 304 strict
+allows, 0 strict quarantines, and 0 quarantine files. The replay hint ended
+`awaiting_client_action` for feature-25-only candidate `0x80015DAA`; the latest
+live SetButton probe above should read as
+`candidate_client_action_no_server_quickbar` because the matched client action
+was observed but no server quickbar followed.
+
+As of 2026-07-04 02:40 +10, proxy2 also writes
+`first_client_action_timing` and
+`followup_events_before_first_client_action` into the same hint and semantic
+trace path. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-action-timing-20260704-023643` and parser
+check `C:\nwnbridge\codex-proxy2-replay-action-timing-summary-20260704-024005`
+stayed at 164 packet files, 304 strict allows, 0 strict quarantines, and 0
+quarantine files. The replay hint remained `awaiting_client_action` for
+feature-25-only candidate `0x80015DAA`, proving the new fields are ready for
+the next live SetButton/UseItem timing probe.
+
+To send the proxy-recommended quickbar SetButton action from the EE driver,
+use:
+
+```powershell
+.\tools\test-hg-bridge.ps1 -Server 213 -AutoQuickbarItemRefreshSetButton -SeedNwsyncClientCache -SkipAssets -SkipBuild -ProxyLogRoot C:\nwnbridge\<descriptive-run>
+```
+
 Latest known live HG proxy status, as of 2026-07-03 22:34 +10: the current
 gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-useitem-self-target-hint-20260703-223120\harness-proxy-20260703-223124`.
@@ -48,6 +93,19 @@ other, and 0 server/client quickbar events. The immediate next
 harness/protocol target is active-property item client-action semantics and
 timing, including quickbar set-button versus radial/UseItem behavior, not
 another proof that the driver can send a valid UseItem payload.
+
+As of 2026-07-03 23:35 +10, proxy2 also writes a decompile-backed
+`GuiQuickbar_SetButton` candidate action into `quickbar-item-refresh-hint.json`.
+The hint includes payload availability, hex bytes, target slot, slot source,
+button type, item object id, int parameter, and target-object presence. Strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-setbutton-hint-20260703-233507`
+against the current Diamond capture stayed at 0 quarantines and produced
+`recommended_client_quickbar_set_button_payload_hex=701E02120000000701AA5D0180FFFFFFFF0060`
+for candidate `0x80015DAA`, slot 7, source `first_blank_committed_slot`. Next
+harness action: add an opt-in driver path that sends this SetButton payload
+from the hint file, then run a live HG probe and compare the post-action
+quickbar/server counters with the UseItem-only probes above.
 
 Latest known live HG status, as of 2026-07-03 15:29 +10: the current
 gameplay-reaching Diamond capture is

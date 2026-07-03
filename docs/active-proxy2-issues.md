@@ -17,6 +17,85 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-04 live SetButton driver probe: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-useitem-self-target-hint-20260703-223120\harness-proxy-20260703-223124`
+  (log last write `2026-07-03T22:34:14.7839098+10:00`, gameplay reached, about
+  1.8h old at the gate). The bridge/harness now has an opt-in
+  `-AutoQuickbarItemRefreshSetButton` path that validates the full high-level
+  `70 1E 02` `GuiQuickbar_SetButton` item payload from proxy2's hint file and
+  sends it through `CNWMessage::SendPlayerToServerMessage`. Reference setup:
+  fresh live HG via the EE driver-only harness, because the question is HG's
+  live response to the SetButton action after previous UseItem probes produced
+  no quickbar refresh. Fresh live probe
+  `C:\nwnbridge\codex-live-quickbar-setbutton-driver-20260704-003119\harness-proxy-20260704-003123`
+  reached gameplay, committed an item-bearing quickbar profile, and dispatched
+  candidate `0x80016A0F` with payload
+  `701E021200000000010F6A0180FFFFFFFF0060`. The hint recorded
+  `first_client_action="client_quickbar_item_set_button"`,
+  `first_client_action_matches_candidate=true`, and 353 events after that
+  action, including 113 live-object events, 1 inventory event, 1 chat event,
+  and 0 server quickbar events. Next production path: compare original
+  Diamond/EE active-property item radial/quickbar action semantics and timing;
+  the driver can now send the typed SetButton action, so the remaining gap is
+  likely a missing action-family/state rule rather than payload dispatch.
+- 2026-07-04 quickbar item-refresh action-outcome slice: live-data gate used
+  the gameplay-reaching live HG proxy harness
+  `C:\nwnbridge\codex-live-quickbar-setbutton-driver-20260704-003119\harness-proxy-20260704-003123`
+  (proxy log last write `2026-07-04T00:36:53+10:00`, about 50 minutes old at
+  gate time). Gameplay was reached and no quarantine artifact directory was
+  present. Proxy2 now classifies the pending quickbar item-refresh client
+  response as `awaiting_client_action`, `first_client_action_target_unknown`,
+  `first_client_action_targets_other_object`,
+  `candidate_client_action_no_server_quickbar`, or
+  `candidate_client_action_observed_server_quickbar`, and writes that outcome
+  into semantic traces plus `quickbar-item-refresh-hint.json`. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-action-outcome-20260704-0138` against the
+  current Diamond HG gameplay capture verified 164 packet files, 304 strict
+  allows, 0 strict quarantines, 0 quarantine files, and a pending
+  `awaiting_client_action` hint for feature-25-only candidate `0x80015DAA`.
+  The latest live SetButton probe would classify as
+  `candidate_client_action_no_server_quickbar`: the client targeted the
+  candidate, but no server quickbar followed. Next production path: use this
+  outcome in the next live probe, then implement or correct the generalized
+  active-property item radial/action timing rule instead of adding another
+  one-off payload guess.
+- 2026-07-04 quickbar client-action timing slice: live-data gate used the same
+  gameplay-reaching live HG proxy harness
+  `C:\nwnbridge\codex-live-quickbar-setbutton-driver-20260704-003119\harness-proxy-20260704-003123`
+  (proxy log last write `2026-07-04T00:36:53+10:00`, about 1h50m old at gate
+  time), with no quarantine artifacts. Proxy2 now classifies the first
+  item-refresh client action as `awaiting_client_action`,
+  `immediate_after_proof`, or `delayed_after_pending_followup`, and records
+  `followup_events_before_first_client_action` in semantic traces plus
+  `quickbar-item-refresh-hint.json`; the replay harness exports both summary
+  fields. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-action-timing-20260704-023643` and parser
+  check `C:\nwnbridge\codex-proxy2-replay-action-timing-summary-20260704-024005`
+  stayed at 164 packet files, 304 strict allows, 0 strict quarantines, and 0
+  quarantine files. The Diamond replay remains `awaiting_client_action` for
+  feature-25-only candidate `0x80015DAA`. Next production path: run the live
+  SetButton/UseItem driver probes with these timing fields, then compare the
+  first client action's delay against Diamond/EE active-property item action
+  semantics before changing the translator action rule.
+- 2026-07-03 ClientQuickbar SetButton hint slice: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-useitem-self-target-hint-20260703-223120\harness-proxy-20260703-223124`
+  (log last write `2026-07-03T22:34:14.7839098+10:00`, gameplay reached, about
+  0.8h old at the gate). Because the latest live UseItem probe still recorded
+  0 quickbar events after the matched self-targeted UseItem, proxy2 now builds
+  an exact `GuiQuickbar_SetButton` item payload from the decompile-backed
+  client quickbar parser, records the first blank/item committed quickbar slot,
+  and writes a `recommended_client_quickbar_set_button_*` action alongside the
+  existing UseItem hint. Reference setup: the fresh live HG capture establishes
+  the behavior gap, and strict Diamond-capture replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-setbutton-hint-20260703-233507`
+  verified 164 packet files, 304 strict allows, 0 quarantines, and hint payload
+  `701E02120000000701AA5D0180FFFFFFFF0060` for candidate `0x80015DAA` using
+  slot 7 from `first_blank_committed_slot`. Next production path: teach the EE
+  driver/harness to dispatch this SetButton payload, then run a fresh live HG
+  probe and compare post-action quickbar/server traffic against the current
+  UseItem-only result.
 - 2026-07-03 self-target UseItem hint slice: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-post-useitem-response-counters-20260703-2145\harness-proxy-20260703-213130`
