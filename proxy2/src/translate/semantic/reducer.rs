@@ -363,6 +363,9 @@ fn apply_event(
                     pending_item_refresh_first_client_action_slot,
                     pending_item_refresh_first_client_action_button_type,
                     pending_item_refresh_first_client_action_body_kind,
+                    pending_item_refresh_first_client_action_candidate_known,
+                    pending_item_refresh_first_client_action_candidate_object_id,
+                    pending_item_refresh_first_client_action_matches_candidate,
                 ) = quickbar_item_refresh_client_action_trace_fields(
                     pending_item_refresh_first_client_action_detail,
                 );
@@ -516,6 +519,9 @@ fn apply_event(
                     pending_item_refresh_first_client_action_slot,
                     pending_item_refresh_first_client_action_button_type,
                     pending_item_refresh_first_client_action_body_kind,
+                    pending_item_refresh_first_client_action_candidate_known,
+                    pending_item_refresh_first_client_action_candidate_object_id,
+                    pending_item_refresh_first_client_action_matches_candidate,
                     pending_item_refresh_candidate_known_before_commit,
                     pending_item_refresh_candidate_object_id_before_commit,
                     pending_item_refresh_candidate_proof_before_commit,
@@ -773,6 +779,9 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_first_client_action_slot,
             pending_item_refresh_first_client_action_button_type,
             pending_item_refresh_first_client_action_body_kind,
+            pending_item_refresh_first_client_action_candidate_known,
+            pending_item_refresh_first_client_action_candidate_object_id,
+            pending_item_refresh_first_client_action_matches_candidate,
         ) = quickbar_item_refresh_client_action_trace_fields(
             state
                 .ui
@@ -861,6 +870,9 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_first_client_action_slot,
             pending_item_refresh_first_client_action_button_type,
             pending_item_refresh_first_client_action_body_kind,
+            pending_item_refresh_first_client_action_candidate_known,
+            pending_item_refresh_first_client_action_candidate_object_id,
+            pending_item_refresh_first_client_action_matches_candidate,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
@@ -914,13 +926,17 @@ fn record_pending_quickbar_item_refresh_event(
                 .post_committed_quickbar_item_refresh_first_client_action
                 .is_none()
         {
+            let compact_candidate = state
+                .ui
+                .last_inventory_item_context_after_committed_quickbar
+                .and_then(|context| context.compact_item_emission_candidate);
             state
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action = Some(event_kind);
             state
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action_detail = Some(
-                quickbar_item_refresh_client_action_detail(event, event_kind),
+                quickbar_item_refresh_client_action_detail(event, event_kind, compact_candidate),
             );
         }
     }
@@ -993,35 +1009,54 @@ fn record_pending_quickbar_item_refresh_event(
 fn quickbar_item_refresh_client_action_detail(
     event: &ProtocolEvent,
     kind: QuickbarItemRefreshEventKind,
+    compact_candidate: Option<InventoryItemContextCandidate>,
 ) -> QuickbarItemRefreshClientActionDetail {
+    let candidate_object_id = compact_candidate.map(|candidate| candidate.object_id);
+    let matches_candidate_object = |object_id: Option<u32>| {
+        object_id
+            .zip(candidate_object_id)
+            .map(|(object_id, candidate_object_id)| object_id == candidate_object_id)
+    };
     match event {
-        ProtocolEvent::ClientInput(event) => QuickbarItemRefreshClientActionDetail {
-            kind,
-            object_id: event.claim.map(|claim| claim.primary_object_id),
-            slot: None,
-            button_type: None,
-            body_kind: None,
-        },
-        ProtocolEvent::ClientQuickbar(event) => QuickbarItemRefreshClientActionDetail {
-            kind,
-            object_id: event.claim.and_then(|claim| claim.item_object_id),
-            slot: event.claim.map(|claim| claim.slot),
-            button_type: event.claim.map(|claim| claim.button_type),
-            body_kind: event.claim.map(|claim| claim.body_kind),
-        },
+        ProtocolEvent::ClientInput(event) => {
+            let object_id = event.claim.map(|claim| claim.primary_object_id);
+            QuickbarItemRefreshClientActionDetail {
+                kind,
+                object_id,
+                slot: None,
+                button_type: None,
+                body_kind: None,
+                candidate_object_id,
+                matches_candidate_object: matches_candidate_object(object_id),
+            }
+        }
+        ProtocolEvent::ClientQuickbar(event) => {
+            let object_id = event.claim.and_then(|claim| claim.item_object_id);
+            QuickbarItemRefreshClientActionDetail {
+                kind,
+                object_id,
+                slot: event.claim.map(|claim| claim.slot),
+                button_type: event.claim.map(|claim| claim.button_type),
+                body_kind: event.claim.map(|claim| claim.body_kind),
+                candidate_object_id,
+                matches_candidate_object: matches_candidate_object(object_id),
+            }
+        }
         _ => QuickbarItemRefreshClientActionDetail {
             kind,
             object_id: None,
             slot: None,
             button_type: None,
             body_kind: None,
+            candidate_object_id,
+            matches_candidate_object: None,
         },
     }
 }
 
 fn quickbar_item_refresh_client_action_trace_fields(
     detail: Option<QuickbarItemRefreshClientActionDetail>,
-) -> (bool, u32, u8, u8, &'static str) {
+) -> (bool, u32, u8, u8, &'static str, bool, u32, bool) {
     let has_object_id = detail.and_then(|detail| detail.object_id).is_some();
     let object_id = detail.and_then(|detail| detail.object_id).unwrap_or(0);
     let slot = detail.and_then(|detail| detail.slot).unwrap_or(0);
@@ -1030,7 +1065,25 @@ fn quickbar_item_refresh_client_action_trace_fields(
         .and_then(|detail| detail.body_kind)
         .map(client_quickbar::ClientQuickbarSetButtonKind::as_str)
         .unwrap_or("none");
-    (has_object_id, object_id, slot, button_type, body_kind)
+    let candidate_known = detail
+        .and_then(|detail| detail.candidate_object_id)
+        .is_some();
+    let candidate_object_id = detail
+        .and_then(|detail| detail.candidate_object_id)
+        .unwrap_or(0);
+    let matches_candidate = detail
+        .and_then(|detail| detail.matches_candidate_object)
+        .unwrap_or(false);
+    (
+        has_object_id,
+        object_id,
+        slot,
+        button_type,
+        body_kind,
+        candidate_known,
+        candidate_object_id,
+        matches_candidate,
+    )
 }
 
 fn quickbar_item_context_candidate_trace_fields(
@@ -1979,7 +2032,7 @@ mod fixture_free_tests {
         let owner_id = 0x8000_0010u32;
         let first_item_id = 0x8000_0100u32;
         let second_item_id = 0x8000_0101u32;
-        let quickbar_item_id = 0x8000_0200u32;
+        let quickbar_item_id = first_item_id;
         let mut live = vec![b'I'];
         live.extend_from_slice(&owner_id.to_le_bytes());
         live.extend_from_slice(&0x2000u16.to_le_bytes());
@@ -2056,8 +2109,10 @@ mod fixture_free_tests {
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                candidate_object_id: Some(first_item_id),
+                matches_candidate_object: Some(true),
             }),
-            "the first client action should retain the verified UseItem object id"
+            "the first client action should retain the verified UseItem object id and candidate match"
         );
         assert_eq!(
             unresolved
@@ -2111,6 +2166,8 @@ mod fixture_free_tests {
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                candidate_object_id: Some(first_item_id),
+                matches_candidate_object: Some(true),
             }),
             "the resolving server quickbar should snapshot the first client action details"
         );
@@ -2183,8 +2240,10 @@ mod fixture_free_tests {
                 slot: Some(7),
                 button_type: Some(1),
                 body_kind: Some(client_quickbar::ClientQuickbarSetButtonKind::Item),
+                candidate_object_id: Some(first_item_id),
+                matches_candidate_object: Some(false),
             }),
-            "the first item SetButton should preserve slot, type, and object id"
+            "the first item SetButton should preserve slot, type, object id, and candidate mismatch"
         );
     }
 

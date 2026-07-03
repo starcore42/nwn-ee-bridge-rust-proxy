@@ -371,6 +371,23 @@ not as standalone workaround targets.
   drive a post-proof UseItem or item-bearing client quickbar SetButton in the
   harness, then verify whether HG emits a later committed item-bearing
   `GuiQuickbar_SetAllButtons`.
+- 2026-07-03 quickbar client-action candidate-match slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at the gate, the
+  newest gameplay packet was about 21h05m old and gameplay reached. Pending
+  refresh client-action diagnostics now compare the first post-proof client
+  action object id against the deterministic compact item-emission candidate.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-action-candidate-match-automation-20260703-122155`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, and 1 committed quickbar summary. This capture still
+  has 37 post-quickbar pending updates and 5 compact item-emission proof
+  objects for candidate `2147574964`, but the first recorded post-proof client
+  actions were generic input against object `2147497163`; all 4 candidate-known
+  action samples therefore had `matches_candidate=false`. Next production path:
+  drive UseItem or an item-bearing client quickbar SetButton specifically
+  against candidate `2147574964` after the Feature-25-only post-proof window
+  opens, then check whether HG emits a later item-bearing committed
+  `GuiQuickbar_SetAllButtons`.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.

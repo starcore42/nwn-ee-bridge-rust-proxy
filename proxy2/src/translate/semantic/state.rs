@@ -91,6 +91,15 @@ impl SemanticSessionState {
             .and_then(|detail| detail.body_kind)
             .map(ClientQuickbarSetButtonKind::as_str)
             .unwrap_or("none");
+        let first_client_action_candidate_known = first_client_action_detail
+            .and_then(|detail| detail.candidate_object_id)
+            .is_some();
+        let first_client_action_candidate_object_id = first_client_action_detail
+            .and_then(|detail| detail.candidate_object_id)
+            .unwrap_or(0);
+        let first_client_action_matches_candidate = first_client_action_detail
+            .and_then(|detail| detail.matches_candidate_object)
+            .unwrap_or(false);
         let compact_item_emission_candidate = summary.item_context.compact_item_emission_candidate;
         let compact_item_emission_candidate_known = compact_item_emission_candidate.is_some();
         let compact_item_emission_candidate_object_id = compact_item_emission_candidate
@@ -137,6 +146,9 @@ impl SemanticSessionState {
             first_client_action_slot,
             first_client_action_button_type,
             first_client_action_body_kind,
+            first_client_action_candidate_known,
+            first_client_action_candidate_object_id,
+            first_client_action_matches_candidate,
             direct_item_proof_objects = summary.item_context.direct_item_proof_objects,
             feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects =
@@ -447,6 +459,8 @@ pub(crate) struct QuickbarItemRefreshClientActionDetail {
     pub(crate) slot: Option<u8>,
     pub(crate) button_type: Option<u8>,
     pub(crate) body_kind: Option<ClientQuickbarSetButtonKind>,
+    pub(crate) candidate_object_id: Option<u32>,
+    pub(crate) matches_candidate_object: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
