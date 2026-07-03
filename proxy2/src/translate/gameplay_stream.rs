@@ -947,7 +947,7 @@ fn focused_quickbar_unit_end(
         return FocusedUnitEnd::Invalid;
     };
 
-    let mut candidate_ends = Vec::new();
+    let mut declared_candidate_ends = Vec::new();
     for read_end in declared_read_end_candidates(bytes, offset, declared) {
         for fragment_bytes in QUICKBAR_MIN_FRAGMENT_BYTES..=MAX_QUICKBAR_FRAGMENT_BYTES {
             let Some(end) = read_end.checked_add(fragment_bytes) else {
@@ -956,10 +956,25 @@ fn focused_quickbar_unit_end(
             if end > bytes.len() {
                 break;
             }
-            candidate_ends.push(end);
+            declared_candidate_ends.push(end);
         }
     }
 
+    declared_candidate_ends.sort_unstable();
+    declared_candidate_ends.dedup();
+    for end in declared_candidate_ends {
+        if quickbar_candidate_end_claims_complete_unit(
+            bytes,
+            offset,
+            end,
+            quickbar_materialization,
+            quickbar_stream_probe_summary,
+        ) {
+            return FocusedUnitEnd::Exact(end);
+        }
+    }
+
+    let mut legacy_candidate_ends = Vec::new();
     let min_legacy_end = offset
         .checked_add(QUICKBAR_LEGACY_PREFIX_BYTES)
         .and_then(|end| end.checked_add(QUICKBAR_SLOT_BYTES))
@@ -970,27 +985,42 @@ fn focused_quickbar_unit_end(
             .map(|end| end.min(bytes.len()))
             .unwrap_or(bytes.len());
         for end in min_legacy_end..=max_legacy_end {
-            candidate_ends.push(end);
+            legacy_candidate_ends.push(end);
         }
     }
 
-    candidate_ends.sort_unstable();
-    candidate_ends.dedup();
-    for end in candidate_ends {
-        let Some(payload) = bytes.get(offset..end) else {
-            continue;
-        };
-        if quickbar_payload_claims_complete_unit(
-            payload,
+    legacy_candidate_ends.sort_unstable();
+    legacy_candidate_ends.dedup();
+    for end in legacy_candidate_ends {
+        if quickbar_candidate_end_claims_complete_unit(
+            bytes,
+            offset,
+            end,
             quickbar_materialization,
             quickbar_stream_probe_summary,
-        ) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
-        {
+        ) {
             return FocusedUnitEnd::Exact(end);
         }
     }
 
     FocusedUnitEnd::Invalid
+}
+
+fn quickbar_candidate_end_claims_complete_unit(
+    bytes: &[u8],
+    offset: usize,
+    end: usize,
+    quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
+    quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
+) -> bool {
+    let Some(payload) = bytes.get(offset..end) else {
+        return false;
+    };
+    quickbar_payload_claims_complete_unit(
+        payload,
+        quickbar_materialization,
+        quickbar_stream_probe_summary,
+    ) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
 }
 
 fn quickbar_payload_claims_complete_unit(
