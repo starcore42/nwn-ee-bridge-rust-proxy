@@ -52,6 +52,8 @@ pub struct ClientQuickbarClaimSummary {
     pub slot: u8,
     pub button_type: u8,
     pub body_kind: ClientQuickbarSetButtonKind,
+    pub item_object_id: Option<u32>,
+    pub target_object_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +69,22 @@ pub enum ClientQuickbarSetButtonKind {
     IntWordObject,
 }
 
+impl ClientQuickbarSetButtonKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NoParam => "no_param",
+            Self::Item => "item",
+            Self::Spell => "spell",
+            Self::SpellWithDomain => "spell_with_domain",
+            Self::IntParam => "int_param",
+            Self::ResRefString => "resref_string",
+            Self::CommandLine => "command_line",
+            Self::ResRef => "resref",
+            Self::IntWordObject => "int_word_object",
+        }
+    }
+}
+
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientQuickbarClaimSummary> {
     let parsed = parse_set_button_payload(payload)?;
     Some(ClientQuickbarClaimSummary {
@@ -74,6 +92,8 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientQuickbarClaimSu
         slot: parsed.slot,
         button_type: parsed.button_type,
         body_kind: parsed.body_kind,
+        item_object_id: parsed.item_object_id,
+        target_object_id: parsed.target_object_id,
     })
 }
 
@@ -82,6 +102,8 @@ struct ParsedClientQuickbarSetButton {
     slot: u8,
     button_type: u8,
     body_kind: ClientQuickbarSetButtonKind,
+    item_object_id: Option<u32>,
+    target_object_id: Option<u32>,
 }
 
 fn parse_set_button_payload(payload: &[u8]) -> Option<ParsedClientQuickbarSetButton> {
@@ -102,17 +124,37 @@ fn parse_set_button_payload(payload: &[u8]) -> Option<ParsedClientQuickbarSetBut
         return None;
     }
 
-    let (body_kind, cursor) =
-        parse_set_button_body(payload, SET_BUTTON_BODY_OFFSET, declared, button_type)?;
-    if cursor != declared {
+    let body = parse_set_button_body(payload, SET_BUTTON_BODY_OFFSET, declared, button_type)?;
+    if body.cursor != declared {
         return None;
     }
 
     Some(ParsedClientQuickbarSetButton {
         slot,
         button_type,
-        body_kind,
+        body_kind: body.kind,
+        item_object_id: body.item_object_id,
+        target_object_id: body.target_object_id,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedSetButtonBody {
+    kind: ClientQuickbarSetButtonKind,
+    cursor: usize,
+    item_object_id: Option<u32>,
+    target_object_id: Option<u32>,
+}
+
+impl ParsedSetButtonBody {
+    fn new(kind: ClientQuickbarSetButtonKind, cursor: usize) -> Self {
+        Self {
+            kind,
+            cursor,
+            item_object_id: None,
+            target_object_id: None,
+        }
+    }
 }
 
 fn parse_set_button_body(
@@ -120,63 +162,95 @@ fn parse_set_button_body(
     cursor: usize,
     declared: usize,
     button_type: u8,
-) -> Option<(ClientQuickbarSetButtonKind, usize)> {
+) -> Option<ParsedSetButtonBody> {
     if client_quickbar_type_has_no_payload(button_type) {
-        return Some((ClientQuickbarSetButtonKind::NoParam, cursor));
+        return Some(ParsedSetButtonBody::new(
+            ClientQuickbarSetButtonKind::NoParam,
+            cursor,
+        ));
     }
 
     if button_type == 1 {
-        return parse_item_button_body(payload, cursor, declared)
-            .map(|cursor| (ClientQuickbarSetButtonKind::Item, cursor));
+        let item = parse_item_button_body(payload, cursor, declared)?;
+        return Some(ParsedSetButtonBody {
+            kind: ClientQuickbarSetButtonKind::Item,
+            cursor: item.cursor,
+            item_object_id: Some(item.item_object_id),
+            target_object_id: item.target_object_id,
+        });
     }
 
     if button_type == 2 {
         return parse_spell_button_body(payload, cursor, declared)
-            .map(|cursor| (ClientQuickbarSetButtonKind::Spell, cursor));
+            .map(|cursor| ParsedSetButtonBody::new(ClientQuickbarSetButtonKind::Spell, cursor));
     }
 
     if button_type == 44 {
-        return parse_spell_with_domain_body(payload, cursor, declared)
-            .map(|cursor| (ClientQuickbarSetButtonKind::SpellWithDomain, cursor));
+        return parse_spell_with_domain_body(payload, cursor, declared).map(|cursor| {
+            ParsedSetButtonBody::new(ClientQuickbarSetButtonKind::SpellWithDomain, cursor)
+        });
     }
 
     if client_quickbar_type_has_int_payload(button_type) {
         return skip_bytes(payload, cursor, declared, INT_BYTES)
-            .map(|cursor| (ClientQuickbarSetButtonKind::IntParam, cursor));
+            .map(|cursor| ParsedSetButtonBody::new(ClientQuickbarSetButtonKind::IntParam, cursor));
     }
 
     if button_type == 39 {
-        return parse_int_word_object_body(payload, cursor, declared)
-            .map(|cursor| (ClientQuickbarSetButtonKind::IntWordObject, cursor));
+        return parse_int_word_object_body(payload, cursor, declared).map(|cursor| {
+            ParsedSetButtonBody::new(ClientQuickbarSetButtonKind::IntWordObject, cursor)
+        });
     }
 
     if (11..=17).contains(&button_type) {
-        return parse_resref_string_body(payload, cursor, declared)
-            .map(|cursor| (ClientQuickbarSetButtonKind::ResRefString, cursor));
+        return parse_resref_string_body(payload, cursor, declared).map(|cursor| {
+            ParsedSetButtonBody::new(ClientQuickbarSetButtonKind::ResRefString, cursor)
+        });
     }
 
     if button_type == 18 {
-        return parse_command_line_body(payload, cursor, declared)
-            .map(|cursor| (ClientQuickbarSetButtonKind::CommandLine, cursor));
+        return parse_command_line_body(payload, cursor, declared).map(|cursor| {
+            ParsedSetButtonBody::new(ClientQuickbarSetButtonKind::CommandLine, cursor)
+        });
     }
 
     if button_type == 29 || button_type == 30 {
         return skip_bytes(payload, cursor, declared, C_RESREF_BYTES)
-            .map(|cursor| (ClientQuickbarSetButtonKind::ResRef, cursor));
+            .map(|cursor| ParsedSetButtonBody::new(ClientQuickbarSetButtonKind::ResRef, cursor));
     }
 
     None
 }
 
-fn parse_item_button_body(payload: &[u8], mut cursor: usize, declared: usize) -> Option<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedItemButtonBody {
+    cursor: usize,
+    item_object_id: u32,
+    target_object_id: Option<u32>,
+}
+
+fn parse_item_button_body(
+    payload: &[u8],
+    mut cursor: usize,
+    declared: usize,
+) -> Option<ParsedItemButtonBody> {
+    let item_object_id = read_le_u32(payload, cursor)?;
     cursor = skip_bytes(payload, cursor, declared, OBJECT_ID_BYTES)?;
     cursor = skip_bytes(payload, cursor, declared, INT_BYTES)?;
     let has_target_object = *payload.get(cursor)? != 0;
     cursor = skip_bytes(payload, cursor, declared, BOOL_WIRE_BYTES)?;
-    if has_target_object {
+    let target_object_id = if has_target_object {
+        let value = read_le_u32(payload, cursor)?;
         cursor = skip_bytes(payload, cursor, declared, OBJECT_ID_BYTES)?;
-    }
-    Some(cursor)
+        Some(value)
+    } else {
+        None
+    };
+    Some(ParsedItemButtonBody {
+        cursor,
+        item_object_id,
+        target_object_id,
+    })
 }
 
 fn parse_spell_button_body(payload: &[u8], mut cursor: usize, declared: usize) -> Option<usize> {
@@ -287,6 +361,8 @@ mod tests {
         assert_eq!(summary.slot, 5);
         assert_eq!(summary.button_type, 0);
         assert_eq!(summary.body_kind, ClientQuickbarSetButtonKind::NoParam);
+        assert_eq!(summary.item_object_id, None);
+        assert_eq!(summary.target_object_id, None);
     }
 
     #[test]
@@ -331,6 +407,29 @@ mod tests {
         assert_eq!(summary.slot, 1);
         assert_eq!(summary.button_type, 1);
         assert_eq!(summary.body_kind, ClientQuickbarSetButtonKind::Item);
+        assert_eq!(summary.item_object_id, Some(0x8001_2345));
+        assert_eq!(summary.target_object_id, None);
+    }
+
+    #[test]
+    fn claims_observed_item_with_target_object_id() {
+        let payload = set_button_payload(
+            3,
+            1,
+            &[
+                0x45, 0x23, 0x01, 0x80, // item object
+                0xFF, 0xFF, 0xFF, 0xFF, // quickbar int parameter
+                0x01, // has target object
+                0xAA, 0xBB, 0x01, 0x80, // target object
+            ],
+        );
+
+        let summary = claim_payload_if_verified(&payload).expect("item target should claim");
+
+        assert_eq!(summary.slot, 3);
+        assert_eq!(summary.body_kind, ClientQuickbarSetButtonKind::Item);
+        assert_eq!(summary.item_object_id, Some(0x8001_2345));
+        assert_eq!(summary.target_object_id, Some(0x8001_BBAA));
     }
 
     #[test]

@@ -336,6 +336,24 @@ not as standalone workaround targets.
   quickbar SetButton after Feature-25-only proof opens, then use the new
   first-trigger counters to decide whether HG emits a later committed
   `SetAllButtons`.
+- 2026-07-03 quickbar first-action detail slice: live-data gate reused
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`; at
+  `2026-07-03T10:16:02+10:00`, the newest gameplay packet was about 19h06m old
+  and gameplay reached. Client `GuiQuickbar_SetButton` claims now expose the
+  item object id and optional target object id for decompile-backed type-1 item
+  bodies, and semantic pending-refresh state snapshots the first post-proof
+  client action's object id, quickbar slot, button type, and body kind. Strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-action-detail-automation-20260703-1038`
+  stayed at 0 quarantines, 414 strict allows, 27 exact live-object rewrites,
+  147 lifecycle claims, 39 stream-probe registry-context summaries, and 1
+  committed quickbar summary. The pending Feature-25-only post-context window
+  still has 0 UseItem and 0 item SetButton actions; the new detail fields prove
+  the only post-proof client action details were generic input with object id
+  `2147497163`, slot/button/body-kind all zero/none. Next production path:
+  update harness/client control to deliberately perform post-proof UseItem or
+  item-bearing client quickbar SetButton, then check whether HG emits a later
+  committed item-bearing `GuiQuickbar_SetAllButtons`.
 - The recurring automation/project workspace must use the populated checkout at
   `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
   visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
@@ -356,8 +374,8 @@ not as standalone workaround targets.
   fresh, use harness/client control to provoke or capture a later committed
   `GuiQuickbar_SetAllButtons` after the Feature-25-only pending item-proof
   window. Prefer a post-proof UseItem or item-bearing client quickbar SetButton;
-  the current first-trigger counters prove ordinary live-object traffic and
-  generic client input do not yet produce an item-bearing refresh.
+  the current first-action detail counters prove ordinary live-object traffic
+  and generic client input do not yet produce an item-bearing refresh.
 - 2026-06-28 live-data gate satisfied by
   `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`: probe window
   `2026-06-28 00:05:38.124 -> 00:07:37.612`, 119 packet files, gameplay reached

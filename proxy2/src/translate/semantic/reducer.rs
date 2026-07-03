@@ -14,7 +14,8 @@ use crate::{
 };
 
 use super::state::{
-    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
+    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
 };
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, ClientQuickbarEvent, InventoryEvent,
@@ -260,6 +261,9 @@ fn apply_event(
                 let pending_item_refresh_first_client_action = state
                     .ui
                     .post_committed_quickbar_item_refresh_first_client_action;
+                let pending_item_refresh_first_client_action_detail = state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_client_action_detail;
                 let pending_item_refresh_outcome =
                     committed_quickbar_item_refresh_outcome(pending_item_refresh, profile);
                 let (best_item_context, best_item_context_source) =
@@ -301,6 +305,10 @@ fn apply_event(
                     .ui
                     .last_committed_quickbar_item_refresh_first_client_action =
                     pending_item_refresh_first_client_action;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_first_client_action_detail =
+                    pending_item_refresh_first_client_action_detail;
                 state.ui.last_committed_quickbar_best_item_context = best_item_context;
                 state.ui.last_committed_quickbar_best_item_context_source =
                     best_item_context_source;
@@ -326,6 +334,9 @@ fn apply_event(
                 state
                     .ui
                     .post_committed_quickbar_item_refresh_first_client_action = None;
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_client_action_detail = None;
                 let prior_item_context_known = prior_item_context.is_some();
                 let prior_item_context = prior_item_context.unwrap_or_default();
                 let previous_post_item_context_known = previous_post_item_context.is_some();
@@ -346,6 +357,15 @@ fn apply_event(
                     pending_item_refresh_first_client_action
                         .map(QuickbarItemRefreshEventKind::as_str)
                         .unwrap_or("none");
+                let (
+                    pending_item_refresh_first_client_action_has_object_id,
+                    pending_item_refresh_first_client_action_object_id,
+                    pending_item_refresh_first_client_action_slot,
+                    pending_item_refresh_first_client_action_button_type,
+                    pending_item_refresh_first_client_action_body_kind,
+                ) = quickbar_item_refresh_client_action_trace_fields(
+                    pending_item_refresh_first_client_action_detail,
+                );
                 tracing::info!(
                     slot_records = profile.slot_records,
                     blank_slots = profile.blank_slots,
@@ -449,6 +469,11 @@ fn apply_event(
                     pending_item_refresh_proof_class,
                     pending_item_refresh_first_followup_event,
                     pending_item_refresh_first_client_action,
+                    pending_item_refresh_first_client_action_has_object_id,
+                    pending_item_refresh_first_client_action_object_id,
+                    pending_item_refresh_first_client_action_slot,
+                    pending_item_refresh_first_client_action_button_type,
+                    pending_item_refresh_first_client_action_body_kind,
                     pending_item_refresh_outcome = pending_item_refresh_outcome.as_str(),
                     best_item_context_known,
                     best_item_context_source,
@@ -663,6 +688,9 @@ fn remember_quickbar_item_context_if_relevant(
             state
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action = None;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_client_action_detail = None;
         } else if !was_pending_item_refresh {
             state
                 .ui
@@ -670,6 +698,9 @@ fn remember_quickbar_item_context_if_relevant(
             state
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action = None;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_client_action_detail = None;
         }
         state.ui.post_committed_quickbar_item_refresh_proof_class =
             pending_item_refresh_proof_class;
@@ -686,6 +717,17 @@ fn remember_quickbar_item_context_if_relevant(
             .post_committed_quickbar_item_refresh_first_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
             .unwrap_or("none");
+        let (
+            pending_item_refresh_first_client_action_has_object_id,
+            pending_item_refresh_first_client_action_object_id,
+            pending_item_refresh_first_client_action_slot,
+            pending_item_refresh_first_client_action_button_type,
+            pending_item_refresh_first_client_action_body_kind,
+        ) = quickbar_item_refresh_client_action_trace_fields(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_client_action_detail,
+        );
         tracing::info!(
             source,
             updates_since_committed_quickbar = state
@@ -756,6 +798,11 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_proof_class,
             pending_item_refresh_first_followup_event,
             pending_item_refresh_first_client_action,
+            pending_item_refresh_first_client_action_has_object_id,
+            pending_item_refresh_first_client_action_object_id,
+            pending_item_refresh_first_client_action_slot,
+            pending_item_refresh_first_client_action_button_type,
+            pending_item_refresh_first_client_action_body_kind,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
@@ -808,6 +855,11 @@ fn record_pending_quickbar_item_refresh_event(
             state
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action = Some(event_kind);
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_client_action_detail = Some(
+                quickbar_item_refresh_client_action_detail(event, event_kind),
+            );
         }
     }
     let breakdown = &mut state
@@ -874,6 +926,49 @@ fn record_pending_quickbar_item_refresh_event(
             breakdown.other_events = breakdown.other_events.saturating_add(1);
         }
     }
+}
+
+fn quickbar_item_refresh_client_action_detail(
+    event: &ProtocolEvent,
+    kind: QuickbarItemRefreshEventKind,
+) -> QuickbarItemRefreshClientActionDetail {
+    match event {
+        ProtocolEvent::ClientInput(event) => QuickbarItemRefreshClientActionDetail {
+            kind,
+            object_id: event.claim.map(|claim| claim.primary_object_id),
+            slot: None,
+            button_type: None,
+            body_kind: None,
+        },
+        ProtocolEvent::ClientQuickbar(event) => QuickbarItemRefreshClientActionDetail {
+            kind,
+            object_id: event.claim.and_then(|claim| claim.item_object_id),
+            slot: event.claim.map(|claim| claim.slot),
+            button_type: event.claim.map(|claim| claim.button_type),
+            body_kind: event.claim.map(|claim| claim.body_kind),
+        },
+        _ => QuickbarItemRefreshClientActionDetail {
+            kind,
+            object_id: None,
+            slot: None,
+            button_type: None,
+            body_kind: None,
+        },
+    }
+}
+
+fn quickbar_item_refresh_client_action_trace_fields(
+    detail: Option<QuickbarItemRefreshClientActionDetail>,
+) -> (bool, u32, u8, u8, &'static str) {
+    let has_object_id = detail.and_then(|detail| detail.object_id).is_some();
+    let object_id = detail.and_then(|detail| detail.object_id).unwrap_or(0);
+    let slot = detail.and_then(|detail| detail.slot).unwrap_or(0);
+    let button_type = detail.and_then(|detail| detail.button_type).unwrap_or(0);
+    let body_kind = detail
+        .and_then(|detail| detail.body_kind)
+        .map(client_quickbar::ClientQuickbarSetButtonKind::as_str)
+        .unwrap_or("none");
+    (has_object_id, object_id, slot, button_type, body_kind)
 }
 
 fn quickbar_item_refresh_event_kind(event: &ProtocolEvent) -> QuickbarItemRefreshEventKind {
@@ -1869,6 +1964,17 @@ mod fixture_free_tests {
             "the first client action after pending proof should be retained"
         );
         assert_eq!(
+            unresolved.first_client_action_detail,
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientInputUseItem,
+                object_id: Some(quickbar_item_id),
+                slot: None,
+                button_type: None,
+                body_kind: None,
+            }),
+            "the first client action should retain the verified UseItem object id"
+        );
+        assert_eq!(
             unresolved
                 .event_breakdown
                 .client_quickbar_item_set_button_events,
@@ -1911,9 +2017,81 @@ mod fixture_free_tests {
             Some(QuickbarItemRefreshEventKind::ClientInputUseItem)
         );
         assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_first_client_action_detail,
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientInputUseItem,
+                object_id: Some(quickbar_item_id),
+                slot: None,
+                button_type: None,
+                body_kind: None,
+            }),
+            "the resolving server quickbar should snapshot the first client action details"
+        );
+        assert_eq!(
             state.ui.last_committed_quickbar_item_refresh_outcome,
             QuickbarItemRefreshOutcome::PendingRefreshStillBlank,
             "the resolving server quickbar should still classify the item refresh outcome separately"
+        );
+    }
+
+    #[test]
+    fn pending_quickbar_refresh_records_first_client_quickbar_item_detail() {
+        let owner_id = 0x8000_0010u32;
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0101u32;
+        let quickbar_item_id = 0x8000_0200u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&first_item_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&second_item_id.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let client_quickbar_item = client_quickbar_item_set_button_payload(7, quickbar_item_id);
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ClientToServer,
+            &VerifiedProof::Family(VerifiedFamily::ClientQuickbar),
+            &client_quickbar_item,
+        );
+
+        let unresolved = state
+            .ui
+            .unresolved_pending_item_refresh()
+            .expect("client quickbar item action should leave the pending refresh unresolved");
+        assert_eq!(
+            unresolved.first_client_action,
+            Some(QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton)
+        );
+        assert_eq!(
+            unresolved.first_client_action_detail,
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton,
+                object_id: Some(quickbar_item_id),
+                slot: Some(7),
+                button_type: Some(1),
+                body_kind: Some(client_quickbar::ClientQuickbarSetButtonKind::Item),
+            }),
+            "the first item SetButton should preserve slot, type, and object id"
         );
     }
 

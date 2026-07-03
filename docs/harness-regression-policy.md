@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-03 09:13 +10: the current
+Latest known live HG status, as of 2026-07-03 10:16 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260702-1504`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 219
@@ -41,7 +41,7 @@ packet files, and packet window
 `2026-07-02T15:05:09.9590892+10:00 -> 2026-07-02T15:09:59.0156462+10:00`.
 Gameplay was reached through BNVR/PRE_PLAYMOD, tempclient BIC read, repeated
 HG `P/05/01` live-object traffic, and in-game chat/reset messages; at the
-2026-07-03 09:13 +10 gate, the newest gameplay packet was about 18 hours old
+2026-07-03 10:16 +10 gate, the newest gameplay packet was about 19h06m old
 and still inside the 24-hour freshness window. The first
 strict proxy2 replay
 `C:\nwnbridge\codex-proxy2-replay-fresh-live-20260702-20260702-151020`
@@ -417,6 +417,20 @@ first client actions were generic input (`first_client_action_other_input=2`).
 The next useful harness action remains a deliberate post-proof UseItem or
 item-bearing client quickbar SetButton, now with first-trigger counters to
 verify the action landed in the correct pending window.
+
+Update as of 2026-07-03 10:38 +10: strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-action-detail-automation-20260703-1038`
+against the same fresh gameplay capture stayed at 0 quarantines, 414 strict
+allows, 27 exact live-object rewrites, 147 lifecycle claims, 39 stream-probe
+registry-context summaries, and 1 committed quickbar summary. Client
+`GuiQuickbar_SetButton` item claims now retain item/target object ids, and
+pending-refresh semantic traces retain the first client action's object id,
+slot, button type, and body kind. The pending Feature-25-only window still has
+0 post-proof UseItem and 0 item SetButton actions; the new detail counters show
+only generic input with object id `2147497163`, slot/button zero, and body kind
+`none`. The next useful harness action remains deliberately provoking a
+post-proof UseItem or item-bearing client quickbar SetButton, then checking
+whether HG emits a later committed item-bearing `GuiQuickbar_SetAllButtons`.
 
 ## Successful live HG capture contract
 

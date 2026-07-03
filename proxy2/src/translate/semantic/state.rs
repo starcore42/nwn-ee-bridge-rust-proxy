@@ -20,6 +20,7 @@ use crate::translate::{
         AreaPlaceableContextStateConflict, AreaPlaceableObservedOrientationSource,
         AreaPlaceableObservedState,
     },
+    client_quickbar::ClientQuickbarSetButtonKind,
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
     quickbar::QuickbarValidatedSlotProfile,
@@ -73,6 +74,23 @@ impl SemanticSessionState {
             .first_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
             .unwrap_or("none");
+        let first_client_action_detail = summary.first_client_action_detail;
+        let first_client_action_has_object_id = first_client_action_detail
+            .and_then(|detail| detail.object_id)
+            .is_some();
+        let first_client_action_object_id = first_client_action_detail
+            .and_then(|detail| detail.object_id)
+            .unwrap_or(0);
+        let first_client_action_slot = first_client_action_detail
+            .and_then(|detail| detail.slot)
+            .unwrap_or(0);
+        let first_client_action_button_type = first_client_action_detail
+            .and_then(|detail| detail.button_type)
+            .unwrap_or(0);
+        let first_client_action_body_kind = first_client_action_detail
+            .and_then(|detail| detail.body_kind)
+            .map(ClientQuickbarSetButtonKind::as_str)
+            .unwrap_or("none");
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
@@ -103,6 +121,11 @@ impl SemanticSessionState {
             pending_item_refresh_proof_class = proof_class,
             first_followup_event,
             first_client_action,
+            first_client_action_has_object_id,
+            first_client_action_object_id,
+            first_client_action_slot,
+            first_client_action_button_type,
+            first_client_action_body_kind,
             direct_item_proof_objects = summary.item_context.direct_item_proof_objects,
             feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects =
@@ -363,6 +386,16 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
+    pub(crate) first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuickbarItemRefreshClientActionDetail {
+    pub(crate) kind: QuickbarItemRefreshEventKind,
+    pub(crate) object_id: Option<u32>,
+    pub(crate) slot: Option<u8>,
+    pub(crate) button_type: Option<u8>,
+    pub(crate) body_kind: Option<ClientQuickbarSetButtonKind>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2234,6 +2267,8 @@ pub(crate) struct UiState {
         Option<QuickbarItemRefreshEventKind>,
     pub(crate) post_committed_quickbar_item_refresh_first_client_action:
         Option<QuickbarItemRefreshEventKind>,
+    pub(crate) post_committed_quickbar_item_refresh_first_client_action_detail:
+        Option<QuickbarItemRefreshClientActionDetail>,
     pub(crate) last_committed_quickbar_previous_post_item_context:
         Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_previous_post_item_context_updates: u64,
@@ -2249,6 +2284,8 @@ pub(crate) struct UiState {
         Option<QuickbarItemRefreshEventKind>,
     pub(crate) last_committed_quickbar_item_refresh_first_client_action:
         Option<QuickbarItemRefreshEventKind>,
+    pub(crate) last_committed_quickbar_item_refresh_first_client_action_detail:
+        Option<QuickbarItemRefreshClientActionDetail>,
     pub(crate) last_committed_quickbar_best_item_context: Option<InventoryItemContextSummary>,
     pub(crate) last_committed_quickbar_best_item_context_source: Option<QuickbarItemContextSource>,
 }
@@ -2269,6 +2306,8 @@ impl UiState {
             proof_class: self.post_committed_quickbar_item_refresh_proof_class,
             first_followup_event: self.post_committed_quickbar_item_refresh_first_followup_event,
             first_client_action: self.post_committed_quickbar_item_refresh_first_client_action,
+            first_client_action_detail: self
+                .post_committed_quickbar_item_refresh_first_client_action_detail,
         })
     }
 }
