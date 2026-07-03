@@ -81,6 +81,7 @@ impl SemanticSessionState {
             .proof_class
             .map(QuickbarItemRefreshProofClass::as_str)
             .unwrap_or("none");
+        let action_outcome = summary.action_outcome.as_str();
         let first_followup_event = summary
             .first_followup_event
             .map(QuickbarItemRefreshEventKind::as_str)
@@ -158,6 +159,7 @@ impl SemanticSessionState {
             chat_events_since_pending_refresh = summary.event_breakdown.chat_events,
             other_events_since_pending_refresh = summary.event_breakdown.other_events,
             pending_item_refresh_proof_class = proof_class,
+            pending_item_refresh_action_outcome = action_outcome,
             first_followup_event,
             first_client_action,
             first_client_action_has_object_id,
@@ -438,6 +440,54 @@ impl QuickbarItemRefreshOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshActionOutcome {
+    AwaitingClientAction,
+    FirstClientActionTargetUnknown,
+    FirstClientActionTargetsOtherObject,
+    CandidateClientActionNoServerQuickbar,
+    CandidateClientActionObservedServerQuickbar,
+}
+
+impl Default for QuickbarItemRefreshActionOutcome {
+    fn default() -> Self {
+        Self::AwaitingClientAction
+    }
+}
+
+impl QuickbarItemRefreshActionOutcome {
+    pub(crate) fn from_pending_state(
+        first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+        event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    ) -> Self {
+        let Some(detail) = first_client_action_detail else {
+            return Self::AwaitingClientAction;
+        };
+        match detail.matches_candidate_object {
+            Some(true) if event_breakdown_after_first_client_action.quickbar_events != 0 => {
+                Self::CandidateClientActionObservedServerQuickbar
+            }
+            Some(true) => Self::CandidateClientActionNoServerQuickbar,
+            Some(false) => Self::FirstClientActionTargetsOtherObject,
+            None => Self::FirstClientActionTargetUnknown,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingClientAction => "awaiting_client_action",
+            Self::FirstClientActionTargetUnknown => "first_client_action_target_unknown",
+            Self::FirstClientActionTargetsOtherObject => "first_client_action_targets_other_object",
+            Self::CandidateClientActionNoServerQuickbar => {
+                "candidate_client_action_no_server_quickbar"
+            }
+            Self::CandidateClientActionObservedServerQuickbar => {
+                "candidate_client_action_observed_server_quickbar"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshProofClass {
     DirectOnly,
     Feature25Only,
@@ -511,6 +561,7 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
     pub(crate) events_after_first_client_action: u64,
     pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    pub(crate) action_outcome: QuickbarItemRefreshActionOutcome,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
@@ -557,6 +608,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
     pub(crate) events_after_first_client_action: u64,
     pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    pub(crate) action_outcome: QuickbarItemRefreshActionOutcome,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
     pub(crate) first_followup_event: Option<QuickbarItemRefreshEventKind>,
     pub(crate) first_client_action: Option<QuickbarItemRefreshEventKind>,
@@ -621,6 +673,7 @@ impl QuickbarItemRefreshHarnessHint {
             .first_event_after_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
             .unwrap_or("none");
+        let action_outcome = self.action_outcome.as_str();
         format!(
             concat!(
                 "{{\n",
@@ -657,6 +710,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
+                "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"first_followup_event\": \"{}\",\n",
                 "  \"first_client_action\": \"{}\",\n",
                 "  \"first_client_action_has_object_id\": {},\n",
@@ -730,6 +784,7 @@ impl QuickbarItemRefreshHarnessHint {
             self.proof_class
                 .map(QuickbarItemRefreshProofClass::as_str)
                 .unwrap_or("none"),
+            action_outcome,
             self.first_followup_event
                 .map(QuickbarItemRefreshEventKind::as_str)
                 .unwrap_or("none"),
@@ -2780,6 +2835,8 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action:
         QuickbarItemRefreshEventBreakdown,
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
+    pub(crate) last_committed_quickbar_item_refresh_action_outcome:
+        QuickbarItemRefreshActionOutcome,
     pub(crate) last_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
     pub(crate) last_committed_quickbar_item_refresh_first_followup_event:
@@ -2857,6 +2914,11 @@ impl UiState {
             .post_committed_quickbar_item_refresh_proof_class
             .map(QuickbarItemRefreshProofClass::as_str)
             .unwrap_or("none");
+        let action_outcome = QuickbarItemRefreshActionOutcome::from_pending_state(
+            self.post_committed_quickbar_item_refresh_first_client_action_detail,
+            self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+        )
+        .as_str();
         let stream_probe = self.last_quickbar_stream_probe.unwrap_or_default();
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
@@ -2886,6 +2948,7 @@ impl UiState {
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
+                "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"candidate_known\": {},\n",
                 "  \"candidate_object_id\": {},\n",
                 "  \"candidate_object_id_hex\": \"0x{:08X}\",\n",
@@ -2932,6 +2995,7 @@ impl UiState {
             self.inventory_item_context_after_committed_quickbar_updates,
             self.post_committed_quickbar_item_refresh_pending_events,
             proof_class,
+            action_outcome,
             candidate_known,
             candidate_object_id,
             candidate_object_id,
@@ -2982,6 +3046,10 @@ impl UiState {
                 .post_committed_quickbar_item_refresh_events_after_first_client_action,
             event_breakdown_after_first_client_action: self
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            action_outcome: QuickbarItemRefreshActionOutcome::from_pending_state(
+                self.post_committed_quickbar_item_refresh_first_client_action_detail,
+                self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            ),
             proof_class: self.post_committed_quickbar_item_refresh_proof_class,
             first_followup_event: self.post_committed_quickbar_item_refresh_first_followup_event,
             first_client_action: self.post_committed_quickbar_item_refresh_first_client_action,
@@ -3009,6 +3077,7 @@ impl UiState {
             events_after_first_client_action: summary.events_after_first_client_action,
             event_breakdown_after_first_client_action: summary
                 .event_breakdown_after_first_client_action,
+            action_outcome: summary.action_outcome,
             proof_class: summary.proof_class,
             first_followup_event: summary.first_followup_event,
             first_client_action: summary.first_client_action,
