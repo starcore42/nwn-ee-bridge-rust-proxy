@@ -75,6 +75,7 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
         item_objects_preserved_by_feature25_first: 0,
         item_objects_preserved_by_feature25_second: 0,
         item_objects_preserved_by_feature25_legacy_tail: 0,
+        validated_slot_profile: None,
     };
 
     assert!(
@@ -132,6 +133,7 @@ fn owned_quickbar_boundary_with_only_blank_slots_does_not_wait_for_placeholder()
         item_objects_preserved_by_feature25_first: 0,
         item_objects_preserved_by_feature25_second: 0,
         item_objects_preserved_by_feature25_legacy_tail: 0,
+        validated_slot_profile: None,
     };
 
     assert!(
@@ -189,6 +191,7 @@ fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
         item_objects_preserved_by_feature25_first: 0,
         item_objects_preserved_by_feature25_second: 0,
         item_objects_preserved_by_feature25_legacy_tail: 0,
+        validated_slot_profile: None,
     };
 
     assert!(

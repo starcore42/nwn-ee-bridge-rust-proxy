@@ -181,6 +181,7 @@ pub struct QuickbarRewriteSummary {
     pub item_objects_preserved_by_feature25_first: u32,
     pub item_objects_preserved_by_feature25_second: u32,
     pub item_objects_preserved_by_feature25_legacy_tail: u32,
+    pub(crate) validated_slot_profile: Option<QuickbarValidatedSlotProfile>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

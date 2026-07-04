@@ -33,24 +33,27 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-04 14:29 +10: the current
+Latest known live HG proxy status, as of 2026-07-04 16:28 +10: the current
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-device-property-classifier-gui-event-20260704-142731\harness-proxy-20260704-142740`.
-It reached gameplay through `Module_Loaded`, `Area_ClientArea`, synthetic
-`Area_AreaLoaded`, exact `GameObjUpdate_LiveObject`, and quickbar stream probe
-traffic. This was the live rerun after the previous GUI-event notify probe
-stalled before gameplay. Proxy2 consumed 70 EE-only
-`Device_AdvertiseProperty` (`70 36 01`) M frames with the CNW declared length
-at payload offset 3 and the `CExoString` property name at offset 7, logged 0
-`client high-level M frame quarantined` lines, and wrote no quarantine artifact
-files. The final hint recorded `stream_probe_quickbar_seen=true`,
-`stream_probe_slot_records_owned=36`, `stream_probe_item_buttons_preserved=21`,
-`committed_quickbar_seen=false`, and
-`no_hint_reason="stream_probe_quickbar_item_candidates_without_committed_profile"`.
-The immediate next harness/protocol target is quickbar stream commitment:
-either commit this verified stream-probe `GuiQuickbar_SetAllButtons` profile
-into semantic state or prove why only a later committed quickbar packet can
-authorize GUI-event/UseItem action emission.
+`C:\nwnbridge\codex-live-stream-probe-commit-gui-event-20260704-162250\harness-proxy-20260704-162301`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, two `Area_ClientArea` observations, live
+object traffic, and the GUI-event notify path, and wrote
+`quickbar-item-refresh-hint.json` at `2026-07-04T16:27:55+10:00`. No client
+high-level M-frame quarantines or quarantine artifact files were observed.
+Proxy2 logged `validated_slot_profile=true` for the stream-probe
+`GuiQuickbar_SetAllButtons` summary; the guarded stream-probe promotion did not
+fire in this run because the same window also carried a normal committed
+`GuiQuickbar` proof. The final hint recorded `pending_item_refresh=true`,
+candidate `0x80015219` with `candidate_proof="active_object"` and
+`candidate_source="direct_only"`, matched
+`first_client_action="client_gui_event_notify"`, and
+`pending_item_refresh_action_outcome="candidate_client_action_no_server_quickbar"`.
+After that matched client action HG produced 147 server-to-client, 136
+client-to-server, 91 live-object, 1 inventory, and 0 server quickbar follow-up
+events. The immediate next harness/protocol target is the original-client
+active-property action semantics/timing for this refresh: the bounded
+`GuiEvent_Notify` probe lands, but HG does not emit a server quickbar refresh.
 
 As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
 `GuiEvent_Notify` client payloads semantically while still forwarding only an
@@ -84,10 +87,10 @@ live radial/menu probe after building the bridge, use:
 
 Treat success as gameplay reached plus a matched
 `first_client_action="client_gui_event_notify"` in the final
-`quickbar-item-refresh-hint.json`, then check whether a server quickbar update
-follows. Treat no matched GUI event, no server quickbar follow-up, or new
-quarantine as the next action-family/state issue rather than a connection
-blocker if `Area_ClientArea` and live-object traffic still continue.
+`quickbar-item-refresh-hint.json`. The 2026-07-04 16:22 live run reached that
+point, so the remaining failure mode is no server quickbar follow-up after the
+matched GUI event. Treat that as the next action-family/state issue rather than
+a connection blocker while `Area_ClientArea` and live-object traffic continue.
 
 As of 2026-07-04 14:29 +10, the 11:50 pre-gameplay GUI-event notify blocker is
 resolved by the shared Rust `Device_AdvertiseProperty` classifier. The earlier
@@ -110,7 +113,10 @@ as historical evidence only. Fresh rerun
 `C:\nwnbridge\codex-live-device-property-classifier-gui-event-20260704-142731\harness-proxy-20260704-142740`
 consumed 70 `Device_AdvertiseProperty` frames, reached gameplay, logged no
 client high-level M-frame quarantines, and moved the active blocker to
-quickbar stream-probe profiles that are verified but not committed.
+quickbar stream-probe profiles that are verified but not committed. The
+2026-07-04 16:22 follow-up added an exact stream-probe profile promotion path
+and reached the GUI-event notify action path; keep the 14:27 run as historical
+connection-blocker evidence.
 
 As of 2026-07-04 05:32 +10, proxy2 also writes server-to-client and
 client-to-server direction totals for pending quickbar item-refresh windows
@@ -778,7 +784,8 @@ work.
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
 | Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch, or `-SkipBuild` uses an older proxy than the one just built | The wrapper selected a stale proxy2 executable before a fresher compatible build | Use the resolver that checks `--help` for the hint flag, skips stale candidates, selects the newest compatible executable by `LastWriteTime`, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
 | GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Historical proxy/module-load handoff blocker: Rust was parsing the EE `Device_AdvertiseProperty` name length where the CNW declared read-buffer length lives | Use the shared `translate::client_device` classifier. Fresh 2026-07-04 14:27 rerun consumed 70 device-property frames and reached gameplay; if this recurs, verify those logs before unrelated action-family work. |
-| GUI-event notify probe reaches gameplay but final hint says `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but semantic state has no committed quickbar profile/candidate | Inspect quickbar stream commitment and profile promotion before injecting GUI-event/UseItem actions. |
+| GUI-event notify probe reaches gameplay but final hint says `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but semantic state has no committed quickbar profile/candidate | Inspect quickbar stream commitment and profile promotion before injecting GUI-event/UseItem actions. The 2026-07-04 16:22 run added a guarded promotion path; if this recurs, confirm whether `promoted_committed_profile=true` is absent and whether normal `GuiQuickbar` proof was also absent. |
+| GUI-event notify probe reaches gameplay, final hint has `first_client_action="client_gui_event_notify"` and `first_client_action_matches_candidate=true`, but `quickbar_events_after_first_client_action=0` | The hinted GUI-event payload lands, but it is not sufficient to make HG emit the original item-refresh quickbar update | Trace original-client active-property action semantics/timing before changing broad translation rules. Compare event id/body/vector/timing against Diamond/EE decompiles and live client action captures. |
 | Live auto-UseItem hint reports `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but no accepted committed quickbar profile has reached semantic state | Inspect splitter/stream commitment and quickbar buffering before trying to inject UseItem; the driver should wait for a pending hint or a committed profile. |
 
 Rules:

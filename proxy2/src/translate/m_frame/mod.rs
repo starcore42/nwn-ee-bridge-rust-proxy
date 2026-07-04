@@ -639,6 +639,16 @@ fn observe_quickbar_stream_probe_from_rewrite(
         .semantic
         .ui
         .observe_quickbar_stream_probe(summary, materialization_context);
+    let verified_proof = rewrite.verified_proof();
+    let promoted_committed_profile = if !verified_proof.contains_family(VerifiedFamily::GuiQuickbar)
+    {
+        state
+            .semantic
+            .ui
+            .promote_quickbar_stream_probe_profile(summary, materialization_context)
+    } else {
+        false
+    };
     tracing::info!(
         probes = state.semantic.ui.quickbar_stream_probe_summaries,
         item_buttons_seen = summary.item_buttons_seen,
@@ -650,6 +660,8 @@ fn observe_quickbar_stream_probe_from_rewrite(
         feature25_item_proof_objects = materialization_context.feature25_item_proof_objects,
         compact_item_emission_proof_objects =
             materialization_context.compact_item_emission_proof_objects,
+        validated_slot_profile = summary.validated_slot_profile.is_some(),
+        promoted_committed_profile,
         "semantic state observed stream-probe GuiQuickbar summary"
     );
     update_quickbar_item_refresh_hint(state);

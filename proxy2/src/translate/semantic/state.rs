@@ -2977,6 +2977,126 @@ impl UiState {
         self.last_quickbar_stream_probe_materialization_context = Some(materialization_context);
     }
 
+    pub(crate) fn promote_quickbar_stream_probe_profile(
+        &mut self,
+        summary: &QuickbarRewriteSummary,
+        materialization_context: InventoryItemContextSummary,
+    ) -> bool {
+        if crate::translate::quickbar::rewrite_summary_needs_more_quickbar_bytes(summary) {
+            return false;
+        }
+        let Some(profile) = summary.validated_slot_profile else {
+            return false;
+        };
+        self.commit_quickbar_profile(profile, materialization_context);
+        true
+    }
+
+    pub(crate) fn commit_quickbar_profile(
+        &mut self,
+        profile: QuickbarValidatedSlotProfile,
+        materialization_context: InventoryItemContextSummary,
+    ) {
+        self.quickbar_packets = self.quickbar_packets.saturating_add(1);
+        self.last_quickbar_family = Some(VerifiedFamily::GuiQuickbar);
+
+        let prior_item_context = self.last_inventory_item_context_before_quickbar;
+        let previous_post_item_context = self.last_inventory_item_context_after_committed_quickbar;
+        let previous_post_item_context_updates =
+            self.inventory_item_context_after_committed_quickbar_updates;
+        let pending_item_refresh = self.post_committed_quickbar_item_refresh_pending;
+        let pending_item_refresh_updates =
+            self.post_committed_quickbar_item_refresh_pending_updates;
+        let pending_item_refresh_events = self.post_committed_quickbar_item_refresh_pending_events;
+        let pending_item_refresh_event_breakdown =
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown;
+        let pending_item_refresh_events_after_first_client_action =
+            self.post_committed_quickbar_item_refresh_events_after_first_client_action;
+        let pending_item_refresh_event_breakdown_after_first_client_action =
+            self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action;
+        let pending_item_refresh_followup_events_before_first_client_action =
+            self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action;
+        let pending_item_refresh_proof_class =
+            self.post_committed_quickbar_item_refresh_proof_class;
+        let pending_item_refresh_first_followup_event =
+            self.post_committed_quickbar_item_refresh_first_followup_event;
+        let pending_item_refresh_first_client_action =
+            self.post_committed_quickbar_item_refresh_first_client_action;
+        let pending_item_refresh_first_client_action_detail =
+            self.post_committed_quickbar_item_refresh_first_client_action_detail;
+        let pending_item_refresh_first_event_after_client_action =
+            self.post_committed_quickbar_item_refresh_first_event_after_client_action;
+        let pending_item_refresh_action_outcome_breakdown =
+            if pending_item_refresh && pending_item_refresh_first_client_action_detail.is_some() {
+                let mut breakdown = pending_item_refresh_event_breakdown_after_first_client_action;
+                breakdown.quickbar_events = breakdown.quickbar_events.saturating_add(1);
+                breakdown
+            } else {
+                pending_item_refresh_event_breakdown_after_first_client_action
+            };
+        let pending_item_refresh_action_outcome =
+            QuickbarItemRefreshActionOutcome::from_pending_state(
+                pending_item_refresh_first_client_action_detail,
+                pending_item_refresh_action_outcome_breakdown,
+            );
+        let pending_item_refresh_outcome =
+            quickbar_item_refresh_outcome_for_profile(pending_item_refresh, &profile);
+        let (best_item_context, best_item_context_source) = best_quickbar_item_context_for_commit(
+            materialization_context,
+            prior_item_context,
+            previous_post_item_context,
+        );
+
+        self.last_committed_quickbar_profile = Some(profile);
+        self.last_committed_quickbar_materialization_context = Some(materialization_context);
+        self.last_committed_quickbar_prior_item_context = prior_item_context;
+        self.last_committed_quickbar_previous_post_item_context = previous_post_item_context;
+        self.last_committed_quickbar_previous_post_item_context_updates =
+            previous_post_item_context_updates;
+        self.last_committed_quickbar_item_refresh_pending = pending_item_refresh;
+        self.last_committed_quickbar_item_refresh_pending_updates = pending_item_refresh_updates;
+        self.last_committed_quickbar_item_refresh_pending_events = pending_item_refresh_events;
+        self.last_committed_quickbar_item_refresh_pending_event_breakdown =
+            pending_item_refresh_event_breakdown;
+        self.last_committed_quickbar_item_refresh_events_after_first_client_action =
+            pending_item_refresh_events_after_first_client_action;
+        self.last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+            pending_item_refresh_event_breakdown_after_first_client_action;
+        self.last_committed_quickbar_item_refresh_followup_events_before_first_client_action =
+            pending_item_refresh_followup_events_before_first_client_action;
+        self.last_committed_quickbar_item_refresh_outcome = pending_item_refresh_outcome;
+        self.last_committed_quickbar_item_refresh_action_outcome =
+            pending_item_refresh_action_outcome;
+        self.last_committed_quickbar_item_refresh_proof_class = pending_item_refresh_proof_class;
+        self.last_committed_quickbar_item_refresh_first_followup_event =
+            pending_item_refresh_first_followup_event;
+        self.last_committed_quickbar_item_refresh_first_client_action =
+            pending_item_refresh_first_client_action;
+        self.last_committed_quickbar_item_refresh_first_client_action_detail =
+            pending_item_refresh_first_client_action_detail;
+        self.last_committed_quickbar_item_refresh_first_event_after_client_action =
+            pending_item_refresh_first_event_after_client_action;
+        self.last_committed_quickbar_best_item_context = best_item_context;
+        self.last_committed_quickbar_best_item_context_source = best_item_context_source;
+
+        self.last_inventory_item_context_after_committed_quickbar = None;
+        self.inventory_item_context_after_committed_quickbar_updates = 0;
+        self.post_committed_quickbar_item_refresh_pending = false;
+        self.post_committed_quickbar_item_refresh_pending_updates = 0;
+        self.post_committed_quickbar_item_refresh_pending_events = 0;
+        self.post_committed_quickbar_item_refresh_pending_event_breakdown =
+            QuickbarItemRefreshEventBreakdown::default();
+        self.post_committed_quickbar_item_refresh_events_after_first_client_action = 0;
+        self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+            QuickbarItemRefreshEventBreakdown::default();
+        self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action = 0;
+        self.post_committed_quickbar_item_refresh_proof_class = None;
+        self.post_committed_quickbar_item_refresh_first_followup_event = None;
+        self.post_committed_quickbar_item_refresh_first_client_action = None;
+        self.post_committed_quickbar_item_refresh_first_client_action_detail = None;
+        self.post_committed_quickbar_item_refresh_first_event_after_client_action = None;
+    }
+
     pub(crate) fn quickbar_item_refresh_harness_idle_reason(&self) -> &'static str {
         if self.last_committed_quickbar_profile.is_none() {
             if let Some(probe) = self.last_quickbar_stream_probe {
@@ -3251,6 +3371,45 @@ impl UiState {
     }
 }
 
+fn quickbar_item_refresh_outcome_for_profile(
+    pending_item_refresh: bool,
+    profile: &QuickbarValidatedSlotProfile,
+) -> QuickbarItemRefreshOutcome {
+    if !pending_item_refresh {
+        return QuickbarItemRefreshOutcome::NoPendingRefresh;
+    }
+    if profile.item_slots == 0 {
+        QuickbarItemRefreshOutcome::PendingRefreshStillBlank
+    } else {
+        QuickbarItemRefreshOutcome::PendingRefreshEmittedItemSlots
+    }
+}
+
+fn best_quickbar_item_context_for_commit(
+    current: InventoryItemContextSummary,
+    prior: Option<InventoryItemContextSummary>,
+    previous_post: Option<InventoryItemContextSummary>,
+) -> (
+    Option<InventoryItemContextSummary>,
+    Option<QuickbarItemContextSource>,
+) {
+    if current.has_quickbar_item_context_evidence() {
+        return (Some(current), Some(QuickbarItemContextSource::Current));
+    }
+    if let Some(previous_post) =
+        previous_post.filter(|context| context.has_quickbar_item_context_evidence())
+    {
+        return (
+            Some(previous_post),
+            Some(QuickbarItemContextSource::PreviousPost),
+        );
+    }
+    if let Some(prior) = prior.filter(|context| context.has_quickbar_item_context_evidence()) {
+        return (Some(prior), Some(QuickbarItemContextSource::Prior));
+    }
+    (None, None)
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct SyntheticState {
     pub(crate) server_synthetic_packets: u64,
@@ -3278,8 +3437,8 @@ mod tests {
         LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
         QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
-        QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass, QuickbarStreamProbeSummary,
-        UiState,
+        QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass, QuickbarRewriteSummary,
+        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -5465,6 +5624,126 @@ mod tests {
                 proof: InventoryItemObjectProof::Feature25SecondList,
                 source: InventoryItemContextCandidateSource::Feature25Only,
             })
+        );
+    }
+
+    fn stream_probe_rewrite_summary_with_profile(
+        profile: Option<QuickbarValidatedSlotProfile>,
+        trailing_read_bytes: usize,
+        fragment_size: usize,
+    ) -> QuickbarRewriteSummary {
+        QuickbarRewriteSummary {
+            old_payload_length: 1523,
+            new_payload_length: 1726,
+            old_declared: 1501,
+            new_declared: 1702,
+            read_size: 1494,
+            fragment_size,
+            final_cursor: 1494usize.saturating_sub(trailing_read_bytes),
+            trailing_read_bytes,
+            direct_opcode_stream: false,
+            slot_records_owned: 36,
+            item_buttons_seen: 21,
+            item_buttons_source_explicit: 21,
+            item_buttons_source_compact: 0,
+            item_buttons_source_recovered: 0,
+            item_buttons_preserved: 21,
+            spells_preserved: 15,
+            blank_buttons_seen: 0,
+            general_buttons_preserved: 0,
+            general_buttons_blanked: 0,
+            item_buttons_blanked: 0,
+            item_buttons_blanked_candidate: 0,
+            unsupported_buttons_blanked: 0,
+            item_buttons_rejected_recovered_type_tag: 0,
+            item_buttons_rejected_missing_type_source: 0,
+            item_buttons_rejected_no_present_item: 0,
+            item_buttons_rejected_invalid_object_id: 0,
+            item_buttons_rejected_missing_active_properties: 0,
+            item_buttons_rejected_unsupported_appearance_type: 0,
+            item_buttons_rejected_appearance_shape: 0,
+            item_buttons_rejected_missing_state_proof: 0,
+            item_buttons_rejected_missing_state_unknown: 0,
+            item_buttons_rejected_missing_state_cleared_delete: 0,
+            item_buttons_rejected_missing_state_cleared_area_reset: 0,
+            item_objects_rejected_missing_state_proven: 0,
+            item_objects_rejected_missing_state_active: 0,
+            item_objects_rejected_missing_state_feature25_first: 0,
+            item_objects_rejected_missing_state_feature25_second: 0,
+            item_objects_rejected_missing_state_feature25_legacy_tail: 0,
+            item_objects_rejected_missing_state_unknown: 0,
+            item_objects_rejected_missing_state_cleared_delete: 0,
+            item_objects_rejected_missing_state_cleared_area_reset: 0,
+            item_objects_preserved_by_explicit_self_materialization: 21,
+            item_objects_preserved_by_active_state: 0,
+            item_objects_preserved_by_feature25_first: 0,
+            item_objects_preserved_by_feature25_second: 0,
+            item_objects_preserved_by_feature25_legacy_tail: 0,
+            validated_slot_profile: profile,
+        }
+    }
+
+    #[test]
+    fn exact_stream_probe_quickbar_profile_promotes_committed_state() {
+        let mut ui = UiState::default();
+        let profile = QuickbarValidatedSlotProfile {
+            slot_records: 36,
+            item_slots: 21,
+            spell_slots: 15,
+            first_item_slot: Some(0),
+            first_page_item_slots: 3,
+            first_page_spell_slots: 2,
+            first_page_visible_slots: 5,
+            ..Default::default()
+        };
+        let summary = stream_probe_rewrite_summary_with_profile(Some(profile), 0, 22);
+        let context = InventoryItemContextSummary {
+            direct_item_proof_objects: 1,
+            ..Default::default()
+        };
+
+        ui.observe_quickbar_stream_probe(&summary, context);
+        assert!(ui.promote_quickbar_stream_probe_profile(&summary, context));
+
+        assert_eq!(ui.quickbar_packets, 1);
+        assert_eq!(ui.last_committed_quickbar_profile, Some(profile));
+        assert_eq!(
+            ui.last_committed_quickbar_materialization_context,
+            Some(context)
+        );
+        assert_eq!(
+            ui.last_committed_quickbar_best_item_context,
+            Some(context),
+            "stream-probe promotion should preserve the same item-context preference as a verified committed quickbar"
+        );
+        assert_eq!(
+            ui.quickbar_item_refresh_harness_idle_reason(),
+            "no_post_committed_item_context"
+        );
+    }
+
+    #[test]
+    fn stream_probe_quickbar_profile_waiting_for_more_bytes_does_not_promote() {
+        let mut ui = UiState::default();
+        let profile = QuickbarValidatedSlotProfile {
+            slot_records: 36,
+            blank_slots: 36,
+            first_blank_slot: Some(0),
+            ..Default::default()
+        };
+        let summary = stream_probe_rewrite_summary_with_profile(Some(profile), 11, 0);
+
+        ui.observe_quickbar_stream_probe(&summary, InventoryItemContextSummary::default());
+        assert!(!ui.promote_quickbar_stream_probe_profile(
+            &summary,
+            InventoryItemContextSummary::default()
+        ));
+
+        assert_eq!(ui.quickbar_packets, 0);
+        assert_eq!(ui.last_committed_quickbar_profile, None);
+        assert_eq!(
+            ui.quickbar_item_refresh_harness_idle_reason(),
+            "stream_probe_quickbar_item_candidates_without_committed_profile"
         );
     }
 

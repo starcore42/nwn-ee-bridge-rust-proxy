@@ -61,6 +61,7 @@ fn rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
         };
     let summary = summarize_quickbar_rewrite(
         &parsed,
+        &rewritten,
         old_payload_length,
         rewritten.len(),
         old_declared,
@@ -141,6 +142,7 @@ fn normalize_and_rewrite_quickbar_payload_with_context_and_trace_if_possible(
     let new_declared = read_le_u32(&rewritten, HIGH_LEVEL_HEADER_BYTES).unwrap_or(old_declared);
     let summary = summarize_quickbar_rewrite(
         &parsed,
+        &rewritten,
         old_payload_length,
         rewritten.len(),
         old_declared,
@@ -374,6 +376,7 @@ fn quickbar_read_window_parses(read_buffer: &[u8], fragments: &[u8]) -> bool {
 
 fn summarize_quickbar_rewrite(
     parsed: &QuickbarParse,
+    rewritten_payload: &[u8],
     old_payload_length: usize,
     new_payload_length: usize,
     old_declared: u32,
@@ -555,6 +558,9 @@ fn summarize_quickbar_rewrite(
         item_objects_preserved_by_feature25_second: materialization_counts.feature25_second,
         item_objects_preserved_by_feature25_legacy_tail: materialization_counts
             .feature25_legacy_tail,
+        validated_slot_profile: super::validator::validated_set_all_buttons_slot_profile(
+            rewritten_payload,
+        ),
     }
 }
 
@@ -807,6 +813,23 @@ fn trace_quickbar_rewrite_summary(
             summary.item_objects_preserved_by_feature25_second,
         item_objects_preserved_by_feature25_legacy_tail =
             summary.item_objects_preserved_by_feature25_legacy_tail,
+        validated_slot_profile = summary.validated_slot_profile.is_some(),
+        validated_slot_records = summary
+            .validated_slot_profile
+            .map(|profile| profile.slot_records)
+            .unwrap_or(0),
+        validated_item_slots = summary
+            .validated_slot_profile
+            .map(|profile| profile.item_slots)
+            .unwrap_or(0),
+        validated_spell_slots = summary
+            .validated_slot_profile
+            .map(|profile| profile.spell_slots)
+            .unwrap_or(0),
+        validated_blank_slots = summary
+            .validated_slot_profile
+            .map(|profile| profile.blank_slots)
+            .unwrap_or(0),
         "server GuiQuickbar_SetAllButtons rewrite summary"
     );
 }
@@ -1143,7 +1166,7 @@ mod tests {
             direct_opcode_stream: false,
         };
 
-        let summary = summarize_quickbar_rewrite(&parsed, 0, 0, 0, 0, Some(&materialization));
+        let summary = summarize_quickbar_rewrite(&parsed, &[], 0, 0, 0, 0, Some(&materialization));
 
         assert_eq!(summary.item_buttons_seen, 1);
         assert_eq!(summary.item_buttons_preserved, 0);

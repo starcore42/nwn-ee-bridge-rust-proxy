@@ -37,9 +37,37 @@ not as standalone workaround targets.
   `-AutoQuickbarItemRefreshGuiEventNotify` still had no dispatchable candidate
   because the final hint was
   `stream_probe_quickbar_item_candidates_without_committed_profile` with
-  `committed_quickbar_seen=false`; next production path is to commit verified
-  stream-probe `GuiQuickbar_SetAllButtons` state, or prove why only a later
-  committed packet can authorize GUI-event/UseItem action emission.
+  `committed_quickbar_seen=false`. Resolved 2026-07-04 by carrying the exact
+  validated quickbar slot profile on stream-probe rewrite summaries and adding
+  a guarded semantic-state promotion path for exact stream probes that do not
+  already carry a normal `GuiQuickbar` proof.
+- 2026-07-04 quickbar stream-profile follow-up: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-device-property-classifier-gui-event-20260704-142731\harness-proxy-20260704-142740`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-04T14:28:57+10:00`; about 1h40m old at the gate, still under 24h).
+  Proxy2 now records `validated_slot_profile` in `GuiQuickbar_SetAllButtons`
+  rewrite summaries and can promote exact stream-probe profiles into committed
+  quickbar semantic state when the verified proof does not already include
+  `GuiQuickbar`. Fresh live rerun
+  `C:\nwnbridge\codex-live-stream-probe-commit-gui-event-20260704-162250\harness-proxy-20260704-162301`
+  selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+  gameplay through `Module_Loaded`, two `Area_ClientArea` observations, live
+  object traffic, and the GUI-event notify path, and wrote
+  `quickbar-item-refresh-hint.json` at `2026-07-04T16:27:55+10:00`. This live
+  run logged `validated_slot_profile=true` for the stream probe, but
+  `promoted_committed_profile=false` because the same window also carried a
+  normal committed `GuiQuickbar` slot profile. The final hint now has
+  `pending_item_refresh=true`, candidate `0x80015219` with
+  `candidate_proof="active_object"` / `candidate_source="direct_only"`,
+  matched `first_client_action="client_gui_event_notify"`, and
+  `first_client_action_matches_candidate=true`; after that action HG produced
+  147 server-to-client, 136 client-to-server, 91 live-object, 1 inventory, and
+  0 quickbar follow-up events. No client high-level M-frame quarantines or
+  quarantine artifacts were observed. Active next path: trace the original
+  client active-property action semantics/timing for this item refresh, because
+  the bounded `GuiEvent_Notify` probe lands but HG does not emit a server
+  quickbar refresh.
 - 2026-07-04 GUI-event live probe blocker: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`

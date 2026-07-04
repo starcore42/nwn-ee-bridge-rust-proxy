@@ -275,6 +275,16 @@ impl VerifiedProof {
         }
     }
 
+    pub fn contains_family(&self, needle: VerifiedFamily) -> bool {
+        match self {
+            Self::Family(family) => *family == needle,
+            Self::GameplayStream(families) => families.contains(&needle),
+            Self::CoalescedWindow(records) => {
+                records.iter().any(|record| record.contains_family(needle))
+            }
+        }
+    }
+
     pub fn from_unit_families(families: Vec<VerifiedFamily>) -> Self {
         match families.as_slice() {
             [family] => Self::Family(*family),
