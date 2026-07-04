@@ -391,6 +391,7 @@ fn summarize_quickbar_rewrite(
     let mut rejection_counts = QuickbarItemRejectionCounts::default();
     let mut missing_state_object_counts = QuickbarMissingStateObjectCounts::default();
     let mut materialization_counts = QuickbarMaterializationCounts::default();
+    let mut first_preserved_active_item_signature = None;
     for button in &parsed.buttons {
         let QuickbarButtonKind::Item {
             primary,
@@ -446,6 +447,10 @@ fn summarize_quickbar_rewrite(
         };
         item_buttons_emitted = item_buttons_emitted.saturating_add(1);
         materialization_counts.observe(proofs);
+        if first_preserved_active_item_signature.is_none() {
+            first_preserved_active_item_signature = quickbar_active_item_signature(primary)
+                .or_else(|| quickbar_active_item_signature(secondary));
+        }
     }
     let item_buttons_blanked_by_policy = item_buttons_total.saturating_sub(item_buttons_emitted);
     let spells_preserved = parsed
@@ -558,10 +563,38 @@ fn summarize_quickbar_rewrite(
         item_objects_preserved_by_feature25_second: materialization_counts.feature25_second,
         item_objects_preserved_by_feature25_legacy_tail: materialization_counts
             .feature25_legacy_tail,
+        first_preserved_active_item_signature,
         validated_slot_profile: super::validator::validated_set_all_buttons_slot_profile(
             rewritten_payload,
         ),
     }
+}
+
+fn quickbar_active_item_signature(
+    item: &QuickbarItemObject,
+) -> Option<QuickbarActiveItemSignature> {
+    if !item.present {
+        return None;
+    }
+    let active_props = item.active_props.as_ref()?;
+    Some(QuickbarActiveItemSignature {
+        object_id: item.object_id,
+        base_item: item.base_item,
+        appearance_type: item.appearance_type,
+        active_property_count: u32::try_from(active_props.properties.len()).unwrap_or(u32::MAX),
+        first_property: active_props.properties.first().map(|property| {
+            QuickbarActivePropertySignature {
+                property: property.property,
+                subtype: property.subtype,
+                cost_table_value: property.cost_table_value,
+                param: property.param,
+            }
+        }),
+        has_armor_word: active_props.has_armor_word,
+        name_is_locstring: active_props.name_is_locstring,
+        state_mask: active_props.state_mask,
+        value_mask: active_props.value_mask,
+    })
 }
 
 #[derive(Default)]

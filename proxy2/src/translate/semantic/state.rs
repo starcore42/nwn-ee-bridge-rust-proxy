@@ -24,7 +24,7 @@ use crate::translate::{
     client_quickbar::{self, ClientQuickbarSetButtonKind},
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
-    quickbar::{QuickbarRewriteSummary, QuickbarValidatedSlotProfile},
+    quickbar::{QuickbarActiveItemSignature, QuickbarRewriteSummary, QuickbarValidatedSlotProfile},
 };
 
 use super::event::{
@@ -174,6 +174,42 @@ impl SemanticSessionState {
         let compact_item_emission_candidate_source = compact_item_emission_candidate
             .map(|candidate| candidate.source.as_str())
             .unwrap_or("none");
+        let first_active_item = self
+            .ui
+            .last_quickbar_stream_probe
+            .and_then(|probe| probe.first_preserved_active_item_signature);
+        let first_active_item_first_property =
+            first_active_item.and_then(|signature| signature.first_property);
+        let first_active_item_known = first_active_item.is_some();
+        let first_active_item_matches_candidate = match (first_active_item, pending_candidate) {
+            (Some(signature), Some(candidate)) => signature.object_id == candidate.object_id,
+            _ => false,
+        };
+        let first_active_item_object_id = first_active_item
+            .map(|signature| signature.object_id)
+            .unwrap_or(0);
+        let first_active_item_base_item = first_active_item
+            .map(|signature| signature.base_item)
+            .unwrap_or(0);
+        let first_active_item_appearance_type = first_active_item
+            .map(|signature| signature.appearance_type)
+            .unwrap_or(0);
+        let first_active_item_property_count = first_active_item
+            .map(|signature| signature.active_property_count)
+            .unwrap_or(0);
+        let first_active_item_first_property_known = first_active_item_first_property.is_some();
+        let first_active_item_first_property_id = first_active_item_first_property
+            .map(|property| property.property)
+            .unwrap_or(0);
+        let first_active_item_first_property_subtype = first_active_item_first_property
+            .map(|property| property.subtype)
+            .unwrap_or(0);
+        let first_active_item_state_mask = first_active_item
+            .map(|signature| signature.state_mask)
+            .unwrap_or(0);
+        let first_active_item_value_mask = first_active_item
+            .map(|signature| signature.value_mask)
+            .unwrap_or(0);
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
@@ -301,6 +337,30 @@ impl SemanticSessionState {
             compact_item_emission_candidate_object_id,
             compact_item_emission_candidate_proof,
             compact_item_emission_candidate_source,
+            first_preserved_active_item_known = first_active_item_known,
+            first_preserved_active_item_matches_candidate = first_active_item_matches_candidate,
+            first_preserved_active_item_object_id = %format_args!(
+                "0x{:08X}",
+                first_active_item_object_id
+            ),
+            first_preserved_active_item_base_item = %format_args!(
+                "0x{:08X}",
+                first_active_item_base_item
+            ),
+            first_preserved_active_item_appearance_type = first_active_item_appearance_type,
+            first_preserved_active_item_property_count = first_active_item_property_count,
+            first_preserved_active_item_first_property_known = first_active_item_first_property_known,
+            first_preserved_active_item_first_property = first_active_item_first_property_id,
+            first_preserved_active_item_first_property_subtype =
+                first_active_item_first_property_subtype,
+            first_preserved_active_item_state_mask = %format_args!(
+                "0x{:02X}",
+                first_active_item_state_mask
+            ),
+            first_preserved_active_item_value_mask = %format_args!(
+                "0x{:02X}",
+                first_active_item_value_mask
+            ),
             compact_item_emission_direct_only_proof_objects = summary
                 .item_context
                 .compact_item_emission_direct_only_proof_objects,
@@ -699,6 +759,7 @@ pub(crate) struct QuickbarStreamProbeSummary {
     pub(crate) item_buttons_blanked_candidate: u32,
     pub(crate) item_buttons_rejected_missing_state_proof: u32,
     pub(crate) item_buttons_rejected_missing_state_unknown: u32,
+    pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
 }
 
 impl QuickbarStreamProbeSummary {
@@ -714,6 +775,7 @@ impl QuickbarStreamProbeSummary {
                 .item_buttons_rejected_missing_state_proof,
             item_buttons_rejected_missing_state_unknown: summary
                 .item_buttons_rejected_missing_state_unknown,
+            first_preserved_active_item_signature: summary.first_preserved_active_item_signature,
         }
     }
 }
@@ -723,6 +785,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) candidate: InventoryItemContextCandidate,
     pub(crate) recommended_set_button_slot: u8,
     pub(crate) recommended_set_button_slot_source: &'static str,
+    pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
@@ -773,6 +836,50 @@ impl QuickbarItemRefreshHarnessHint {
             .as_deref()
             .map(hex_encode_upper)
             .unwrap_or_default();
+        let first_active_item = self.first_preserved_active_item_signature;
+        let first_active_item_first_property =
+            first_active_item.and_then(|signature| signature.first_property);
+        let first_active_item_known = first_active_item.is_some();
+        let first_active_item_matches_candidate = first_active_item
+            .map(|signature| signature.object_id == self.candidate.object_id)
+            .unwrap_or(false);
+        let first_active_item_object_id = first_active_item
+            .map(|signature| signature.object_id)
+            .unwrap_or(0);
+        let first_active_item_base_item = first_active_item
+            .map(|signature| signature.base_item)
+            .unwrap_or(0);
+        let first_active_item_appearance_type = first_active_item
+            .map(|signature| signature.appearance_type)
+            .unwrap_or(0);
+        let first_active_item_property_count = first_active_item
+            .map(|signature| signature.active_property_count)
+            .unwrap_or(0);
+        let first_active_item_first_property_known = first_active_item_first_property.is_some();
+        let first_active_item_first_property_id = first_active_item_first_property
+            .map(|property| property.property)
+            .unwrap_or(0);
+        let first_active_item_first_property_subtype = first_active_item_first_property
+            .map(|property| property.subtype)
+            .unwrap_or(0);
+        let first_active_item_first_property_cost_table_value = first_active_item_first_property
+            .map(|property| property.cost_table_value)
+            .unwrap_or(0);
+        let first_active_item_first_property_param = first_active_item_first_property
+            .map(|property| property.param)
+            .unwrap_or(0);
+        let first_active_item_has_armor_word = first_active_item
+            .map(|signature| signature.has_armor_word)
+            .unwrap_or(false);
+        let first_active_item_name_is_locstring = first_active_item
+            .map(|signature| signature.name_is_locstring)
+            .unwrap_or(false);
+        let first_active_item_state_mask = first_active_item
+            .map(|signature| signature.state_mask)
+            .unwrap_or(0);
+        let first_active_item_value_mask = first_active_item
+            .map(|signature| signature.value_mask)
+            .unwrap_or(0);
         let first_client_action_has_object_id = first_client_action_detail
             .and_then(|detail| detail.object_id)
             .is_some();
@@ -856,6 +963,25 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"candidate_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"candidate_proof\": \"{}\",\n",
                 "  \"candidate_source\": \"{}\",\n",
+                "  \"first_preserved_active_item_known\": {},\n",
+                "  \"first_preserved_active_item_matches_candidate\": {},\n",
+                "  \"first_preserved_active_item_object_id\": {},\n",
+                "  \"first_preserved_active_item_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"first_preserved_active_item_base_item\": {},\n",
+                "  \"first_preserved_active_item_base_item_hex\": \"0x{:08X}\",\n",
+                "  \"first_preserved_active_item_appearance_type\": {},\n",
+                "  \"first_preserved_active_item_property_count\": {},\n",
+                "  \"first_preserved_active_item_first_property_known\": {},\n",
+                "  \"first_preserved_active_item_first_property\": {},\n",
+                "  \"first_preserved_active_item_first_property_subtype\": {},\n",
+                "  \"first_preserved_active_item_first_property_cost_table_value\": {},\n",
+                "  \"first_preserved_active_item_first_property_param\": {},\n",
+                "  \"first_preserved_active_item_has_armor_word\": {},\n",
+                "  \"first_preserved_active_item_name_is_locstring\": {},\n",
+                "  \"first_preserved_active_item_state_mask\": {},\n",
+                "  \"first_preserved_active_item_state_mask_hex\": \"0x{:02X}\",\n",
+                "  \"first_preserved_active_item_value_mask\": {},\n",
+                "  \"first_preserved_active_item_value_mask_hex\": \"0x{:02X}\",\n",
                 "  \"recommended_client_action\": \"target_candidate_with_use_item_item_quickbar_set_button_or_gui_event_notify_probe\",\n",
                 "  \"recommended_use_item_payload_available\": {},\n",
                 "  \"recommended_use_item_payload_kind\": \"Input_UseItem\",\n",
@@ -967,6 +1093,25 @@ impl QuickbarItemRefreshHarnessHint {
             self.candidate.object_id,
             self.candidate.proof.as_str(),
             self.candidate.source.as_str(),
+            first_active_item_known,
+            first_active_item_matches_candidate,
+            first_active_item_object_id,
+            first_active_item_object_id,
+            first_active_item_base_item,
+            first_active_item_base_item,
+            first_active_item_appearance_type,
+            first_active_item_property_count,
+            first_active_item_first_property_known,
+            first_active_item_first_property_id,
+            first_active_item_first_property_subtype,
+            first_active_item_first_property_cost_table_value,
+            first_active_item_first_property_param,
+            first_active_item_has_armor_word,
+            first_active_item_name_is_locstring,
+            first_active_item_state_mask,
+            first_active_item_state_mask,
+            first_active_item_value_mask,
+            first_active_item_value_mask,
             recommended_use_item_payload_available,
             recommended_use_item_payload_hex,
             self.candidate.object_id,
@@ -3327,6 +3472,37 @@ impl UiState {
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
             .unwrap_or_default();
+        let stream_probe_active_item = stream_probe.first_preserved_active_item_signature;
+        let stream_probe_active_item_first_property =
+            stream_probe_active_item.and_then(|signature| signature.first_property);
+        let stream_probe_active_item_known = stream_probe_active_item.is_some();
+        let stream_probe_active_item_object_id = stream_probe_active_item
+            .map(|signature| signature.object_id)
+            .unwrap_or(0);
+        let stream_probe_active_item_base_item = stream_probe_active_item
+            .map(|signature| signature.base_item)
+            .unwrap_or(0);
+        let stream_probe_active_item_appearance_type = stream_probe_active_item
+            .map(|signature| signature.appearance_type)
+            .unwrap_or(0);
+        let stream_probe_active_item_property_count = stream_probe_active_item
+            .map(|signature| signature.active_property_count)
+            .unwrap_or(0);
+        let stream_probe_active_item_first_property_known =
+            stream_probe_active_item_first_property.is_some();
+        let stream_probe_active_item_first_property_id = stream_probe_active_item_first_property
+            .map(|property| property.property)
+            .unwrap_or(0);
+        let stream_probe_active_item_first_property_subtype =
+            stream_probe_active_item_first_property
+                .map(|property| property.subtype)
+                .unwrap_or(0);
+        let stream_probe_active_item_state_mask = stream_probe_active_item
+            .map(|signature| signature.state_mask)
+            .unwrap_or(0);
+        let stream_probe_active_item_value_mask = stream_probe_active_item
+            .map(|signature| signature.value_mask)
+            .unwrap_or(0);
         format!(
             concat!(
                 "{{\n",
@@ -3344,6 +3520,20 @@ impl UiState {
                 "  \"stream_probe_item_buttons_blanked_candidate\": {},\n",
                 "  \"stream_probe_item_buttons_rejected_missing_state_proof\": {},\n",
                 "  \"stream_probe_item_buttons_rejected_missing_state_unknown\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_known\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_object_id\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"stream_probe_first_preserved_active_item_base_item\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_base_item_hex\": \"0x{:08X}\",\n",
+                "  \"stream_probe_first_preserved_active_item_appearance_type\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_property_count\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_first_property_known\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_first_property\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_first_property_subtype\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_state_mask\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_state_mask_hex\": \"0x{:02X}\",\n",
+                "  \"stream_probe_first_preserved_active_item_value_mask\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_value_mask_hex\": \"0x{:02X}\",\n",
                 "  \"stream_probe_direct_item_proof_objects\": {},\n",
                 "  \"stream_probe_feature25_item_proof_objects\": {},\n",
                 "  \"stream_probe_compact_item_emission_proof_objects\": {},\n",
@@ -3395,6 +3585,20 @@ impl UiState {
             stream_probe.item_buttons_blanked_candidate,
             stream_probe.item_buttons_rejected_missing_state_proof,
             stream_probe.item_buttons_rejected_missing_state_unknown,
+            stream_probe_active_item_known,
+            stream_probe_active_item_object_id,
+            stream_probe_active_item_object_id,
+            stream_probe_active_item_base_item,
+            stream_probe_active_item_base_item,
+            stream_probe_active_item_appearance_type,
+            stream_probe_active_item_property_count,
+            stream_probe_active_item_first_property_known,
+            stream_probe_active_item_first_property_id,
+            stream_probe_active_item_first_property_subtype,
+            stream_probe_active_item_state_mask,
+            stream_probe_active_item_state_mask,
+            stream_probe_active_item_value_mask,
+            stream_probe_active_item_value_mask,
             stream_probe_context.direct_item_proof_objects,
             stream_probe_context.feature25_item_proof_objects,
             stream_probe_context.compact_item_emission_proof_objects,
@@ -3490,6 +3694,9 @@ impl UiState {
             candidate,
             recommended_set_button_slot,
             recommended_set_button_slot_source,
+            first_preserved_active_item_signature: self
+                .last_quickbar_stream_probe
+                .and_then(|probe| probe.first_preserved_active_item_signature),
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
             events_since_pending_refresh: summary.events_since_pending_refresh,
             event_breakdown: summary.event_breakdown,
@@ -3604,9 +3811,10 @@ mod tests {
         InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectStatus,
         LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
-        QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
-        QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass, QuickbarRewriteSummary,
-        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
+        QuickbarActiveItemSignature, QuickbarItemRefreshClientActionDetail,
+        QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
+        QuickbarItemRefreshProofClass, QuickbarRewriteSummary, QuickbarStreamProbeSummary,
+        QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -5847,6 +6055,7 @@ mod tests {
             item_objects_preserved_by_feature25_first: 0,
             item_objects_preserved_by_feature25_second: 0,
             item_objects_preserved_by_feature25_legacy_tail: 0,
+            first_preserved_active_item_signature: None,
             validated_slot_profile: profile,
         }
     }
@@ -5992,6 +6201,34 @@ mod tests {
             });
         ui.post_committed_quickbar_item_refresh_first_event_after_client_action =
             Some(QuickbarItemRefreshEventKind::LiveObject);
+        ui.last_quickbar_stream_probe = Some(QuickbarStreamProbeSummary {
+            slot_records_owned: 36,
+            item_buttons_seen: 2,
+            item_buttons_source_compact: 0,
+            item_buttons_preserved: 2,
+            item_buttons_blanked: 0,
+            item_buttons_blanked_candidate: 0,
+            item_buttons_rejected_missing_state_proof: 0,
+            item_buttons_rejected_missing_state_unknown: 0,
+            first_preserved_active_item_signature: Some(QuickbarActiveItemSignature {
+                object_id: 0x8000_0100,
+                base_item: 0x11,
+                appearance_type: 2,
+                active_property_count: 1,
+                first_property: Some(
+                    crate::translate::quickbar::QuickbarActivePropertySignature {
+                        property: 100,
+                        subtype: 2,
+                        cost_table_value: 3,
+                        param: 4,
+                    },
+                ),
+                has_armor_word: false,
+                name_is_locstring: false,
+                state_mask: 0x05,
+                value_mask: 0x08,
+            }),
+        });
 
         assert_eq!(
             ui.quickbar_item_refresh_harness_hint(),
@@ -6026,6 +6263,17 @@ mod tests {
         assert!(json.contains("\"candidate_object_id_hex\": \"0x80000100\""));
         assert!(json.contains("\"candidate_proof\": \"feature25_second_list\""));
         assert!(json.contains("\"candidate_source\": \"feature25_only\""));
+        assert!(json.contains("\"first_preserved_active_item_known\": true"));
+        assert!(json.contains("\"first_preserved_active_item_matches_candidate\": true"));
+        assert!(json.contains("\"first_preserved_active_item_object_id_hex\": \"0x80000100\""));
+        assert!(json.contains("\"first_preserved_active_item_base_item_hex\": \"0x00000011\""));
+        assert!(json.contains("\"first_preserved_active_item_appearance_type\": 2"));
+        assert!(json.contains("\"first_preserved_active_item_property_count\": 1"));
+        assert!(json.contains("\"first_preserved_active_item_first_property_known\": true"));
+        assert!(json.contains("\"first_preserved_active_item_first_property\": 100"));
+        assert!(json.contains("\"first_preserved_active_item_first_property_subtype\": 2"));
+        assert!(json.contains("\"first_preserved_active_item_state_mask_hex\": \"0x05\""));
+        assert!(json.contains("\"first_preserved_active_item_value_mask_hex\": \"0x08\""));
         assert!(json.contains("\"recommended_use_item_payload_available\": true"));
         assert!(json.contains("\"recommended_use_item_payload_kind\": \"Input_UseItem\""));
         assert!(json.contains(
@@ -6202,6 +6450,24 @@ mod tests {
             item_buttons_blanked_candidate: 7,
             item_buttons_rejected_missing_state_proof: 3,
             item_buttons_rejected_missing_state_unknown: 3,
+            first_preserved_active_item_signature: Some(QuickbarActiveItemSignature {
+                object_id: 0x8000_0100,
+                base_item: 0x11,
+                appearance_type: 2,
+                active_property_count: 1,
+                first_property: Some(
+                    crate::translate::quickbar::QuickbarActivePropertySignature {
+                        property: 100,
+                        subtype: 2,
+                        cost_table_value: 3,
+                        param: 4,
+                    },
+                ),
+                has_armor_word: false,
+                name_is_locstring: false,
+                state_mask: 0x05,
+                value_mask: 0x08,
+            }),
         });
         ui.last_quickbar_stream_probe_materialization_context = Some(InventoryItemContextSummary {
             direct_item_proof_objects: 1,
@@ -6217,6 +6483,28 @@ mod tests {
         assert!(
             stream_probe_no_commit
                 .contains("\"stream_probe_item_buttons_rejected_missing_state_proof\": 3")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_first_preserved_active_item_known\": true")
+        );
+        assert!(stream_probe_no_commit.contains(
+            "\"stream_probe_first_preserved_active_item_object_id_hex\": \"0x80000100\""
+        ));
+        assert!(stream_probe_no_commit.contains(
+            "\"stream_probe_first_preserved_active_item_base_item_hex\": \"0x00000011\""
+        ));
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_first_preserved_active_item_property_count\": 1")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_first_preserved_active_item_first_property\": 100")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_first_preserved_active_item_state_mask_hex\": \"0x05\"")
         );
         assert!(stream_probe_no_commit.contains("\"stream_probe_direct_item_proof_objects\": 1"));
 

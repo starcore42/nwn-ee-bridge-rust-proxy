@@ -17,6 +17,31 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 active-item signature instrumentation slice: live-data gate used
+  the gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T00:26:33+10:00`; about 1h45m old at the gate, still under
+  24h). No fresh live run was required. Proxy2 now carries the first accepted
+  quickbar active-item signature from the verified `GuiQuickbar_SetAllButtons`
+  rewrite summary into stream-probe semantic state, unresolved traces, idle
+  hints, and pending `quickbar-item-refresh-hint.json`. The signature records
+  object id, base item, appearance type, active-property count, first
+  property/subtype/cost-table/param, armor/name flags, and state/value masks,
+  plus whether the signature matches the pending item-refresh candidate. Strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-active-item-signature-20260705-022017`
+  against
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  completed with 164 packet files, 304 strict allow decisions, 0 quarantine
+  decisions/artifacts, and a pending feature-25-only candidate `0x80015DAA`.
+  The replay hint included the new fields with
+  `first_preserved_active_item_known=false`, proving the field path is present
+  even when the replay's pending candidate is not backed by a preserved
+  active-item quickbar body. Active next path: run the next live GUI-event
+  probe with these fields and compare whether HG's live candidate matches the
+  preserved active-property quickbar item before changing the generalized
+  active-property action/state rule.
 - 2026-07-05 GUI-event probe shape-match live evidence: live-data gate used
   the gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-stream-probe-commit-gui-event-20260704-162250\harness-proxy-20260704-162301`

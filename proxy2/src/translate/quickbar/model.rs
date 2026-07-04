@@ -181,7 +181,29 @@ pub struct QuickbarRewriteSummary {
     pub item_objects_preserved_by_feature25_first: u32,
     pub item_objects_preserved_by_feature25_second: u32,
     pub item_objects_preserved_by_feature25_legacy_tail: u32,
+    pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) validated_slot_profile: Option<QuickbarValidatedSlotProfile>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct QuickbarActivePropertySignature {
+    pub(crate) property: u16,
+    pub(crate) subtype: u16,
+    pub(crate) cost_table_value: u16,
+    pub(crate) param: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct QuickbarActiveItemSignature {
+    pub(crate) object_id: u32,
+    pub(crate) base_item: u32,
+    pub(crate) appearance_type: i8,
+    pub(crate) active_property_count: u32,
+    pub(crate) first_property: Option<QuickbarActivePropertySignature>,
+    pub(crate) has_armor_word: bool,
+    pub(crate) name_is_locstring: bool,
+    pub(crate) state_mask: u8,
+    pub(crate) value_mask: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

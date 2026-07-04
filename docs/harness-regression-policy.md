@@ -58,6 +58,27 @@ payload delivery for this bounded `GuiEvent_Notify` probe; trace the
 original-client active-property item action/state semantics and implement the
 next generalized client action rule that differs from this exact probe.
 
+As of 2026-07-05 02:20 +10, proxy2 also writes first-preserved active-item
+signature fields into quickbar item-refresh hints and unresolved traces. The
+fields are:
+`first_preserved_active_item_known`,
+`first_preserved_active_item_matches_candidate`,
+`first_preserved_active_item_object_id_hex`,
+`first_preserved_active_item_base_item_hex`,
+`first_preserved_active_item_appearance_type`,
+`first_preserved_active_item_property_count`,
+`first_preserved_active_item_first_property`,
+`first_preserved_active_item_first_property_subtype`,
+`first_preserved_active_item_state_mask_hex`, and
+`first_preserved_active_item_value_mask_hex`. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-active-item-signature-20260705-022017`
+stayed at 164 packet files, 304 strict allows, and 0 quarantine artifacts; its
+pending feature-25-only hint exposed the new fields with no preserved active
+item signature. The next live GUI-event/action probe should use
+`first_preserved_active_item_matches_candidate` as primary evidence for whether
+the action target corresponds to the verified quickbar active-property item
+body before changing the active-property action/state translator rule.
+
 As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
 `GuiEvent_Notify` client payloads semantically while still forwarding only an
 empty Diamond/1.69 compatibility carrier. Pending quickbar item-refresh traces,
