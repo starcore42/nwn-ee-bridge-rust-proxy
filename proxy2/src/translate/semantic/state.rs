@@ -141,6 +141,24 @@ impl SemanticSessionState {
         let first_client_action_matches_candidate = first_client_action_detail
             .and_then(|detail| detail.matches_candidate_object)
             .unwrap_or(false);
+        let (recommended_set_button_slot, _) = self.ui.quickbar_item_refresh_set_button_slot();
+        let pending_candidate = summary.item_context.compact_item_emission_candidate;
+        let first_client_action_matches_recommended_client_quickbar_set_button =
+            match (first_client_action_detail, pending_candidate) {
+                (Some(detail), Some(candidate)) => detail
+                    .matches_recommended_client_quickbar_set_button(
+                        candidate.object_id,
+                        recommended_set_button_slot,
+                    ),
+                _ => false,
+            };
+        let first_client_action_matches_recommended_client_gui_event_notify =
+            match (first_client_action_detail, pending_candidate) {
+                (Some(detail), Some(candidate)) => {
+                    detail.matches_recommended_client_gui_event_notify(candidate.object_id)
+                }
+                _ => false,
+            };
         let first_event_after_client_action = summary
             .first_event_after_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
@@ -220,6 +238,8 @@ impl SemanticSessionState {
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
+            first_client_action_matches_recommended_client_quickbar_set_button,
+            first_client_action_matches_recommended_client_gui_event_notify,
             first_event_after_client_action,
             events_after_first_client_action = summary.events_after_first_client_action,
             server_to_client_events_after_first_client_action = summary
@@ -802,6 +822,21 @@ impl QuickbarItemRefreshHarnessHint {
         let first_client_action_matches_candidate = first_client_action_detail
             .and_then(|detail| detail.matches_candidate_object)
             .unwrap_or(false);
+        let first_client_action_matches_recommended_client_quickbar_set_button =
+            first_client_action_detail
+                .map(|detail| {
+                    detail.matches_recommended_client_quickbar_set_button(
+                        self.candidate.object_id,
+                        self.recommended_set_button_slot,
+                    )
+                })
+                .unwrap_or(false);
+        let first_client_action_matches_recommended_client_gui_event_notify =
+            first_client_action_detail
+                .map(|detail| {
+                    detail.matches_recommended_client_gui_event_notify(self.candidate.object_id)
+                })
+                .unwrap_or(false);
         let first_event_after_client_action = self
             .first_event_after_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
@@ -884,6 +919,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_client_action_candidate_known\": {},\n",
                 "  \"first_client_action_candidate_object_id\": {},\n",
                 "  \"first_client_action_matches_candidate\": {},\n",
+                "  \"first_client_action_matches_recommended_client_quickbar_set_button\": {},\n",
+                "  \"first_client_action_matches_recommended_client_gui_event_notify\": {},\n",
                 "  \"first_event_after_client_action\": \"{}\",\n",
                 "  \"events_after_first_client_action\": {},\n",
                 "  \"server_to_client_events_after_first_client_action\": {},\n",
@@ -986,6 +1023,8 @@ impl QuickbarItemRefreshHarnessHint {
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
+            first_client_action_matches_recommended_client_quickbar_set_button,
+            first_client_action_matches_recommended_client_gui_event_notify,
             first_event_after_client_action,
             self.events_after_first_client_action,
             self.event_breakdown_after_first_client_action
@@ -1069,6 +1108,40 @@ pub(crate) struct QuickbarItemRefreshClientActionDetail {
     pub(crate) gui_event_vector_bits: Option<[u32; 3]>,
     pub(crate) candidate_object_id: Option<u32>,
     pub(crate) matches_candidate_object: Option<bool>,
+}
+
+impl QuickbarItemRefreshClientActionDetail {
+    pub(crate) fn matches_recommended_client_quickbar_set_button(
+        self,
+        candidate_object_id: u32,
+        recommended_slot: u8,
+    ) -> bool {
+        self.kind == QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton
+            && self.object_id == Some(candidate_object_id)
+            && self.slot == Some(recommended_slot)
+            && self.button_type == Some(client_quickbar::ITEM_SET_BUTTON_TYPE)
+            && self.body_kind == Some(ClientQuickbarSetButtonKind::Item)
+            && self.candidate_object_id == Some(candidate_object_id)
+            && self.matches_candidate_object == Some(true)
+    }
+
+    pub(crate) fn matches_recommended_client_gui_event_notify(
+        self,
+        candidate_object_id: u32,
+    ) -> bool {
+        self.kind == QuickbarItemRefreshEventKind::ClientGuiEventNotify
+            && self.object_id == Some(candidate_object_id)
+            && self.gui_event_a == Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_A)
+            && self.gui_event_b == Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_B)
+            && self.gui_event_declared_bytes
+                == Some(client_gui_event::EE_8193_35_NOTIFY_DECLARED_BYTES)
+            && self.gui_event_trailing_fragment_bytes
+                == Some(client_gui_event::RADIAL_NOTIFY_PROBE_TRAILING_FRAGMENT_BYTES)
+            && self.gui_event_has_vector == Some(true)
+            && self.gui_event_vector_bits == Some([0, 0, 0])
+            && self.candidate_object_id == Some(candidate_object_id)
+            && self.matches_candidate_object == Some(true)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3518,6 +3591,7 @@ mod tests {
         AreaPlaceableObservedOrientationSource,
     };
     use crate::translate::client_gui_event;
+    use crate::translate::client_quickbar::{self, ClientQuickbarSetButtonKind};
     use crate::translate::semantic::{
         LiveObjectInventoryFeature25Reference, LiveObjectOrientationSource,
         LiveObjectOrientationVector,
@@ -6022,12 +6096,47 @@ mod tests {
         assert!(json.contains("\"followup_events_before_first_client_action\": 8"));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
         assert!(json.contains("\"first_client_action\": \"client_input_other\""));
+        assert!(json.contains(
+            "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
+        ));
+        assert!(json.contains(
+            "\"first_client_action_matches_recommended_client_gui_event_notify\": false"
+        ));
         assert!(json.contains("\"first_event_after_client_action\": \"live_object\""));
         assert!(json.contains("\"events_after_first_client_action\": 2"));
         assert!(json.contains("\"server_to_client_events_after_first_client_action\": 1"));
         assert!(json.contains("\"client_to_server_events_after_first_client_action\": 1"));
         assert!(json.contains("\"live_object_events_after_first_client_action\": 1"));
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
+
+        ui.post_committed_quickbar_item_refresh_first_client_action =
+            Some(QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton);
+        ui.post_committed_quickbar_item_refresh_first_client_action_detail =
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton,
+                object_id: Some(0x8000_0100),
+                slot: Some(5),
+                button_type: Some(client_quickbar::ITEM_SET_BUTTON_TYPE),
+                body_kind: Some(ClientQuickbarSetButtonKind::Item),
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
+                candidate_object_id: Some(0x8000_0100),
+                matches_candidate_object: Some(true),
+            });
+        let set_button_json = ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("pending candidate should still expose a harness hint")
+            .to_json();
+        assert!(set_button_json.contains(
+            "\"first_client_action_matches_recommended_client_quickbar_set_button\": true"
+        ));
+        assert!(set_button_json.contains(
+            "\"first_client_action_matches_recommended_client_gui_event_notify\": false"
+        ));
 
         ui.post_committed_quickbar_item_refresh_first_client_action =
             Some(QuickbarItemRefreshEventKind::ClientGuiEventNotify);
@@ -6062,6 +6171,14 @@ mod tests {
         assert!(
             gui_json
                 .contains("\"first_client_action_gui_event_vector_x_bits_hex\": \"0x00000000\"")
+        );
+        assert!(gui_json.contains(
+            "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
+        ));
+        assert!(
+            gui_json.contains(
+                "\"first_client_action_matches_recommended_client_gui_event_notify\": true"
+            )
         );
     }
 

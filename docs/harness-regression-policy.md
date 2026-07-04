@@ -33,27 +33,30 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-04 16:28 +10: the current
+Latest known live HG proxy status, as of 2026-07-05 00:26 +10: the current
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-stream-probe-commit-gui-event-20260704-162250\harness-proxy-20260704-162301`.
+`C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
-gameplay through `Module_Loaded`, two `Area_ClientArea` observations, live
-object traffic, and the GUI-event notify path, and wrote
-`quickbar-item-refresh-hint.json` at `2026-07-04T16:27:55+10:00`. No client
-high-level M-frame quarantines or quarantine artifact files were observed.
-Proxy2 logged `validated_slot_profile=true` for the stream-probe
-`GuiQuickbar_SetAllButtons` summary; the guarded stream-probe promotion did not
-fire in this run because the same window also carried a normal committed
-`GuiQuickbar` proof. The final hint recorded `pending_item_refresh=true`,
-candidate `0x80015219` with `candidate_proof="active_object"` and
-`candidate_source="direct_only"`, matched
-`first_client_action="client_gui_event_notify"`, and
+gameplay, dispatched the GUI-event notify path, and wrote
+`quickbar-item-refresh-hint.json` at `2026-07-05T00:26:07+10:00`. No client
+high-level M-frame quarantines or quarantine artifact files were observed. The
+final hint recorded `pending_item_refresh=true`, candidate `0x80015B11` with
+`candidate_proof="active_object"` and `candidate_source="direct_only"`,
+matched `first_client_action="client_gui_event_notify"`, and
 `pending_item_refresh_action_outcome="candidate_client_action_no_server_quickbar"`.
-After that matched client action HG produced 147 server-to-client, 136
-client-to-server, 91 live-object, 1 inventory, and 0 server quickbar follow-up
-events. The immediate next harness/protocol target is the original-client
-active-property action semantics/timing for this refresh: the bounded
-`GuiEvent_Notify` probe lands, but HG does not emit a server quickbar refresh.
+The new exact-shape fields proved the first client action matched the generated
+GUI-event probe rather than merely targeting the same object:
+`first_client_action_gui_event_a=17`, `first_client_action_gui_event_b=0`,
+`first_client_action_gui_event_declared_bytes=27`,
+`first_client_action_gui_event_trailing_fragment_bytes=1`,
+`first_client_action_gui_event_vector_zero=true`, and
+`first_client_action_matches_recommended_client_gui_event_notify=true`. After
+that exact matched action HG produced 198 server-to-client, 165
+client-to-server, 111 live-object, 1 inventory, 1 chat, and 0 server quickbar
+follow-up events. The immediate next harness/protocol target is no longer
+payload delivery for this bounded `GuiEvent_Notify` probe; trace the
+original-client active-property item action/state semantics and implement the
+next generalized client action rule that differs from this exact probe.
 
 As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
 `GuiEvent_Notify` client payloads semantically while still forwarding only an
@@ -87,10 +90,12 @@ live radial/menu probe after building the bridge, use:
 
 Treat success as gameplay reached plus a matched
 `first_client_action="client_gui_event_notify"` in the final
-`quickbar-item-refresh-hint.json`. The 2026-07-04 16:22 live run reached that
-point, so the remaining failure mode is no server quickbar follow-up after the
-matched GUI event. Treat that as the next action-family/state issue rather than
-a connection blocker while `Area_ClientArea` and live-object traffic continue.
+`quickbar-item-refresh-hint.json`. The 2026-07-05 00:21 live run reached that
+point and additionally proved
+`first_client_action_matches_recommended_client_gui_event_notify=true`, so the
+remaining failure mode is no server quickbar follow-up after the exact matched
+GUI event. Treat that as the next action-family/state issue rather than a
+connection blocker while `Area_ClientArea` and live-object traffic continue.
 
 As of 2026-07-04 14:29 +10, the 11:50 pre-gameplay GUI-event notify blocker is
 resolved by the shared Rust `Device_AdvertiseProperty` classifier. The earlier

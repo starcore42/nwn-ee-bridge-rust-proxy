@@ -17,6 +17,37 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 GUI-event probe shape-match live evidence: live-data gate used
+  the gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-stream-probe-commit-gui-event-20260704-162250\harness-proxy-20260704-162301`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-04T16:27:55+10:00`; about 7h43m old at the gate, still under
+  24h). Proxy2 now compares the first quickbar item-refresh client action
+  against the generated SetButton and `GuiEvent_Notify` probe shapes and
+  exports
+  `first_client_action_matches_recommended_client_quickbar_set_button` plus
+  `first_client_action_matches_recommended_client_gui_event_notify` in the
+  harness hint and unresolved trace. Fresh live rerun
+  `C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`
+  selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+  gameplay, dispatched candidate `0x80015B11`, and wrote the final hint at
+  `2026-07-05T00:26:07+10:00` with no quarantine files. The first client
+  action was `client_gui_event_notify`, matched the candidate, had event
+  words `0x0011/0x0000`, declared 27 bytes, one trailing fragment byte, a zero
+  vector, and
+  `first_client_action_matches_recommended_client_gui_event_notify=true`.
+  After the exact matched probe HG still sent 363 post-action events
+  (198 server-to-client, 165 client-to-server, 111 live-object, 1 inventory,
+  1 chat) and 0 server quickbar events. Strict replay of
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  through the same proxy build completed with 164 packet files, 304 strict
+  allow decisions, and 0 quarantine decisions/artifacts; replay did not contain
+  the live client GUI-event follow-up and remains a packet-shape regression
+  check rather than proof that the live action is sufficient. Active next path:
+  stop treating the bounded GUI-event payload/driver delivery as the suspect;
+  trace the original Diamond/EE active-property item action semantics and
+  implement the next generalized client action/state rule that differs from the
+  exact `GuiEvent_Notify` probe.
 - 2026-07-04 device-property classifier live rerun: live-data gate first used
   the gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`
