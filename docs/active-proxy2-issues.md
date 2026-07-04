@@ -37,9 +37,24 @@ not as standalone workaround targets.
   completed with 164 packet files, 304 strict allow decisions, 0 quarantine
   decisions/artifacts, and emitted
   `recommended_client_use_object_payload_hex=70060B0B000000AA5D0180A0` for
-  candidate `0x80015DAA`. Active next path: add an opt-in bridge/harness
-  dispatch path for the new UseObject hint and run a live HG probe to compare
-  `first_client_action_match_class=recommended_use_object` against server
+  candidate `0x80015DAA`. Resolved 2026-07-05: the bridge/harness now has an
+  opt-in `HG_BRIDGE_AUTO_QUICKBAR_ITEM_REFRESH_USEOBJECT` /
+  `-AutoQuickbarItemRefreshUseObject` dispatch path that validates the hinted
+  `Input_UseObject` packet before sending it through
+  `CNWMessage::SendPlayerToServerMessage`. Reference setup: live HG
+  driver-only harness, because the unresolved question is HG's response to the
+  generated client action. Fresh probe
+  `C:\nwnbridge\codex-live-useobject-driver-retry-20260705-0827\harness-proxy-20260705-082506`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and
+  `GameObjUpdate_LiveObject` traffic, but no UseObject was dispatched because
+  the hint stayed `pending_item_refresh=false` with
+  `no_hint_reason="no_committed_quickbar_profile"`. The same run quarantined a
+  517-byte `GameObjUpdate_LiveObject` payload as
+  `live-object-unclaimed-strict-family` after exact record-boundary validation
+  rejected the intermediate rewrite. Active next path: reduce/fix that
+  live-object strict-family gap and restore a committed quickbar profile in the
+  live probe before rerunning the UseObject driver to compare
+  `first_client_action_match_class="recommended_use_object"` against server
   quickbar follow-up.
 - 2026-07-05 active-item action match-class slice: live-data gate used the
   gameplay-reaching proxy harness

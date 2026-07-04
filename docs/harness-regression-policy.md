@@ -33,34 +33,26 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-05 04:17 +10: the current
+Latest known live HG proxy status, as of 2026-07-05 08:27 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`.
+`C:\nwnbridge\codex-live-useobject-driver-retry-20260705-0827\harness-proxy-20260705-082506`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
-gameplay, dispatched the GUI-event notify path, and wrote
-`quickbar-item-refresh-hint.json` at `2026-07-05T04:17:34+10:00`. No client
-high-level M-frame quarantines or quarantine artifact files were observed. The
-final hint recorded `pending_item_refresh=true`, candidate `0x80015219` with
-`candidate_proof="active_object"` and `candidate_source="direct_only"`,
-`first_preserved_active_item_matches_candidate=true`, matched
-`first_client_action="client_gui_event_notify"`, and
-`pending_item_refresh_action_outcome="candidate_client_action_no_server_quickbar"`.
-The exact-shape fields proved the first client action matched the generated
-GUI-event probe rather than merely targeting the same object, and the preserved
-active-item signature proved the target was the verified active-property
-quickbar item:
-`first_client_action_gui_event_a=17`, `first_client_action_gui_event_b=0`,
-`first_client_action_gui_event_declared_bytes=27`,
-`first_client_action_gui_event_trailing_fragment_bytes=1`,
-`first_client_action_gui_event_vector_zero=true`, and
-`first_client_action_matches_recommended_client_gui_event_notify=true`. After
-that exact matched action HG produced 163 server-to-client, 156
-client-to-server, 100 live-object, 1 inventory, 1 chat, and 0 server quickbar
-follow-up events. The immediate next harness/protocol target is no longer
-target identity or payload delivery for this bounded `GuiEvent_Notify` probe;
-trace the original-client active-property item action/state semantics and
-implement the next generalized client action rule that differs from this exact
-probe.
+gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+`GameObjUpdate_LiveObject` traffic, and wrote
+`quickbar-item-refresh-hint.json` at `2026-07-05T08:25:24+10:00`. This is live
+gameplay evidence but not a clean protocol baseline: the hint stayed
+`pending_item_refresh=false` with `no_hint_reason="no_committed_quickbar_profile"`,
+so the new UseObject driver path did not dispatch, and the run quarantined a
+517-byte `GameObjUpdate_LiveObject` payload as
+`live-object-unclaimed-strict-family` under `quarantine\`. The immediate
+harness/protocol target is to reduce/fix that live-object strict-family gap and
+recover a committed quickbar profile before rerunning
+`-AutoQuickbarItemRefreshUseObject`. The previous clean gameplay-reaching
+baseline remains
+`C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`,
+which wrote its final hint at `2026-07-05T04:17:34+10:00` with no quarantine
+artifacts and matched the generated GUI-event probe against the preserved
+active-property quickbar item, but still saw 0 server quickbar follow-up events.
 
 As of 2026-07-05 04:41 +10, proxy2 also writes first-preserved active-item
 signature fields into quickbar item-refresh hints and unresolved traces. The
@@ -98,11 +90,20 @@ Strict replay
 `C:\nwnbridge\codex-proxy2-replay-useobject-hint-20260705-061927` stayed at
 164 packet files, 304 strict allows, and 0 quarantine artifacts, and emitted
 `recommended_client_use_object_payload_hex=70060B0B000000AA5D0180A0` for
-candidate `0x80015DAA`. The next harness implementation target is an opt-in
-driver switch that validates and sends this hinted `Input_UseObject` payload,
-then a live HG probe that checks for
-`first_client_action_match_class="recommended_use_object"` and any server
-quickbar follow-up.
+candidate `0x80015DAA`. The EE bridge validates this hinted packet before
+dispatch and the PowerShell harness exposes it through
+`-AutoQuickbarItemRefreshUseObject`, gated by driver-only mode and
+`HG_BRIDGE_AUTO_QUICKBAR_ITEM_REFRESH_USEOBJECT=1`. To run the live probe after
+building the bridge, use:
+
+```powershell
+.\tools\test-hg-bridge.ps1 -Server 213 -AutoQuickbarItemRefreshUseObject -SeedNwsyncClientCache -SkipAssets -SkipBuild -ProxyLogRoot C:\nwnbridge\<descriptive-run>
+```
+
+Treat success as gameplay reached plus a final `quickbar-item-refresh-hint.json`
+with `pending_item_refresh=true` and
+`first_client_action_match_class="recommended_use_object"`, then inspect whether
+HG emits any server quickbar follow-up.
 
 As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
 `GuiEvent_Notify` client payloads semantically while still forwarding only an
