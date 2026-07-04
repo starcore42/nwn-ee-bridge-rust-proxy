@@ -17,6 +17,34 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-04 quickbar GUI-event notify probe slice: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-04T09:43:40+10:00`; about 47 minutes old at the start-of-run gate,
+  still under 24h). Gameplay reached `Area_ClientArea` and sustained
+  live-object traffic with no quarantine files. The hint remained
+  `candidate_client_action_no_server_quickbar` after matched SetButton
+  candidate `0x8001620D`, with 48 server-to-client, 39 client-to-server, 33
+  live-object, 1 inventory, 1 chat, 0 quickbar, and 0
+  `client_gui_event_notify` events after the pending proof. Proxy2 now builds
+  and self-validates a bounded `ClientGuiEvent/Notify` radial probe payload
+  (`70 35 01`, declared 27-byte EE vector form, event words `0x0011/0x0000`,
+  candidate object id, zero vector, final fragment cursor `0x60`) and exports
+  it in `quickbar-item-refresh-hint.json`. The EE bridge and harness now have
+  opt-in `HG_BRIDGE_AUTO_QUICKBAR_ITEM_REFRESH_GUI_EVENT_NOTIFY` /
+  `-AutoQuickbarItemRefreshGuiEventNotify` dispatch for that exact hinted
+  payload. Reference setup: fresh live HG SetButton evidence for the unresolved
+  action gap plus strict replay/unit checks for the writer/hint shape. Strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-gui-event-probe-20260704-1047` stayed at
+  164 packet files, 304 strict allows, 0 strict quarantines, and 0 quarantine
+  files; its hint exported
+  `recommended_client_gui_event_notify_payload_hex=7035011B00000011000000AA5D018000000000000000000000000060`
+  for candidate `0x80015DAA`. Next production path: run live HG with
+  `-AutoQuickbarItemRefreshGuiEventNotify`, then inspect whether HG records
+  `first_client_action="client_gui_event_notify"` and emits a server quickbar
+  refresh before changing the active item action translator rule.
 - 2026-07-04 consumed ClientGuiEvent semantic-observation slice: live-data
   gate used the gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-direction-counters-setbutton-20260704-0535\harness-proxy-20260704-053414`

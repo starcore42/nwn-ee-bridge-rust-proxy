@@ -20,6 +20,7 @@ use crate::translate::{
         AreaPlaceableContextStateConflict, AreaPlaceableObservedOrientationSource,
         AreaPlaceableObservedState,
     },
+    client_gui_event,
     client_quickbar::{self, ClientQuickbarSetButtonKind},
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
@@ -701,6 +702,14 @@ impl QuickbarItemRefreshHarnessHint {
             .as_deref()
             .map(hex_encode_upper)
             .unwrap_or_default();
+        let recommended_gui_event_notify_payload =
+            client_gui_event::build_radial_notify_probe_payload(self.candidate.object_id);
+        let recommended_gui_event_notify_payload_available =
+            recommended_gui_event_notify_payload.is_some();
+        let recommended_gui_event_notify_payload_hex = recommended_gui_event_notify_payload
+            .as_deref()
+            .map(hex_encode_upper)
+            .unwrap_or_default();
         let first_client_action_has_object_id = first_client_action_detail
             .and_then(|detail| detail.object_id)
             .is_some();
@@ -745,7 +754,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"candidate_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"candidate_proof\": \"{}\",\n",
                 "  \"candidate_source\": \"{}\",\n",
-                "  \"recommended_client_action\": \"target_candidate_with_use_item_or_item_quickbar_set_button\",\n",
+                "  \"recommended_client_action\": \"target_candidate_with_use_item_item_quickbar_set_button_or_gui_event_notify_probe\",\n",
                 "  \"recommended_use_item_payload_available\": {},\n",
                 "  \"recommended_use_item_payload_kind\": \"Input_UseItem\",\n",
                 "  \"recommended_use_item_payload_hex\": \"{}\",\n",
@@ -769,6 +778,17 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"recommended_client_quickbar_set_button_item_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"recommended_client_quickbar_set_button_int_param\": {},\n",
                 "  \"recommended_client_quickbar_set_button_has_target_object\": false,\n",
+                "  \"recommended_client_gui_event_notify_payload_available\": {},\n",
+                "  \"recommended_client_gui_event_notify_payload_kind\": \"GuiEvent_Notify\",\n",
+                "  \"recommended_client_gui_event_notify_payload_hex\": \"{}\",\n",
+                "  \"recommended_client_gui_event_notify_event_a\": {},\n",
+                "  \"recommended_client_gui_event_notify_event_b\": {},\n",
+                "  \"recommended_client_gui_event_notify_object_id\": {},\n",
+                "  \"recommended_client_gui_event_notify_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"recommended_client_gui_event_notify_has_vector\": true,\n",
+                "  \"recommended_client_gui_event_notify_vector_x\": 0.0,\n",
+                "  \"recommended_client_gui_event_notify_vector_y\": 0.0,\n",
+                "  \"recommended_client_gui_event_notify_vector_z\": 0.0,\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"server_to_client_events_since_pending_refresh\": {},\n",
@@ -849,6 +869,12 @@ impl QuickbarItemRefreshHarnessHint {
             self.candidate.object_id,
             self.candidate.object_id,
             client_quickbar::ITEM_SET_BUTTON_DEFAULT_INT_PARAM,
+            recommended_gui_event_notify_payload_available,
+            recommended_gui_event_notify_payload_hex,
+            client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_A,
+            client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_B,
+            self.candidate.object_id,
+            self.candidate.object_id,
             self.updates_since_committed_quickbar,
             self.events_since_pending_refresh,
             self.event_breakdown.server_to_client_events,
@@ -5589,6 +5615,22 @@ mod tests {
         assert!(
             json.contains("\"recommended_client_quickbar_set_button_has_target_object\": false")
         );
+        assert!(json.contains("\"recommended_client_gui_event_notify_payload_available\": true"));
+        assert!(
+            json.contains(
+                "\"recommended_client_gui_event_notify_payload_kind\": \"GuiEvent_Notify\""
+            )
+        );
+        assert!(json.contains(
+            "\"recommended_client_gui_event_notify_payload_hex\": \"7035011B000000110000000001008000000000000000000000000060\""
+        ));
+        assert!(json.contains("\"recommended_client_gui_event_notify_event_a\": 17"));
+        assert!(json.contains("\"recommended_client_gui_event_notify_event_b\": 0"));
+        assert!(json.contains("\"recommended_client_gui_event_notify_object_id\": 2147483904"));
+        assert!(
+            json.contains("\"recommended_client_gui_event_notify_object_id_hex\": \"0x80000100\"")
+        );
+        assert!(json.contains("\"recommended_client_gui_event_notify_has_vector\": true"));
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(json.contains("\"server_to_client_events_since_pending_refresh\": 10"));
         assert!(json.contains("\"client_to_server_events_since_pending_refresh\": 1"));

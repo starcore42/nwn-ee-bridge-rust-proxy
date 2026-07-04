@@ -70,6 +70,26 @@ primary evidence for whether the original client action after the pending item
 proof is a GUI/radial event rather than another quickbar SetButton or UseItem
 shape.
 
+As of 2026-07-04 10:30 +10, proxy2 also writes a bounded recommended
+`ClientGuiEvent/Notify` radial probe into `quickbar-item-refresh-hint.json`
+when a pending quickbar item refresh has a candidate object id. The EE bridge
+validates that hinted `70 35 01` payload before dispatch and the PowerShell
+harness exposes it through `-AutoQuickbarItemRefreshGuiEventNotify`, gated by
+driver-only mode and
+`HG_BRIDGE_AUTO_QUICKBAR_ITEM_REFRESH_GUI_EVENT_NOTIFY=1`. To run the next
+live radial/menu probe after building the bridge, use:
+
+```powershell
+.\tools\test-hg-bridge.ps1 -Server 213 -AutoQuickbarItemRefreshGuiEventNotify -SeedNwsyncClientCache -SkipAssets -SkipBuild -ProxyLogRoot C:\nwnbridge\<descriptive-run>
+```
+
+Treat success as gameplay reached plus a matched
+`first_client_action="client_gui_event_notify"` in the final
+`quickbar-item-refresh-hint.json`, then check whether a server quickbar update
+follows. Treat no matched GUI event, no server quickbar follow-up, or new
+quarantine as the next action-family/state issue rather than a connection
+blocker if `Area_ClientArea` and live-object traffic still continue.
+
 As of 2026-07-04 05:32 +10, proxy2 also writes server-to-client and
 client-to-server direction totals for pending quickbar item-refresh windows
 into semantic traces, `quickbar-item-refresh-hint.json`, and replay summaries.

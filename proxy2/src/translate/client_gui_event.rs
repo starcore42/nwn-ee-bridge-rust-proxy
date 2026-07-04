@@ -27,6 +27,8 @@ const LEGACY_NOTIFY_DECLARED_BYTES: usize = BODY_OFFSET + 2 + 2 + 4;
 const EE_8193_35_NOTIFY_DECLARED_BYTES: usize = LEGACY_NOTIFY_DECLARED_BYTES + 12;
 const FRAGMENT_CURSOR_MASK: u8 = 0xE0;
 const EXPECTED_FINAL_FRAGMENT_CURSOR: u8 = 0x60;
+pub(crate) const RADIAL_NOTIFY_PROBE_EVENT_A: u16 = 0x0011;
+pub(crate) const RADIAL_NOTIFY_PROBE_EVENT_B: u16 = 0x0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientGuiEventLegacyAction {
@@ -93,6 +95,42 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientGuiEventClaimSu
     })
 }
 
+pub fn build_notify_payload(
+    event_a: u16,
+    event_b: u16,
+    object_id: u32,
+    vector: Option<[f32; 3]>,
+) -> Option<Vec<u8>> {
+    let declared_bytes = if vector.is_some() {
+        EE_8193_35_NOTIFY_DECLARED_BYTES
+    } else {
+        LEGACY_NOTIFY_DECLARED_BYTES
+    };
+    let mut payload = Vec::with_capacity(declared_bytes.checked_add(1)?);
+    payload.extend_from_slice(&[0x70, GUI_EVENT_MAJOR, GUI_EVENT_NOTIFY_MINOR]);
+    payload.extend_from_slice(&(u32::try_from(declared_bytes).ok()?).to_le_bytes());
+    payload.extend_from_slice(&event_a.to_le_bytes());
+    payload.extend_from_slice(&event_b.to_le_bytes());
+    payload.extend_from_slice(&object_id.to_le_bytes());
+    if let Some(vector) = vector {
+        for component in vector {
+            payload.extend_from_slice(&component.to_bits().to_le_bytes());
+        }
+    }
+    payload.push(EXPECTED_FINAL_FRAGMENT_CURSOR);
+    claim_payload_if_verified(&payload)?;
+    Some(payload)
+}
+
+pub fn build_radial_notify_probe_payload(object_id: u32) -> Option<Vec<u8>> {
+    build_notify_payload(
+        RADIAL_NOTIFY_PROBE_EVENT_A,
+        RADIAL_NOTIFY_PROBE_EVENT_B,
+        object_id,
+        Some([0.0, 0.0, 0.0]),
+    )
+}
+
 fn read_le_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     let slice = bytes.get(offset..offset.checked_add(2)?)?;
     Some(u16::from_le_bytes(slice.try_into().ok()?))
@@ -140,6 +178,45 @@ mod tests {
             summary.legacy_action,
             ClientGuiEventLegacyAction::ConsumeNoLegacyEquivalent
         );
+    }
+
+    #[test]
+    fn builds_exact_gui_event_notify_radial_probe_shape() {
+        let payload = build_radial_notify_probe_payload(0x8000_0100)
+            .expect("radial notify probe should build");
+
+        assert_eq!(
+            payload,
+            [
+                0x70, 0x35, 0x01, 0x1B, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+                0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60,
+            ]
+        );
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("built radial notify probe should satisfy the focused verifier");
+        assert_eq!(summary.packet_name, "GuiEvent_Notify");
+        assert_eq!(summary.event_a, RADIAL_NOTIFY_PROBE_EVENT_A);
+        assert_eq!(summary.event_b, RADIAL_NOTIFY_PROBE_EVENT_B);
+        assert_eq!(summary.object_id, 0x8000_0100);
+        assert_eq!(summary.vector, Some([0.0, 0.0, 0.0]));
+        assert_eq!(summary.declared_bytes, EE_8193_35_NOTIFY_DECLARED_BYTES);
+        assert_eq!(summary.trailing_fragment_bytes, 1);
+    }
+
+    #[test]
+    fn builds_exact_gui_event_notify_without_vector_shape() {
+        let payload = build_notify_payload(2, 3, 0xDEAD_BEEF, None)
+            .expect("legacy-sized notify should build");
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("built legacy-sized notify should satisfy the focused verifier");
+        assert_eq!(summary.event_a, 2);
+        assert_eq!(summary.event_b, 3);
+        assert_eq!(summary.object_id, 0xDEAD_BEEF);
+        assert_eq!(summary.vector, None);
+        assert_eq!(summary.declared_bytes, LEGACY_NOTIFY_DECLARED_BYTES);
+        assert_eq!(summary.trailing_fragment_bytes, 1);
     }
 
     #[test]
