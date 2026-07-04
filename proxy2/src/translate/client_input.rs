@@ -198,6 +198,8 @@ pub struct ClientInputClaimSummary {
     pub declared: usize,
     pub fragment_bytes: usize,
     pub primary_object_id: u32,
+    pub use_object_mark_inventory_gui_state: Option<bool>,
+    pub use_object_schedule_script_event: Option<bool>,
     pub rewritten_self_object_id: bool,
     pub rewritten_transition_door_close: bool,
 }
@@ -392,6 +394,8 @@ fn claim_or_rewrite_payload_inner(
             declared: read_declared(payload)?,
             fragment_bytes: ONE_FRAGMENT_BYTE,
             primary_object_id: use_item.item_object_id,
+            use_object_mark_inventory_gui_state: None,
+            use_object_schedule_script_event: None,
             rewritten_self_object_id,
             rewritten_transition_door_close: false,
         });
@@ -418,6 +422,8 @@ fn claim_payload_inner(
                 declared: WALK_DECLARED_BYTES,
                 fragment_bytes: payload.len() - WALK_DECLARED_BYTES,
                 primary_object_id: walk.area_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -430,6 +436,8 @@ fn claim_payload_inner(
                 declared: OBJECT_ONLY_DECLARED_BYTES,
                 fragment_bytes: payload.len() - OBJECT_ONLY_DECLARED_BYTES,
                 primary_object_id: attack.target_object_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -442,6 +450,8 @@ fn claim_payload_inner(
                 declared: DOOR_DECLARED_BYTES,
                 fragment_bytes: payload.len() - DOOR_DECLARED_BYTES,
                 primary_object_id: door.door_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -454,6 +464,8 @@ fn claim_payload_inner(
                 declared: EXAMINE_DECLARED_BYTES,
                 fragment_bytes: payload.len() - EXAMINE_DECLARED_BYTES,
                 primary_object_id: examine.object_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -466,6 +478,8 @@ fn claim_payload_inner(
                 declared: read_declared(payload)?,
                 fragment_bytes: ONE_FRAGMENT_BYTE,
                 primary_object_id: use_feat.target_object_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -478,6 +492,8 @@ fn claim_payload_inner(
                 declared: USE_SKILL_DECLARED_BYTES,
                 fragment_bytes: payload.len() - USE_SKILL_DECLARED_BYTES,
                 primary_object_id: use_skill.target_object_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -490,6 +506,8 @@ fn claim_payload_inner(
                 declared: read_declared(payload)?,
                 fragment_bytes: ONE_FRAGMENT_BYTE,
                 primary_object_id: use_item.item_object_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -502,6 +520,8 @@ fn claim_payload_inner(
                 declared: read_declared(payload)?,
                 fragment_bytes: ONE_FRAGMENT_BYTE,
                 primary_object_id: toggle.counterspell_target.unwrap_or(INVALID_OBJECT_ID),
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -514,6 +534,8 @@ fn claim_payload_inner(
                 declared: USE_OBJECT_DECLARED_BYTES,
                 fragment_bytes: payload.len() - USE_OBJECT_DECLARED_BYTES,
                 primary_object_id: use_object.object_id,
+                use_object_mark_inventory_gui_state: Some(use_object.mark_inventory_gui_state),
+                use_object_schedule_script_event: Some(use_object.schedule_script_event),
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -526,6 +548,8 @@ fn claim_payload_inner(
                 declared: OBJECT_ONLY_DECLARED_BYTES,
                 fragment_bytes: payload.len() - OBJECT_ONLY_DECLARED_BYTES,
                 primary_object_id: unlock.object_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -538,6 +562,8 @@ fn claim_payload_inner(
                 declared: HIGH_LEVEL_ONLY_INPUT_BYTES,
                 fragment_bytes: 0,
                 primary_object_id: INVALID_OBJECT_ID,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -550,6 +576,8 @@ fn claim_payload_inner(
                 declared: OBJECT_ONLY_DECLARED_BYTES,
                 fragment_bytes: payload.len() - OBJECT_ONLY_DECLARED_BYTES,
                 primary_object_id: lock.object_id,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -562,6 +590,8 @@ fn claim_payload_inner(
                 declared: MEMORIZE_SPELL_DECLARED_BYTES,
                 fragment_bytes: payload.len() - MEMORIZE_SPELL_DECLARED_BYTES,
                 primary_object_id: INVALID_OBJECT_ID,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -574,6 +604,8 @@ fn claim_payload_inner(
                 declared: UNMEMORIZE_SPELL_DECLARED_BYTES,
                 fragment_bytes: payload.len() - UNMEMORIZE_SPELL_DECLARED_BYTES,
                 primary_object_id: INVALID_OBJECT_ID,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -690,6 +722,8 @@ fn claim_or_rewrite_transition_door_close(
         declared: WALK_DECLARED_BYTES,
         fragment_bytes: ONE_FRAGMENT_BYTE,
         primary_object_id: parsed.area_id,
+        use_object_mark_inventory_gui_state: None,
+        use_object_schedule_script_event: None,
         rewritten_self_object_id: false,
         rewritten_transition_door_close: true,
     })
@@ -1051,6 +1085,27 @@ pub fn parse_use_object(payload: &[u8]) -> Option<UseObject> {
         mark_inventory_gui_state,
         schedule_script_event,
     })
+}
+
+pub fn build_use_object_payload(
+    object_id: u32,
+    mark_inventory_gui_state: bool,
+    schedule_script_event: bool,
+) -> Option<Vec<u8>> {
+    if object_id == INVALID_OBJECT_ID {
+        return None;
+    }
+
+    let mut payload = Vec::with_capacity(USE_OBJECT_DECLARED_BYTES + ONE_FRAGMENT_BYTE);
+    payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, USE_OBJECT_MINOR]);
+    payload.extend_from_slice(&(USE_OBJECT_DECLARED_BYTES as u32).to_le_bytes());
+    payload.extend_from_slice(&object_id.to_le_bytes());
+    payload.push(fragment_tail_byte(&[
+        mark_inventory_gui_state,
+        schedule_script_event,
+    ])?);
+    parse_use_object(&payload)?;
+    Some(payload)
 }
 
 pub fn parse_unlock_object(payload: &[u8]) -> Option<UnlockObject> {
@@ -1568,6 +1623,33 @@ mod tests {
         assert!(!summary.rewritten_self_object_id);
         assert_eq!(parsed.object_id, 0x8000_34CB);
         assert!(parsed.mark_inventory_gui_state);
+        assert!(!parsed.schedule_script_event);
+    }
+
+    #[test]
+    fn use_object_builder_emits_candidate_probe_bool_shape() {
+        let payload = build_use_object_payload(0x8001_5219, false, false)
+            .expect("valid object id should build a UseObject probe");
+        assert_eq!(
+            payload,
+            [
+                0x70, 0x06, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0x19, 0x52, 0x01, 0x80, 0xA0
+            ],
+            "UseObject probe keeps both decompile-owned BOOLs false"
+        );
+
+        let summary =
+            claim_payload_if_verified(&payload).expect("built UseObject should be claimed");
+        let parsed = parse_use_object(&payload).expect("built UseObject should parse");
+        assert_eq!(summary.kind, ClientInputKind::UseObject);
+        assert_eq!(summary.packet_name, "Input_UseObject");
+        assert_eq!(summary.declared, USE_OBJECT_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8001_5219);
+        assert_eq!(summary.use_object_mark_inventory_gui_state, Some(false));
+        assert_eq!(summary.use_object_schedule_script_event, Some(false));
+        assert_eq!(parsed.object_id, 0x8001_5219);
+        assert!(!parsed.mark_inventory_gui_state);
         assert!(!parsed.schedule_script_event);
     }
 

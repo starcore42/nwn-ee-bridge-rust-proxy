@@ -1403,6 +1403,12 @@ fn quickbar_item_refresh_client_action_detail(
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_object_mark_inventory_gui_state: event
+                    .claim
+                    .and_then(|claim| claim.use_object_mark_inventory_gui_state),
+                use_object_schedule_script_event: event
+                    .claim
+                    .and_then(|claim| claim.use_object_schedule_script_event),
                 candidate_object_id,
                 matches_candidate_object: matches_candidate_object(object_id),
             }
@@ -1432,6 +1438,8 @@ fn quickbar_item_refresh_client_action_detail(
                     .map(|claim| claim.trailing_fragment_bytes),
                 gui_event_has_vector: event.claim.map(|claim| claim.vector.is_some()),
                 gui_event_vector_bits: vector_bits,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 candidate_object_id,
                 matches_candidate_object: matches_candidate_object(object_id),
             }
@@ -1450,6 +1458,8 @@ fn quickbar_item_refresh_client_action_detail(
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 candidate_object_id,
                 matches_candidate_object: matches_candidate_object(object_id),
             }
@@ -1466,6 +1476,8 @@ fn quickbar_item_refresh_client_action_detail(
             gui_event_trailing_fragment_bytes: None,
             gui_event_has_vector: None,
             gui_event_vector_bits: None,
+            use_object_mark_inventory_gui_state: None,
+            use_object_schedule_script_event: None,
             candidate_object_id,
             matches_candidate_object: None,
         },
@@ -2470,6 +2482,8 @@ mod fixture_free_tests {
             gui_event_trailing_fragment_bytes: None,
             gui_event_has_vector: None,
             gui_event_vector_bits: None,
+            use_object_mark_inventory_gui_state: None,
+            use_object_schedule_script_event: None,
             candidate_object_id: Some(0x8000_0100),
             matches_candidate_object: Some(true),
         };
@@ -2510,6 +2524,25 @@ mod fixture_free_tests {
             ),
             gui_event_has_vector: Some(true),
             gui_event_vector_bits: Some([0, 0, 0]),
+            use_object_mark_inventory_gui_state: None,
+            use_object_schedule_script_event: None,
+            candidate_object_id: Some(0x8000_0100),
+            matches_candidate_object: Some(true),
+        };
+        let use_object_detail = QuickbarItemRefreshClientActionDetail {
+            kind: QuickbarItemRefreshEventKind::ClientInputUseObject,
+            object_id: Some(0x8000_0100),
+            slot: None,
+            button_type: None,
+            body_kind: None,
+            gui_event_a: None,
+            gui_event_b: None,
+            gui_event_declared_bytes: None,
+            gui_event_trailing_fragment_bytes: None,
+            gui_event_has_vector: None,
+            gui_event_vector_bits: None,
+            use_object_mark_inventory_gui_state: Some(false),
+            use_object_schedule_script_event: Some(false),
             candidate_object_id: Some(0x8000_0100),
             matches_candidate_object: Some(true),
         };
@@ -2620,6 +2653,15 @@ mod fixture_free_tests {
                 active_signature,
             ),
             QuickbarItemRefreshClientActionMatchClass::RecommendedGuiEventNotify
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(use_object_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::RecommendedUseObject
         );
     }
 
@@ -2757,6 +2799,8 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(true),
             }),
@@ -2866,6 +2910,8 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(true),
             }),
@@ -3045,6 +3091,8 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(false),
             }),
@@ -3126,6 +3174,8 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: Some(1),
                 gui_event_has_vector: Some(true),
                 gui_event_vector_bits: Some([0, 0, 0]),
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(true),
             }),

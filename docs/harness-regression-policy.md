@@ -89,6 +89,21 @@ the first action corresponds only to the candidate, to the preserved active
 item, or to one of the exact generated probe shapes before changing the
 active-property action/state translator rule.
 
+As of 2026-07-05 06:22 +10, proxy2 also writes a decompile-backed
+`Input_UseObject` probe into pending quickbar item-refresh hints. The generated
+payload uses family/minor `70 06 0B`, declared byte count `0x0B`, the pending
+candidate object id, and two final fragment BOOLs in the EE/legacy reader
+order: `mark_inventory_gui_state=false` then `schedule_script_event=false`.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-useobject-hint-20260705-061927` stayed at
+164 packet files, 304 strict allows, and 0 quarantine artifacts, and emitted
+`recommended_client_use_object_payload_hex=70060B0B000000AA5D0180A0` for
+candidate `0x80015DAA`. The next harness implementation target is an opt-in
+driver switch that validates and sends this hinted `Input_UseObject` payload,
+then a live HG probe that checks for
+`first_client_action_match_class="recommended_use_object"` and any server
+quickbar follow-up.
+
 As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
 `GuiEvent_Notify` client payloads semantically while still forwarding only an
 empty Diamond/1.69 compatibility carrier. Pending quickbar item-refresh traces,

@@ -17,6 +17,30 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 UseObject active-item probe scaffold: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T04:17:44+10:00`; about 1.9h old at the gate). Gameplay was
+  reached through live-object traffic and no quarantine artifacts were present.
+  Because exact `GuiEvent_Notify` delivery to the preserved active quickbar
+  item still produced no server quickbar, proxy2 now builds a decompile-backed
+  `Input_UseObject` (`70 06 0B`) candidate action for the same pending item.
+  The builder writes the raw object id followed by the two EE/legacy
+  server-reader BOOLs in order, currently both false, and self-validates
+  through the focused `client_input` parser. Pending quickbar hints now expose
+  `recommended_client_use_object_*` fields and classify an observed first
+  action as `recommended_use_object` only when kind, object id, and both BOOLs
+  exactly match. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-useobject-hint-20260705-061927` against
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  completed with 164 packet files, 304 strict allow decisions, 0 quarantine
+  decisions/artifacts, and emitted
+  `recommended_client_use_object_payload_hex=70060B0B000000AA5D0180A0` for
+  candidate `0x80015DAA`. Active next path: add an opt-in bridge/harness
+  dispatch path for the new UseObject hint and run a live HG probe to compare
+  `first_client_action_match_class=recommended_use_object` against server
+  quickbar follow-up.
 - 2026-07-05 active-item action match-class slice: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`
