@@ -1370,18 +1370,41 @@ fn quickbar_item_refresh_client_action_detail(
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
                 candidate_object_id,
                 matches_candidate_object: matches_candidate_object(object_id),
             }
         }
         ProtocolEvent::ClientGuiEvent(event) => {
             let object_id = event.claim.map(|claim| claim.object_id);
+            let vector_bits = event.claim.and_then(|claim| {
+                claim.vector.map(|vector| {
+                    [
+                        vector[0].to_bits(),
+                        vector[1].to_bits(),
+                        vector[2].to_bits(),
+                    ]
+                })
+            });
             QuickbarItemRefreshClientActionDetail {
                 kind,
                 object_id,
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                gui_event_a: event.claim.map(|claim| claim.event_a),
+                gui_event_b: event.claim.map(|claim| claim.event_b),
+                gui_event_declared_bytes: event.claim.map(|claim| claim.declared_bytes),
+                gui_event_trailing_fragment_bytes: event
+                    .claim
+                    .map(|claim| claim.trailing_fragment_bytes),
+                gui_event_has_vector: event.claim.map(|claim| claim.vector.is_some()),
+                gui_event_vector_bits: vector_bits,
                 candidate_object_id,
                 matches_candidate_object: matches_candidate_object(object_id),
             }
@@ -1394,6 +1417,12 @@ fn quickbar_item_refresh_client_action_detail(
                 slot: event.claim.map(|claim| claim.slot),
                 button_type: event.claim.map(|claim| claim.button_type),
                 body_kind: event.claim.map(|claim| claim.body_kind),
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
                 candidate_object_id,
                 matches_candidate_object: matches_candidate_object(object_id),
             }
@@ -1404,6 +1433,12 @@ fn quickbar_item_refresh_client_action_detail(
             slot: None,
             button_type: None,
             body_kind: None,
+            gui_event_a: None,
+            gui_event_b: None,
+            gui_event_declared_bytes: None,
+            gui_event_trailing_fragment_bytes: None,
+            gui_event_has_vector: None,
+            gui_event_vector_bits: None,
             candidate_object_id,
             matches_candidate_object: None,
         },
@@ -2402,6 +2437,12 @@ mod fixture_free_tests {
             slot: Some(2),
             button_type: Some(1),
             body_kind: Some(client_quickbar::ClientQuickbarSetButtonKind::Item),
+            gui_event_a: None,
+            gui_event_b: None,
+            gui_event_declared_bytes: None,
+            gui_event_trailing_fragment_bytes: None,
+            gui_event_has_vector: None,
+            gui_event_vector_bits: None,
             candidate_object_id: Some(0x8000_0100),
             matches_candidate_object: Some(true),
         };
@@ -2592,6 +2633,12 @@ mod fixture_free_tests {
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(true),
             }),
@@ -2695,6 +2742,12 @@ mod fixture_free_tests {
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(true),
             }),
@@ -2868,6 +2921,12 @@ mod fixture_free_tests {
                 slot: Some(7),
                 button_type: Some(1),
                 body_kind: Some(client_quickbar::ClientQuickbarSetButtonKind::Item),
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(false),
             }),
@@ -2943,6 +3002,12 @@ mod fixture_free_tests {
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                gui_event_a: Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_A),
+                gui_event_b: Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_B),
+                gui_event_declared_bytes: Some(27),
+                gui_event_trailing_fragment_bytes: Some(1),
+                gui_event_has_vector: Some(true),
+                gui_event_vector_bits: Some([0, 0, 0]),
                 candidate_object_id: Some(first_item_id),
                 matches_candidate_object: Some(true),
             }),
@@ -3116,14 +3181,8 @@ mod fixture_free_tests {
     }
 
     fn client_gui_event_notify_payload(object_id: u32) -> Vec<u8> {
-        const DECLARED: usize = 15;
-        let mut payload = Vec::with_capacity(DECLARED);
-        payload.extend_from_slice(&[0x70, 0x35, 0x01]);
-        payload.extend_from_slice(&(DECLARED as u32).to_le_bytes());
-        payload.extend_from_slice(&2u16.to_le_bytes());
-        payload.extend_from_slice(&3u16.to_le_bytes());
-        payload.extend_from_slice(&object_id.to_le_bytes());
-        payload
+        client_gui_event::build_radial_notify_probe_payload(object_id)
+            .expect("radial GuiEvent notify test payload should build")
     }
 }
 

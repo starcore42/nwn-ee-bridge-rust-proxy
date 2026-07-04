@@ -108,6 +108,30 @@ impl SemanticSessionState {
             .and_then(|detail| detail.body_kind)
             .map(ClientQuickbarSetButtonKind::as_str)
             .unwrap_or("none");
+        let first_client_action_gui_event_known = first_client_action_detail
+            .and_then(|detail| detail.gui_event_a)
+            .is_some();
+        let first_client_action_gui_event_a = first_client_action_detail
+            .and_then(|detail| detail.gui_event_a)
+            .unwrap_or(0);
+        let first_client_action_gui_event_b = first_client_action_detail
+            .and_then(|detail| detail.gui_event_b)
+            .unwrap_or(0);
+        let first_client_action_gui_event_declared_bytes = first_client_action_detail
+            .and_then(|detail| detail.gui_event_declared_bytes)
+            .unwrap_or(0);
+        let first_client_action_gui_event_trailing_fragment_bytes = first_client_action_detail
+            .and_then(|detail| detail.gui_event_trailing_fragment_bytes)
+            .unwrap_or(0);
+        let first_client_action_gui_event_has_vector = first_client_action_detail
+            .and_then(|detail| detail.gui_event_has_vector)
+            .unwrap_or(false);
+        let first_client_action_gui_event_vector_bits = first_client_action_detail
+            .and_then(|detail| detail.gui_event_vector_bits)
+            .unwrap_or([0, 0, 0]);
+        let first_client_action_gui_event_vector_zero = first_client_action_detail
+            .and_then(|detail| detail.gui_event_vector_bits)
+            == Some([0, 0, 0]);
         let first_client_action_candidate_known = first_client_action_detail
             .and_then(|detail| detail.candidate_object_id)
             .is_some();
@@ -174,6 +198,25 @@ impl SemanticSessionState {
             first_client_action_slot,
             first_client_action_button_type,
             first_client_action_body_kind,
+            first_client_action_gui_event_known,
+            first_client_action_gui_event_a,
+            first_client_action_gui_event_b,
+            first_client_action_gui_event_declared_bytes,
+            first_client_action_gui_event_trailing_fragment_bytes,
+            first_client_action_gui_event_has_vector,
+            first_client_action_gui_event_vector_zero,
+            first_client_action_gui_event_vector_x_bits = %format_args!(
+                "0x{:08X}",
+                first_client_action_gui_event_vector_bits[0]
+            ),
+            first_client_action_gui_event_vector_y_bits = %format_args!(
+                "0x{:08X}",
+                first_client_action_gui_event_vector_bits[1]
+            ),
+            first_client_action_gui_event_vector_z_bits = %format_args!(
+                "0x{:08X}",
+                first_client_action_gui_event_vector_bits[2]
+            ),
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
@@ -726,6 +769,30 @@ impl QuickbarItemRefreshHarnessHint {
             .and_then(|detail| detail.body_kind)
             .map(ClientQuickbarSetButtonKind::as_str)
             .unwrap_or("none");
+        let first_client_action_gui_event_known = first_client_action_detail
+            .and_then(|detail| detail.gui_event_a)
+            .is_some();
+        let first_client_action_gui_event_a = first_client_action_detail
+            .and_then(|detail| detail.gui_event_a)
+            .unwrap_or(0);
+        let first_client_action_gui_event_b = first_client_action_detail
+            .and_then(|detail| detail.gui_event_b)
+            .unwrap_or(0);
+        let first_client_action_gui_event_declared_bytes = first_client_action_detail
+            .and_then(|detail| detail.gui_event_declared_bytes)
+            .unwrap_or(0);
+        let first_client_action_gui_event_trailing_fragment_bytes = first_client_action_detail
+            .and_then(|detail| detail.gui_event_trailing_fragment_bytes)
+            .unwrap_or(0);
+        let first_client_action_gui_event_has_vector = first_client_action_detail
+            .and_then(|detail| detail.gui_event_has_vector)
+            .unwrap_or(false);
+        let first_client_action_gui_event_vector_bits = first_client_action_detail
+            .and_then(|detail| detail.gui_event_vector_bits)
+            .unwrap_or([0, 0, 0]);
+        let first_client_action_gui_event_vector_zero = first_client_action_detail
+            .and_then(|detail| detail.gui_event_vector_bits)
+            == Some([0, 0, 0]);
         let first_client_action_candidate_known = first_client_action_detail
             .and_then(|detail| detail.candidate_object_id)
             .is_some();
@@ -804,6 +871,16 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_client_action_slot\": {},\n",
                 "  \"first_client_action_button_type\": {},\n",
                 "  \"first_client_action_body_kind\": \"{}\",\n",
+                "  \"first_client_action_gui_event_known\": {},\n",
+                "  \"first_client_action_gui_event_a\": {},\n",
+                "  \"first_client_action_gui_event_b\": {},\n",
+                "  \"first_client_action_gui_event_declared_bytes\": {},\n",
+                "  \"first_client_action_gui_event_trailing_fragment_bytes\": {},\n",
+                "  \"first_client_action_gui_event_has_vector\": {},\n",
+                "  \"first_client_action_gui_event_vector_zero\": {},\n",
+                "  \"first_client_action_gui_event_vector_x_bits_hex\": \"0x{:08X}\",\n",
+                "  \"first_client_action_gui_event_vector_y_bits_hex\": \"0x{:08X}\",\n",
+                "  \"first_client_action_gui_event_vector_z_bits_hex\": \"0x{:08X}\",\n",
                 "  \"first_client_action_candidate_known\": {},\n",
                 "  \"first_client_action_candidate_object_id\": {},\n",
                 "  \"first_client_action_matches_candidate\": {},\n",
@@ -896,6 +973,16 @@ impl QuickbarItemRefreshHarnessHint {
             first_client_action_slot,
             first_client_action_button_type,
             first_client_action_body_kind,
+            first_client_action_gui_event_known,
+            first_client_action_gui_event_a,
+            first_client_action_gui_event_b,
+            first_client_action_gui_event_declared_bytes,
+            first_client_action_gui_event_trailing_fragment_bytes,
+            first_client_action_gui_event_has_vector,
+            first_client_action_gui_event_vector_zero,
+            first_client_action_gui_event_vector_bits[0],
+            first_client_action_gui_event_vector_bits[1],
+            first_client_action_gui_event_vector_bits[2],
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
@@ -974,6 +1061,12 @@ pub(crate) struct QuickbarItemRefreshClientActionDetail {
     pub(crate) slot: Option<u8>,
     pub(crate) button_type: Option<u8>,
     pub(crate) body_kind: Option<ClientQuickbarSetButtonKind>,
+    pub(crate) gui_event_a: Option<u16>,
+    pub(crate) gui_event_b: Option<u16>,
+    pub(crate) gui_event_declared_bytes: Option<usize>,
+    pub(crate) gui_event_trailing_fragment_bytes: Option<usize>,
+    pub(crate) gui_event_has_vector: Option<bool>,
+    pub(crate) gui_event_vector_bits: Option<[u32; 3]>,
     pub(crate) candidate_object_id: Option<u32>,
     pub(crate) matches_candidate_object: Option<bool>,
 }
@@ -3424,6 +3517,7 @@ mod tests {
         AreaPlaceableContextRow, AreaPlaceableContextState, AreaPlaceableContextStateConflict,
         AreaPlaceableObservedOrientationSource,
     };
+    use crate::translate::client_gui_event;
     use crate::translate::semantic::{
         LiveObjectInventoryFeature25Reference, LiveObjectOrientationSource,
         LiveObjectOrientationVector,
@@ -5813,6 +5907,12 @@ mod tests {
                 slot: None,
                 button_type: None,
                 body_kind: None,
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
                 candidate_object_id: Some(0x8000_0100),
                 matches_candidate_object: Some(true),
             });
@@ -5928,6 +6028,41 @@ mod tests {
         assert!(json.contains("\"client_to_server_events_after_first_client_action\": 1"));
         assert!(json.contains("\"live_object_events_after_first_client_action\": 1"));
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
+
+        ui.post_committed_quickbar_item_refresh_first_client_action =
+            Some(QuickbarItemRefreshEventKind::ClientGuiEventNotify);
+        ui.post_committed_quickbar_item_refresh_first_client_action_detail =
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientGuiEventNotify,
+                object_id: Some(0x8000_0100),
+                slot: None,
+                button_type: None,
+                body_kind: None,
+                gui_event_a: Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_A),
+                gui_event_b: Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_B),
+                gui_event_declared_bytes: Some(27),
+                gui_event_trailing_fragment_bytes: Some(1),
+                gui_event_has_vector: Some(true),
+                gui_event_vector_bits: Some([0, 0, 0]),
+                candidate_object_id: Some(0x8000_0100),
+                matches_candidate_object: Some(true),
+            });
+        let gui_json = ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("pending candidate should still expose a harness hint")
+            .to_json();
+        assert!(gui_json.contains("\"first_client_action\": \"client_gui_event_notify\""));
+        assert!(gui_json.contains("\"first_client_action_gui_event_known\": true"));
+        assert!(gui_json.contains("\"first_client_action_gui_event_a\": 17"));
+        assert!(gui_json.contains("\"first_client_action_gui_event_b\": 0"));
+        assert!(gui_json.contains("\"first_client_action_gui_event_declared_bytes\": 27"));
+        assert!(gui_json.contains("\"first_client_action_gui_event_trailing_fragment_bytes\": 1"));
+        assert!(gui_json.contains("\"first_client_action_gui_event_has_vector\": true"));
+        assert!(gui_json.contains("\"first_client_action_gui_event_vector_zero\": true"));
+        assert!(
+            gui_json
+                .contains("\"first_client_action_gui_event_vector_x_bits_hex\": \"0x00000000\"")
+        );
     }
 
     #[test]

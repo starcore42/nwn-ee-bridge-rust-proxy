@@ -68,6 +68,25 @@ not as standalone workaround targets.
   client active-property action semantics/timing for this item refresh, because
   the bounded `GuiEvent_Notify` probe lands but HG does not emit a server
   quickbar refresh.
+- 2026-07-04 GUI-event action-shape diagnostic slice: live-data gate reused
+  the gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-stream-probe-commit-gui-event-20260704-162250\harness-proxy-20260704-162301`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-04T16:27:55+10:00`; about 1h40m old at the gate, still under
+  24h). Proxy2 now retains the first client `GuiEvent_Notify` shape in the
+  pending quickbar item-refresh action detail and exports event A/B, declared
+  bytes, trailing fragment bytes, vector presence, and raw vector bits through
+  `quickbar-item-refresh-hint.json` and unresolved semantic traces. Reference
+  setup: fresh live HG evidence is still the authoritative source for the
+  missing item-refresh action, while the bounded radial notify payload remains
+  guarded by the typed client GUI-event builder. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-gui-event-shape-20260704-1855` against
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  stayed at 164 packet files, 304 strict allows, and 0 quarantines. Active next
+  path: run the next live GUI-event/active-property probe with these fields,
+  then compare the exact event ids, body length, vector branch, and timing
+  against Diamond/EE decompiles before changing any broad active-item
+  translator rule.
 - 2026-07-04 GUI-event live probe blocker: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`

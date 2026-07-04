@@ -744,6 +744,23 @@ candidate-known samples. The next useful harness action is to drive UseItem or
 an item-bearing client quickbar SetButton specifically against candidate
 `2147574964` after the post-proof window opens.
 
+Update as of 2026-07-04 18:54 +10: live-data gate reused the gameplay-reaching
+proxy harness
+`C:\nwnbridge\codex-live-stream-probe-commit-gui-event-20260704-162250\harness-proxy-20260704-162301`;
+`quickbar-item-refresh-hint.json` was written at
+`2026-07-04T16:27:55+10:00`, about 1h40m old at the gate, and gameplay was
+reached through module load, area load, live-object traffic, and the GUI-event
+notify path. Proxy2 now exports the first client `GuiEvent_Notify` event A/B,
+declared bytes, trailing fragment bytes, vector-present flag, and raw vector
+bits in the pending quickbar item-refresh hint. The next live GUI-event or
+active-property probe should inspect those `first_client_action_gui_event_*`
+fields before deciding whether the missing HG quickbar refresh is caused by the
+event ids, payload body, vector branch, timing, or a different action family.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-gui-event-shape-20260704-1855` against
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+stayed at 164 packet files, 304 strict allows, and 0 quarantines.
+
 ## Successful live HG capture contract
 
 A successful live HG capture requires all of the following:
