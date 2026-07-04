@@ -210,6 +210,17 @@ impl SemanticSessionState {
         let first_active_item_value_mask = first_active_item
             .map(|signature| signature.value_mask)
             .unwrap_or(0);
+        let first_client_action_matches_preserved_active_item = first_client_action_detail
+            .map(|detail| detail.matches_preserved_active_item(first_active_item))
+            .unwrap_or(false);
+        let first_client_action_match_class =
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                first_client_action_detail,
+                pending_candidate.map(|candidate| candidate.object_id),
+                recommended_set_button_slot,
+                first_active_item,
+            )
+            .as_str();
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
@@ -274,6 +285,8 @@ impl SemanticSessionState {
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
+            first_client_action_matches_preserved_active_item,
+            first_client_action_match_class,
             first_client_action_matches_recommended_client_quickbar_set_button,
             first_client_action_matches_recommended_client_gui_event_notify,
             first_event_after_client_action,
@@ -627,6 +640,70 @@ impl QuickbarItemRefreshActionOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshClientActionMatchClass {
+    AwaitingClientAction,
+    TargetUnknown,
+    OtherObject,
+    CandidateObject,
+    PreservedActiveItem,
+    RecommendedSetButton,
+    RecommendedGuiEventNotify,
+}
+
+impl Default for QuickbarItemRefreshClientActionMatchClass {
+    fn default() -> Self {
+        Self::AwaitingClientAction
+    }
+}
+
+impl QuickbarItemRefreshClientActionMatchClass {
+    pub(crate) fn from_pending_state(
+        first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+        candidate_object_id: Option<u32>,
+        recommended_set_button_slot: u8,
+        first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+    ) -> Self {
+        let Some(detail) = first_client_action_detail else {
+            return Self::AwaitingClientAction;
+        };
+        if detail.object_id.is_none() {
+            return Self::TargetUnknown;
+        }
+        if let Some(candidate_object_id) = candidate_object_id {
+            if detail.matches_recommended_client_gui_event_notify(candidate_object_id) {
+                return Self::RecommendedGuiEventNotify;
+            }
+            if detail.matches_recommended_client_quickbar_set_button(
+                candidate_object_id,
+                recommended_set_button_slot,
+            ) {
+                return Self::RecommendedSetButton;
+            }
+        }
+        if detail.matches_preserved_active_item(first_preserved_active_item_signature) {
+            return Self::PreservedActiveItem;
+        }
+        match detail.matches_candidate_object {
+            Some(true) => Self::CandidateObject,
+            Some(false) => Self::OtherObject,
+            None => Self::TargetUnknown,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingClientAction => "awaiting_client_action",
+            Self::TargetUnknown => "target_unknown",
+            Self::OtherObject => "other_object",
+            Self::CandidateObject => "candidate_object",
+            Self::PreservedActiveItem => "preserved_active_item",
+            Self::RecommendedSetButton => "recommended_set_button",
+            Self::RecommendedGuiEventNotify => "recommended_gui_event_notify",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshClientActionTiming {
     AwaitingClientAction,
     ImmediateAfterProof,
@@ -929,6 +1006,9 @@ impl QuickbarItemRefreshHarnessHint {
         let first_client_action_matches_candidate = first_client_action_detail
             .and_then(|detail| detail.matches_candidate_object)
             .unwrap_or(false);
+        let first_client_action_matches_preserved_active_item = first_client_action_detail
+            .map(|detail| detail.matches_preserved_active_item(first_active_item))
+            .unwrap_or(false);
         let first_client_action_matches_recommended_client_quickbar_set_button =
             first_client_action_detail
                 .map(|detail| {
@@ -944,6 +1024,14 @@ impl QuickbarItemRefreshHarnessHint {
                     detail.matches_recommended_client_gui_event_notify(self.candidate.object_id)
                 })
                 .unwrap_or(false);
+        let first_client_action_match_class =
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                first_client_action_detail,
+                Some(self.candidate.object_id),
+                self.recommended_set_button_slot,
+                first_active_item,
+            )
+            .as_str();
         let first_event_after_client_action = self
             .first_event_after_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
@@ -1045,6 +1133,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_client_action_candidate_known\": {},\n",
                 "  \"first_client_action_candidate_object_id\": {},\n",
                 "  \"first_client_action_matches_candidate\": {},\n",
+                "  \"first_client_action_matches_preserved_active_item\": {},\n",
+                "  \"first_client_action_match_class\": \"{}\",\n",
                 "  \"first_client_action_matches_recommended_client_quickbar_set_button\": {},\n",
                 "  \"first_client_action_matches_recommended_client_gui_event_notify\": {},\n",
                 "  \"first_event_after_client_action\": \"{}\",\n",
@@ -1168,6 +1258,8 @@ impl QuickbarItemRefreshHarnessHint {
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
+            first_client_action_matches_preserved_active_item,
+            first_client_action_match_class,
             first_client_action_matches_recommended_client_quickbar_set_button,
             first_client_action_matches_recommended_client_gui_event_notify,
             first_event_after_client_action,
@@ -1256,6 +1348,16 @@ pub(crate) struct QuickbarItemRefreshClientActionDetail {
 }
 
 impl QuickbarItemRefreshClientActionDetail {
+    pub(crate) fn matches_preserved_active_item(
+        self,
+        first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+    ) -> bool {
+        match (self.object_id, first_preserved_active_item_signature) {
+            (Some(object_id), Some(signature)) => object_id == signature.object_id,
+            _ => false,
+        }
+    }
+
     pub(crate) fn matches_recommended_client_quickbar_set_button(
         self,
         candidate_object_id: u32,
@@ -3728,7 +3830,7 @@ impl UiState {
         })
     }
 
-    fn quickbar_item_refresh_set_button_slot(&self) -> (u8, &'static str) {
+    pub(super) fn quickbar_item_refresh_set_button_slot(&self) -> (u8, &'static str) {
         if let Some(profile) = self.last_committed_quickbar_profile {
             if let Some(slot) = profile.first_blank_slot {
                 return (slot, "first_blank_committed_slot");
@@ -6344,6 +6446,8 @@ mod tests {
         assert!(json.contains("\"followup_events_before_first_client_action\": 8"));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
         assert!(json.contains("\"first_client_action\": \"client_input_other\""));
+        assert!(json.contains("\"first_client_action_matches_preserved_active_item\": true"));
+        assert!(json.contains("\"first_client_action_match_class\": \"preserved_active_item\""));
         assert!(json.contains(
             "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
         ));
@@ -6382,6 +6486,13 @@ mod tests {
         assert!(set_button_json.contains(
             "\"first_client_action_matches_recommended_client_quickbar_set_button\": true"
         ));
+        assert!(
+            set_button_json.contains("\"first_client_action_matches_preserved_active_item\": true")
+        );
+        assert!(
+            set_button_json
+                .contains("\"first_client_action_match_class\": \"recommended_set_button\"")
+        );
         assert!(set_button_json.contains(
             "\"first_client_action_matches_recommended_client_gui_event_notify\": false"
         ));
@@ -6423,6 +6534,11 @@ mod tests {
         assert!(gui_json.contains(
             "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
         ));
+        assert!(gui_json.contains("\"first_client_action_matches_preserved_active_item\": true"));
+        assert!(
+            gui_json
+                .contains("\"first_client_action_match_class\": \"recommended_gui_event_notify\"")
+        );
         assert!(
             gui_json.contains(
                 "\"first_client_action_matches_recommended_client_gui_event_notify\": true"

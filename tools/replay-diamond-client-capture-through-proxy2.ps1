@@ -1391,6 +1391,8 @@ try {
     $quickbarHintCandidateSource = ''
     $quickbarHintNoHintReason = ''
     $quickbarHintFirstActionMatchesCandidate = $false
+    $quickbarHintFirstActionMatchesPreservedActiveItem = $false
+    $quickbarHintFirstActionMatchClass = ''
     $quickbarHintFirstClientActionTiming = ''
     $quickbarHintFollowupEventsBeforeFirstClientAction = 0
     $quickbarHintServerToClientEventsSincePendingRefresh = 0
@@ -1429,6 +1431,14 @@ try {
         $matchProp = $quickbarHintJson.PSObject.Properties['first_client_action_matches_candidate']
         if ($null -ne $matchProp -and $null -ne $matchProp.Value) {
             $quickbarHintFirstActionMatchesCandidate = [bool]$matchProp.Value
+        }
+        $preservedMatchProp = $quickbarHintJson.PSObject.Properties['first_client_action_matches_preserved_active_item']
+        if ($null -ne $preservedMatchProp -and $null -ne $preservedMatchProp.Value) {
+            $quickbarHintFirstActionMatchesPreservedActiveItem = [bool]$preservedMatchProp.Value
+        }
+        $matchClassProp = $quickbarHintJson.PSObject.Properties['first_client_action_match_class']
+        if ($null -ne $matchClassProp -and $null -ne $matchClassProp.Value) {
+            $quickbarHintFirstActionMatchClass = [string]$matchClassProp.Value
         }
         $timingProp = $quickbarHintJson.PSObject.Properties['first_client_action_timing']
         if ($null -ne $timingProp -and $null -ne $timingProp.Value) {
@@ -1502,6 +1512,8 @@ try {
         QuickbarItemRefreshHintCandidateSource = $quickbarHintCandidateSource
         QuickbarItemRefreshHintNoHintReason = $quickbarHintNoHintReason
         QuickbarItemRefreshHintFirstActionMatchesCandidate = $quickbarHintFirstActionMatchesCandidate
+        QuickbarItemRefreshHintFirstActionMatchesPreservedActiveItem = $quickbarHintFirstActionMatchesPreservedActiveItem
+        QuickbarItemRefreshHintFirstActionMatchClass = $quickbarHintFirstActionMatchClass
         QuickbarItemRefreshHintFirstClientActionTiming = $quickbarHintFirstClientActionTiming
         QuickbarItemRefreshHintFollowupEventsBeforeFirstClientAction = $quickbarHintFollowupEventsBeforeFirstClientAction
         QuickbarItemRefreshHintServerToClientEventsSincePendingRefresh = $quickbarHintServerToClientEventsSincePendingRefresh

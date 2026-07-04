@@ -15,8 +15,9 @@ use crate::{
 
 use super::state::{
     InventoryItemContextCandidate, QuickbarItemRefreshActionOutcome,
-    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionTiming,
-    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
+    QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
+    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
 };
 use super::{
     AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent, ClientQuickbarEvent,
@@ -985,6 +986,30 @@ fn remember_quickbar_item_context_if_relevant(
                 .ui
                 .post_committed_quickbar_item_refresh_first_client_action_detail,
         );
+        let pending_item_refresh_first_client_action_detail = state
+            .ui
+            .post_committed_quickbar_item_refresh_first_client_action_detail;
+        let first_preserved_active_item_signature = state
+            .ui
+            .last_quickbar_stream_probe
+            .and_then(|probe| probe.first_preserved_active_item_signature);
+        let pending_item_refresh_first_client_action_matches_preserved_active_item =
+            pending_item_refresh_first_client_action_detail
+                .map(|detail| {
+                    detail.matches_preserved_active_item(first_preserved_active_item_signature)
+                })
+                .unwrap_or(false);
+        let (recommended_set_button_slot, _) = state.ui.quickbar_item_refresh_set_button_slot();
+        let pending_item_refresh_first_client_action_match_class =
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                pending_item_refresh_first_client_action_detail,
+                item_context
+                    .compact_item_emission_candidate
+                    .map(|candidate| candidate.object_id),
+                recommended_set_button_slot,
+                first_preserved_active_item_signature,
+            )
+            .as_str();
         let (
             compact_item_emission_candidate_known,
             compact_item_emission_candidate_object_id,
@@ -1161,6 +1186,8 @@ fn remember_quickbar_item_context_if_relevant(
             pending_item_refresh_first_client_action_candidate_known,
             pending_item_refresh_first_client_action_candidate_object_id,
             pending_item_refresh_first_client_action_matches_candidate,
+            pending_item_refresh_first_client_action_matches_preserved_active_item,
+            pending_item_refresh_first_client_action_match_class,
             pending_item_refresh_first_event_after_client_action,
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
@@ -2458,6 +2485,34 @@ mod fixture_free_tests {
         };
         let mut response_breakdown = QuickbarItemRefreshEventBreakdown::default();
         response_breakdown.quickbar_events = 1;
+        let active_signature = Some(quickbar::QuickbarActiveItemSignature {
+            object_id: 0x8000_0100,
+            base_item: 0x34,
+            appearance_type: 0,
+            active_property_count: 1,
+            first_property: None,
+            has_armor_word: false,
+            name_is_locstring: true,
+            state_mask: 1,
+            value_mask: 0xFF,
+        });
+        let gui_event_detail = QuickbarItemRefreshClientActionDetail {
+            kind: QuickbarItemRefreshEventKind::ClientGuiEventNotify,
+            object_id: Some(0x8000_0100),
+            slot: None,
+            button_type: None,
+            body_kind: None,
+            gui_event_a: Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_A),
+            gui_event_b: Some(client_gui_event::RADIAL_NOTIFY_PROBE_EVENT_B),
+            gui_event_declared_bytes: Some(client_gui_event::EE_8193_35_NOTIFY_DECLARED_BYTES),
+            gui_event_trailing_fragment_bytes: Some(
+                client_gui_event::RADIAL_NOTIFY_PROBE_TRAILING_FRAGMENT_BYTES,
+            ),
+            gui_event_has_vector: Some(true),
+            gui_event_vector_bits: Some([0, 0, 0]),
+            candidate_object_id: Some(0x8000_0100),
+            matches_candidate_object: Some(true),
+        };
 
         assert_eq!(
             QuickbarItemRefreshActionOutcome::from_pending_state(None, Default::default()),
@@ -2502,6 +2557,69 @@ mod fixture_free_tests {
         assert_eq!(
             QuickbarItemRefreshClientActionTiming::from_pending_state(Some(candidate_detail), 2),
             QuickbarItemRefreshClientActionTiming::DelayedAfterPendingFollowup
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                None,
+                Some(0x8000_0100),
+                2,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::AwaitingClientAction
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(unknown_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::TargetUnknown
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(mismatched_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::OtherObject
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(candidate_detail),
+                Some(0x8000_0100),
+                3,
+                None,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::CandidateObject
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(candidate_detail),
+                Some(0x8000_0100),
+                3,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::PreservedActiveItem
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(candidate_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::RecommendedSetButton
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(gui_event_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::RecommendedGuiEventNotify
         );
     }
 

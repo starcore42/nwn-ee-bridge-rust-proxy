@@ -33,32 +33,36 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-05 00:26 +10: the current
+Latest known live HG proxy status, as of 2026-07-05 04:17 +10: the current
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`.
+`C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay, dispatched the GUI-event notify path, and wrote
-`quickbar-item-refresh-hint.json` at `2026-07-05T00:26:07+10:00`. No client
+`quickbar-item-refresh-hint.json` at `2026-07-05T04:17:34+10:00`. No client
 high-level M-frame quarantines or quarantine artifact files were observed. The
-final hint recorded `pending_item_refresh=true`, candidate `0x80015B11` with
+final hint recorded `pending_item_refresh=true`, candidate `0x80015219` with
 `candidate_proof="active_object"` and `candidate_source="direct_only"`,
-matched `first_client_action="client_gui_event_notify"`, and
+`first_preserved_active_item_matches_candidate=true`, matched
+`first_client_action="client_gui_event_notify"`, and
 `pending_item_refresh_action_outcome="candidate_client_action_no_server_quickbar"`.
-The new exact-shape fields proved the first client action matched the generated
-GUI-event probe rather than merely targeting the same object:
+The exact-shape fields proved the first client action matched the generated
+GUI-event probe rather than merely targeting the same object, and the preserved
+active-item signature proved the target was the verified active-property
+quickbar item:
 `first_client_action_gui_event_a=17`, `first_client_action_gui_event_b=0`,
 `first_client_action_gui_event_declared_bytes=27`,
 `first_client_action_gui_event_trailing_fragment_bytes=1`,
 `first_client_action_gui_event_vector_zero=true`, and
 `first_client_action_matches_recommended_client_gui_event_notify=true`. After
-that exact matched action HG produced 198 server-to-client, 165
-client-to-server, 111 live-object, 1 inventory, 1 chat, and 0 server quickbar
+that exact matched action HG produced 163 server-to-client, 156
+client-to-server, 100 live-object, 1 inventory, 1 chat, and 0 server quickbar
 follow-up events. The immediate next harness/protocol target is no longer
-payload delivery for this bounded `GuiEvent_Notify` probe; trace the
-original-client active-property item action/state semantics and implement the
-next generalized client action rule that differs from this exact probe.
+target identity or payload delivery for this bounded `GuiEvent_Notify` probe;
+trace the original-client active-property item action/state semantics and
+implement the next generalized client action rule that differs from this exact
+probe.
 
-As of 2026-07-05 02:20 +10, proxy2 also writes first-preserved active-item
+As of 2026-07-05 04:41 +10, proxy2 also writes first-preserved active-item
 signature fields into quickbar item-refresh hints and unresolved traces. The
 fields are:
 `first_preserved_active_item_known`,
@@ -70,14 +74,20 @@ fields are:
 `first_preserved_active_item_first_property`,
 `first_preserved_active_item_first_property_subtype`,
 `first_preserved_active_item_state_mask_hex`, and
-`first_preserved_active_item_value_mask_hex`. Strict replay
-`C:\nwnbridge\codex-proxy2-replay-active-item-signature-20260705-022017`
+`first_preserved_active_item_value_mask_hex`. Proxy2 also classifies the first
+client action with `first_client_action_matches_preserved_active_item` and
+`first_client_action_match_class` (`awaiting_client_action`, `target_unknown`,
+`other_object`, `candidate_object`, `preserved_active_item`,
+`recommended_set_button`, or `recommended_gui_event_notify`). Strict rebuilt
+replay
+`C:\nwnbridge\codex-proxy2-replay-action-match-class-rebuilt-20260705-0441`
 stayed at 164 packet files, 304 strict allows, and 0 quarantine artifacts; its
-pending feature-25-only hint exposed the new fields with no preserved active
-item signature. The next live GUI-event/action probe should use
-`first_preserved_active_item_matches_candidate` as primary evidence for whether
-the action target corresponds to the verified quickbar active-property item
-body before changing the active-property action/state translator rule.
+pending feature-25-only hint exposed the new fields with
+`first_client_action_match_class="awaiting_client_action"`. The next live
+GUI-event/action probe should use these fields as primary evidence for whether
+the first action corresponds only to the candidate, to the preserved active
+item, or to one of the exact generated probe shapes before changing the
+active-property action/state translator rule.
 
 As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
 `GuiEvent_Notify` client payloads semantically while still forwarding only an
@@ -111,12 +121,12 @@ live radial/menu probe after building the bridge, use:
 
 Treat success as gameplay reached plus a matched
 `first_client_action="client_gui_event_notify"` in the final
-`quickbar-item-refresh-hint.json`. The 2026-07-05 00:21 live run reached that
-point and additionally proved
-`first_client_action_matches_recommended_client_gui_event_notify=true`, so the
-remaining failure mode is no server quickbar follow-up after the exact matched
-GUI event. Treat that as the next action-family/state issue rather than a
-connection blocker while `Area_ClientArea` and live-object traffic continue.
+`quickbar-item-refresh-hint.json`. The 2026-07-05 04:12 live run reached that
+point and additionally proved the generated GUI event targeted both the
+candidate and the preserved active-property quickbar item, so the remaining
+failure mode is no server quickbar follow-up after the exact matched GUI event.
+Treat that as the next action-family/state issue rather than a connection
+blocker while `Area_ClientArea` and live-object traffic continue.
 
 As of 2026-07-04 14:29 +10, the 11:50 pre-gameplay GUI-event notify blocker is
 resolved by the shared Rust `Device_AdvertiseProperty` classifier. The earlier

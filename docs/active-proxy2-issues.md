@@ -17,6 +17,30 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 active-item action match-class slice: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T00:26:33+10:00`; about 3h44m old at the gate, still under
+  24h). Fresh current-code GUI-event probe
+  `C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`
+  reached gameplay, wrote its final hint at `2026-07-05T04:17:34+10:00`, and
+  produced no quarantine artifacts. The first preserved active item
+  `0x80015219` matched the pending candidate, and the first client action was
+  the generated `GuiEvent_Notify` probe matching the candidate, but HG still
+  sent 0 server quickbar events after 319 post-action events / 100 live-object
+  events. Proxy2 now classifies first client-action match strength in hint JSON
+  and semantic traces with
+  `first_client_action_matches_preserved_active_item` and
+  `first_client_action_match_class`. Strict rebuilt replay
+  `C:\nwnbridge\codex-proxy2-replay-action-match-class-rebuilt-20260705-0441`
+  against
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  completed with 164 packet files, 304 strict allow decisions, 0 quarantine
+  decisions/artifacts, and replay hint class `awaiting_client_action`. Active
+  next path: stop retesting target identity and bounded payload shape; trace
+  the original Diamond/EE active-property item action/state semantics that
+  differ from the exact GUI-event probe.
 - 2026-07-05 active-item signature instrumentation slice: live-data gate used
   the gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`
