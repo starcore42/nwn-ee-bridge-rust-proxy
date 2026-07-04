@@ -17,6 +17,30 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-04 GUI-event live probe blocker: live-data gate used the
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-04T09:43:40+10:00`; about 1h49m old at the gate, still under 24h).
+  The first `-AutoQuickbarItemRefreshGuiEventNotify` run selected a stale repo
+  debug proxy and reached module load before strict `LiveObject` and
+  `Area_ClientArea` quarantines. The harness resolver now chooses the newest
+  compatible proxy2 executable among repo and `C:\nwnbridge\cargo-target`
+  builds, making `-SkipBuild` use the freshly built proxy instead of silently
+  preferring an older repo debug binary. Retry run
+  `C:\nwnbridge\codex-live-gui-event-notify-newest-proxy-retry-20260704-114234\harness-proxy-20260704-114239`
+  selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe` and passed
+  BNK/BNCS/BNVR, character list, login, `Module_Info`, and
+  `CNWCModule::LoadModuleResources`, but did not reach `Module_Loaded`,
+  `Area_ClientArea`, live-object traffic, or GUI-event dispatch by the run
+  cutoff. No quarantine files were written; the hint stayed
+  `pending_item_refresh=false` with `no_committed_quickbar_profile`. The proxy
+  logged repeated pre-gameplay client high-level unknown M-frame quarantines
+  matching the EE `Device_AdvertiseProperty` window seen in the bridge log.
+  Next production path: classify or consume those pre-gameplay client frames
+  through the shared client M-frame filter/diagnostic path, then rerun the live
+  GUI-event probe to see whether module load reaches gameplay before changing
+  active item action semantics.
 - 2026-07-04 quickbar GUI-event notify probe slice: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`
