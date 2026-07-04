@@ -13,7 +13,7 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
     VerifiedFamily, ambient, area, area_change_day_night, area_visual_effect, camera, char_list,
-    chat, client_area, client_char_list, client_character_sheet, client_gui_event,
+    chat, client_area, client_char_list, client_character_sheet, client_device, client_gui_event,
     client_gui_inventory, client_input, client_login, client_module, client_quickbar,
     client_server_status, client_side_message, custom_token, cutscene, dialog, game_obj_update,
     gui_timing_event, inventory, journal, loadbar, login, module, module_resources, module_time,
@@ -291,6 +291,7 @@ fn focused_high_level_unit_end_with_quickbar_materialization(
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         (0x33, _) => focused_cutscene_unit_end(bytes, offset),
         (0x35, 0x01) => focused_client_gui_event_unit_end(bytes, offset),
+        (0x36, 0x01) => focused_client_device_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
 }
@@ -506,6 +507,23 @@ fn focused_client_gui_event_unit_end(bytes: &[u8], offset: usize) -> FocusedUnit
     focused_claimed_unit_end(bytes, offset, 1, |payload| {
         client_gui_event::claim_payload_if_verified(payload).is_some()
     })
+}
+
+fn focused_client_device_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    let Some(end) = bytes
+        .get(offset..)
+        .and_then(client_device::unit_end_if_verified)
+    else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(end) = offset.checked_add(end) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    if end == bytes.len() || boundary_has_plausible_unit(bytes, end) {
+        FocusedUnitEnd::Exact(end)
+    } else {
+        FocusedUnitEnd::Invalid
+    }
 }
 
 fn focused_area_visual_effect_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -2002,6 +2020,36 @@ mod tests {
     }
 
     #[test]
+    fn splits_client_device_advertise_property_before_char_list_request() {
+        let mut bytes = client_device_advertise_property_payload("graphics.windowed", &[0x60]);
+        let char_list_offset = bytes.len();
+        bytes.extend_from_slice(&[0x70, 0x11, 0x01]);
+
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x36);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), char_list_offset);
+            }
+            _ => panic!("expected Device_AdvertiseProperty unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, char_list_offset);
+                assert_eq!(message.major, 0x11);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ClientCharList_Request unit"),
+        }
+    }
+
+    #[test]
     fn splits_play_module_character_list_client_controls_with_focused_owner() {
         for minor in [0x01, 0x02] {
             let bytes = [b'P', 0x31, minor, b'P', 0x01, 0x01];
@@ -2490,6 +2538,53 @@ mod tests {
                 assert_eq!(message.payload.len(), 3);
             }
             _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn splits_declared_starcore_quickbar_before_following_status() {
+        // Live HG Starcore quickbars carry a normal CNW declared read window
+        // plus a 19-byte fragment tail. Try that declared endpoint before the
+        // zero-declared legacy prefix fallback; the fallback scans partial
+        // 36-slot prefixes and cannot own this already well-declared shape.
+        let mut bytes =
+            include_bytes!("../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")
+                .to_vec();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        let summary = split
+            .quickbar_stream_probe_summary
+            .expect("splitter should prove the live quickbar with the quickbar translator");
+        assert_eq!(summary.old_payload_length, status_offset);
+        assert_eq!(summary.old_declared, 1321);
+        assert_eq!(summary.read_size, 1314);
+        assert_eq!(summary.fragment_size, 19);
+        assert_eq!(summary.trailing_read_bytes, 0);
+        assert_eq!(summary.item_buttons_preserved, 18);
+        assert_eq!(summary.spells_preserved, 15);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x1E);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected live-shaped GuiQuickbar_SetAllButtons unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected following ServerStatus_Status unit"),
         }
     }
 
@@ -3148,6 +3243,19 @@ mod tests {
             payload.extend_from_slice(&value.to_le_bytes());
         }
         payload.push(fragment_tail);
+        payload
+    }
+
+    fn client_device_advertise_property_payload(name: &str, fragment_tail: &[u8]) -> Vec<u8> {
+        let mut payload = vec![0x70, 0x36, 0x01];
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        payload.extend_from_slice(name.as_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(fragment_tail);
         payload
     }
 

@@ -17,6 +17,29 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-04 device-property classifier live rerun: live-data gate first used
+  the gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-04T09:43:40+10:00`; about 4h23m old at the gate, still under 24h).
+  Because the previous GUI-event notify run failed before gameplay, proxy2 now
+  claims EE `Device_AdvertiseProperty` (`70 36 01`) with the CNW declared
+  read-buffer length at payload offset 3 and the `CExoString` property name at
+  offset 7. Fresh live rerun
+  `C:\nwnbridge\codex-live-device-property-classifier-gui-event-20260704-142731\harness-proxy-20260704-142740`
+  selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, wrote
+  `quickbar-item-refresh-hint.json` at `2026-07-04T14:28:57+10:00`, and
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, synthetic
+  `Area_AreaLoaded`, exact `GameObjUpdate_LiveObject`, and quickbar stream
+  probe evidence. The run consumed 70 `Device_AdvertiseProperty` frames as
+  proxy-owned EE-only M payloads, logged 0 `client high-level M frame
+  quarantined` lines, and wrote no quarantine artifact files. Remaining issue:
+  `-AutoQuickbarItemRefreshGuiEventNotify` still had no dispatchable candidate
+  because the final hint was
+  `stream_probe_quickbar_item_candidates_without_committed_profile` with
+  `committed_quickbar_seen=false`; next production path is to commit verified
+  stream-probe `GuiQuickbar_SetAllButtons` state, or prove why only a later
+  committed packet can authorize GUI-event/UseItem action emission.
 - 2026-07-04 GUI-event live probe blocker: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`
@@ -37,10 +60,8 @@ not as standalone workaround targets.
   `pending_item_refresh=false` with `no_committed_quickbar_profile`. The proxy
   logged repeated pre-gameplay client high-level unknown M-frame quarantines
   matching the EE `Device_AdvertiseProperty` window seen in the bridge log.
-  Next production path: classify or consume those pre-gameplay client frames
-  through the shared client M-frame filter/diagnostic path, then rerun the live
-  GUI-event probe to see whether module load reaches gameplay before changing
-  active item action semantics.
+  Resolved 2026-07-04 by the shared `Device_AdvertiseProperty` classifier
+  described above; keep this paragraph as the failure-mode trail.
 - 2026-07-04 quickbar GUI-event notify probe slice: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`

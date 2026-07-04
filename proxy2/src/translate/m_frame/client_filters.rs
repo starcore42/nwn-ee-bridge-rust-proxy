@@ -9,7 +9,7 @@ use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
     translate::{
-        VerifiedFamily, client_high, client_server_admin, gameplay_stream,
+        VerifiedFamily, client_device, client_high, client_server_admin, gameplay_stream,
         semantic::SemanticSessionState,
     },
 };
@@ -108,7 +108,7 @@ pub(super) fn translate_client_frame(
     if high.major == DEVICE_ADVERTISE_PROPERTY_MAJOR
         && high.minor == DEVICE_ADVERTISE_PROPERTY_MINOR
     {
-        if device_advertise_property_payload_valid(payload) {
+        if client_device::claim_payload_if_verified(payload).is_some() {
             return consume_device_advertise_property(&bytes, view, payload);
         }
         return consume_unclaimed_client_high_level(&bytes, view);
@@ -190,7 +190,7 @@ fn translate_mixed_client_primary_payload_if_needed(
     payload: &[u8],
     state: &mut SemanticSessionState,
 ) -> Option<MixedClientPrimaryPayload> {
-    if let Some(device_end) = device_advertise_property_unit_end(payload) {
+    if let Some(device_end) = client_device::unit_end_if_verified(payload) {
         if device_end < payload.len() {
             let tail = &payload[device_end..];
             let split = gameplay_stream::split_inflated_gameplay(tail);
@@ -256,9 +256,7 @@ fn translate_mixed_client_high_level_units(
             };
         };
 
-        if message.major == DEVICE_ADVERTISE_PROPERTY_MAJOR
-            && message.minor == DEVICE_ADVERTISE_PROPERTY_MINOR
-        {
+        if client_device::claim_payload_if_verified(message.payload).is_some() {
             consumed_units = consumed_units.saturating_add(1);
             continue;
         }
@@ -342,39 +340,6 @@ fn translate_mixed_client_high_level_units(
         total_units,
         quarantine_reason: None,
     }
-}
-
-fn device_advertise_property_unit_end(payload: &[u8]) -> Option<usize> {
-    let high = HighLevel::parse(payload)?;
-    if high.major != DEVICE_ADVERTISE_PROPERTY_MAJOR
-        || high.minor != DEVICE_ADVERTISE_PROPERTY_MINOR
-    {
-        return None;
-    }
-
-    let name_len = read_le_u32_at(payload, 3)? as usize;
-    if name_len > 0x20 {
-        return None;
-    }
-    let property_kind_offset = 7usize.checked_add(name_len)?;
-    let property_value_offset = property_kind_offset.checked_add(4)?;
-    let end = property_value_offset.checked_add(4)?;
-    if end > payload.len() {
-        return None;
-    }
-    if read_le_u32_at(payload, property_kind_offset)? != 1 {
-        return None;
-    }
-    Some(end)
-}
-
-fn device_advertise_property_payload_valid(payload: &[u8]) -> bool {
-    device_advertise_property_unit_end(payload) == Some(payload.len())
-}
-
-fn read_le_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
-    let slice: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
-    Some(u32::from_le_bytes(slice))
 }
 
 fn finalize_mixed_client_primary_payload(
@@ -543,9 +508,9 @@ fn consume_device_advertise_property(
     view: &MFrameView,
     payload: &[u8],
 ) -> anyhow::Result<ClientFrameTranslation> {
-    if !device_advertise_property_payload_valid(payload) {
+    let Some(summary) = client_device::claim_payload_if_verified(payload) else {
         anyhow::bail!("client Device_AdvertiseProperty payload did not match verified EE shape");
-    }
+    };
 
     tracing::info!(
         old_len = bytes.len(),
@@ -555,6 +520,11 @@ fn consume_device_advertise_property(
         packetized_sequence = view.packetized_sequence,
         payload_len = view.payload_length,
         trailing_payload_len = view.trailing_payload_length,
+        declared = summary.declared,
+        property_name_len = summary.property_name_len,
+        flag = summary.flag,
+        has_value = summary.has_value,
+        fragment_bytes = summary.fragment_bytes,
         "client Device_AdvertiseProperty consumed as proxy-owned EE-only reliable M payload"
     );
 
@@ -622,10 +592,13 @@ mod tests {
 
     fn valid_device_advertise_property_payload() -> Vec<u8> {
         let mut payload = vec![0x70, 0x36, 0x01];
+        payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.push(b'x');
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
         payload
     }
 
@@ -750,7 +723,7 @@ mod tests {
         let packet = build_client_m_frame(0x002B, 0x0003, &payload);
         let view = MFrameView::parse(&packet).expect("fixture should parse as M frame");
 
-        assert!(!device_advertise_property_payload_valid(&payload));
+        assert!(client_device::claim_payload_if_verified(&payload).is_none());
         assert!(
             consume_device_advertise_property(&packet, &view, &payload).is_err(),
             "major/minor alone must not prove Device_AdvertiseProperty ownership"

@@ -23,6 +23,7 @@ pub(crate) mod chat;
 pub(crate) mod client_area;
 pub(crate) mod client_char_list;
 pub(crate) mod client_character_sheet;
+pub(crate) mod client_device;
 pub(crate) mod client_gui_event;
 pub(crate) mod client_gui_inventory;
 mod client_high;

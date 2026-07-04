@@ -33,25 +33,24 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-04 09:43 +10: the current
+Latest known live HG proxy status, as of 2026-07-04 14:29 +10: the current
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-client-gui-event-current-20260704-094122\harness-proxy-20260704-094127`.
-It reached gameplay through `Area_ClientArea` and sustained
-`GameObjUpdate_LiveObject` traffic. The bridge DLL dispatched one validated
-`GuiQuickbar_SetButton` item action for quickbar item-refresh candidate
-`0x8001620D`, using payload
-`701E021200000000010D620180FFFFFFFF0060`. The final proxy hint recorded
-`first_client_action="client_quickbar_item_set_button"`,
-`first_client_action_matches_candidate=true`,
-`pending_item_refresh_action_outcome="candidate_client_action_no_server_quickbar"`,
-and `first_client_action_timing="delayed_after_pending_followup"`. After that
-first client action, HG/EE traffic continued for 79 verified events: 44
-server-to-client, 35 client-to-server, 31 live-object, 1 inventory, 1 chat, 0
-quickbar events, and 0 `client_gui_event_notify` events. No quarantine artifact
-files were written. The immediate next harness/protocol target is
-active-property item radial/menu action semantics, because matched SetButton
-delivery is now repeatedly proven and HG continues sending non-quickbar traffic
-afterward.
+`C:\nwnbridge\codex-live-device-property-classifier-gui-event-20260704-142731\harness-proxy-20260704-142740`.
+It reached gameplay through `Module_Loaded`, `Area_ClientArea`, synthetic
+`Area_AreaLoaded`, exact `GameObjUpdate_LiveObject`, and quickbar stream probe
+traffic. This was the live rerun after the previous GUI-event notify probe
+stalled before gameplay. Proxy2 consumed 70 EE-only
+`Device_AdvertiseProperty` (`70 36 01`) M frames with the CNW declared length
+at payload offset 3 and the `CExoString` property name at offset 7, logged 0
+`client high-level M frame quarantined` lines, and wrote no quarantine artifact
+files. The final hint recorded `stream_probe_quickbar_seen=true`,
+`stream_probe_slot_records_owned=36`, `stream_probe_item_buttons_preserved=21`,
+`committed_quickbar_seen=false`, and
+`no_hint_reason="stream_probe_quickbar_item_candidates_without_committed_profile"`.
+The immediate next harness/protocol target is quickbar stream commitment:
+either commit this verified stream-probe `GuiQuickbar_SetAllButtons` profile
+into semantic state or prove why only a later committed quickbar packet can
+authorize GUI-event/UseItem action emission.
 
 As of 2026-07-04 09:43 +10, proxy2 also observes consumed EE-only
 `GuiEvent_Notify` client payloads semantically while still forwarding only an
@@ -90,9 +89,9 @@ follows. Treat no matched GUI event, no server quickbar follow-up, or new
 quarantine as the next action-family/state issue rather than a connection
 blocker if `Area_ClientArea` and live-object traffic still continue.
 
-As of 2026-07-04 11:50 +10, the newest gameplay-reaching capture remains the
-09:43 run above, but the first live GUI-event notify probes did not produce new
-gameplay evidence. Run
+As of 2026-07-04 14:29 +10, the 11:50 pre-gameplay GUI-event notify blocker is
+resolved by the shared Rust `Device_AdvertiseProperty` classifier. The earlier
+failure trail was: run
 `C:\nwnbridge\codex-live-gui-event-notify-20260704-113400\harness-proxy-20260704-113405`
 selected an older repo debug proxy, reached module load, then quarantined
 strict `GameObjUpdate_LiveObject` and `Area_ClientArea` payloads. The harness
@@ -107,9 +106,11 @@ BNK/BNCS/BNVR, character list, login, `Module_Info`, and
 `Area_ClientArea`, live-object traffic, or GUI-event dispatch by the run
 cutoff. It wrote no quarantine files and the hint stayed
 `pending_item_refresh=false` with `no_committed_quickbar_profile`. Treat this
-as the current harness/proxy blocker for the GUI-event probe: inspect the
-pre-gameplay EE `Device_AdvertiseProperty`/unknown client M-frame ownership
-and module-load handoff before making more active item action changes.
+as historical evidence only. Fresh rerun
+`C:\nwnbridge\codex-live-device-property-classifier-gui-event-20260704-142731\harness-proxy-20260704-142740`
+consumed 70 `Device_AdvertiseProperty` frames, reached gameplay, logged no
+client high-level M-frame quarantines, and moved the active blocker to
+quickbar stream-probe profiles that are verified but not committed.
 
 As of 2026-07-04 05:32 +10, proxy2 also writes server-to-client and
 client-to-server direction totals for pending quickbar item-refresh windows
@@ -776,7 +777,8 @@ work.
 | Strict replay fails before launch with `Access is denied` while replacing `target\debug\hgbridge_proxy2.exe` | A stale replay proxy is still holding the debug executable | List `hgbridge_proxy2.exe` processes, stop only the stale debug replay process, or pass `-ProxyExe` with an isolated build output. Leave unrelated live/public proxy processes alone. |
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
 | Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch, or `-SkipBuild` uses an older proxy than the one just built | The wrapper selected a stale proxy2 executable before a fresher compatible build | Use the resolver that checks `--help` for the hint flag, skips stale candidates, selects the newest compatible executable by `LastWriteTime`, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
-| GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Current proxy/module-load handoff blocker, likely around pre-gameplay EE `Device_AdvertiseProperty` or unknown client M-frame ownership | Treat as the top live harness blocker. Inspect client M-frame filters and module-load handoff diagnostics, then rerun `-AutoQuickbarItemRefreshGuiEventNotify` before unrelated action-family work. |
+| GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Historical proxy/module-load handoff blocker: Rust was parsing the EE `Device_AdvertiseProperty` name length where the CNW declared read-buffer length lives | Use the shared `translate::client_device` classifier. Fresh 2026-07-04 14:27 rerun consumed 70 device-property frames and reached gameplay; if this recurs, verify those logs before unrelated action-family work. |
+| GUI-event notify probe reaches gameplay but final hint says `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but semantic state has no committed quickbar profile/candidate | Inspect quickbar stream commitment and profile promotion before injecting GUI-event/UseItem actions. |
 | Live auto-UseItem hint reports `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but no accepted committed quickbar profile has reached semantic state | Inspect splitter/stream commitment and quickbar buffering before trying to inject UseItem; the driver should wait for a pending hint or a committed profile. |
 
 Rules:

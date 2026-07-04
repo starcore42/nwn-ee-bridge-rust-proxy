@@ -463,6 +463,10 @@ impl HighLevel {
             (0x33, 0x06) => "Cutscene_BlackScreen",
             (0x33, 0x07) => "Cutscene_HideGui",
             (0x35, 0x01) => "GuiEvent_Notify",
+            // EE client-side device/UI property advertisement. Diamond/1.69
+            // has no handler for this family; proxy2 consumes verified client
+            // 0x36/0x01 frames as EE-only reliable-window progress carriers.
+            (0x36, 0x01) => "Device_AdvertiseProperty",
             _ => "<unknown>",
         }
     }
