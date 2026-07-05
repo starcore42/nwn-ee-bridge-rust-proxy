@@ -17,6 +17,34 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 UseItem first-property subtype-low diagnostic: live-data gate
+  reused gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T12:24:46+10:00`; about 3h50m old at the gate). Gameplay was
+  reached through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, with no quarantine artifacts. The live hint
+  showed candidate `0x80015678` matching the preserved active-property quickbar
+  item, first property `15`, subtype `0x020D`, and cost-table value `13`.
+  EE decompile evidence for group input case 9 reads `OBJECTID`, the
+  active-property byte, optional-byte BOOL, optional-target BOOL/object, and
+  optional-position BOOL/vector before calling server `UseItem`, so the
+  generated packet cursor is byte/bit-order backed but the byte's gameplay
+  meaning remains diagnostic. Proxy2 now emits
+  `recommended_use_item_first_property_subtype_low_*` hint fields only when the
+  first preserved active item matches the pending candidate, using the low byte
+  of that first property subtype; it also classifies observed first actions as
+  `recommended_use_item_first_property_subtype_low` and reports dedicated
+  no-server-quickbar/observed-server-quickbar outcomes. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-useitem-subtype-low-retry-20260705-163118`
+  against
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  completed with 164 packet files, 304 strict allow decisions, 0 quarantine
+  decisions/artifacts, and correctly left the subtype-low payload unavailable
+  for replay candidate `0x80015DAA` because no preserved active item matched.
+  Active next path: add an opt-in bridge/harness dispatch for the subtype-low
+  UseItem probe and run a live HG check, or if live/decompile evidence disproves
+  the byte derivation, continue tracing original-client UseItem byte semantics.
 - 2026-07-05 UseItem active-property action classifier: live-data gate reused
   the gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`

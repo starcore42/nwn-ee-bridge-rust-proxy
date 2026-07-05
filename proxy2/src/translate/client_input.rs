@@ -312,6 +312,19 @@ impl UseItemPayloadSpec {
             position: None,
         }
     }
+
+    pub fn self_target_with_active_property_byte(
+        item_object_id: u32,
+        active_property_subtype: u8,
+    ) -> Self {
+        Self {
+            item_object_id,
+            active_property_subtype,
+            optional_byte: None,
+            target_object_id: Some(EE_SELF_OBJECT_ID),
+            position: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1066,6 +1079,16 @@ pub fn build_self_target_use_item_payload(item_object_id: u32) -> Option<Vec<u8>
     build_use_item_payload(UseItemPayloadSpec::self_target(item_object_id))
 }
 
+pub fn build_self_target_use_item_payload_with_active_property_byte(
+    item_object_id: u32,
+    active_property_subtype: u8,
+) -> Option<Vec<u8>> {
+    build_use_item_payload(UseItemPayloadSpec::self_target_with_active_property_byte(
+        item_object_id,
+        active_property_subtype,
+    ))
+}
+
 pub fn build_use_item_payload(spec: UseItemPayloadSpec) -> Option<Vec<u8>> {
     if spec.item_object_id == INVALID_OBJECT_ID {
         return None;
@@ -1458,6 +1481,28 @@ mod public_tests {
         let rewritten = parse_use_item(&rewritten).expect("rewritten UseItem should parse");
         assert!(summary.rewritten_self_object_id);
         assert_eq!(rewritten.target_object_id, Some(INVALID_OBJECT_ID));
+    }
+
+    #[test]
+    fn use_item_builder_emits_self_target_shape_with_nonzero_active_property_byte() {
+        let payload =
+            build_self_target_use_item_payload_with_active_property_byte(0x8001_6012, 0x0D)
+                .expect("valid item id and active-property byte should build a UseItem");
+        assert_eq!(
+            payload,
+            [
+                0x70, 0x06, 0x09, 0x10, 0x00, 0x00, 0x00, 0x12, 0x60, 0x01, 0x80, 0x0D, 0xFD, 0xFF,
+                0xFF, 0xFF, 0xC8
+            ],
+            "the UseItem byte remains before the BOOL-guarded optional target object"
+        );
+
+        let parsed = parse_use_item(&payload).expect("built UseItem should parse");
+        assert_eq!(parsed.item_object_id, 0x8001_6012);
+        assert_eq!(parsed.active_property_subtype, 0x0D);
+        assert_eq!(parsed.optional_byte, None);
+        assert_eq!(parsed.target_object_id, Some(EE_SELF_OBJECT_ID));
+        assert_eq!(parsed.position, None);
     }
 
     #[test]

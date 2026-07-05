@@ -85,6 +85,28 @@ outcomes now distinguish `recommended_use_item_no_server_quickbar` from
 probe should compare these fields against HG follow-up traffic before changing
 the generated action rule, especially the meaning of the UseItem subtype byte.
 
+As of 2026-07-05 16:31 +10, the same 12:17/12:24 gameplay-reaching live HG
+capture remained fresh, so no new live capture was required for the
+first-property subtype-low UseItem diagnostic. Proxy2 now writes
+`recommended_use_item_first_property_subtype_low_*` fields into pending
+quickbar item-refresh hints when the first preserved active item matches the
+pending candidate and has a first active property. The generated diagnostic
+payload keeps the decompile-backed `Input_UseItem` reader order:
+`OBJECTID`, active-property byte, optional-byte BOOL, optional-target
+BOOL/object, optional-position BOOL/vector. The 12:17 live hint gives a
+dispatchable example for candidate `0x80015678`, with first property subtype
+`0x020D`, low byte `0x0D`, and generated payload
+`70060910000000785601800DFDFFFFFFC8`. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-useitem-subtype-low-retry-20260705-163118`
+against
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+stayed at 164 packet files, 304 strict allow decisions, 0 quarantine
+decisions/artifacts, and correctly reported the subtype-low payload as
+unavailable for replay candidate `0x80015DAA` because no preserved active item
+matched that candidate. The next live harness slice should add a guarded
+driver dispatch for this subtype-low UseItem probe, then compare HG follow-up
+quickbar/server counters against the zero-byte UseItem and UseObject probes.
+
 As of 2026-07-05 04:41 +10, proxy2 also writes first-preserved active-item
 signature fields into quickbar item-refresh hints and unresolved traces. The
 fields are:
@@ -882,6 +904,7 @@ work.
 | HG endpoint is unreachable or the server is down | External live-server blocker | Record the exact network/server failure and retry later; do not claim fresh gameplay evidence. |
 | Strict replay fails before launch with `Access is denied` while replacing `target\debug\hgbridge_proxy2.exe` | A stale replay proxy is still holding the debug executable | List `hgbridge_proxy2.exe` processes, stop only the stale debug replay process, or pass `-ProxyExe` with an isolated build output. Leave unrelated live/public proxy processes alone. |
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
+| Strict replay proxy exits before packet replay with `Access is denied. (os error 10013)` while binding the default listen endpoint, such as `127.0.0.1:55121` | Local port reservation, policy, or a stale process owns the default proxy listen port | Retry with an explicit free port pair, for example `-ListenPort 56121 -ServerPort 56133`, and keep `-DrainReceiveTimeoutMilliseconds 5` for automation replays. |
 | Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch, or `-SkipBuild` uses an older proxy than the one just built | The wrapper selected a stale proxy2 executable before a fresher compatible build | Use the resolver that checks `--help` for the hint flag, skips stale candidates, selects the newest compatible executable by `LastWriteTime`, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
 | GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Historical proxy/module-load handoff blocker: Rust was parsing the EE `Device_AdvertiseProperty` name length where the CNW declared read-buffer length lives | Use the shared `translate::client_device` classifier. Fresh 2026-07-04 14:27 rerun consumed 70 device-property frames and reached gameplay; if this recurs, verify those logs before unrelated action-family work. |
 | GUI-event notify probe reaches gameplay but final hint says `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but semantic state has no committed quickbar profile/candidate | Inspect quickbar stream commitment and profile promotion before injecting GUI-event/UseItem actions. The 2026-07-04 16:22 run added a guarded promotion path; if this recurs, confirm whether `promoted_committed_profile=true` is absent and whether normal `GuiQuickbar` proof was also absent. |

@@ -647,6 +647,7 @@ pub(crate) enum QuickbarItemRefreshClientActionMatchClass {
     CandidateObject,
     PreservedActiveItem,
     RecommendedUseItem,
+    RecommendedUseItemFirstPropertySubtypeLow,
     RecommendedSetButton,
     RecommendedGuiEventNotify,
     RecommendedUseObject,
@@ -674,6 +675,12 @@ impl QuickbarItemRefreshClientActionMatchClass {
         if let Some(candidate_object_id) = candidate_object_id {
             if detail.matches_recommended_client_use_item(candidate_object_id) {
                 return Self::RecommendedUseItem;
+            }
+            if detail.matches_recommended_client_use_item_first_property_subtype_low(
+                candidate_object_id,
+                first_preserved_active_item_signature,
+            ) {
+                return Self::RecommendedUseItemFirstPropertySubtypeLow;
             }
             if detail.matches_recommended_client_gui_event_notify(candidate_object_id) {
                 return Self::RecommendedGuiEventNotify;
@@ -706,6 +713,9 @@ impl QuickbarItemRefreshClientActionMatchClass {
             Self::CandidateObject => "candidate_object",
             Self::PreservedActiveItem => "preserved_active_item",
             Self::RecommendedUseItem => "recommended_use_item",
+            Self::RecommendedUseItemFirstPropertySubtypeLow => {
+                "recommended_use_item_first_property_subtype_low"
+            }
             Self::RecommendedSetButton => "recommended_set_button",
             Self::RecommendedGuiEventNotify => "recommended_gui_event_notify",
             Self::RecommendedUseObject => "recommended_use_object",
@@ -719,6 +729,8 @@ pub(crate) enum QuickbarItemRefreshRecommendedActionOutcome {
     NoRecommendedClientAction,
     RecommendedUseItemNoServerQuickbar,
     RecommendedUseItemObservedServerQuickbar,
+    RecommendedUseItemFirstPropertySubtypeLowNoServerQuickbar,
+    RecommendedUseItemFirstPropertySubtypeLowObservedServerQuickbar,
     RecommendedSetButtonNoServerQuickbar,
     RecommendedSetButtonObservedServerQuickbar,
     RecommendedGuiEventNotifyNoServerQuickbar,
@@ -738,6 +750,7 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
         first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
         candidate_object_id: Option<u32>,
         recommended_set_button_slot: u8,
+        first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
         event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
     ) -> Self {
         let Some(detail) = first_client_action_detail else {
@@ -753,6 +766,16 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
                 Self::RecommendedUseItemObservedServerQuickbar
             } else {
                 Self::RecommendedUseItemNoServerQuickbar
+            };
+        }
+        if detail.matches_recommended_client_use_item_first_property_subtype_low(
+            candidate_object_id,
+            first_preserved_active_item_signature,
+        ) {
+            return if observed_server_quickbar {
+                Self::RecommendedUseItemFirstPropertySubtypeLowObservedServerQuickbar
+            } else {
+                Self::RecommendedUseItemFirstPropertySubtypeLowNoServerQuickbar
             };
         }
         if detail.matches_recommended_client_gui_event_notify(candidate_object_id) {
@@ -789,6 +812,12 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
             Self::RecommendedUseItemNoServerQuickbar => "recommended_use_item_no_server_quickbar",
             Self::RecommendedUseItemObservedServerQuickbar => {
                 "recommended_use_item_observed_server_quickbar"
+            }
+            Self::RecommendedUseItemFirstPropertySubtypeLowNoServerQuickbar => {
+                "recommended_use_item_first_property_subtype_low_no_server_quickbar"
+            }
+            Self::RecommendedUseItemFirstPropertySubtypeLowObservedServerQuickbar => {
+                "recommended_use_item_first_property_subtype_low_observed_server_quickbar"
             }
             Self::RecommendedSetButtonNoServerQuickbar => {
                 "recommended_set_button_no_server_quickbar"
@@ -995,6 +1024,17 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
 impl QuickbarItemRefreshHarnessHint {
     pub(crate) fn to_json(self) -> String {
         let first_client_action_detail = self.first_client_action_detail;
+        let first_active_item = self.first_preserved_active_item_signature;
+        let first_active_item_first_property =
+            first_active_item.and_then(|signature| signature.first_property);
+        let first_active_item_known = first_active_item.is_some();
+        let first_active_item_matches_candidate = first_active_item
+            .map(|signature| signature.object_id == self.candidate.object_id)
+            .unwrap_or(false);
+        let first_property_subtype_low_byte = first_property_subtype_low_byte_for_candidate(
+            first_active_item,
+            self.candidate.object_id,
+        );
         let recommended_use_item_payload =
             crate::translate::client_input::build_self_target_use_item_payload(
                 self.candidate.object_id,
@@ -1004,6 +1044,32 @@ impl QuickbarItemRefreshHarnessHint {
             .as_deref()
             .map(hex_encode_upper)
             .unwrap_or_default();
+        let recommended_use_item_first_property_subtype_low_payload =
+            first_property_subtype_low_byte.and_then(|active_property_subtype| {
+                client_input::build_self_target_use_item_payload_with_active_property_byte(
+                    self.candidate.object_id,
+                    active_property_subtype,
+                )
+            });
+        let recommended_use_item_first_property_subtype_low_payload_available =
+            recommended_use_item_first_property_subtype_low_payload.is_some();
+        let recommended_use_item_first_property_subtype_low_payload_hex =
+            recommended_use_item_first_property_subtype_low_payload
+                .as_deref()
+                .map(hex_encode_upper)
+                .unwrap_or_default();
+        let recommended_use_item_first_property_subtype_low_byte_known =
+            first_property_subtype_low_byte.is_some();
+        let recommended_use_item_first_property_subtype_low_byte =
+            first_property_subtype_low_byte.unwrap_or(0);
+        let recommended_use_item_first_property_subtype_low_source =
+            if recommended_use_item_first_property_subtype_low_byte_known {
+                "first_preserved_active_item_first_property_subtype_low_byte"
+            } else {
+                "none"
+            };
+        let recommended_use_item_first_property_subtype_low_matches_default =
+            first_property_subtype_low_byte == Some(0);
         let recommended_set_button_payload = client_quickbar::build_item_set_button_payload(
             self.recommended_set_button_slot,
             self.candidate.object_id,
@@ -1029,13 +1095,6 @@ impl QuickbarItemRefreshHarnessHint {
             .as_deref()
             .map(hex_encode_upper)
             .unwrap_or_default();
-        let first_active_item = self.first_preserved_active_item_signature;
-        let first_active_item_first_property =
-            first_active_item.and_then(|signature| signature.first_property);
-        let first_active_item_known = first_active_item.is_some();
-        let first_active_item_matches_candidate = first_active_item
-            .map(|signature| signature.object_id == self.candidate.object_id)
-            .unwrap_or(false);
         let first_active_item_object_id = first_active_item
             .map(|signature| signature.object_id)
             .unwrap_or(0);
@@ -1165,6 +1224,15 @@ impl QuickbarItemRefreshHarnessHint {
         let first_client_action_matches_recommended_client_use_item = first_client_action_detail
             .map(|detail| detail.matches_recommended_client_use_item(self.candidate.object_id))
             .unwrap_or(false);
+        let first_client_action_matches_recommended_client_use_item_first_property_subtype_low =
+            first_client_action_detail
+                .map(|detail| {
+                    detail.matches_recommended_client_use_item_first_property_subtype_low(
+                        self.candidate.object_id,
+                        first_active_item,
+                    )
+                })
+                .unwrap_or(false);
         let first_client_action_matches_recommended_client_use_object = first_client_action_detail
             .map(|detail| detail.matches_recommended_client_use_object(self.candidate.object_id))
             .unwrap_or(false);
@@ -1186,6 +1254,7 @@ impl QuickbarItemRefreshHarnessHint {
                 first_client_action_detail,
                 Some(self.candidate.object_id),
                 self.recommended_set_button_slot,
+                first_active_item,
                 self.event_breakdown_after_first_client_action,
             )
             .as_str();
@@ -1236,6 +1305,20 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"recommended_use_item_target_legacy_rewrite_object_id\": {},\n",
                 "  \"recommended_use_item_target_legacy_rewrite_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"recommended_use_item_has_position\": false,\n",
+                "  \"recommended_use_item_first_property_subtype_low_payload_available\": {},\n",
+                "  \"recommended_use_item_first_property_subtype_low_payload_kind\": \"Input_UseItem\",\n",
+                "  \"recommended_use_item_first_property_subtype_low_payload_hex\": \"{}\",\n",
+                "  \"recommended_use_item_first_property_subtype_low_byte_known\": {},\n",
+                "  \"recommended_use_item_first_property_subtype_low_byte\": {},\n",
+                "  \"recommended_use_item_first_property_subtype_low_source\": \"{}\",\n",
+                "  \"recommended_use_item_first_property_subtype_low_matches_default\": {},\n",
+                "  \"recommended_use_item_first_property_subtype_low_has_optional_byte\": false,\n",
+                "  \"recommended_use_item_first_property_subtype_low_has_target_object\": true,\n",
+                "  \"recommended_use_item_first_property_subtype_low_target_object_id\": {},\n",
+                "  \"recommended_use_item_first_property_subtype_low_target_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"recommended_use_item_first_property_subtype_low_target_legacy_rewrite_object_id\": {},\n",
+                "  \"recommended_use_item_first_property_subtype_low_target_legacy_rewrite_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"recommended_use_item_first_property_subtype_low_has_position\": false,\n",
                 "  \"recommended_client_quickbar_set_button_payload_available\": {},\n",
                 "  \"recommended_client_quickbar_set_button_payload_kind\": \"GuiQuickbar_SetButton\",\n",
                 "  \"recommended_client_quickbar_set_button_payload_hex\": \"{}\",\n",
@@ -1304,6 +1387,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_client_action_matches_preserved_active_item\": {},\n",
                 "  \"first_client_action_match_class\": \"{}\",\n",
                 "  \"first_client_action_matches_recommended_client_use_item\": {},\n",
+                "  \"first_client_action_matches_recommended_client_use_item_first_property_subtype_low\": {},\n",
                 "  \"first_client_action_matches_recommended_client_quickbar_set_button\": {},\n",
                 "  \"first_client_action_matches_recommended_client_gui_event_notify\": {},\n",
                 "  \"first_client_action_matches_recommended_client_use_object\": {},\n",
@@ -1380,6 +1464,16 @@ impl QuickbarItemRefreshHarnessHint {
             crate::translate::client_input::EE_SELF_OBJECT_ID,
             crate::translate::client_input::INVALID_OBJECT_ID,
             crate::translate::client_input::INVALID_OBJECT_ID,
+            recommended_use_item_first_property_subtype_low_payload_available,
+            recommended_use_item_first_property_subtype_low_payload_hex,
+            recommended_use_item_first_property_subtype_low_byte_known,
+            recommended_use_item_first_property_subtype_low_byte,
+            recommended_use_item_first_property_subtype_low_source,
+            recommended_use_item_first_property_subtype_low_matches_default,
+            crate::translate::client_input::EE_SELF_OBJECT_ID,
+            crate::translate::client_input::EE_SELF_OBJECT_ID,
+            crate::translate::client_input::INVALID_OBJECT_ID,
+            crate::translate::client_input::INVALID_OBJECT_ID,
             recommended_set_button_payload_available,
             recommended_set_button_payload_hex,
             self.recommended_set_button_slot,
@@ -1444,6 +1538,7 @@ impl QuickbarItemRefreshHarnessHint {
             first_client_action_matches_preserved_active_item,
             first_client_action_match_class,
             first_client_action_matches_recommended_client_use_item,
+            first_client_action_matches_recommended_client_use_item_first_property_subtype_low,
             first_client_action_matches_recommended_client_quickbar_set_button,
             first_client_action_matches_recommended_client_gui_event_notify,
             first_client_action_matches_recommended_client_use_object,
@@ -1515,6 +1610,18 @@ fn hex_encode_upper(bytes: &[u8]) -> String {
     encoded
 }
 
+fn first_property_subtype_low_byte_for_candidate(
+    signature: Option<QuickbarActiveItemSignature>,
+    candidate_object_id: u32,
+) -> Option<u8> {
+    let signature = signature?;
+    if signature.object_id != candidate_object_id {
+        return None;
+    }
+    let property = signature.first_property?;
+    Some((property.subtype & 0x00FF) as u8)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QuickbarItemRefreshClientActionDetail {
     pub(crate) kind: QuickbarItemRefreshEventKind,
@@ -1583,9 +1690,35 @@ impl QuickbarItemRefreshClientActionDetail {
     }
 
     pub(crate) fn matches_recommended_client_use_item(self, candidate_object_id: u32) -> bool {
+        self.matches_recommended_client_use_item_with_active_property_byte(candidate_object_id, 0)
+    }
+
+    pub(crate) fn matches_recommended_client_use_item_first_property_subtype_low(
+        self,
+        candidate_object_id: u32,
+        first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+    ) -> bool {
+        first_property_subtype_low_byte_for_candidate(
+            first_preserved_active_item_signature,
+            candidate_object_id,
+        )
+        .map(|active_property_subtype| {
+            self.matches_recommended_client_use_item_with_active_property_byte(
+                candidate_object_id,
+                active_property_subtype,
+            )
+        })
+        .unwrap_or(false)
+    }
+
+    fn matches_recommended_client_use_item_with_active_property_byte(
+        self,
+        candidate_object_id: u32,
+        active_property_subtype: u8,
+    ) -> bool {
         self.kind == QuickbarItemRefreshEventKind::ClientInputUseItem
             && self.object_id == Some(candidate_object_id)
-            && self.use_item_active_property_subtype == Some(0)
+            && self.use_item_active_property_subtype == Some(active_property_subtype)
             && self.use_item_has_optional_byte == Some(false)
             && self.use_item_has_target_object == Some(true)
             && matches!(
@@ -3786,6 +3919,8 @@ impl UiState {
                 self.post_committed_quickbar_item_refresh_first_client_action_detail,
                 candidate.map(|candidate| candidate.object_id),
                 self.quickbar_item_refresh_set_button_slot().0,
+                self.last_quickbar_stream_probe
+                    .and_then(|probe| probe.first_preserved_active_item_signature),
                 self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             )
             .as_str();
@@ -6628,6 +6763,31 @@ mod tests {
             "\"recommended_use_item_target_legacy_rewrite_object_id_hex\": \"0x7F000000\""
         ));
         assert!(json.contains("\"recommended_use_item_has_position\": false"));
+        assert!(json.contains(
+            "\"recommended_use_item_first_property_subtype_low_payload_available\": true"
+        ));
+        assert!(json.contains(
+            "\"recommended_use_item_first_property_subtype_low_payload_kind\": \"Input_UseItem\""
+        ));
+        assert!(json.contains(
+            "\"recommended_use_item_first_property_subtype_low_payload_hex\": \"700609100000000001008002FDFFFFFFC8\""
+        ));
+        assert!(
+            json.contains("\"recommended_use_item_first_property_subtype_low_byte_known\": true")
+        );
+        assert!(json.contains("\"recommended_use_item_first_property_subtype_low_byte\": 2"));
+        assert!(json.contains(
+            "\"recommended_use_item_first_property_subtype_low_source\": \"first_preserved_active_item_first_property_subtype_low_byte\""
+        ));
+        assert!(json.contains(
+            "\"recommended_use_item_first_property_subtype_low_matches_default\": false"
+        ));
+        assert!(json.contains(
+            "\"recommended_use_item_first_property_subtype_low_has_target_object\": true"
+        ));
+        assert!(json.contains(
+            "\"recommended_use_item_first_property_subtype_low_target_object_id_hex\": \"0xFFFFFFFD\""
+        ));
         assert!(
             json.contains("\"recommended_client_quickbar_set_button_payload_available\": true")
         );
@@ -6708,6 +6868,9 @@ mod tests {
             json.contains("\"first_client_action_matches_recommended_client_use_item\": false")
         );
         assert!(json.contains(
+            "\"first_client_action_matches_recommended_client_use_item_first_property_subtype_low\": false"
+        ));
+        assert!(json.contains(
             "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
         ));
         assert!(json.contains(
@@ -6781,7 +6944,36 @@ mod tests {
                 .contains("\"first_client_action_matches_recommended_client_use_item\": true")
         );
         assert!(use_item_json.contains(
+            "\"first_client_action_matches_recommended_client_use_item_first_property_subtype_low\": false"
+        ));
+        assert!(use_item_json.contains(
             "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
+        ));
+
+        ui.post_committed_quickbar_item_refresh_first_client_action =
+            Some(QuickbarItemRefreshEventKind::ClientInputUseItem);
+        ui.post_committed_quickbar_item_refresh_first_client_action_detail =
+            Some(QuickbarItemRefreshClientActionDetail {
+                use_item_active_property_subtype: Some(2),
+                ..ui.post_committed_quickbar_item_refresh_first_client_action_detail
+                    .expect("UseItem detail should still be installed")
+            });
+        let use_item_subtype_low_json = ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("pending candidate should still expose a harness hint")
+            .to_json();
+        assert!(use_item_subtype_low_json.contains(
+            "\"first_client_action_match_class\": \"recommended_use_item_first_property_subtype_low\""
+        ));
+        assert!(use_item_subtype_low_json.contains(
+            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_use_item_first_property_subtype_low_no_server_quickbar\""
+        ));
+        assert!(
+            use_item_subtype_low_json
+                .contains("\"first_client_action_matches_recommended_client_use_item\": false")
+        );
+        assert!(use_item_subtype_low_json.contains(
+            "\"first_client_action_matches_recommended_client_use_item_first_property_subtype_low\": true"
         ));
 
         ui.post_committed_quickbar_item_refresh_first_client_action =

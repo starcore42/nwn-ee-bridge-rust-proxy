@@ -479,12 +479,17 @@ fn apply_event(
                 );
                 let (recommended_set_button_slot, _) =
                     state.ui.quickbar_item_refresh_set_button_slot();
+                let first_preserved_active_item_signature = state
+                    .ui
+                    .last_quickbar_stream_probe
+                    .and_then(|probe| probe.first_preserved_active_item_signature);
                 let pending_item_refresh_recommended_action_outcome =
                     QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
                         pending_item_refresh_first_client_action_detail,
                         pending_item_refresh_candidate_before_commit
                             .map(|candidate| candidate.object_id),
                         recommended_set_button_slot,
+                        first_preserved_active_item_signature,
                         pending_item_refresh_action_outcome_breakdown,
                     )
                     .as_str();
@@ -1033,6 +1038,7 @@ fn remember_quickbar_item_context_if_relevant(
                     .compact_item_emission_candidate
                     .map(|candidate| candidate.object_id),
                 recommended_set_button_slot,
+                first_preserved_active_item_signature,
                 state
                     .ui
                     .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
@@ -2566,7 +2572,12 @@ mod fixture_free_tests {
             base_item: 0x34,
             appearance_type: 0,
             active_property_count: 1,
-            first_property: None,
+            first_property: Some(quickbar::QuickbarActivePropertySignature {
+                property: 15,
+                subtype: 0x020D,
+                cost_table_value: 13,
+                param: 0,
+            }),
             has_armor_word: false,
             name_is_locstring: true,
             state_mask: 1,
@@ -2593,6 +2604,10 @@ mod fixture_free_tests {
             use_object_schedule_script_event: None,
             candidate_object_id: Some(0x8000_0100),
             matches_candidate_object: Some(true),
+        };
+        let use_item_subtype_low_detail = QuickbarItemRefreshClientActionDetail {
+            use_item_active_property_subtype: Some(0x0D),
+            ..use_item_detail
         };
         let gui_event_detail = QuickbarItemRefreshClientActionDetail {
             kind: QuickbarItemRefreshEventKind::ClientGuiEventNotify,
@@ -2678,6 +2693,7 @@ mod fixture_free_tests {
                 None,
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 Default::default(),
             ),
             QuickbarItemRefreshRecommendedActionOutcome::AwaitingClientAction
@@ -2687,6 +2703,7 @@ mod fixture_free_tests {
                 Some(mismatched_detail),
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 Default::default(),
             ),
             QuickbarItemRefreshRecommendedActionOutcome::NoRecommendedClientAction
@@ -2696,6 +2713,7 @@ mod fixture_free_tests {
                 Some(use_item_detail),
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 Default::default(),
             ),
             QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemNoServerQuickbar
@@ -2705,15 +2723,37 @@ mod fixture_free_tests {
                 Some(use_item_detail),
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 response_breakdown,
             ),
             QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemObservedServerQuickbar
         );
         assert_eq!(
             QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(use_item_subtype_low_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+                Default::default(),
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemFirstPropertySubtypeLowNoServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(use_item_subtype_low_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+                response_breakdown,
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemFirstPropertySubtypeLowObservedServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
                 Some(candidate_detail),
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 Default::default(),
             ),
             QuickbarItemRefreshRecommendedActionOutcome::RecommendedSetButtonNoServerQuickbar
@@ -2723,6 +2763,7 @@ mod fixture_free_tests {
                 Some(candidate_detail),
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 response_breakdown,
             ),
             QuickbarItemRefreshRecommendedActionOutcome::RecommendedSetButtonObservedServerQuickbar
@@ -2732,6 +2773,7 @@ mod fixture_free_tests {
                 Some(gui_event_detail),
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 Default::default(),
             ),
             QuickbarItemRefreshRecommendedActionOutcome::RecommendedGuiEventNotifyNoServerQuickbar
@@ -2741,6 +2783,7 @@ mod fixture_free_tests {
                 Some(use_object_detail),
                 Some(0x8000_0100),
                 2,
+                active_signature,
                 Default::default(),
             ),
             QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseObjectNoServerQuickbar
