@@ -78,6 +78,25 @@ fn observe_quickbar_stream_probe_summary(
         .semantic
         .ui
         .observe_quickbar_stream_probe(summary, materialization_context);
+    let promoted_committed_profile = state
+        .semantic
+        .ui
+        .promote_quickbar_stream_probe_profile(summary, materialization_context);
+    tracing::info!(
+        probes = state.semantic.ui.quickbar_stream_probe_summaries,
+        item_buttons_seen = summary.item_buttons_seen,
+        item_buttons_source_compact = summary.item_buttons_source_compact,
+        item_buttons_preserved = summary.item_buttons_preserved,
+        item_buttons_rejected_missing_state_proof =
+            summary.item_buttons_rejected_missing_state_proof,
+        direct_item_proof_objects = materialization_context.direct_item_proof_objects,
+        feature25_item_proof_objects = materialization_context.feature25_item_proof_objects,
+        compact_item_emission_proof_objects =
+            materialization_context.compact_item_emission_proof_objects,
+        validated_slot_profile = summary.validated_slot_profile.is_some(),
+        promoted_committed_profile,
+        "semantic state observed quickbar stream-probe summary"
+    );
     super::update_quickbar_item_refresh_hint(state);
 }
 

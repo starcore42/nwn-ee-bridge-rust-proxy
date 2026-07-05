@@ -17,6 +17,35 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 UseItem subtype-low dispatch live result: live-data gate used
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T12:24:46+10:00`; about 5h51m old at gate). Gameplay was reached
+  and no quarantine artifacts were present. The bridge/harness now has an
+  opt-in `HG_BRIDGE_AUTO_QUICKBAR_ITEM_REFRESH_USEITEM_SUBTYPE_LOW` /
+  `-AutoQuickbarItemRefreshUseItemSubtypeLow` path that validates the hinted
+  `Input_UseItem` high-level shape before dispatch: header `70 06 09`, exact
+  declared byte count, `OBJECTID`, active-property byte, optional-byte BOOL,
+  optional-target BOOL/object, optional-position BOOL/vector, and the final
+  3-bit BOOL fragment. Production proxy2 also promotes completed
+  quickbar stream-probe profiles from `quickbar_stream` summaries into the
+  committed semantic quickbar state; the first live subtype-low attempt reached
+  gameplay with no quarantines but exposed this missing promotion by reporting
+  `stream_probe_quickbar_item_candidates_without_committed_profile`.
+  Fresh current-code probe
+  `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`
+  reached gameplay, produced 0 quarantines, committed the stream-probe quickbar
+  profile, selected candidate `0x80015989` from `active_object` / `direct_only`
+  proof, generated payload `70060910000000895901800DFDFFFFFFC8`, and observed
+  the first client action as `client_input_use_item` with
+  `first_client_action_match_class="recommended_use_item_first_property_subtype_low"`.
+  HG still emitted 0 server quickbar events after the matching action
+  (`pending_item_refresh_recommended_action_outcome="recommended_use_item_first_property_subtype_low_no_server_quickbar"`).
+  Active next path: stop cycling exact SetButton, GuiEvent_Notify, UseObject,
+  zero-byte UseItem, and subtype-low UseItem identity probes. Trace the original
+  Diamond/EE active-property action/state handoff that causes HG to schedule
+  the quickbar refresh, then implement that generalized state/translator rule.
 - 2026-07-05 UseItem first-property subtype-low diagnostic: live-data gate
   reused gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`
@@ -42,9 +71,10 @@ not as standalone workaround targets.
   completed with 164 packet files, 304 strict allow decisions, 0 quarantine
   decisions/artifacts, and correctly left the subtype-low payload unavailable
   for replay candidate `0x80015DAA` because no preserved active item matched.
-  Active next path: add an opt-in bridge/harness dispatch for the subtype-low
-  UseItem probe and run a live HG check, or if live/decompile evidence disproves
-  the byte derivation, continue tracing original-client UseItem byte semantics.
+  Resolved 2026-07-05: the guarded bridge/harness dispatch path now sends the
+  subtype-low UseItem probe, and live HG confirmed the payload is observed as a
+  matching first client action but is still insufficient to trigger a server
+  quickbar refresh.
 - 2026-07-05 UseItem active-property action classifier: live-data gate reused
   the gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`
