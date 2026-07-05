@@ -17,6 +17,26 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 active-property response outcome diagnostics: live-data gate used
+  gameplay-reaching HG proxy harness
+  `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T18:43:53+10:00`; about 5h52m old at gate). Gameplay was
+  reached through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, with no quarantine artifacts, so no fresh live
+  run was required. Proxy2 now exposes a bounded
+  `pending_item_refresh_active_property_outcome` plus candidate-specific
+  `0x18/0x01` uses-delta and `0x18/0x02` full-refresh counters/row totals for
+  both the full pending window and the post-first-client-action window in
+  semantic traces, `quickbar-item-refresh-hint.json`, and replay summaries.
+  This is an implementation-enabling diagnostic slice: it does not change the
+  generated SetButton, GuiEvent_Notify, UseObject, zero-byte UseItem, or
+  subtype-low UseItem actions. Active next path: run the next live
+  subtype-low/active-property probe and use
+  `pending_item_refresh_active_property_outcome` to distinguish no HG
+  active-property response from candidate `uses`, candidate `full`, or
+  candidate `uses+full` responses before changing the generalized
+  active-property action/state handoff.
 - 2026-07-05 active item property update packet ownership: live-data gate reused
   the gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`

@@ -1429,6 +1429,27 @@ fn record_quickbar_item_refresh_event_breakdown(
                 breakdown.server_active_item_property_candidate_events = breakdown
                     .server_active_item_property_candidate_events
                     .saturating_add(1);
+                match event.claim.minor {
+                    item_update_active_props::USES_MINOR => {
+                        breakdown.server_active_item_property_candidate_uses_events = breakdown
+                            .server_active_item_property_candidate_uses_events
+                            .saturating_add(1);
+                        breakdown.server_active_item_property_candidate_changed_use_count_rows =
+                            breakdown
+                                .server_active_item_property_candidate_changed_use_count_rows
+                                .saturating_add(u64::from(event.claim.changed_use_count_rows));
+                    }
+                    item_update_active_props::FULL_MINOR => {
+                        breakdown.server_active_item_property_candidate_full_events = breakdown
+                            .server_active_item_property_candidate_full_events
+                            .saturating_add(1);
+                        breakdown.server_active_item_property_candidate_full_property_rows =
+                            breakdown
+                                .server_active_item_property_candidate_full_property_rows
+                                .saturating_add(u64::from(event.claim.full_property_count));
+                    }
+                    _ => {}
+                }
             }
         }
         ProtocolEvent::Area(_) => {

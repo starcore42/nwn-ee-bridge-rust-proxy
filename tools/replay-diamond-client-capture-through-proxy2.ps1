@@ -1394,6 +1394,7 @@ try {
     $quickbarHintFirstActionMatchesPreservedActiveItem = $false
     $quickbarHintFirstActionMatchClass = ''
     $quickbarHintRecommendedActionOutcome = ''
+    $quickbarHintActivePropertyOutcome = ''
     $quickbarHintFirstClientActionTiming = ''
     $quickbarHintFollowupEventsBeforeFirstClientAction = 0
     $quickbarHintServerToClientEventsSincePendingRefresh = 0
@@ -1403,6 +1404,14 @@ try {
     $quickbarHintServerQuickbarItemUseCountRecordsSincePendingRefresh = 0
     $quickbarHintServerQuickbarItemUseCountRowsSincePendingRefresh = 0
     $quickbarHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyEventsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyUsesEventsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyFullEventsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyCandidateEventsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyCandidateUsesEventsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyCandidateFullEventsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyCandidateChangedUseCountRowsSincePendingRefresh = 0
+    $quickbarHintServerActiveItemPropertyCandidateFullPropertyRowsSincePendingRefresh = 0
     $quickbarHintFirstEventAfterClientAction = ''
     $quickbarHintEventsAfterFirstClientAction = 0
     $quickbarHintServerToClientEventsAfterFirstClientAction = 0
@@ -1413,10 +1422,26 @@ try {
     $quickbarHintServerQuickbarItemUseCountRecordsAfterFirstClientAction = 0
     $quickbarHintServerQuickbarItemUseCountRowsAfterFirstClientAction = 0
     $quickbarHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyEventsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyUsesEventsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyFullEventsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyCandidateEventsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyCandidateUsesEventsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyCandidateFullEventsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyCandidateChangedUseCountRowsAfterFirstClientAction = 0
+    $quickbarHintServerActiveItemPropertyCandidateFullPropertyRowsAfterFirstClientAction = 0
     $quickbarHintInventoryEventsAfterFirstClientAction = 0
     $quickbarHintClientGuiEventEventsAfterFirstClientAction = 0
     $quickbarHintOtherEventsAfterFirstClientAction = 0
     if ($null -ne $quickbarHintJson) {
+        $getQuickbarHintInt64 = {
+            param([string]$Name)
+            $prop = $quickbarHintJson.PSObject.Properties[$Name]
+            if ($null -ne $prop -and $null -ne $prop.Value) {
+                return [int64]$prop.Value
+            }
+            return 0
+        }
         $pendingProp = $quickbarHintJson.PSObject.Properties['pending_item_refresh']
         if ($null -ne $pendingProp) {
             $quickbarHintPending = [bool]$pendingProp.Value
@@ -1452,6 +1477,10 @@ try {
         $recommendedActionOutcomeProp = $quickbarHintJson.PSObject.Properties['pending_item_refresh_recommended_action_outcome']
         if ($null -ne $recommendedActionOutcomeProp -and $null -ne $recommendedActionOutcomeProp.Value) {
             $quickbarHintRecommendedActionOutcome = [string]$recommendedActionOutcomeProp.Value
+        }
+        $activePropertyOutcomeProp = $quickbarHintJson.PSObject.Properties['pending_item_refresh_active_property_outcome']
+        if ($null -ne $activePropertyOutcomeProp -and $null -ne $activePropertyOutcomeProp.Value) {
+            $quickbarHintActivePropertyOutcome = [string]$activePropertyOutcomeProp.Value
         }
         $timingProp = $quickbarHintJson.PSObject.Properties['first_client_action_timing']
         if ($null -ne $timingProp -and $null -ne $timingProp.Value) {
@@ -1489,6 +1518,14 @@ try {
         if ($null -ne $sincePendingUseCountCandidateRowsProp -and $null -ne $sincePendingUseCountCandidateRowsProp.Value) {
             $quickbarHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh = [int64]$sincePendingUseCountCandidateRowsProp.Value
         }
+        $quickbarHintServerActiveItemPropertyEventsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_events_since_pending_refresh'
+        $quickbarHintServerActiveItemPropertyUsesEventsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_uses_events_since_pending_refresh'
+        $quickbarHintServerActiveItemPropertyFullEventsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_full_events_since_pending_refresh'
+        $quickbarHintServerActiveItemPropertyCandidateEventsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_candidate_events_since_pending_refresh'
+        $quickbarHintServerActiveItemPropertyCandidateUsesEventsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_candidate_uses_events_since_pending_refresh'
+        $quickbarHintServerActiveItemPropertyCandidateFullEventsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_candidate_full_events_since_pending_refresh'
+        $quickbarHintServerActiveItemPropertyCandidateChangedUseCountRowsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_candidate_changed_use_count_rows_since_pending_refresh'
+        $quickbarHintServerActiveItemPropertyCandidateFullPropertyRowsSincePendingRefresh = & $getQuickbarHintInt64 'server_active_item_property_candidate_full_property_rows_since_pending_refresh'
         $firstAfterActionProp = $quickbarHintJson.PSObject.Properties['first_event_after_client_action']
         if ($null -ne $firstAfterActionProp -and $null -ne $firstAfterActionProp.Value) {
             $quickbarHintFirstEventAfterClientAction = [string]$firstAfterActionProp.Value
@@ -1529,6 +1566,14 @@ try {
         if ($null -ne $afterActionUseCountCandidateRowsProp -and $null -ne $afterActionUseCountCandidateRowsProp.Value) {
             $quickbarHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction = [int64]$afterActionUseCountCandidateRowsProp.Value
         }
+        $quickbarHintServerActiveItemPropertyEventsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_events_after_first_client_action'
+        $quickbarHintServerActiveItemPropertyUsesEventsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_uses_events_after_first_client_action'
+        $quickbarHintServerActiveItemPropertyFullEventsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_full_events_after_first_client_action'
+        $quickbarHintServerActiveItemPropertyCandidateEventsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_candidate_events_after_first_client_action'
+        $quickbarHintServerActiveItemPropertyCandidateUsesEventsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_candidate_uses_events_after_first_client_action'
+        $quickbarHintServerActiveItemPropertyCandidateFullEventsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_candidate_full_events_after_first_client_action'
+        $quickbarHintServerActiveItemPropertyCandidateChangedUseCountRowsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_candidate_changed_use_count_rows_after_first_client_action'
+        $quickbarHintServerActiveItemPropertyCandidateFullPropertyRowsAfterFirstClientAction = & $getQuickbarHintInt64 'server_active_item_property_candidate_full_property_rows_after_first_client_action'
         $afterActionInventoryProp = $quickbarHintJson.PSObject.Properties['inventory_events_after_first_client_action']
         if ($null -ne $afterActionInventoryProp -and $null -ne $afterActionInventoryProp.Value) {
             $quickbarHintInventoryEventsAfterFirstClientAction = [int64]$afterActionInventoryProp.Value
@@ -1560,6 +1605,7 @@ try {
         QuickbarItemRefreshHintFirstActionMatchesPreservedActiveItem = $quickbarHintFirstActionMatchesPreservedActiveItem
         QuickbarItemRefreshHintFirstActionMatchClass = $quickbarHintFirstActionMatchClass
         QuickbarItemRefreshHintRecommendedActionOutcome = $quickbarHintRecommendedActionOutcome
+        QuickbarItemRefreshHintActivePropertyOutcome = $quickbarHintActivePropertyOutcome
         QuickbarItemRefreshHintFirstClientActionTiming = $quickbarHintFirstClientActionTiming
         QuickbarItemRefreshHintFollowupEventsBeforeFirstClientAction = $quickbarHintFollowupEventsBeforeFirstClientAction
         QuickbarItemRefreshHintServerToClientEventsSincePendingRefresh = $quickbarHintServerToClientEventsSincePendingRefresh
@@ -1569,6 +1615,14 @@ try {
         QuickbarItemRefreshHintServerQuickbarItemUseCountRecordsSincePendingRefresh = $quickbarHintServerQuickbarItemUseCountRecordsSincePendingRefresh
         QuickbarItemRefreshHintServerQuickbarItemUseCountRowsSincePendingRefresh = $quickbarHintServerQuickbarItemUseCountRowsSincePendingRefresh
         QuickbarItemRefreshHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh = $quickbarHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyEventsSincePendingRefresh = $quickbarHintServerActiveItemPropertyEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyUsesEventsSincePendingRefresh = $quickbarHintServerActiveItemPropertyUsesEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyFullEventsSincePendingRefresh = $quickbarHintServerActiveItemPropertyFullEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateEventsSincePendingRefresh = $quickbarHintServerActiveItemPropertyCandidateEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateUsesEventsSincePendingRefresh = $quickbarHintServerActiveItemPropertyCandidateUsesEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateFullEventsSincePendingRefresh = $quickbarHintServerActiveItemPropertyCandidateFullEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateChangedUseCountRowsSincePendingRefresh = $quickbarHintServerActiveItemPropertyCandidateChangedUseCountRowsSincePendingRefresh
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateFullPropertyRowsSincePendingRefresh = $quickbarHintServerActiveItemPropertyCandidateFullPropertyRowsSincePendingRefresh
         QuickbarItemRefreshHintFirstEventAfterClientAction = $quickbarHintFirstEventAfterClientAction
         QuickbarItemRefreshHintEventsAfterFirstClientAction = $quickbarHintEventsAfterFirstClientAction
         QuickbarItemRefreshHintServerToClientEventsAfterFirstClientAction = $quickbarHintServerToClientEventsAfterFirstClientAction
@@ -1579,6 +1633,14 @@ try {
         QuickbarItemRefreshHintServerQuickbarItemUseCountRecordsAfterFirstClientAction = $quickbarHintServerQuickbarItemUseCountRecordsAfterFirstClientAction
         QuickbarItemRefreshHintServerQuickbarItemUseCountRowsAfterFirstClientAction = $quickbarHintServerQuickbarItemUseCountRowsAfterFirstClientAction
         QuickbarItemRefreshHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction = $quickbarHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyEventsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyUsesEventsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyUsesEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyFullEventsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyFullEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateEventsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyCandidateEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateUsesEventsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyCandidateUsesEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateFullEventsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyCandidateFullEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateChangedUseCountRowsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyCandidateChangedUseCountRowsAfterFirstClientAction
+        QuickbarItemRefreshHintServerActiveItemPropertyCandidateFullPropertyRowsAfterFirstClientAction = $quickbarHintServerActiveItemPropertyCandidateFullPropertyRowsAfterFirstClientAction
         QuickbarItemRefreshHintInventoryEventsAfterFirstClientAction = $quickbarHintInventoryEventsAfterFirstClientAction
         QuickbarItemRefreshHintClientGuiEventEventsAfterFirstClientAction = $quickbarHintClientGuiEventEventsAfterFirstClientAction
         QuickbarItemRefreshHintOtherEventsAfterFirstClientAction = $quickbarHintOtherEventsAfterFirstClientAction

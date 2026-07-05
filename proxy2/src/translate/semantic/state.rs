@@ -83,6 +83,11 @@ impl SemanticSessionState {
             .map(QuickbarItemRefreshProofClass::as_str)
             .unwrap_or("none");
         let action_outcome = summary.action_outcome.as_str();
+        let active_property_outcome = QuickbarItemRefreshActivePropertyOutcome::from_pending_state(
+            summary.first_client_action_detail,
+            summary.event_breakdown_after_first_client_action,
+        )
+        .as_str();
         let first_followup_event = summary
             .first_followup_event
             .map(QuickbarItemRefreshEventKind::as_str)
@@ -242,6 +247,30 @@ impl SemanticSessionState {
             server_quickbar_item_use_count_candidate_rows_since_pending_refresh = summary
                 .event_breakdown
                 .server_quickbar_item_use_count_candidate_rows,
+            server_active_item_property_events_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_events,
+            server_active_item_property_uses_events_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_uses_events,
+            server_active_item_property_full_events_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_full_events,
+            server_active_item_property_candidate_events_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_candidate_events,
+            server_active_item_property_candidate_uses_events_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_candidate_uses_events,
+            server_active_item_property_candidate_full_events_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_candidate_full_events,
+            server_active_item_property_candidate_changed_use_count_rows_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_candidate_changed_use_count_rows,
+            server_active_item_property_candidate_full_property_rows_since_pending_refresh = summary
+                .event_breakdown
+                .server_active_item_property_candidate_full_property_rows,
             area_events_since_pending_refresh = summary.event_breakdown.area_events,
             inventory_events_since_pending_refresh = summary.event_breakdown.inventory_events,
             client_gui_event_events_since_pending_refresh =
@@ -268,6 +297,7 @@ impl SemanticSessionState {
             other_events_since_pending_refresh = summary.event_breakdown.other_events,
             pending_item_refresh_proof_class = proof_class,
             pending_item_refresh_action_outcome = action_outcome,
+            pending_item_refresh_active_property_outcome = active_property_outcome,
             first_followup_event,
             first_client_action,
             first_client_action_has_object_id,
@@ -327,6 +357,30 @@ impl SemanticSessionState {
             server_quickbar_item_use_count_candidate_rows_after_first_client_action = summary
                 .event_breakdown_after_first_client_action
                 .server_quickbar_item_use_count_candidate_rows,
+            server_active_item_property_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_events,
+            server_active_item_property_uses_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_uses_events,
+            server_active_item_property_full_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_full_events,
+            server_active_item_property_candidate_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_events,
+            server_active_item_property_candidate_uses_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_uses_events,
+            server_active_item_property_candidate_full_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_full_events,
+            server_active_item_property_candidate_changed_use_count_rows_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_changed_use_count_rows,
+            server_active_item_property_candidate_full_property_rows_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_full_property_rows,
             area_events_after_first_client_action = summary
                 .event_breakdown_after_first_client_action
                 .area_events,
@@ -868,6 +922,72 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshActivePropertyOutcome {
+    AwaitingClientAction,
+    FirstClientActionTargetUnknown,
+    FirstClientActionTargetsOtherObject,
+    CandidateClientActionNoActivePropertyResponse,
+    CandidateClientActionObservedUsesDelta,
+    CandidateClientActionObservedFullRefresh,
+    CandidateClientActionObservedUsesAndFullRefresh,
+}
+
+impl Default for QuickbarItemRefreshActivePropertyOutcome {
+    fn default() -> Self {
+        Self::AwaitingClientAction
+    }
+}
+
+impl QuickbarItemRefreshActivePropertyOutcome {
+    pub(crate) fn from_pending_state(
+        first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+        event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    ) -> Self {
+        let Some(detail) = first_client_action_detail else {
+            return Self::AwaitingClientAction;
+        };
+        match detail.matches_candidate_object {
+            Some(true) => {
+                let observed_uses = event_breakdown_after_first_client_action
+                    .server_active_item_property_candidate_uses_events
+                    != 0;
+                let observed_full = event_breakdown_after_first_client_action
+                    .server_active_item_property_candidate_full_events
+                    != 0;
+                match (observed_uses, observed_full) {
+                    (true, true) => Self::CandidateClientActionObservedUsesAndFullRefresh,
+                    (true, false) => Self::CandidateClientActionObservedUsesDelta,
+                    (false, true) => Self::CandidateClientActionObservedFullRefresh,
+                    (false, false) => Self::CandidateClientActionNoActivePropertyResponse,
+                }
+            }
+            Some(false) => Self::FirstClientActionTargetsOtherObject,
+            None => Self::FirstClientActionTargetUnknown,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingClientAction => "awaiting_client_action",
+            Self::FirstClientActionTargetUnknown => "first_client_action_target_unknown",
+            Self::FirstClientActionTargetsOtherObject => "first_client_action_targets_other_object",
+            Self::CandidateClientActionNoActivePropertyResponse => {
+                "candidate_client_action_no_active_property_response"
+            }
+            Self::CandidateClientActionObservedUsesDelta => {
+                "candidate_client_action_observed_active_property_uses_delta"
+            }
+            Self::CandidateClientActionObservedFullRefresh => {
+                "candidate_client_action_observed_active_property_full_refresh"
+            }
+            Self::CandidateClientActionObservedUsesAndFullRefresh => {
+                "candidate_client_action_observed_active_property_uses_and_full_refresh"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshClientActionTiming {
     AwaitingClientAction,
     ImmediateAfterProof,
@@ -1288,6 +1408,11 @@ impl QuickbarItemRefreshHarnessHint {
                 self.event_breakdown_after_first_client_action,
             )
             .as_str();
+        let active_property_outcome = QuickbarItemRefreshActivePropertyOutcome::from_pending_state(
+            first_client_action_detail,
+            self.event_breakdown_after_first_client_action,
+        )
+        .as_str();
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             first_client_action_detail,
             self.followup_events_before_first_client_action,
@@ -1384,6 +1509,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_recommended_action_outcome\": \"{}\",\n",
+                "  \"pending_item_refresh_active_property_outcome\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
                 "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"first_followup_event\": \"{}\",\n",
@@ -1435,6 +1561,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"server_active_item_property_uses_events_after_first_client_action\": {},\n",
                 "  \"server_active_item_property_full_events_after_first_client_action\": {},\n",
                 "  \"server_active_item_property_candidate_events_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_uses_events_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_full_events_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_changed_use_count_rows_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_full_property_rows_after_first_client_action\": {},\n",
                 "  \"area_events_after_first_client_action\": {},\n",
                 "  \"inventory_events_after_first_client_action\": {},\n",
                 "  \"client_gui_event_events_after_first_client_action\": {},\n",
@@ -1464,6 +1594,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"server_active_item_property_uses_events_since_pending_refresh\": {},\n",
                 "  \"server_active_item_property_full_events_since_pending_refresh\": {},\n",
                 "  \"server_active_item_property_candidate_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_uses_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_full_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_changed_use_count_rows_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_full_property_rows_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
                 "  \"client_gui_event_events_since_pending_refresh\": {},\n",
@@ -1547,6 +1681,7 @@ impl QuickbarItemRefreshHarnessHint {
                 .unwrap_or("none"),
             action_outcome,
             recommended_action_outcome,
+            active_property_outcome,
             first_client_action_timing,
             self.followup_events_before_first_client_action,
             self.first_followup_event
@@ -1614,6 +1749,14 @@ impl QuickbarItemRefreshHarnessHint {
                 .server_active_item_property_full_events,
             self.event_breakdown_after_first_client_action
                 .server_active_item_property_candidate_events,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_uses_events,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_full_events,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_changed_use_count_rows,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_full_property_rows,
             self.event_breakdown_after_first_client_action.area_events,
             self.event_breakdown_after_first_client_action
                 .inventory_events,
@@ -1655,6 +1798,14 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown.server_active_item_property_full_events,
             self.event_breakdown
                 .server_active_item_property_candidate_events,
+            self.event_breakdown
+                .server_active_item_property_candidate_uses_events,
+            self.event_breakdown
+                .server_active_item_property_candidate_full_events,
+            self.event_breakdown
+                .server_active_item_property_candidate_changed_use_count_rows,
+            self.event_breakdown
+                .server_active_item_property_candidate_full_property_rows,
             self.event_breakdown.area_events,
             self.event_breakdown.inventory_events,
             self.event_breakdown.client_gui_event_events,
@@ -1826,6 +1977,10 @@ pub(crate) struct QuickbarItemRefreshEventBreakdown {
     pub(crate) server_active_item_property_uses_events: u64,
     pub(crate) server_active_item_property_full_events: u64,
     pub(crate) server_active_item_property_candidate_events: u64,
+    pub(crate) server_active_item_property_candidate_uses_events: u64,
+    pub(crate) server_active_item_property_candidate_full_events: u64,
+    pub(crate) server_active_item_property_candidate_changed_use_count_rows: u64,
+    pub(crate) server_active_item_property_candidate_full_property_rows: u64,
     pub(crate) area_events: u64,
     pub(crate) inventory_events: u64,
     pub(crate) client_gui_event_events: u64,
@@ -4010,6 +4165,11 @@ impl UiState {
                 self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             )
             .as_str();
+        let active_property_outcome = QuickbarItemRefreshActivePropertyOutcome::from_pending_state(
+            self.post_committed_quickbar_item_refresh_first_client_action_detail,
+            self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+        )
+        .as_str();
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             self.post_committed_quickbar_item_refresh_first_client_action_detail,
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
@@ -4093,6 +4253,7 @@ impl UiState {
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_recommended_action_outcome\": \"{}\",\n",
+                "  \"pending_item_refresh_active_property_outcome\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
                 "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"candidate_known\": {},\n",
@@ -4120,6 +4281,10 @@ impl UiState {
                 "  \"server_active_item_property_uses_events_since_pending_refresh\": {},\n",
                 "  \"server_active_item_property_full_events_since_pending_refresh\": {},\n",
                 "  \"server_active_item_property_candidate_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_uses_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_full_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_changed_use_count_rows_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_full_property_rows_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
                 "  \"client_gui_event_events_since_pending_refresh\": {},\n",
@@ -4170,6 +4335,7 @@ impl UiState {
             proof_class,
             action_outcome,
             recommended_action_outcome,
+            active_property_outcome,
             first_client_action_timing,
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
             candidate_known,
@@ -4207,6 +4373,14 @@ impl UiState {
                 .server_active_item_property_full_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .server_active_item_property_candidate_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_candidate_uses_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_candidate_full_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_candidate_changed_use_count_rows,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_candidate_full_property_rows,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .area_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -4387,8 +4561,8 @@ mod tests {
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
         QuickbarActiveItemSignature, QuickbarItemRefreshClientActionDetail,
         QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
-        QuickbarItemRefreshProofClass, QuickbarRewriteSummary, QuickbarStreamProbeSummary,
-        QuickbarValidatedSlotProfile, UiState,
+        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass, QuickbarRewriteSummary,
+        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -6745,6 +6919,8 @@ mod tests {
                 server_active_item_property_uses_events: 3,
                 server_active_item_property_full_events: 2,
                 server_active_item_property_candidate_events: 1,
+                server_active_item_property_candidate_uses_events: 1,
+                server_active_item_property_candidate_changed_use_count_rows: 2,
                 client_input_other_events: 1,
                 other_events: 3,
                 ..QuickbarItemRefreshEventBreakdown::default()
@@ -6986,10 +7162,25 @@ mod tests {
             )
         );
         assert!(json.contains(
+            "\"server_active_item_property_candidate_uses_events_since_pending_refresh\": 1"
+        ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_full_events_since_pending_refresh\": 0"
+        ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_changed_use_count_rows_since_pending_refresh\": 2"
+        ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_full_property_rows_since_pending_refresh\": 0"
+        ));
+        assert!(json.contains(
             "\"pending_item_refresh_action_outcome\": \"candidate_client_action_no_server_quickbar\""
         ));
         assert!(json.contains(
             "\"pending_item_refresh_recommended_action_outcome\": \"no_recommended_client_action\""
+        ));
+        assert!(json.contains(
+            "\"pending_item_refresh_active_property_outcome\": \"candidate_client_action_no_active_property_response\""
         ));
         assert!(
             json.contains("\"first_client_action_timing\": \"delayed_after_pending_followup\"")
@@ -7044,7 +7235,40 @@ mod tests {
         assert!(json.contains(
             "\"server_active_item_property_candidate_events_after_first_client_action\": 0"
         ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_uses_events_after_first_client_action\": 0"
+        ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_full_events_after_first_client_action\": 0"
+        ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_changed_use_count_rows_after_first_client_action\": 0"
+        ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_full_property_rows_after_first_client_action\": 0"
+        ));
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
+
+        let active_property_response_json = QuickbarItemRefreshHarnessHint {
+            event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown {
+                server_active_item_property_candidate_uses_events: 1,
+                server_active_item_property_candidate_full_events: 1,
+                server_active_item_property_candidate_changed_use_count_rows: 2,
+                server_active_item_property_candidate_full_property_rows: 1,
+                ..QuickbarItemRefreshEventBreakdown::default()
+            },
+            ..hint
+        }
+        .to_json();
+        assert!(active_property_response_json.contains(
+            "\"pending_item_refresh_active_property_outcome\": \"candidate_client_action_observed_active_property_uses_and_full_refresh\""
+        ));
+        assert!(active_property_response_json.contains(
+            "\"server_active_item_property_candidate_changed_use_count_rows_after_first_client_action\": 2"
+        ));
+        assert!(active_property_response_json.contains(
+            "\"server_active_item_property_candidate_full_property_rows_after_first_client_action\": 1"
+        ));
 
         ui.post_committed_quickbar_item_refresh_first_client_action =
             Some(QuickbarItemRefreshEventKind::ClientInputUseItem);

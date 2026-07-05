@@ -33,13 +33,13 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-05 22:18 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-06 00:36 +10: the freshest
 gameplay-reaching proxy harness remains
 `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
 `GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
-`2026-07-05T18:43:53+10:00`, about 3h35m old at the gate, and produced no
+`2026-07-05T18:43:53+10:00`, about 5h52m old at the latest gate, and produced no
 quarantine artifacts. The run confirmed completed quickbar stream-probe
 profiles now promote into committed semantic quickbar state from the focused
 `quickbar_stream` path. Proxy2 treats verified live-object GUI `G Q` quickbar
@@ -48,9 +48,14 @@ item-use-count rows as a server quickbar response family distinct from full
 item-refresh hints. Current code also owns high-level `0x18/0x01` and
 `0x18/0x02` active item property update packets exactly, based on EE
 `SendServerToPlayerUpdateActiveItemProperties*` writer order, and exposes
-`server_active_item_property_*` event/full/uses/candidate counters. The 18:43
-live result still contained 0 server quickbar responses of either kind after
-the matching action. Candidate `0x80015989` came from `active_object` /
+`server_active_item_property_*` event/full/uses/candidate counters. As of
+2026-07-06, current proxy2 additionally writes
+`pending_item_refresh_active_property_outcome` plus candidate-specific
+active-property uses/full event counters and changed/full row totals for both
+the full pending window and the post-first-client-action window in
+`quickbar-item-refresh-hint.json`, semantic traces, and replay summaries. The
+18:43 live result still contained 0 server quickbar responses of either kind
+after the matching action. Candidate `0x80015989` came from `active_object` /
 `direct_only` proof and matched the preserved active-property quickbar item.
 The bridge dispatched the validated first-property subtype-low `Input_UseItem`
 payload
@@ -58,9 +63,13 @@ payload
 `first_client_action_match_class="recommended_use_item_first_property_subtype_low"`.
 HG still sent 0 server quickbar events after the matching action
 (`pending_item_refresh_recommended_action_outcome="recommended_use_item_first_property_subtype_low_no_server_quickbar"`).
-This keeps the active target on original-client active-property action/state
-semantics beyond exact SetButton, GuiEvent_Notify, UseObject, zero-byte
-UseItem, and subtype-low UseItem probe payload identity.
+The next live subtype-low/active-property probe should now treat
+`pending_item_refresh_active_property_outcome` as the primary discriminator for
+whether HG emitted no candidate active-property response, a candidate
+`0x18/0x01` uses delta, a candidate `0x18/0x02` full refresh, or both. This
+keeps the active target on original-client active-property action/state
+semantics beyond exact SetButton, GuiEvent_Notify, UseObject, zero-byte UseItem,
+and subtype-low UseItem probe payload identity.
 
 As of 2026-07-05 12:33 +10, proxy2 also writes
 `pending_item_refresh_recommended_action_outcome` into quickbar item-refresh
