@@ -17,6 +17,24 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 UseItem active-property action classifier: live-data gate reused
+  the gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T12:24:46+10:00`; about 1.8h old at the gate and about 2.2h old
+  when this slice was documented). Gameplay was reached through sustained
+  live-object traffic and no quarantine artifacts were present, so no fresh
+  live run was required. Proxy2 now carries parsed `Input_UseItem`
+  active-property subtype, optional-byte, target-object, and position presence
+  into semantic quickbar action details and pending item-refresh hints. The
+  hint classifier recognizes the exact generated UseItem probe shape as
+  `recommended_use_item` only when it targets the pending candidate, preserves
+  subtype byte `0`, omits the optional byte and position, and targets either
+  EE self `0xFFFF_FFFD` or legacy self `0xFFFF_FFFF`. This does not claim
+  UseItem is the final HG action fix; it removes the diagnostic blind spot so
+  the next live/decompile pass can prove whether the active-property subtype
+  byte is a constant zero, a quickbar/property index, or another original-client
+  state field before changing outbound action generation.
 - 2026-07-05 UseObject active-item probe scaffold: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`

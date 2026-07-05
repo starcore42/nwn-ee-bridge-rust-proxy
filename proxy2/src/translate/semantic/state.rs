@@ -646,6 +646,7 @@ pub(crate) enum QuickbarItemRefreshClientActionMatchClass {
     OtherObject,
     CandidateObject,
     PreservedActiveItem,
+    RecommendedUseItem,
     RecommendedSetButton,
     RecommendedGuiEventNotify,
     RecommendedUseObject,
@@ -671,6 +672,9 @@ impl QuickbarItemRefreshClientActionMatchClass {
             return Self::TargetUnknown;
         }
         if let Some(candidate_object_id) = candidate_object_id {
+            if detail.matches_recommended_client_use_item(candidate_object_id) {
+                return Self::RecommendedUseItem;
+            }
             if detail.matches_recommended_client_gui_event_notify(candidate_object_id) {
                 return Self::RecommendedGuiEventNotify;
             }
@@ -701,6 +705,7 @@ impl QuickbarItemRefreshClientActionMatchClass {
             Self::OtherObject => "other_object",
             Self::CandidateObject => "candidate_object",
             Self::PreservedActiveItem => "preserved_active_item",
+            Self::RecommendedUseItem => "recommended_use_item",
             Self::RecommendedSetButton => "recommended_set_button",
             Self::RecommendedGuiEventNotify => "recommended_gui_event_notify",
             Self::RecommendedUseObject => "recommended_use_object",
@@ -712,6 +717,8 @@ impl QuickbarItemRefreshClientActionMatchClass {
 pub(crate) enum QuickbarItemRefreshRecommendedActionOutcome {
     AwaitingClientAction,
     NoRecommendedClientAction,
+    RecommendedUseItemNoServerQuickbar,
+    RecommendedUseItemObservedServerQuickbar,
     RecommendedSetButtonNoServerQuickbar,
     RecommendedSetButtonObservedServerQuickbar,
     RecommendedGuiEventNotifyNoServerQuickbar,
@@ -741,6 +748,13 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
         };
         let observed_server_quickbar =
             event_breakdown_after_first_client_action.quickbar_events != 0;
+        if detail.matches_recommended_client_use_item(candidate_object_id) {
+            return if observed_server_quickbar {
+                Self::RecommendedUseItemObservedServerQuickbar
+            } else {
+                Self::RecommendedUseItemNoServerQuickbar
+            };
+        }
         if detail.matches_recommended_client_gui_event_notify(candidate_object_id) {
             return if observed_server_quickbar {
                 Self::RecommendedGuiEventNotifyObservedServerQuickbar
@@ -772,6 +786,10 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
         match self {
             Self::AwaitingClientAction => "awaiting_client_action",
             Self::NoRecommendedClientAction => "no_recommended_client_action",
+            Self::RecommendedUseItemNoServerQuickbar => "recommended_use_item_no_server_quickbar",
+            Self::RecommendedUseItemObservedServerQuickbar => {
+                "recommended_use_item_observed_server_quickbar"
+            }
             Self::RecommendedSetButtonNoServerQuickbar => {
                 "recommended_set_button_no_server_quickbar"
             }
@@ -1095,6 +1113,28 @@ impl QuickbarItemRefreshHarnessHint {
         let first_client_action_gui_event_vector_zero = first_client_action_detail
             .and_then(|detail| detail.gui_event_vector_bits)
             == Some([0, 0, 0]);
+        let first_client_action_use_item_known = first_client_action_detail
+            .and_then(|detail| detail.use_item_active_property_subtype)
+            .is_some();
+        let first_client_action_use_item_active_property_subtype = first_client_action_detail
+            .and_then(|detail| detail.use_item_active_property_subtype)
+            .unwrap_or(0);
+        let first_client_action_use_item_has_optional_byte = first_client_action_detail
+            .and_then(|detail| detail.use_item_has_optional_byte)
+            .unwrap_or(false);
+        let first_client_action_use_item_has_target_object = first_client_action_detail
+            .and_then(|detail| detail.use_item_has_target_object)
+            .unwrap_or(false);
+        let first_client_action_use_item_target_object_id = first_client_action_detail
+            .and_then(|detail| detail.use_item_target_object_id)
+            .unwrap_or(0);
+        let first_client_action_use_item_target_is_self_or_legacy_self = matches!(
+            first_client_action_detail.and_then(|detail| detail.use_item_target_object_id),
+            Some(client_input::EE_SELF_OBJECT_ID) | Some(client_input::INVALID_OBJECT_ID)
+        );
+        let first_client_action_use_item_has_position = first_client_action_detail
+            .and_then(|detail| detail.use_item_has_position)
+            .unwrap_or(false);
         let first_client_action_candidate_known = first_client_action_detail
             .and_then(|detail| detail.candidate_object_id)
             .is_some();
@@ -1122,6 +1162,9 @@ impl QuickbarItemRefreshHarnessHint {
                     detail.matches_recommended_client_gui_event_notify(self.candidate.object_id)
                 })
                 .unwrap_or(false);
+        let first_client_action_matches_recommended_client_use_item = first_client_action_detail
+            .map(|detail| detail.matches_recommended_client_use_item(self.candidate.object_id))
+            .unwrap_or(false);
         let first_client_action_matches_recommended_client_use_object = first_client_action_detail
             .map(|detail| detail.matches_recommended_client_use_object(self.candidate.object_id))
             .unwrap_or(false);
@@ -1247,11 +1290,20 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_client_action_gui_event_vector_x_bits_hex\": \"0x{:08X}\",\n",
                 "  \"first_client_action_gui_event_vector_y_bits_hex\": \"0x{:08X}\",\n",
                 "  \"first_client_action_gui_event_vector_z_bits_hex\": \"0x{:08X}\",\n",
+                "  \"first_client_action_use_item_known\": {},\n",
+                "  \"first_client_action_use_item_active_property_subtype\": {},\n",
+                "  \"first_client_action_use_item_has_optional_byte\": {},\n",
+                "  \"first_client_action_use_item_has_target_object\": {},\n",
+                "  \"first_client_action_use_item_target_object_id\": {},\n",
+                "  \"first_client_action_use_item_target_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"first_client_action_use_item_target_is_self_or_legacy_self\": {},\n",
+                "  \"first_client_action_use_item_has_position\": {},\n",
                 "  \"first_client_action_candidate_known\": {},\n",
                 "  \"first_client_action_candidate_object_id\": {},\n",
                 "  \"first_client_action_matches_candidate\": {},\n",
                 "  \"first_client_action_matches_preserved_active_item\": {},\n",
                 "  \"first_client_action_match_class\": \"{}\",\n",
+                "  \"first_client_action_matches_recommended_client_use_item\": {},\n",
                 "  \"first_client_action_matches_recommended_client_quickbar_set_button\": {},\n",
                 "  \"first_client_action_matches_recommended_client_gui_event_notify\": {},\n",
                 "  \"first_client_action_matches_recommended_client_use_object\": {},\n",
@@ -1378,11 +1430,20 @@ impl QuickbarItemRefreshHarnessHint {
             first_client_action_gui_event_vector_bits[0],
             first_client_action_gui_event_vector_bits[1],
             first_client_action_gui_event_vector_bits[2],
+            first_client_action_use_item_known,
+            first_client_action_use_item_active_property_subtype,
+            first_client_action_use_item_has_optional_byte,
+            first_client_action_use_item_has_target_object,
+            first_client_action_use_item_target_object_id,
+            first_client_action_use_item_target_object_id,
+            first_client_action_use_item_target_is_self_or_legacy_self,
+            first_client_action_use_item_has_position,
             first_client_action_candidate_known,
             first_client_action_candidate_object_id,
             first_client_action_matches_candidate,
             first_client_action_matches_preserved_active_item,
             first_client_action_match_class,
+            first_client_action_matches_recommended_client_use_item,
             first_client_action_matches_recommended_client_quickbar_set_button,
             first_client_action_matches_recommended_client_gui_event_notify,
             first_client_action_matches_recommended_client_use_object,
@@ -1467,6 +1528,11 @@ pub(crate) struct QuickbarItemRefreshClientActionDetail {
     pub(crate) gui_event_trailing_fragment_bytes: Option<usize>,
     pub(crate) gui_event_has_vector: Option<bool>,
     pub(crate) gui_event_vector_bits: Option<[u32; 3]>,
+    pub(crate) use_item_active_property_subtype: Option<u8>,
+    pub(crate) use_item_has_optional_byte: Option<bool>,
+    pub(crate) use_item_has_target_object: Option<bool>,
+    pub(crate) use_item_target_object_id: Option<u32>,
+    pub(crate) use_item_has_position: Option<bool>,
     pub(crate) use_object_mark_inventory_gui_state: Option<bool>,
     pub(crate) use_object_schedule_script_event: Option<bool>,
     pub(crate) candidate_object_id: Option<u32>,
@@ -1512,6 +1578,21 @@ impl QuickbarItemRefreshClientActionDetail {
                 == Some(client_gui_event::RADIAL_NOTIFY_PROBE_TRAILING_FRAGMENT_BYTES)
             && self.gui_event_has_vector == Some(true)
             && self.gui_event_vector_bits == Some([0, 0, 0])
+            && self.candidate_object_id == Some(candidate_object_id)
+            && self.matches_candidate_object == Some(true)
+    }
+
+    pub(crate) fn matches_recommended_client_use_item(self, candidate_object_id: u32) -> bool {
+        self.kind == QuickbarItemRefreshEventKind::ClientInputUseItem
+            && self.object_id == Some(candidate_object_id)
+            && self.use_item_active_property_subtype == Some(0)
+            && self.use_item_has_optional_byte == Some(false)
+            && self.use_item_has_target_object == Some(true)
+            && matches!(
+                self.use_item_target_object_id,
+                Some(client_input::EE_SELF_OBJECT_ID) | Some(client_input::INVALID_OBJECT_ID)
+            )
+            && self.use_item_has_position == Some(false)
             && self.candidate_object_id == Some(candidate_object_id)
             && self.matches_candidate_object == Some(true)
     }
@@ -4045,6 +4126,7 @@ mod tests {
         AreaPlaceableObservedOrientationSource,
     };
     use crate::translate::client_gui_event;
+    use crate::translate::client_input;
     use crate::translate::client_quickbar::{self, ClientQuickbarSetButtonKind};
     use crate::translate::semantic::{
         LiveObjectInventoryFeature25Reference, LiveObjectOrientationSource,
@@ -6443,6 +6525,11 @@ mod tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id: Some(0x8000_0100),
@@ -6610,8 +6697,16 @@ mod tests {
         assert!(json.contains("\"followup_events_before_first_client_action\": 8"));
         assert!(json.contains("\"first_followup_event\": \"client_input_other\""));
         assert!(json.contains("\"first_client_action\": \"client_input_other\""));
+        assert!(json.contains("\"first_client_action_use_item_known\": false"));
+        assert!(json.contains("\"first_client_action_use_item_active_property_subtype\": 0"));
+        assert!(
+            json.contains("\"first_client_action_use_item_target_is_self_or_legacy_self\": false")
+        );
         assert!(json.contains("\"first_client_action_matches_preserved_active_item\": true"));
         assert!(json.contains("\"first_client_action_match_class\": \"preserved_active_item\""));
+        assert!(
+            json.contains("\"first_client_action_matches_recommended_client_use_item\": false")
+        );
         assert!(json.contains(
             "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
         ));
@@ -6629,6 +6724,67 @@ mod tests {
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
 
         ui.post_committed_quickbar_item_refresh_first_client_action =
+            Some(QuickbarItemRefreshEventKind::ClientInputUseItem);
+        ui.post_committed_quickbar_item_refresh_first_client_action_detail =
+            Some(QuickbarItemRefreshClientActionDetail {
+                kind: QuickbarItemRefreshEventKind::ClientInputUseItem,
+                object_id: Some(0x8000_0100),
+                slot: None,
+                button_type: None,
+                body_kind: None,
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
+                use_item_active_property_subtype: Some(0),
+                use_item_has_optional_byte: Some(false),
+                use_item_has_target_object: Some(true),
+                use_item_target_object_id: Some(client_input::EE_SELF_OBJECT_ID),
+                use_item_has_position: Some(false),
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
+                candidate_object_id: Some(0x8000_0100),
+                matches_candidate_object: Some(true),
+            });
+        let use_item_json = ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("pending candidate should still expose a harness hint")
+            .to_json();
+        assert!(use_item_json.contains("\"first_client_action\": \"client_input_use_item\""));
+        assert!(use_item_json.contains("\"first_client_action_use_item_known\": true"));
+        assert!(
+            use_item_json.contains("\"first_client_action_use_item_active_property_subtype\": 0")
+        );
+        assert!(
+            use_item_json.contains("\"first_client_action_use_item_has_optional_byte\": false")
+        );
+        assert!(use_item_json.contains("\"first_client_action_use_item_has_target_object\": true"));
+        assert!(
+            use_item_json
+                .contains("\"first_client_action_use_item_target_object_id_hex\": \"0xFFFFFFFD\"")
+        );
+        assert!(
+            use_item_json
+                .contains("\"first_client_action_use_item_target_is_self_or_legacy_self\": true")
+        );
+        assert!(use_item_json.contains("\"first_client_action_use_item_has_position\": false"));
+        assert!(
+            use_item_json.contains("\"first_client_action_match_class\": \"recommended_use_item\"")
+        );
+        assert!(use_item_json.contains(
+            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_use_item_no_server_quickbar\""
+        ));
+        assert!(
+            use_item_json
+                .contains("\"first_client_action_matches_recommended_client_use_item\": true")
+        );
+        assert!(use_item_json.contains(
+            "\"first_client_action_matches_recommended_client_quickbar_set_button\": false"
+        ));
+
+        ui.post_committed_quickbar_item_refresh_first_client_action =
             Some(QuickbarItemRefreshEventKind::ClientQuickbarItemSetButton);
         ui.post_committed_quickbar_item_refresh_first_client_action_detail =
             Some(QuickbarItemRefreshClientActionDetail {
@@ -6643,6 +6799,11 @@ mod tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id: Some(0x8000_0100),
@@ -6688,6 +6849,11 @@ mod tests {
                 gui_event_trailing_fragment_bytes: Some(1),
                 gui_event_has_vector: Some(true),
                 gui_event_vector_bits: Some([0, 0, 0]),
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id: Some(0x8000_0100),
@@ -6745,6 +6911,11 @@ mod tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: Some(false),
                 use_object_schedule_script_event: Some(false),
                 candidate_object_id: Some(0x8000_0100),

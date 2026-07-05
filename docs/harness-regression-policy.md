@@ -68,6 +68,23 @@ decisions/artifacts, and exported
 `QuickbarItemRefreshHintRecommendedActionOutcome=awaiting_client_action` for
 the replay's no-client-action pending window.
 
+As of 2026-07-05 14:33 +10, the same 12:17/12:24 gameplay-reaching live HG
+capture remained fresh, so no new live capture was required for the UseItem
+classifier slice. Proxy2 now records UseItem-specific parsed fields in
+quickbar action details and harness hints:
+`first_client_action_use_item_known`,
+`first_client_action_use_item_active_property_subtype`,
+`first_client_action_use_item_has_optional_byte`,
+`first_client_action_use_item_has_target_object`,
+`first_client_action_use_item_target_object_id_hex`,
+`first_client_action_use_item_target_is_self_or_legacy_self`,
+`first_client_action_use_item_has_position`, and
+`first_client_action_matches_recommended_client_use_item`. Recommended-action
+outcomes now distinguish `recommended_use_item_no_server_quickbar` from
+`recommended_use_item_observed_server_quickbar`. The next live active-property
+probe should compare these fields against HG follow-up traffic before changing
+the generated action rule, especially the meaning of the UseItem subtype byte.
+
 As of 2026-07-05 04:41 +10, proxy2 also writes first-preserved active-item
 signature fields into quickbar item-refresh hints and unresolved traces. The
 fields are:

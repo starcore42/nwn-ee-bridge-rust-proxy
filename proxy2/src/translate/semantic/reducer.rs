@@ -1432,6 +1432,19 @@ fn quickbar_item_refresh_client_action_detail(
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: event
+                    .claim
+                    .and_then(|claim| claim.use_item_active_property_subtype),
+                use_item_has_optional_byte: event
+                    .claim
+                    .and_then(|claim| claim.use_item_has_optional_byte),
+                use_item_has_target_object: event
+                    .claim
+                    .and_then(|claim| claim.use_item_has_target_object),
+                use_item_target_object_id: event
+                    .claim
+                    .and_then(|claim| claim.use_item_target_object_id),
+                use_item_has_position: event.claim.and_then(|claim| claim.use_item_has_position),
                 use_object_mark_inventory_gui_state: event
                     .claim
                     .and_then(|claim| claim.use_object_mark_inventory_gui_state),
@@ -1467,6 +1480,11 @@ fn quickbar_item_refresh_client_action_detail(
                     .map(|claim| claim.trailing_fragment_bytes),
                 gui_event_has_vector: event.claim.map(|claim| claim.vector.is_some()),
                 gui_event_vector_bits: vector_bits,
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id,
@@ -1487,6 +1505,11 @@ fn quickbar_item_refresh_client_action_detail(
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id,
@@ -1505,6 +1528,11 @@ fn quickbar_item_refresh_client_action_detail(
             gui_event_trailing_fragment_bytes: None,
             gui_event_has_vector: None,
             gui_event_vector_bits: None,
+            use_item_active_property_subtype: None,
+            use_item_has_optional_byte: None,
+            use_item_has_target_object: None,
+            use_item_target_object_id: None,
+            use_item_has_position: None,
             use_object_mark_inventory_gui_state: None,
             use_object_schedule_script_event: None,
             candidate_object_id,
@@ -2511,6 +2539,11 @@ mod fixture_free_tests {
             gui_event_trailing_fragment_bytes: None,
             gui_event_has_vector: None,
             gui_event_vector_bits: None,
+            use_item_active_property_subtype: None,
+            use_item_has_optional_byte: None,
+            use_item_has_target_object: None,
+            use_item_target_object_id: None,
+            use_item_has_position: None,
             use_object_mark_inventory_gui_state: None,
             use_object_schedule_script_event: None,
             candidate_object_id: Some(0x8000_0100),
@@ -2539,6 +2572,28 @@ mod fixture_free_tests {
             state_mask: 1,
             value_mask: 0xFF,
         });
+        let use_item_detail = QuickbarItemRefreshClientActionDetail {
+            kind: QuickbarItemRefreshEventKind::ClientInputUseItem,
+            object_id: Some(0x8000_0100),
+            slot: None,
+            button_type: None,
+            body_kind: None,
+            gui_event_a: None,
+            gui_event_b: None,
+            gui_event_declared_bytes: None,
+            gui_event_trailing_fragment_bytes: None,
+            gui_event_has_vector: None,
+            gui_event_vector_bits: None,
+            use_item_active_property_subtype: Some(0),
+            use_item_has_optional_byte: Some(false),
+            use_item_has_target_object: Some(true),
+            use_item_target_object_id: Some(client_input::EE_SELF_OBJECT_ID),
+            use_item_has_position: Some(false),
+            use_object_mark_inventory_gui_state: None,
+            use_object_schedule_script_event: None,
+            candidate_object_id: Some(0x8000_0100),
+            matches_candidate_object: Some(true),
+        };
         let gui_event_detail = QuickbarItemRefreshClientActionDetail {
             kind: QuickbarItemRefreshEventKind::ClientGuiEventNotify,
             object_id: Some(0x8000_0100),
@@ -2553,6 +2608,11 @@ mod fixture_free_tests {
             ),
             gui_event_has_vector: Some(true),
             gui_event_vector_bits: Some([0, 0, 0]),
+            use_item_active_property_subtype: None,
+            use_item_has_optional_byte: None,
+            use_item_has_target_object: None,
+            use_item_target_object_id: None,
+            use_item_has_position: None,
             use_object_mark_inventory_gui_state: None,
             use_object_schedule_script_event: None,
             candidate_object_id: Some(0x8000_0100),
@@ -2570,6 +2630,11 @@ mod fixture_free_tests {
             gui_event_trailing_fragment_bytes: None,
             gui_event_has_vector: None,
             gui_event_vector_bits: None,
+            use_item_active_property_subtype: None,
+            use_item_has_optional_byte: None,
+            use_item_has_target_object: None,
+            use_item_target_object_id: None,
+            use_item_has_position: None,
             use_object_mark_inventory_gui_state: Some(false),
             use_object_schedule_script_event: Some(false),
             candidate_object_id: Some(0x8000_0100),
@@ -2625,6 +2690,24 @@ mod fixture_free_tests {
                 Default::default(),
             ),
             QuickbarItemRefreshRecommendedActionOutcome::NoRecommendedClientAction
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(use_item_detail),
+                Some(0x8000_0100),
+                2,
+                Default::default(),
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemNoServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(use_item_detail),
+                Some(0x8000_0100),
+                2,
+                response_breakdown,
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemObservedServerQuickbar
         );
         assert_eq!(
             QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
@@ -2723,6 +2806,15 @@ mod fixture_free_tests {
                 active_signature,
             ),
             QuickbarItemRefreshClientActionMatchClass::PreservedActiveItem
+        );
+        assert_eq!(
+            QuickbarItemRefreshClientActionMatchClass::from_pending_state(
+                Some(use_item_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+            ),
+            QuickbarItemRefreshClientActionMatchClass::RecommendedUseItem
         );
         assert_eq!(
             QuickbarItemRefreshClientActionMatchClass::from_pending_state(
@@ -2887,6 +2979,11 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: Some(0),
+                use_item_has_optional_byte: Some(false),
+                use_item_has_target_object: Some(false),
+                use_item_target_object_id: None,
+                use_item_has_position: Some(false),
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
@@ -2998,6 +3095,11 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: Some(0),
+                use_item_has_optional_byte: Some(false),
+                use_item_has_target_object: Some(false),
+                use_item_target_object_id: None,
+                use_item_has_position: Some(false),
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
@@ -3179,6 +3281,11 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: None,
                 gui_event_has_vector: None,
                 gui_event_vector_bits: None,
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
@@ -3262,6 +3369,11 @@ mod fixture_free_tests {
                 gui_event_trailing_fragment_bytes: Some(1),
                 gui_event_has_vector: Some(true),
                 gui_event_vector_bits: Some([0, 0, 0]),
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
                 use_object_mark_inventory_gui_state: None,
                 use_object_schedule_script_event: None,
                 candidate_object_id: Some(first_item_id),
