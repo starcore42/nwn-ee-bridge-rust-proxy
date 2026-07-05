@@ -22,7 +22,9 @@ use crate::translate::{
     },
     client_gui_event, client_input,
     client_quickbar::{self, ClientQuickbarSetButtonKind},
-    live_object_update::{area_static_row_scalar_orientation, object_ids},
+    live_object_update::{
+        LiveObjectQuickbarItemUseCountUpdate, area_static_row_scalar_orientation, object_ids,
+    },
     player_list::PlayerListObjectIds,
     quickbar::{QuickbarActiveItemSignature, QuickbarRewriteSummary, QuickbarValidatedSlotProfile},
 };
@@ -1157,6 +1159,11 @@ pub(crate) struct QuickbarPendingItemRefreshSummary {
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
     pub(crate) events_after_first_client_action: u64,
     pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    pub(crate) first_candidate_use_count_row: Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) first_candidate_use_count_row_before_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) first_candidate_use_count_row_after_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) action_outcome: QuickbarItemRefreshActionOutcome,
     pub(crate) followup_events_before_first_client_action: u64,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
@@ -1208,6 +1215,11 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
     pub(crate) events_after_first_client_action: u64,
     pub(crate) event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    pub(crate) first_candidate_use_count_row: Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) first_candidate_use_count_row_before_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) first_candidate_use_count_row_after_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) action_outcome: QuickbarItemRefreshActionOutcome,
     pub(crate) followup_events_before_first_client_action: u64,
     pub(crate) proof_class: Option<QuickbarItemRefreshProofClass>,
@@ -1221,6 +1233,27 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) compact_item_emission_direct_only_proof_objects: usize,
     pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
     pub(crate) compact_item_emission_shared_proof_objects: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct QuickbarItemRefreshUseCountRow {
+    pub(crate) slot: u8,
+    pub(crate) button_type: u8,
+    pub(crate) object_id: u32,
+    pub(crate) active_property_index: u8,
+    pub(crate) use_count: u16,
+}
+
+impl From<LiveObjectQuickbarItemUseCountUpdate> for QuickbarItemRefreshUseCountRow {
+    fn from(update: LiveObjectQuickbarItemUseCountUpdate) -> Self {
+        Self {
+            slot: update.slot,
+            button_type: update.button_type,
+            object_id: update.object_id,
+            active_property_index: update.active_property_index,
+            use_count: update.use_count,
+        }
+    }
 }
 
 impl QuickbarItemRefreshHarnessHint {
@@ -1475,6 +1508,23 @@ impl QuickbarItemRefreshHarnessHint {
                 self.event_breakdown_after_first_client_action,
             )
             .as_str();
+        let first_candidate_use_count_row = self.first_candidate_use_count_row.unwrap_or_default();
+        let first_candidate_use_count_row_before_first_client_action = self
+            .first_candidate_use_count_row_before_first_client_action
+            .unwrap_or_default();
+        let first_candidate_use_count_row_after_first_client_action = self
+            .first_candidate_use_count_row_after_first_client_action
+            .unwrap_or_default();
+        let first_candidate_use_count_row_timing = match (
+            self.first_candidate_use_count_row,
+            self.first_candidate_use_count_row_before_first_client_action,
+            self.first_candidate_use_count_row_after_first_client_action,
+        ) {
+            (None, _, _) => "none",
+            (Some(first), Some(before), _) if first == before => "before_first_client_action",
+            (Some(first), _, Some(after)) if first == after => "after_first_client_action",
+            (Some(_), _, _) => "unknown",
+        };
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             first_client_action_detail,
             self.followup_events_before_first_client_action,
@@ -1573,6 +1623,24 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"pending_item_refresh_recommended_action_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_active_property_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_server_quickbar_response_timing\": \"{}\",\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_known\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_timing\": \"{}\",\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_slot\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_button_type\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_object_id\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_active_property_index\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_use_count\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_before_first_client_action_known\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_before_first_client_action_slot\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_before_first_client_action_button_type\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_before_first_client_action_active_property_index\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_before_first_client_action_use_count\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_after_first_client_action_known\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_after_first_client_action_slot\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_after_first_client_action_button_type\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_after_first_client_action_active_property_index\": {},\n",
+                "  \"first_server_quickbar_item_use_count_candidate_row_after_first_client_action_use_count\": {},\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
                 "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"first_followup_event\": \"{}\",\n",
@@ -1759,6 +1827,26 @@ impl QuickbarItemRefreshHarnessHint {
             recommended_action_outcome,
             active_property_outcome,
             server_quickbar_response_timing,
+            self.first_candidate_use_count_row.is_some(),
+            first_candidate_use_count_row_timing,
+            first_candidate_use_count_row.slot,
+            first_candidate_use_count_row.button_type,
+            first_candidate_use_count_row.object_id,
+            first_candidate_use_count_row.object_id,
+            first_candidate_use_count_row.active_property_index,
+            first_candidate_use_count_row.use_count,
+            self.first_candidate_use_count_row_before_first_client_action
+                .is_some(),
+            first_candidate_use_count_row_before_first_client_action.slot,
+            first_candidate_use_count_row_before_first_client_action.button_type,
+            first_candidate_use_count_row_before_first_client_action.active_property_index,
+            first_candidate_use_count_row_before_first_client_action.use_count,
+            self.first_candidate_use_count_row_after_first_client_action
+                .is_some(),
+            first_candidate_use_count_row_after_first_client_action.slot,
+            first_candidate_use_count_row_after_first_client_action.button_type,
+            first_candidate_use_count_row_after_first_client_action.active_property_index,
+            first_candidate_use_count_row_after_first_client_action.use_count,
             first_client_action_timing,
             self.followup_events_before_first_client_action,
             self.first_followup_event
@@ -4104,6 +4192,12 @@ pub(crate) struct UiState {
     pub(crate) post_committed_quickbar_item_refresh_events_after_first_client_action: u64,
     pub(crate) post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action:
         QuickbarItemRefreshEventBreakdown,
+    pub(crate) post_committed_quickbar_item_refresh_first_candidate_use_count_row:
+        Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) post_committed_quickbar_item_refresh_followup_events_before_first_client_action: u64,
     pub(crate) post_committed_quickbar_item_refresh_proof_class:
         Option<QuickbarItemRefreshProofClass>,
@@ -4126,6 +4220,12 @@ pub(crate) struct UiState {
     pub(crate) last_committed_quickbar_item_refresh_events_after_first_client_action: u64,
     pub(crate) last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action:
         QuickbarItemRefreshEventBreakdown,
+    pub(crate) last_committed_quickbar_item_refresh_first_candidate_use_count_row:
+        Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) last_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) last_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action:
+        Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) last_committed_quickbar_item_refresh_followup_events_before_first_client_action: u64,
     pub(crate) last_committed_quickbar_item_refresh_outcome: QuickbarItemRefreshOutcome,
     pub(crate) last_committed_quickbar_item_refresh_action_outcome:
@@ -4194,6 +4294,12 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_events_after_first_client_action;
         let pending_item_refresh_event_breakdown_after_first_client_action =
             self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action;
+        let pending_item_refresh_first_candidate_use_count_row =
+            self.post_committed_quickbar_item_refresh_first_candidate_use_count_row;
+        let pending_item_refresh_first_candidate_use_count_row_before_first_client_action = self
+            .post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action;
+        let pending_item_refresh_first_candidate_use_count_row_after_first_client_action = self
+            .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action;
         let pending_item_refresh_followup_events_before_first_client_action =
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action;
         let pending_item_refresh_proof_class =
@@ -4242,6 +4348,12 @@ impl UiState {
             pending_item_refresh_events_after_first_client_action;
         self.last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
             pending_item_refresh_event_breakdown_after_first_client_action;
+        self.last_committed_quickbar_item_refresh_first_candidate_use_count_row =
+            pending_item_refresh_first_candidate_use_count_row;
+        self.last_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action =
+            pending_item_refresh_first_candidate_use_count_row_before_first_client_action;
+        self.last_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action =
+            pending_item_refresh_first_candidate_use_count_row_after_first_client_action;
         self.last_committed_quickbar_item_refresh_followup_events_before_first_client_action =
             pending_item_refresh_followup_events_before_first_client_action;
         self.last_committed_quickbar_item_refresh_outcome = pending_item_refresh_outcome;
@@ -4269,6 +4381,9 @@ impl UiState {
         self.post_committed_quickbar_item_refresh_events_after_first_client_action = 0;
         self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
             QuickbarItemRefreshEventBreakdown::default();
+        self.post_committed_quickbar_item_refresh_first_candidate_use_count_row = None;
+        self.post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action = None;
+        self.post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action = None;
         self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action = 0;
         self.post_committed_quickbar_item_refresh_proof_class = None;
         self.post_committed_quickbar_item_refresh_first_followup_event = None;
@@ -4605,6 +4720,12 @@ impl UiState {
                 .post_committed_quickbar_item_refresh_events_after_first_client_action,
             event_breakdown_after_first_client_action: self
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            first_candidate_use_count_row: self
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row,
+            first_candidate_use_count_row_before_first_client_action: self
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action,
+            first_candidate_use_count_row_after_first_client_action: self
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action,
             action_outcome: QuickbarItemRefreshActionOutcome::from_pending_state(
                 self.post_committed_quickbar_item_refresh_first_client_action_detail,
                 self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
@@ -4641,6 +4762,11 @@ impl UiState {
             events_after_first_client_action: summary.events_after_first_client_action,
             event_breakdown_after_first_client_action: summary
                 .event_breakdown_after_first_client_action,
+            first_candidate_use_count_row: summary.first_candidate_use_count_row,
+            first_candidate_use_count_row_before_first_client_action: summary
+                .first_candidate_use_count_row_before_first_client_action,
+            first_candidate_use_count_row_after_first_client_action: summary
+                .first_candidate_use_count_row_after_first_client_action,
             action_outcome: summary.action_outcome,
             followup_events_before_first_client_action: summary
                 .followup_events_before_first_client_action,
@@ -4752,8 +4878,9 @@ mod tests {
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
         QuickbarActiveItemSignature, QuickbarItemRefreshClientActionDetail,
         QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
-        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass, QuickbarRewriteSummary,
-        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
+        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass,
+        QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary, QuickbarStreamProbeSummary,
+        QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -7125,6 +7252,17 @@ mod tests {
                 other_events: 1,
                 ..QuickbarItemRefreshEventBreakdown::default()
             };
+        let pre_action_use_count_row = QuickbarItemRefreshUseCountRow {
+            slot: 2,
+            button_type: 1,
+            object_id: 0x8000_0100,
+            active_property_index: 7,
+            use_count: 4,
+        };
+        ui.post_committed_quickbar_item_refresh_first_candidate_use_count_row =
+            Some(pre_action_use_count_row);
+        ui.post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action =
+            Some(pre_action_use_count_row);
         ui.post_committed_quickbar_item_refresh_followup_events_before_first_client_action = 8;
         ui.post_committed_quickbar_item_refresh_proof_class =
             Some(QuickbarItemRefreshProofClass::Feature25Only);
@@ -7375,6 +7513,28 @@ mod tests {
         ));
         assert!(json.contains(
             "\"pending_item_refresh_server_quickbar_response_timing\": \"server_quickbar_response_before_first_client_action\""
+        ));
+        assert!(
+            json.contains("\"first_server_quickbar_item_use_count_candidate_row_known\": true")
+        );
+        assert!(json.contains(
+            "\"first_server_quickbar_item_use_count_candidate_row_timing\": \"before_first_client_action\""
+        ));
+        assert!(json.contains("\"first_server_quickbar_item_use_count_candidate_row_slot\": 2"));
+        assert!(json.contains(
+            "\"first_server_quickbar_item_use_count_candidate_row_object_id_hex\": \"0x80000100\""
+        ));
+        assert!(json.contains(
+            "\"first_server_quickbar_item_use_count_candidate_row_active_property_index\": 7"
+        ));
+        assert!(
+            json.contains("\"first_server_quickbar_item_use_count_candidate_row_use_count\": 4")
+        );
+        assert!(json.contains(
+            "\"first_server_quickbar_item_use_count_candidate_row_before_first_client_action_known\": true"
+        ));
+        assert!(json.contains(
+            "\"first_server_quickbar_item_use_count_candidate_row_after_first_client_action_known\": false"
         ));
         assert!(
             json.contains("\"first_client_action_timing\": \"delayed_after_pending_followup\"")

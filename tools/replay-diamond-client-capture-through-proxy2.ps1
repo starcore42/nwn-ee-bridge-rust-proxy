@@ -1396,6 +1396,23 @@ try {
     $quickbarHintRecommendedActionOutcome = ''
     $quickbarHintActivePropertyOutcome = ''
     $quickbarHintServerQuickbarResponseTiming = ''
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown = $false
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowTiming = ''
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowSlot = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowButtonType = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowObjectId = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowActivePropertyIndex = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowUseCount = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionKnown = $false
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionSlot = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionButtonType = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionActivePropertyIndex = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionUseCount = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionKnown = $false
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionSlot = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionButtonType = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionActivePropertyIndex = 0
+    $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionUseCount = 0
     $quickbarHintFirstClientActionTiming = ''
     $quickbarHintFollowupEventsBeforeFirstClientAction = 0
     $quickbarHintServerToClientEventsSincePendingRefresh = 0
@@ -1487,6 +1504,35 @@ try {
         if ($null -ne $serverQuickbarResponseTimingProp -and $null -ne $serverQuickbarResponseTimingProp.Value) {
             $quickbarHintServerQuickbarResponseTiming = [string]$serverQuickbarResponseTimingProp.Value
         }
+        $firstUseCountCandidateRowKnownProp = $quickbarHintJson.PSObject.Properties['first_server_quickbar_item_use_count_candidate_row_known']
+        if ($null -ne $firstUseCountCandidateRowKnownProp -and $null -ne $firstUseCountCandidateRowKnownProp.Value) {
+            $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown = [bool]$firstUseCountCandidateRowKnownProp.Value
+        }
+        $firstUseCountCandidateRowTimingProp = $quickbarHintJson.PSObject.Properties['first_server_quickbar_item_use_count_candidate_row_timing']
+        if ($null -ne $firstUseCountCandidateRowTimingProp -and $null -ne $firstUseCountCandidateRowTimingProp.Value) {
+            $quickbarHintFirstServerQuickbarItemUseCountCandidateRowTiming = [string]$firstUseCountCandidateRowTimingProp.Value
+        }
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowSlot = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_slot'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowButtonType = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_button_type'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowObjectId = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_object_id'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowActivePropertyIndex = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_active_property_index'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowUseCount = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_use_count'
+        $beforeUseCountCandidateRowKnownProp = $quickbarHintJson.PSObject.Properties['first_server_quickbar_item_use_count_candidate_row_before_first_client_action_known']
+        if ($null -ne $beforeUseCountCandidateRowKnownProp -and $null -ne $beforeUseCountCandidateRowKnownProp.Value) {
+            $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionKnown = [bool]$beforeUseCountCandidateRowKnownProp.Value
+        }
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionSlot = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_before_first_client_action_slot'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionButtonType = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_before_first_client_action_button_type'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionActivePropertyIndex = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_before_first_client_action_active_property_index'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionUseCount = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_before_first_client_action_use_count'
+        $afterUseCountCandidateRowKnownProp = $quickbarHintJson.PSObject.Properties['first_server_quickbar_item_use_count_candidate_row_after_first_client_action_known']
+        if ($null -ne $afterUseCountCandidateRowKnownProp -and $null -ne $afterUseCountCandidateRowKnownProp.Value) {
+            $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionKnown = [bool]$afterUseCountCandidateRowKnownProp.Value
+        }
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionSlot = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_after_first_client_action_slot'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionButtonType = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_after_first_client_action_button_type'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionActivePropertyIndex = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_after_first_client_action_active_property_index'
+        $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionUseCount = & $getQuickbarHintInt64 'first_server_quickbar_item_use_count_candidate_row_after_first_client_action_use_count'
         $timingProp = $quickbarHintJson.PSObject.Properties['first_client_action_timing']
         if ($null -ne $timingProp -and $null -ne $timingProp.Value) {
             $quickbarHintFirstClientActionTiming = [string]$timingProp.Value
@@ -1612,6 +1658,23 @@ try {
         QuickbarItemRefreshHintRecommendedActionOutcome = $quickbarHintRecommendedActionOutcome
         QuickbarItemRefreshHintActivePropertyOutcome = $quickbarHintActivePropertyOutcome
         QuickbarItemRefreshHintServerQuickbarResponseTiming = $quickbarHintServerQuickbarResponseTiming
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowKnown = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowTiming = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowTiming
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowSlot = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowSlot
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowButtonType = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowButtonType
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowObjectId = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowObjectId
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowActivePropertyIndex = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowActivePropertyIndex
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowUseCount = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowUseCount
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionKnown = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionKnown
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionSlot = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionSlot
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionButtonType = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionButtonType
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionActivePropertyIndex = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionActivePropertyIndex
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionUseCount = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowBeforeFirstClientActionUseCount
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionKnown = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionKnown
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionSlot = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionSlot
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionButtonType = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionButtonType
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionActivePropertyIndex = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionActivePropertyIndex
+        QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionUseCount = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowAfterFirstClientActionUseCount
         QuickbarItemRefreshHintFirstClientActionTiming = $quickbarHintFirstClientActionTiming
         QuickbarItemRefreshHintFollowupEventsBeforeFirstClientAction = $quickbarHintFollowupEventsBeforeFirstClientAction
         QuickbarItemRefreshHintServerToClientEventsSincePendingRefresh = $quickbarHintServerToClientEventsSincePendingRefresh

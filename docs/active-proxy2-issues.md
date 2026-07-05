@@ -17,6 +17,21 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 server quickbar `G Q` row timing details: live-data gate reused
+  the gameplay-reaching HG proxy harness
+  `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-06T02:26:01+10:00`; about 1h56m old at gate). Gameplay was reached
+  through `Module_Loaded`, `Area_ClientArea`, and sustained live-object
+  traffic, with no quarantine artifacts. The current production slice records
+  the first typed live-object `G Q` use-count row for the pending quickbar item
+  candidate overall, before the first client action, and after the first client
+  action; `quickbar-item-refresh-hint.json` and replay summaries now expose
+  the row `slot`, `button_type`, object id, active-property index, use count,
+  and timing. Active next path: rerun the live subtype-low active-property
+  probe with these row fields visible, then use the pre-action candidate row to
+  prove the original-client active-property state handoff before changing the
+  generalized translator/action rule.
 - 2026-07-06 server quickbar response timing diagnostics: live-data gate first
   used gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`

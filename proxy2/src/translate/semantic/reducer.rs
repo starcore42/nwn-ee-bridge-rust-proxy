@@ -18,7 +18,7 @@ use super::state::{
     QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
     QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
     QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
-    QuickbarItemRefreshRecommendedActionOutcome,
+    QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshUseCountRow,
 };
 use super::{
     ActiveItemPropertiesEvent, AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent,
@@ -281,6 +281,13 @@ fn apply_event(
                 let pending_item_refresh_event_breakdown_after_first_client_action = state
                     .ui
                     .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action;
+                let pending_item_refresh_first_candidate_use_count_row = state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_candidate_use_count_row;
+                let pending_item_refresh_first_candidate_use_count_row_before_first_client_action =
+                    state.ui.post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action;
+                let pending_item_refresh_first_candidate_use_count_row_after_first_client_action =
+                    state.ui.post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action;
                 let pending_item_refresh_followup_events_before_first_client_action = state
                     .ui
                     .post_committed_quickbar_item_refresh_followup_events_before_first_client_action;
@@ -352,6 +359,18 @@ fn apply_event(
                     pending_item_refresh_event_breakdown_after_first_client_action;
                 state
                     .ui
+                    .last_committed_quickbar_item_refresh_first_candidate_use_count_row =
+                    pending_item_refresh_first_candidate_use_count_row;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action =
+                    pending_item_refresh_first_candidate_use_count_row_before_first_client_action;
+                state
+                    .ui
+                    .last_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action =
+                    pending_item_refresh_first_candidate_use_count_row_after_first_client_action;
+                state
+                    .ui
                     .last_committed_quickbar_item_refresh_followup_events_before_first_client_action =
                     pending_item_refresh_followup_events_before_first_client_action;
                 state.ui.last_committed_quickbar_item_refresh_outcome =
@@ -403,7 +422,16 @@ fn apply_event(
                     QuickbarItemRefreshEventBreakdown::default();
                 state
                     .ui
-                    .post_committed_quickbar_item_refresh_followup_events_before_first_client_action =
+                    .post_committed_quickbar_item_refresh_first_candidate_use_count_row = None;
+                state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action = None;
+                state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action = None;
+                state
+                .ui
+                .post_committed_quickbar_item_refresh_followup_events_before_first_client_action =
                     0;
                 state.ui.post_committed_quickbar_item_refresh_proof_class = None;
                 state
@@ -940,6 +968,15 @@ fn remember_quickbar_item_context_if_relevant(
                 QuickbarItemRefreshEventBreakdown::default();
             state
                 .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row = None;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action = None;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action = None;
+            state
+                .ui
                 .post_committed_quickbar_item_refresh_followup_events_before_first_client_action =
                 0;
             state
@@ -962,6 +999,15 @@ fn remember_quickbar_item_context_if_relevant(
                 .ui
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
                 QuickbarItemRefreshEventBreakdown::default();
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row = None;
+            state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action = None;
+            state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action = None;
             state
                 .ui
                 .post_committed_quickbar_item_refresh_followup_events_before_first_client_action =
@@ -1365,6 +1411,56 @@ fn record_pending_quickbar_item_refresh_event(
         event,
         compact_candidate_object_id,
     );
+    if let Some(row) =
+        first_quickbar_item_refresh_candidate_use_count_row(event, compact_candidate_object_id)
+    {
+        if state
+            .ui
+            .post_committed_quickbar_item_refresh_first_candidate_use_count_row
+            .is_none()
+        {
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row = Some(row);
+        }
+        if first_client_action_seen_before_event {
+            if state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action
+                .is_none()
+            {
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action =
+                    Some(row);
+            }
+        } else if state
+            .ui
+            .post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action
+            .is_none()
+        {
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action =
+                Some(row);
+        }
+    }
+}
+
+fn first_quickbar_item_refresh_candidate_use_count_row(
+    event: &ProtocolEvent,
+    candidate_object_id: Option<u32>,
+) -> Option<QuickbarItemRefreshUseCountRow> {
+    let candidate_object_id = candidate_object_id?;
+    let ProtocolEvent::LiveObject(event) = event else {
+        return None;
+    };
+    event
+        .quickbar_item_use_count_updates
+        .iter()
+        .copied()
+        .find(|update| update.object_id == candidate_object_id)
+        .map(QuickbarItemRefreshUseCountRow::from)
 }
 
 fn record_quickbar_item_refresh_event_breakdown(
@@ -3303,6 +3399,130 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn pending_quickbar_refresh_records_candidate_use_count_row_timing() {
+        let owner_id = 0x8000_0010u32;
+        let candidate_id = 0x8000_0100u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&candidate_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&0x8000_0102u32.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let client_use_item = client_use_item_payload(candidate_id);
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 7,
+                    button_type: 1,
+                    object_id: candidate_id,
+                    active_property_index: 3,
+                    use_count: 4,
+                },
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 8,
+                    button_type: 1,
+                    object_id: 0x8000_0101,
+                    active_property_index: 9,
+                    use_count: 1,
+                },
+            ]),
+            None,
+        );
+        observe_verified_payload(
+            &mut state,
+            Direction::ClientToServer,
+            &VerifiedProof::Family(VerifiedFamily::ClientInput),
+            &client_use_item,
+        );
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 7,
+                    button_type: 1,
+                    object_id: candidate_id,
+                    active_property_index: 3,
+                    use_count: 3,
+                },
+            ]),
+            None,
+        );
+
+        let unresolved = state
+            .ui
+            .unresolved_pending_item_refresh()
+            .expect("typed use-count rows should not close the pending quickbar refresh");
+        assert_eq!(
+            unresolved
+                .event_breakdown
+                .server_quickbar_item_use_count_events,
+            2
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown
+                .server_quickbar_item_use_count_rows,
+            3
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown
+                .server_quickbar_item_use_count_candidate_rows,
+            2
+        );
+        assert_eq!(
+            unresolved
+                .event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_events,
+            1
+        );
+        assert_eq!(
+            unresolved.first_candidate_use_count_row,
+            Some(QuickbarItemRefreshUseCountRow {
+                slot: 7,
+                button_type: 1,
+                object_id: candidate_id,
+                active_property_index: 3,
+                use_count: 4,
+            })
+        );
+        assert_eq!(
+            unresolved.first_candidate_use_count_row_before_first_client_action,
+            unresolved.first_candidate_use_count_row
+        );
+        assert_eq!(
+            unresolved.first_candidate_use_count_row_after_first_client_action,
+            Some(QuickbarItemRefreshUseCountRow {
+                slot: 7,
+                button_type: 1,
+                object_id: candidate_id,
+                active_property_index: 3,
+                use_count: 3,
+            })
+        );
+    }
+
+    #[test]
     fn pending_quickbar_refresh_records_delayed_client_action_timing() {
         let owner_id = 0x8000_0010u32;
         let first_item_id = 0x8000_0100u32;
@@ -3729,6 +3949,24 @@ mod fixture_free_tests {
         payload.push(0);
         payload.push(0x60);
         payload
+    }
+
+    fn quickbar_use_count_event(
+        updates: Vec<crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate>,
+    ) -> ProtocolEvent {
+        ProtocolEvent::LiveObject(LiveObjectEvent {
+            observed: observed_high_level(
+                Direction::ServerToClient,
+                VerifiedFamily::GameObjUpdateLiveObject,
+                &[],
+            ),
+            mentions: Vec::new(),
+            materialized_item_object_ids: Vec::new(),
+            inventory_feature25_references: Vec::new(),
+            quickbar_item_use_count_records: 1,
+            quickbar_item_use_count_rows: u32::try_from(updates.len()).unwrap_or(u32::MAX),
+            quickbar_item_use_count_updates: updates,
+        })
     }
 
     fn client_gui_event_notify_payload(object_id: u32) -> Vec<u8> {

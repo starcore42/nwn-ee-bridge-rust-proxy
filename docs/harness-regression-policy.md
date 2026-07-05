@@ -33,13 +33,14 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-06 02:35 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-06 04:39 +10: the freshest
 gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
 `GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
-`2026-07-06T02:26:01+10:00`, and produced no quarantine artifacts. Candidate
+`2026-07-06T02:26:01+10:00`, about 2h13m old at this status update, and
+produced no quarantine artifacts. Candidate
 `0x80015D4C` came from `active_object` / `direct_only` proof, matched the
 preserved active-property quickbar item, and the bridge dispatched the
 validated first-property subtype-low `Input_UseItem` payload
@@ -51,13 +52,15 @@ full `GuiQuickbar`, 0 live-object `G Q`, and 0 candidate `0x18/0x01` or
 (`pending_item_refresh_active_property_outcome="candidate_client_action_no_active_property_response"`).
 The full pending window did contain one pre-action live-object `G Q` event with
 four candidate rows. Current proxy2 now derives
-`pending_item_refresh_server_quickbar_response_timing` plus explicit
-`*_before_first_client_action` response counters in `quickbar-item-refresh-hint.json`;
-the replay summary exports the timing field as
-`QuickbarItemRefreshHintServerQuickbarResponseTiming`. The active target is now
-the original-client active-property state handoff around that pre-action `G Q`
-refresh, not another exact SetButton, GuiEvent_Notify, UseObject, zero-byte
-UseItem, or subtype-low UseItem payload probe.
+`pending_item_refresh_server_quickbar_response_timing`, explicit
+`*_before_first_client_action` response counters, and
+`first_server_quickbar_item_use_count_candidate_row_*` fields in
+`quickbar-item-refresh-hint.json`; the replay summary exports the timing field
+and the first candidate row timing/slot/button/property/use-count values. The
+next live subtype-low probe should inspect these row fields first. The active
+target is now the original-client active-property state handoff around that
+pre-action `G Q` refresh, not another exact SetButton, GuiEvent_Notify,
+UseObject, zero-byte UseItem, or subtype-low UseItem payload probe.
 
 As of 2026-07-05 12:33 +10, proxy2 also writes
 `pending_item_refresh_recommended_action_outcome` into quickbar item-refresh
