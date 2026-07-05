@@ -1784,6 +1784,7 @@ try {
         QuickbarSemanticPendingItemRefreshOutcomeNoPending = Get-SemanticCommittedQuickbarProfileStringFieldCount -Text $proxyLogText -Field 'pending_item_refresh_outcome' -Value 'no_pending_refresh'
         QuickbarSemanticPendingItemRefreshOutcomeStillBlank = Get-SemanticCommittedQuickbarProfileStringFieldCount -Text $proxyLogText -Field 'pending_item_refresh_outcome' -Value 'pending_refresh_still_blank'
         QuickbarSemanticPendingItemRefreshOutcomeEmittedItemSlots = Get-SemanticCommittedQuickbarProfileStringFieldCount -Text $proxyLogText -Field 'pending_item_refresh_outcome' -Value 'pending_refresh_emitted_item_slots'
+        QuickbarSemanticPendingItemRefreshOutcomeObservedUseCountRows = Get-SemanticCommittedQuickbarProfileStringFieldCount -Text $proxyLogText -Field 'pending_item_refresh_outcome' -Value 'pending_refresh_observed_use_count_rows'
         QuickbarSemanticPendingItemRefreshFirstFollowupLiveObject = Get-SemanticCommittedQuickbarProfileStringFieldCount -Text $proxyLogText -Field 'pending_item_refresh_first_followup_event' -Value 'live_object'
         QuickbarSemanticPendingItemRefreshFirstFollowupInventory = Get-SemanticCommittedQuickbarProfileStringFieldCount -Text $proxyLogText -Field 'pending_item_refresh_first_followup_event' -Value 'inventory'
         QuickbarSemanticPendingItemRefreshFirstFollowupClientInputUseItem = Get-SemanticCommittedQuickbarProfileStringFieldCount -Text $proxyLogText -Field 'pending_item_refresh_first_followup_event' -Value 'client_input_use_item'

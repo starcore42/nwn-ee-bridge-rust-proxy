@@ -653,6 +653,7 @@ pub(crate) enum QuickbarItemRefreshOutcome {
     NoPendingRefresh,
     PendingRefreshStillBlank,
     PendingRefreshEmittedItemSlots,
+    PendingRefreshObservedUseCountRows,
 }
 
 impl Default for QuickbarItemRefreshOutcome {
@@ -667,6 +668,7 @@ impl QuickbarItemRefreshOutcome {
             Self::NoPendingRefresh => "no_pending_refresh",
             Self::PendingRefreshStillBlank => "pending_refresh_still_blank",
             Self::PendingRefreshEmittedItemSlots => "pending_refresh_emitted_item_slots",
+            Self::PendingRefreshObservedUseCountRows => "pending_refresh_observed_use_count_rows",
         }
     }
 }
@@ -4216,6 +4218,7 @@ pub(crate) struct UiState {
         Option<InventoryItemContextSummary>,
     pub(crate) inventory_item_context_after_committed_quickbar_updates: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending: bool,
+    pub(crate) post_committed_quickbar_item_refresh_resolved_by_server_use_count: bool,
     pub(crate) post_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_events: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_event_breakdown:
@@ -4411,6 +4414,7 @@ impl UiState {
         self.last_inventory_item_context_after_committed_quickbar = None;
         self.inventory_item_context_after_committed_quickbar_updates = 0;
         self.post_committed_quickbar_item_refresh_pending = false;
+        self.post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
         self.post_committed_quickbar_item_refresh_pending_updates = 0;
         self.post_committed_quickbar_item_refresh_pending_events = 0;
         self.post_committed_quickbar_item_refresh_pending_event_breakdown =
@@ -4427,6 +4431,95 @@ impl UiState {
         self.post_committed_quickbar_item_refresh_first_client_action = None;
         self.post_committed_quickbar_item_refresh_first_client_action_detail = None;
         self.post_committed_quickbar_item_refresh_first_event_after_client_action = None;
+    }
+
+    pub(crate) fn resolve_pending_quickbar_item_refresh_with_server_use_count(&mut self) -> bool {
+        if !self.post_committed_quickbar_item_refresh_pending {
+            return false;
+        }
+        if self
+            .post_committed_quickbar_item_refresh_first_candidate_use_count_row
+            .is_none()
+        {
+            return false;
+        }
+        let Some(item_context) = self.last_inventory_item_context_after_committed_quickbar else {
+            return false;
+        };
+
+        let pending_item_refresh_event_breakdown =
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown;
+        let pending_item_refresh_event_breakdown_after_first_client_action =
+            self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action;
+        let pending_item_refresh_event_breakdown_before_first_client_action =
+            pending_item_refresh_event_breakdown
+                .saturating_sub(pending_item_refresh_event_breakdown_after_first_client_action);
+        let pending_item_refresh_action_outcome =
+            QuickbarItemRefreshActionOutcome::from_pending_state(
+                self.post_committed_quickbar_item_refresh_first_client_action_detail,
+                pending_item_refresh_event_breakdown_before_first_client_action,
+                pending_item_refresh_event_breakdown_after_first_client_action,
+            );
+
+        self.last_committed_quickbar_previous_post_item_context = Some(item_context);
+        self.last_committed_quickbar_previous_post_item_context_updates =
+            self.inventory_item_context_after_committed_quickbar_updates;
+        self.last_committed_quickbar_item_refresh_pending = true;
+        self.last_committed_quickbar_item_refresh_pending_updates =
+            self.post_committed_quickbar_item_refresh_pending_updates;
+        self.last_committed_quickbar_item_refresh_pending_events =
+            self.post_committed_quickbar_item_refresh_pending_events;
+        self.last_committed_quickbar_item_refresh_pending_event_breakdown =
+            pending_item_refresh_event_breakdown;
+        self.last_committed_quickbar_item_refresh_events_after_first_client_action =
+            self.post_committed_quickbar_item_refresh_events_after_first_client_action;
+        self.last_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+            pending_item_refresh_event_breakdown_after_first_client_action;
+        self.last_committed_quickbar_item_refresh_first_candidate_use_count_row =
+            self.post_committed_quickbar_item_refresh_first_candidate_use_count_row;
+        self.last_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action =
+            self.post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action;
+        self.last_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action =
+            self.post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action;
+        self.last_committed_quickbar_item_refresh_followup_events_before_first_client_action =
+            self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action;
+        self.last_committed_quickbar_item_refresh_outcome =
+            QuickbarItemRefreshOutcome::PendingRefreshObservedUseCountRows;
+        self.last_committed_quickbar_item_refresh_action_outcome =
+            pending_item_refresh_action_outcome;
+        self.last_committed_quickbar_item_refresh_proof_class =
+            self.post_committed_quickbar_item_refresh_proof_class;
+        self.last_committed_quickbar_item_refresh_first_followup_event =
+            self.post_committed_quickbar_item_refresh_first_followup_event;
+        self.last_committed_quickbar_item_refresh_first_client_action =
+            self.post_committed_quickbar_item_refresh_first_client_action;
+        self.last_committed_quickbar_item_refresh_first_client_action_detail =
+            self.post_committed_quickbar_item_refresh_first_client_action_detail;
+        self.last_committed_quickbar_item_refresh_first_event_after_client_action =
+            self.post_committed_quickbar_item_refresh_first_event_after_client_action;
+        self.last_committed_quickbar_best_item_context = Some(item_context);
+        self.last_committed_quickbar_best_item_context_source =
+            Some(QuickbarItemContextSource::Current);
+
+        self.post_committed_quickbar_item_refresh_pending = false;
+        self.post_committed_quickbar_item_refresh_resolved_by_server_use_count = true;
+        self.post_committed_quickbar_item_refresh_pending_updates = 0;
+        self.post_committed_quickbar_item_refresh_pending_events = 0;
+        self.post_committed_quickbar_item_refresh_pending_event_breakdown =
+            QuickbarItemRefreshEventBreakdown::default();
+        self.post_committed_quickbar_item_refresh_events_after_first_client_action = 0;
+        self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action =
+            QuickbarItemRefreshEventBreakdown::default();
+        self.post_committed_quickbar_item_refresh_first_candidate_use_count_row = None;
+        self.post_committed_quickbar_item_refresh_first_candidate_use_count_row_before_first_client_action = None;
+        self.post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action = None;
+        self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action = 0;
+        self.post_committed_quickbar_item_refresh_proof_class = None;
+        self.post_committed_quickbar_item_refresh_first_followup_event = None;
+        self.post_committed_quickbar_item_refresh_first_client_action = None;
+        self.post_committed_quickbar_item_refresh_first_client_action_detail = None;
+        self.post_committed_quickbar_item_refresh_first_event_after_client_action = None;
+        true
     }
 
     pub(crate) fn quickbar_item_refresh_harness_idle_reason(&self) -> &'static str {
@@ -4449,6 +4542,10 @@ impl UiState {
                 return "pending_refresh_without_candidate";
             }
             return "pending_refresh_hint_unavailable";
+        }
+
+        if self.post_committed_quickbar_item_refresh_resolved_by_server_use_count {
+            return "post_context_resolved_by_server_quickbar_use_count";
         }
 
         if context.cleared_inventory_item_object_ids != 0 {
@@ -4589,6 +4686,7 @@ impl UiState {
                 "  \"stream_probe_compact_item_emission_proof_objects\": {},\n",
                 "  \"post_committed_item_context_known\": {},\n",
                 "  \"post_committed_item_refresh_pending\": {},\n",
+                "  \"post_committed_item_refresh_resolved_by_server_use_count\": {},\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"server_to_client_events_since_pending_refresh\": {},\n",
@@ -4670,6 +4768,7 @@ impl UiState {
             self.last_inventory_item_context_after_committed_quickbar
                 .is_some(),
             self.post_committed_quickbar_item_refresh_pending,
+            self.post_committed_quickbar_item_refresh_resolved_by_server_use_count,
             self.inventory_item_context_after_committed_quickbar_updates,
             self.post_committed_quickbar_item_refresh_pending_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -7969,6 +8068,9 @@ mod tests {
 
         let initial = ui.quickbar_item_refresh_harness_idle_json();
         assert!(initial.contains("\"pending_item_refresh\": false"));
+        assert!(
+            initial.contains("\"post_committed_item_refresh_resolved_by_server_use_count\": false")
+        );
         assert!(initial.contains("\"no_hint_reason\": \"no_committed_quickbar_profile\""));
         assert!(initial.contains("\"committed_quickbar_seen\": false"));
         assert!(initial.contains("\"stream_probe_quickbar_seen\": false"));
@@ -8080,6 +8182,18 @@ mod tests {
         assert!(no_candidate.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(no_candidate.contains("\"candidate_known\": false"));
         assert!(no_candidate.contains("\"compact_item_emission_proof_objects\": 1"));
+
+        ui.post_committed_quickbar_item_refresh_pending = false;
+        ui.post_committed_quickbar_item_refresh_resolved_by_server_use_count = true;
+        let resolved_by_use_count = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(resolved_by_use_count.contains("\"pending_item_refresh\": false"));
+        assert!(resolved_by_use_count.contains(
+            "\"no_hint_reason\": \"post_context_resolved_by_server_quickbar_use_count\""
+        ));
+        assert!(
+            resolved_by_use_count
+                .contains("\"post_committed_item_refresh_resolved_by_server_use_count\": true")
+        );
     }
 
     #[test]

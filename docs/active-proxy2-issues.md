@@ -17,6 +17,32 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 pre-action `G Q` quickbar state handoff: live-data gate reused
+  the gameplay-reaching HG proxy harness
+  `C:\nwnbridge\codex-live-preaction-gq-suppression-20260706-070013\harness-proxy-20260706-070018`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-06T07:02:35+10:00`; about 1h20m old at gate). Gameplay was reached
+  through `Module_Loaded`, `Area_ClientArea`, and sustained live-object
+  traffic, with no quarantine directory. The capture showed four typed
+  candidate live-object `G Q` item-use-count rows before any client action.
+  Proxy2 now treats that verified server row as the generalized semantic
+  resolution for the pending post-committed quickbar item-refresh window:
+  it snapshots the pending counters/first-row timing into the last committed
+  quickbar summary, records
+  `pending_item_refresh_outcome="pending_refresh_observed_use_count_rows"`,
+  clears the active pending hint, and reports
+  `no_hint_reason="post_context_resolved_by_server_quickbar_use_count"`.
+  No packet bit reader/writer changed in this slice; it consumes the existing
+  typed `G Q` rows from the decompile-backed live-object parser. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-gq-resolution-20260706-083719`
+  over the 2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304
+  strict allows, 0 strict quarantines, and 0 quarantine files; that capture has
+  no candidate `G Q` row in the pending window, so
+  `QuickbarSemanticPendingItemRefreshOutcomeObservedUseCountRows=0` is
+  expected. Replay summaries now count that outcome for captures that do have
+  the resolved row. Next verification path: run the live HG harness on the
+  current build and confirm the final hint resolves by server quickbar use-count
+  rows without dispatching another generated active-property action.
 - 2026-07-06 pre-action `G Q` quickbar response suppression: live-data gate
   first reused the gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`

@@ -33,13 +33,13 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-06 07:08 +10: the freshest
-gameplay-reaching proxy harness is
+Latest known live HG proxy status, as of 2026-07-06 08:36 +10: the freshest
+gameplay-reaching proxy harness is still
 `C:\nwnbridge\codex-live-preaction-gq-suppression-20260706-070013\harness-proxy-20260706-070018`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
 `GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
-`2026-07-06T07:02:35+10:00`, about 5 minutes old at this status update, and
+`2026-07-06T07:02:35+10:00`, about 1h33m old at this status update, and
 produced no quarantine directory. Candidate
 `0x8001596F` came from `active_object` / `direct_only` proof and matched the
 preserved active-property quickbar item. The final hint recorded
@@ -51,9 +51,13 @@ preserved active-property quickbar item. The final hint recorded
 before any client action, and zero candidate rows after a client action. The
 driver log confirmed the opt-in subtype-low auto action was skipped with
 `recommended client action suppressed by proxy hint:
-server_quickbar_response_before_first_client_action`. The active target is now
-the generalized EE client handling/state handoff for the pre-action
-live-object `G Q` quickbar use-count row, not another exact SetButton,
+server_quickbar_response_before_first_client_action`. Current proxy2 code now
+uses the verified pre-action candidate `G Q` row as the semantic handoff for
+the pending quickbar item-refresh window, records
+`pending_refresh_observed_use_count_rows`, clears the active pending hint, and
+reports `post_context_resolved_by_server_quickbar_use_count`. The next harness
+target is a live HG rerun on that current build to confirm the final hint
+resolves this way without dispatching another exact SetButton,
 GuiEvent_Notify, UseObject, zero-byte UseItem, or subtype-low UseItem payload
 probe.
 
