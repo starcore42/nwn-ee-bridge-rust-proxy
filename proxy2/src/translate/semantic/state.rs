@@ -674,6 +674,7 @@ impl QuickbarItemRefreshOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshActionOutcome {
     AwaitingClientAction,
+    ServerQuickbarResponseBeforeFirstClientAction,
     FirstClientActionTargetUnknown,
     FirstClientActionTargetsOtherObject,
     CandidateClientActionNoServerQuickbar,
@@ -689,8 +690,12 @@ impl Default for QuickbarItemRefreshActionOutcome {
 impl QuickbarItemRefreshActionOutcome {
     pub(crate) fn from_pending_state(
         first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+        event_breakdown_before_first_client_action: QuickbarItemRefreshEventBreakdown,
         event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
     ) -> Self {
+        if event_breakdown_before_first_client_action.has_server_quickbar_response() {
+            return Self::ServerQuickbarResponseBeforeFirstClientAction;
+        }
         let Some(detail) = first_client_action_detail else {
             return Self::AwaitingClientAction;
         };
@@ -709,6 +714,9 @@ impl QuickbarItemRefreshActionOutcome {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::AwaitingClientAction => "awaiting_client_action",
+            Self::ServerQuickbarResponseBeforeFirstClientAction => {
+                "server_quickbar_response_before_first_client_action"
+            }
             Self::FirstClientActionTargetUnknown => "first_client_action_target_unknown",
             Self::FirstClientActionTargetsOtherObject => "first_client_action_targets_other_object",
             Self::CandidateClientActionNoServerQuickbar => {
@@ -809,6 +817,7 @@ impl QuickbarItemRefreshClientActionMatchClass {
 pub(crate) enum QuickbarItemRefreshRecommendedActionOutcome {
     AwaitingClientAction,
     NoRecommendedClientAction,
+    ServerQuickbarResponseBeforeRecommendedAction,
     RecommendedUseItemNoServerQuickbar,
     RecommendedUseItemObservedServerQuickbar,
     RecommendedUseItemFirstPropertySubtypeLowNoServerQuickbar,
@@ -833,8 +842,12 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
         candidate_object_id: Option<u32>,
         recommended_set_button_slot: u8,
         first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+        event_breakdown_before_first_client_action: QuickbarItemRefreshEventBreakdown,
         event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
     ) -> Self {
+        if event_breakdown_before_first_client_action.has_server_quickbar_response() {
+            return Self::ServerQuickbarResponseBeforeRecommendedAction;
+        }
         let Some(detail) = first_client_action_detail else {
             return Self::AwaitingClientAction;
         };
@@ -891,6 +904,9 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
         match self {
             Self::AwaitingClientAction => "awaiting_client_action",
             Self::NoRecommendedClientAction => "no_recommended_client_action",
+            Self::ServerQuickbarResponseBeforeRecommendedAction => {
+                "server_quickbar_response_before_recommended_action"
+            }
             Self::RecommendedUseItemNoServerQuickbar => "recommended_use_item_no_server_quickbar",
             Self::RecommendedUseItemObservedServerQuickbar => {
                 "recommended_use_item_observed_server_quickbar"
@@ -1483,6 +1499,19 @@ impl QuickbarItemRefreshHarnessHint {
             .first_event_after_client_action
             .map(QuickbarItemRefreshEventKind::as_str)
             .unwrap_or("none");
+        let event_breakdown_before_first_client_action = self
+            .event_breakdown
+            .saturating_sub(self.event_breakdown_after_first_client_action);
+        let server_quickbar_response_before_first_client_action =
+            event_breakdown_before_first_client_action.has_server_quickbar_response();
+        let recommended_client_action_should_dispatch =
+            !server_quickbar_response_before_first_client_action;
+        let recommended_client_action_suppressed_reason =
+            if server_quickbar_response_before_first_client_action {
+                "server_quickbar_response_before_first_client_action"
+            } else {
+                "none"
+            };
         let action_outcome = self.action_outcome.as_str();
         let recommended_action_outcome =
             QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
@@ -1490,6 +1519,7 @@ impl QuickbarItemRefreshHarnessHint {
                 Some(self.candidate.object_id),
                 self.recommended_set_button_slot,
                 first_active_item,
+                event_breakdown_before_first_client_action,
                 self.event_breakdown_after_first_client_action,
             )
             .as_str();
@@ -1498,9 +1528,6 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown_after_first_client_action,
         )
         .as_str();
-        let event_breakdown_before_first_client_action = self
-            .event_breakdown
-            .saturating_sub(self.event_breakdown_after_first_client_action);
         let server_quickbar_response_timing =
             QuickbarItemRefreshServerQuickbarResponseTiming::from_pending_state(
                 first_client_action_detail,
@@ -1559,6 +1586,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_preserved_active_item_value_mask\": {},\n",
                 "  \"first_preserved_active_item_value_mask_hex\": \"0x{:02X}\",\n",
                 "  \"recommended_client_action\": \"target_candidate_with_use_item_use_object_quickbar_set_button_or_gui_event_notify_probe\",\n",
+                "  \"recommended_client_action_should_dispatch\": {},\n",
+                "  \"recommended_client_action_suppressed_reason\": \"{}\",\n",
                 "  \"recommended_use_item_payload_available\": {},\n",
                 "  \"recommended_use_item_payload_kind\": \"Input_UseItem\",\n",
                 "  \"recommended_use_item_payload_hex\": \"{}\",\n",
@@ -1780,6 +1809,8 @@ impl QuickbarItemRefreshHarnessHint {
             first_active_item_state_mask,
             first_active_item_value_mask,
             first_active_item_value_mask,
+            recommended_client_action_should_dispatch,
+            recommended_client_action_suppressed_reason,
             recommended_use_item_payload_available,
             recommended_use_item_payload_hex,
             self.candidate.object_id,
@@ -4320,9 +4351,15 @@ impl UiState {
             } else {
                 pending_item_refresh_event_breakdown_after_first_client_action
             };
+        let pending_item_refresh_event_breakdown_before_first_client_action = self
+            .post_committed_quickbar_item_refresh_pending_event_breakdown
+            .saturating_sub(
+                self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            );
         let pending_item_refresh_action_outcome =
             QuickbarItemRefreshActionOutcome::from_pending_state(
                 pending_item_refresh_first_client_action_detail,
+                pending_item_refresh_event_breakdown_before_first_client_action,
                 pending_item_refresh_action_outcome_breakdown,
             );
         let pending_item_refresh_outcome =
@@ -4442,8 +4479,14 @@ impl UiState {
             .post_committed_quickbar_item_refresh_proof_class
             .map(QuickbarItemRefreshProofClass::as_str)
             .unwrap_or("none");
+        let event_breakdown_before_first_client_action = self
+            .post_committed_quickbar_item_refresh_pending_event_breakdown
+            .saturating_sub(
+                self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            );
         let action_outcome = QuickbarItemRefreshActionOutcome::from_pending_state(
             self.post_committed_quickbar_item_refresh_first_client_action_detail,
+            event_breakdown_before_first_client_action,
             self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
         )
         .as_str();
@@ -4454,6 +4497,7 @@ impl UiState {
                 self.quickbar_item_refresh_set_button_slot().0,
                 self.last_quickbar_stream_probe
                     .and_then(|probe| probe.first_preserved_active_item_signature),
+                event_breakdown_before_first_client_action,
                 self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             )
             .as_str();
@@ -4462,11 +4506,6 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
         )
         .as_str();
-        let event_breakdown_before_first_client_action = self
-            .post_committed_quickbar_item_refresh_pending_event_breakdown
-            .saturating_sub(
-                self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
-            );
         let server_quickbar_response_timing =
             QuickbarItemRefreshServerQuickbarResponseTiming::from_pending_state(
                 self.post_committed_quickbar_item_refresh_first_client_action_detail,
@@ -4728,6 +4767,10 @@ impl UiState {
                 .post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action,
             action_outcome: QuickbarItemRefreshActionOutcome::from_pending_state(
                 self.post_committed_quickbar_item_refresh_first_client_action_detail,
+                self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                    .saturating_sub(
+                        self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+                    ),
                 self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             ),
             followup_events_before_first_client_action: self
@@ -7438,6 +7481,10 @@ mod tests {
         assert!(json.contains(
             "\"recommended_client_action\": \"target_candidate_with_use_item_use_object_quickbar_set_button_or_gui_event_notify_probe\""
         ));
+        assert!(json.contains("\"recommended_client_action_should_dispatch\": false"));
+        assert!(json.contains(
+            "\"recommended_client_action_suppressed_reason\": \"server_quickbar_response_before_first_client_action\""
+        ));
         assert!(json.contains("\"recommended_client_gui_event_notify_payload_available\": true"));
         assert!(
             json.contains(
@@ -7503,10 +7550,10 @@ mod tests {
             "\"server_active_item_property_candidate_full_property_rows_since_pending_refresh\": 0"
         ));
         assert!(json.contains(
-            "\"pending_item_refresh_action_outcome\": \"candidate_client_action_no_server_quickbar\""
+            "\"pending_item_refresh_action_outcome\": \"server_quickbar_response_before_first_client_action\""
         ));
         assert!(json.contains(
-            "\"pending_item_refresh_recommended_action_outcome\": \"no_recommended_client_action\""
+            "\"pending_item_refresh_recommended_action_outcome\": \"server_quickbar_response_before_recommended_action\""
         ));
         assert!(json.contains(
             "\"pending_item_refresh_active_property_outcome\": \"candidate_client_action_no_active_property_response\""
@@ -7722,7 +7769,7 @@ mod tests {
             use_item_json.contains("\"first_client_action_match_class\": \"recommended_use_item\"")
         );
         assert!(use_item_json.contains(
-            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_use_item_no_server_quickbar\""
+            "\"pending_item_refresh_recommended_action_outcome\": \"server_quickbar_response_before_recommended_action\""
         ));
         assert!(
             use_item_json
@@ -7751,7 +7798,7 @@ mod tests {
             "\"first_client_action_match_class\": \"recommended_use_item_first_property_subtype_low\""
         ));
         assert!(use_item_subtype_low_json.contains(
-            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_use_item_first_property_subtype_low_no_server_quickbar\""
+            "\"pending_item_refresh_recommended_action_outcome\": \"server_quickbar_response_before_recommended_action\""
         ));
         assert!(
             use_item_subtype_low_json
@@ -7801,7 +7848,7 @@ mod tests {
                 .contains("\"first_client_action_match_class\": \"recommended_set_button\"")
         );
         assert!(set_button_json.contains(
-            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_set_button_no_server_quickbar\""
+            "\"pending_item_refresh_recommended_action_outcome\": \"server_quickbar_response_before_recommended_action\""
         ));
         assert!(set_button_json.contains(
             "\"first_client_action_matches_recommended_client_gui_event_notify\": false"
@@ -7861,7 +7908,7 @@ mod tests {
                 .contains("\"first_client_action_match_class\": \"recommended_gui_event_notify\"")
         );
         assert!(gui_json.contains(
-            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_gui_event_notify_no_server_quickbar\""
+            "\"pending_item_refresh_recommended_action_outcome\": \"server_quickbar_response_before_recommended_action\""
         ));
         assert!(
             gui_json.contains(
@@ -7908,7 +7955,7 @@ mod tests {
                 .contains("\"first_client_action_match_class\": \"recommended_use_object\"")
         );
         assert!(use_object_json.contains(
-            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_use_object_no_server_quickbar\""
+            "\"pending_item_refresh_recommended_action_outcome\": \"server_quickbar_response_before_recommended_action\""
         ));
         assert!(
             use_object_json

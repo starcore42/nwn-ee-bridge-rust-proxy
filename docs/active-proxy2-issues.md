@@ -17,6 +17,39 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 pre-action `G Q` quickbar response suppression: live-data gate
+  first reused the gameplay-reaching HG proxy harness
+  `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-06T02:26:01+10:00`; about 3h56m old at gate). A current-code probe
+  before the implementation,
+  `C:\nwnbridge\codex-live-useitem-subtype-low-row-current-20260706-062327\harness-proxy-20260706-062336`,
+  reached gameplay and showed the same pattern: a server live-object `G Q`
+  item-use-count row for the candidate existed before the injected subtype-low
+  `UseItem`, while no quickbar response followed the injected action. Proxy2
+  now classifies any pre-first-client-action server quickbar response as
+  `server_quickbar_response_before_first_client_action` /
+  `server_quickbar_response_before_recommended_action`, exports
+  `recommended_client_action_should_dispatch=false` plus the suppression
+  reason in `quickbar-item-refresh-hint.json`, and the EE bridge/harness honors
+  that hint for all generated quickbar item-refresh probes. Fresh verification
+  harness
+  `C:\nwnbridge\codex-live-preaction-gq-suppression-20260706-070013\harness-proxy-20260706-070018`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, wrote the final hint at
+  `2026-07-06T07:02:35+10:00`, produced no quarantine directory, selected
+  candidate `0x8001596F`, recorded four candidate `G Q` rows before any client
+  action and zero after, and left `first_client_action="none"`. The driver log
+  confirmed the generated subtype-low action was skipped with
+  `recommended client action suppressed by proxy hint:
+  server_quickbar_response_before_first_client_action`. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-preaction-gq-suppression-20260706-070434`
+  over the 2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304
+  strict allows, 0 strict quarantines, and 0 quarantine files. Active next path:
+  trace and implement the generalized EE client handling/state handoff for the
+  pre-action live-object `G Q` quickbar use-count row so that the visible
+  quickbar/active-property state matches original gameplay, rather than adding
+  another generated action identity probe.
 - 2026-07-06 server quickbar `G Q` row timing details: live-data gate reused
   the gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`
