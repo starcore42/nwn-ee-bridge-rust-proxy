@@ -18,6 +18,7 @@ use super::state::{
     QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
     QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
     QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    QuickbarItemRefreshRecommendedActionOutcome,
 };
 use super::{
     AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent, ClientQuickbarEvent,
@@ -463,16 +464,30 @@ fn apply_event(
                 ) = quickbar_item_context_candidate_trace_fields(
                     previous_post_item_context.compact_item_emission_candidate,
                 );
+                let pending_item_refresh_candidate_before_commit = if pending_item_refresh {
+                    previous_post_item_context.compact_item_emission_candidate
+                } else {
+                    None
+                };
                 let (
                     pending_item_refresh_candidate_known_before_commit,
                     pending_item_refresh_candidate_object_id_before_commit,
                     pending_item_refresh_candidate_proof_before_commit,
                     pending_item_refresh_candidate_source_before_commit,
-                ) = quickbar_item_context_candidate_trace_fields(if pending_item_refresh {
-                    previous_post_item_context.compact_item_emission_candidate
-                } else {
-                    None
-                });
+                ) = quickbar_item_context_candidate_trace_fields(
+                    pending_item_refresh_candidate_before_commit,
+                );
+                let (recommended_set_button_slot, _) =
+                    state.ui.quickbar_item_refresh_set_button_slot();
+                let pending_item_refresh_recommended_action_outcome =
+                    QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                        pending_item_refresh_first_client_action_detail,
+                        pending_item_refresh_candidate_before_commit
+                            .map(|candidate| candidate.object_id),
+                        recommended_set_button_slot,
+                        pending_item_refresh_action_outcome_breakdown,
+                    )
+                    .as_str();
                 let (
                     best_compact_item_emission_candidate_known,
                     best_compact_item_emission_candidate_object_id,
@@ -637,6 +652,7 @@ fn apply_event(
                         pending_item_refresh_event_breakdown_after_first_client_action.other_events,
                     pending_item_refresh_proof_class,
                     pending_item_refresh_action_outcome,
+                    pending_item_refresh_recommended_action_outcome,
                     pending_item_refresh_first_client_action_timing,
                     pending_item_refresh_followup_events_before_first_client_action,
                     pending_item_refresh_first_followup_event,
@@ -1010,6 +1026,18 @@ fn remember_quickbar_item_context_if_relevant(
                 first_preserved_active_item_signature,
             )
             .as_str();
+        let pending_item_refresh_recommended_action_outcome =
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                pending_item_refresh_first_client_action_detail,
+                item_context
+                    .compact_item_emission_candidate
+                    .map(|candidate| candidate.object_id),
+                recommended_set_button_slot,
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            )
+            .as_str();
         let (
             compact_item_emission_candidate_known,
             compact_item_emission_candidate_object_id,
@@ -1175,6 +1203,7 @@ fn remember_quickbar_item_context_if_relevant(
                 .other_events,
             pending_item_refresh_proof_class,
             pending_item_refresh_action_outcome,
+            pending_item_refresh_recommended_action_outcome,
             pending_item_refresh_first_client_action_timing,
             pending_item_refresh_first_followup_event,
             pending_item_refresh_first_client_action,
@@ -2578,6 +2607,65 @@ mod fixture_free_tests {
                 response_breakdown,
             ),
             QuickbarItemRefreshActionOutcome::CandidateClientActionObservedServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                None,
+                Some(0x8000_0100),
+                2,
+                Default::default(),
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::AwaitingClientAction
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(mismatched_detail),
+                Some(0x8000_0100),
+                2,
+                Default::default(),
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::NoRecommendedClientAction
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(candidate_detail),
+                Some(0x8000_0100),
+                2,
+                Default::default(),
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedSetButtonNoServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(candidate_detail),
+                Some(0x8000_0100),
+                2,
+                response_breakdown,
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedSetButtonObservedServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(gui_event_detail),
+                Some(0x8000_0100),
+                2,
+                Default::default(),
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedGuiEventNotifyNoServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(use_object_detail),
+                Some(0x8000_0100),
+                2,
+                Default::default(),
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseObjectNoServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseObjectNoServerQuickbar
+                .as_str(),
+            "recommended_use_object_no_server_quickbar"
         );
         assert_eq!(
             QuickbarItemRefreshClientActionTiming::from_pending_state(None, 0),

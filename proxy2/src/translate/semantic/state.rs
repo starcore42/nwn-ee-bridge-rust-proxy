@@ -709,6 +709,92 @@ impl QuickbarItemRefreshClientActionMatchClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshRecommendedActionOutcome {
+    AwaitingClientAction,
+    NoRecommendedClientAction,
+    RecommendedSetButtonNoServerQuickbar,
+    RecommendedSetButtonObservedServerQuickbar,
+    RecommendedGuiEventNotifyNoServerQuickbar,
+    RecommendedGuiEventNotifyObservedServerQuickbar,
+    RecommendedUseObjectNoServerQuickbar,
+    RecommendedUseObjectObservedServerQuickbar,
+}
+
+impl Default for QuickbarItemRefreshRecommendedActionOutcome {
+    fn default() -> Self {
+        Self::AwaitingClientAction
+    }
+}
+
+impl QuickbarItemRefreshRecommendedActionOutcome {
+    pub(crate) fn from_pending_state(
+        first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+        candidate_object_id: Option<u32>,
+        recommended_set_button_slot: u8,
+        event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    ) -> Self {
+        let Some(detail) = first_client_action_detail else {
+            return Self::AwaitingClientAction;
+        };
+        let Some(candidate_object_id) = candidate_object_id else {
+            return Self::NoRecommendedClientAction;
+        };
+        let observed_server_quickbar =
+            event_breakdown_after_first_client_action.quickbar_events != 0;
+        if detail.matches_recommended_client_gui_event_notify(candidate_object_id) {
+            return if observed_server_quickbar {
+                Self::RecommendedGuiEventNotifyObservedServerQuickbar
+            } else {
+                Self::RecommendedGuiEventNotifyNoServerQuickbar
+            };
+        }
+        if detail.matches_recommended_client_use_object(candidate_object_id) {
+            return if observed_server_quickbar {
+                Self::RecommendedUseObjectObservedServerQuickbar
+            } else {
+                Self::RecommendedUseObjectNoServerQuickbar
+            };
+        }
+        if detail.matches_recommended_client_quickbar_set_button(
+            candidate_object_id,
+            recommended_set_button_slot,
+        ) {
+            return if observed_server_quickbar {
+                Self::RecommendedSetButtonObservedServerQuickbar
+            } else {
+                Self::RecommendedSetButtonNoServerQuickbar
+            };
+        }
+        Self::NoRecommendedClientAction
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingClientAction => "awaiting_client_action",
+            Self::NoRecommendedClientAction => "no_recommended_client_action",
+            Self::RecommendedSetButtonNoServerQuickbar => {
+                "recommended_set_button_no_server_quickbar"
+            }
+            Self::RecommendedSetButtonObservedServerQuickbar => {
+                "recommended_set_button_observed_server_quickbar"
+            }
+            Self::RecommendedGuiEventNotifyNoServerQuickbar => {
+                "recommended_gui_event_notify_no_server_quickbar"
+            }
+            Self::RecommendedGuiEventNotifyObservedServerQuickbar => {
+                "recommended_gui_event_notify_observed_server_quickbar"
+            }
+            Self::RecommendedUseObjectNoServerQuickbar => {
+                "recommended_use_object_no_server_quickbar"
+            }
+            Self::RecommendedUseObjectObservedServerQuickbar => {
+                "recommended_use_object_observed_server_quickbar"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshClientActionTiming {
     AwaitingClientAction,
     ImmediateAfterProof,
@@ -1052,6 +1138,14 @@ impl QuickbarItemRefreshHarnessHint {
             .map(QuickbarItemRefreshEventKind::as_str)
             .unwrap_or("none");
         let action_outcome = self.action_outcome.as_str();
+        let recommended_action_outcome =
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                first_client_action_detail,
+                Some(self.candidate.object_id),
+                self.recommended_set_button_slot,
+                self.event_breakdown_after_first_client_action,
+            )
+            .as_str();
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             first_client_action_detail,
             self.followup_events_before_first_client_action,
@@ -1133,6 +1227,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"client_to_server_events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
+                "  \"pending_item_refresh_recommended_action_outcome\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
                 "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"first_followup_event\": \"{}\",\n",
@@ -1259,6 +1354,7 @@ impl QuickbarItemRefreshHarnessHint {
                 .map(QuickbarItemRefreshProofClass::as_str)
                 .unwrap_or("none"),
             action_outcome,
+            recommended_action_outcome,
             first_client_action_timing,
             self.followup_events_before_first_client_action,
             self.first_followup_event
@@ -3604,6 +3700,14 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
         )
         .as_str();
+        let recommended_action_outcome =
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                self.post_committed_quickbar_item_refresh_first_client_action_detail,
+                candidate.map(|candidate| candidate.object_id),
+                self.quickbar_item_refresh_set_button_slot().0,
+                self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            )
+            .as_str();
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             self.post_committed_quickbar_item_refresh_first_client_action_detail,
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
@@ -3686,6 +3790,7 @@ impl UiState {
                 "  \"client_to_server_events_since_pending_refresh\": {},\n",
                 "  \"pending_item_refresh_proof_class\": \"{}\",\n",
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
+                "  \"pending_item_refresh_recommended_action_outcome\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
                 "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"candidate_known\": {},\n",
@@ -3754,6 +3859,7 @@ impl UiState {
                 .client_to_server_events,
             proof_class,
             action_outcome,
+            recommended_action_outcome,
             first_client_action_timing,
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
             candidate_known,
@@ -6495,6 +6601,9 @@ mod tests {
         assert!(json.contains(
             "\"pending_item_refresh_action_outcome\": \"candidate_client_action_no_server_quickbar\""
         ));
+        assert!(json.contains(
+            "\"pending_item_refresh_recommended_action_outcome\": \"no_recommended_client_action\""
+        ));
         assert!(
             json.contains("\"first_client_action_timing\": \"delayed_after_pending_followup\"")
         );
@@ -6554,6 +6663,9 @@ mod tests {
                 .contains("\"first_client_action_match_class\": \"recommended_set_button\"")
         );
         assert!(set_button_json.contains(
+            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_set_button_no_server_quickbar\""
+        ));
+        assert!(set_button_json.contains(
             "\"first_client_action_matches_recommended_client_gui_event_notify\": false"
         ));
         assert!(
@@ -6605,6 +6717,9 @@ mod tests {
             gui_json
                 .contains("\"first_client_action_match_class\": \"recommended_gui_event_notify\"")
         );
+        assert!(gui_json.contains(
+            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_gui_event_notify_no_server_quickbar\""
+        ));
         assert!(
             gui_json.contains(
                 "\"first_client_action_matches_recommended_client_gui_event_notify\": true"
@@ -6644,6 +6759,9 @@ mod tests {
             use_object_json
                 .contains("\"first_client_action_match_class\": \"recommended_use_object\"")
         );
+        assert!(use_object_json.contains(
+            "\"pending_item_refresh_recommended_action_outcome\": \"recommended_use_object_no_server_quickbar\""
+        ));
         assert!(
             use_object_json
                 .contains("\"first_client_action_matches_recommended_client_use_object\": true")

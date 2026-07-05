@@ -58,10 +58,30 @@ not as standalone workaround targets.
   `U/5` boundary instead of splitting on the embedded item `A` rows or the
   printable `W` inside "Wrap of the Dark Prince". Private live regression
   coverage uses the quarantined seq28 payload and proves the appearance record
-  ends at live offset 407. Active next path: rerun the live HG UseObject driver
-  and verify the payload no longer quarantines, the committed quickbar profile
-  recovers, and `first_client_action_match_class="recommended_use_object"` can
-  be compared against server quickbar follow-up.
+  ends at live offset 407. Fresh current-code UseObject rerun
+  `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`
+  selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+  gameplay, wrote its final hint at `2026-07-05T12:24:46+10:00`, and produced
+  no quarantine artifacts. The committed quickbar profile recovered; candidate
+  `0x80015678` was `active_object` / `direct_only`, matched the preserved
+  active-property quickbar item, and the bridge dispatched the validated
+  `Input_UseObject` payload `70060B0B00000078560180A0`. The first client
+  action was `client_input_use_object`, matched the recommended UseObject probe,
+  but HG still sent 0 server quickbar events after 583 post-action events
+  (181 live-object, 1 inventory, 1 chat). Proxy2 now also classifies the
+  specifically recommended action family outcome as
+  `pending_item_refresh_recommended_action_outcome`; this live result derives
+  as `recommended_use_object_no_server_quickbar`. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-recommended-outcome-20260705-123353`
+  against
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+  completed with 164 packet files, 304 strict allow decisions, 0 quarantine
+  decisions/artifacts, and exported
+  `QuickbarItemRefreshHintRecommendedActionOutcome=awaiting_client_action` for
+  the replay's no-client-action pending window. Active next path: stop cycling
+  exact SetButton, GuiEvent_Notify, UseItem, and UseObject probe identity; trace
+  original Diamond/EE active-property item action/state semantics and implement
+  the generalized rule that differs from these exact payload probes.
 - 2026-07-05 active-item action match-class slice: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`

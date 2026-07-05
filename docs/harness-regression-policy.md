@@ -33,30 +33,40 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-05 08:27 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-05 12:24 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-useobject-driver-retry-20260705-0827\harness-proxy-20260705-082506`.
+`C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
-`GameObjUpdate_LiveObject` traffic, and wrote
-`quickbar-item-refresh-hint.json` at `2026-07-05T08:25:24+10:00`. This is live
-gameplay evidence but not a clean protocol baseline: the hint stayed
-`pending_item_refresh=false` with `no_hint_reason="no_committed_quickbar_profile"`,
-so the new UseObject driver path did not dispatch, and the run quarantined a
-517-byte `GameObjUpdate_LiveObject` payload as
-`live-object-unclaimed-strict-family` under `quarantine\`. Follow-up
-2026-07-05: proxy2 now claims that current-creature full `P/5` appearance by
-proving the promoted `100` CNW header as a bounded fence before the direct-name
-selector, owning all eight counted visible-equipment rows through the following
-`U/5` boundary, and rejecting printable item-name bytes such as `W` as
-top-level visible-equipment boundaries. The immediate harness/protocol target
-is to rerun `-AutoQuickbarItemRefreshUseObject` and verify that the seq28
-payload no longer quarantines and that a committed quickbar profile recovers.
-The previous clean gameplay-reaching baseline remains
-`C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`,
-which wrote its final hint at `2026-07-05T04:17:34+10:00` with no quarantine
-artifacts and matched the generated GUI-event probe against the preserved
-active-property quickbar item, but still saw 0 server quickbar follow-up events.
+`GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
+`2026-07-05T12:24:46+10:00`, and produced no quarantine artifacts. The earlier
+seq28 current-creature full `P/5` quarantine is resolved by proving the
+promoted `100` CNW header as a bounded fence before the direct-name selector,
+owning all eight counted visible-equipment rows through the following `U/5`
+boundary, and rejecting printable item-name bytes such as `W` as top-level
+visible-equipment boundaries. The recovered committed quickbar profile selected
+candidate `0x80015678` from `active_object` / `direct_only` proof, matched the
+preserved active-property quickbar item, and the bridge dispatched the validated
+`Input_UseObject` payload `70060B0B00000078560180A0`. The first client action
+was `client_input_use_object` with
+`first_client_action_match_class="recommended_use_object"`, but HG still sent
+0 server quickbar events after 583 post-action events. This moves the active
+target from connection/profile recovery to original-client active-property
+action/state semantics beyond exact SetButton, GuiEvent_Notify, UseItem, and
+UseObject probe payload identity.
+
+As of 2026-07-05 12:33 +10, proxy2 also writes
+`pending_item_refresh_recommended_action_outcome` into quickbar item-refresh
+hints and semantic traces, and the replay summary exports it as
+`QuickbarItemRefreshHintRecommendedActionOutcome`. The 12:17 live capture
+predates that JSON field but its existing first-action and follow-up counters
+derive as `recommended_use_object_no_server_quickbar`. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-recommended-outcome-20260705-123353` against
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260703-1516\diamond-client-packets`
+stayed at 164 packet files, 304 strict allow decisions, 0 quarantine
+decisions/artifacts, and exported
+`QuickbarItemRefreshHintRecommendedActionOutcome=awaiting_client_action` for
+the replay's no-client-action pending window.
 
 As of 2026-07-05 04:41 +10, proxy2 also writes first-preserved active-item
 signature fields into quickbar item-refresh hints and unresolved traces. The
@@ -859,6 +869,7 @@ work.
 | GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Historical proxy/module-load handoff blocker: Rust was parsing the EE `Device_AdvertiseProperty` name length where the CNW declared read-buffer length lives | Use the shared `translate::client_device` classifier. Fresh 2026-07-04 14:27 rerun consumed 70 device-property frames and reached gameplay; if this recurs, verify those logs before unrelated action-family work. |
 | GUI-event notify probe reaches gameplay but final hint says `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but semantic state has no committed quickbar profile/candidate | Inspect quickbar stream commitment and profile promotion before injecting GUI-event/UseItem actions. The 2026-07-04 16:22 run added a guarded promotion path; if this recurs, confirm whether `promoted_committed_profile=true` is absent and whether normal `GuiQuickbar` proof was also absent. |
 | GUI-event notify probe reaches gameplay, final hint has `first_client_action="client_gui_event_notify"` and `first_client_action_matches_candidate=true`, but `quickbar_events_after_first_client_action=0` | The hinted GUI-event payload lands, but it is not sufficient to make HG emit the original item-refresh quickbar update | Trace original-client active-property action semantics/timing before changing broad translation rules. Compare event id/body/vector/timing against Diamond/EE decompiles and live client action captures. |
+| UseObject probe reaches gameplay, final hint has `first_client_action_match_class="recommended_use_object"`, but `quickbar_events_after_first_client_action=0` | The bounded `Input_UseObject` payload lands, but it is not sufficient to make HG emit the original item-refresh quickbar update | Stop retesting exact probe identity. Trace original-client active-property item action/state semantics beyond SetButton, GuiEvent_Notify, UseItem, and UseObject before changing broad translation rules. |
 | Live auto-UseItem hint reports `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but no accepted committed quickbar profile has reached semantic state | Inspect splitter/stream commitment and quickbar buffering before trying to inject UseItem; the driver should wait for a pending hint or a committed profile. |
 
 Rules:

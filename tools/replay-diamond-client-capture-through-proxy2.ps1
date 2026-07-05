@@ -1393,6 +1393,7 @@ try {
     $quickbarHintFirstActionMatchesCandidate = $false
     $quickbarHintFirstActionMatchesPreservedActiveItem = $false
     $quickbarHintFirstActionMatchClass = ''
+    $quickbarHintRecommendedActionOutcome = ''
     $quickbarHintFirstClientActionTiming = ''
     $quickbarHintFollowupEventsBeforeFirstClientAction = 0
     $quickbarHintServerToClientEventsSincePendingRefresh = 0
@@ -1439,6 +1440,10 @@ try {
         $matchClassProp = $quickbarHintJson.PSObject.Properties['first_client_action_match_class']
         if ($null -ne $matchClassProp -and $null -ne $matchClassProp.Value) {
             $quickbarHintFirstActionMatchClass = [string]$matchClassProp.Value
+        }
+        $recommendedActionOutcomeProp = $quickbarHintJson.PSObject.Properties['pending_item_refresh_recommended_action_outcome']
+        if ($null -ne $recommendedActionOutcomeProp -and $null -ne $recommendedActionOutcomeProp.Value) {
+            $quickbarHintRecommendedActionOutcome = [string]$recommendedActionOutcomeProp.Value
         }
         $timingProp = $quickbarHintJson.PSObject.Properties['first_client_action_timing']
         if ($null -ne $timingProp -and $null -ne $timingProp.Value) {
@@ -1514,6 +1519,7 @@ try {
         QuickbarItemRefreshHintFirstActionMatchesCandidate = $quickbarHintFirstActionMatchesCandidate
         QuickbarItemRefreshHintFirstActionMatchesPreservedActiveItem = $quickbarHintFirstActionMatchesPreservedActiveItem
         QuickbarItemRefreshHintFirstActionMatchClass = $quickbarHintFirstActionMatchClass
+        QuickbarItemRefreshHintRecommendedActionOutcome = $quickbarHintRecommendedActionOutcome
         QuickbarItemRefreshHintFirstClientActionTiming = $quickbarHintFirstClientActionTiming
         QuickbarItemRefreshHintFollowupEventsBeforeFirstClientAction = $quickbarHintFollowupEventsBeforeFirstClientAction
         QuickbarItemRefreshHintServerToClientEventsSincePendingRefresh = $quickbarHintServerToClientEventsSincePendingRefresh
