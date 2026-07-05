@@ -114,13 +114,15 @@ fn observe_family_payload(
             // `GameObjUpdate_LiveObject` parser. This preserves the strict
             // discipline from the EE/Diamond readers: no loose byte scans, no
             // packet-family inference without proven record boundaries.
-            let (mentions, materialized_item_object_ids, inventory_feature25_references) =
-                live_object_observations_from_payload(payload);
+            let live_object = live_object_observations_from_payload(payload);
             ProtocolEvent::LiveObject(LiveObjectEvent {
                 observed,
-                mentions,
-                materialized_item_object_ids,
-                inventory_feature25_references,
+                mentions: live_object.mentions,
+                materialized_item_object_ids: live_object.materialized_item_object_ids,
+                inventory_feature25_references: live_object.inventory_feature25_references,
+                quickbar_item_use_count_records: live_object.quickbar_item_use_count_records,
+                quickbar_item_use_count_rows: live_object.quickbar_item_use_count_rows,
+                quickbar_item_use_count_updates: live_object.quickbar_item_use_count_updates,
             })
         }
         VerifiedFamily::PlayerList => {
@@ -1261,6 +1263,11 @@ fn record_pending_quickbar_item_refresh_event(
         .post_committed_quickbar_item_refresh_pending_events
         .saturating_add(1);
     let event_kind = quickbar_item_refresh_event_kind(event);
+    let compact_candidate_object_id = state
+        .ui
+        .last_inventory_item_context_after_committed_quickbar
+        .and_then(|context| context.compact_item_emission_candidate)
+        .map(|candidate| candidate.object_id);
     let first_client_action_seen_before_event = state
         .ui
         .post_committed_quickbar_item_refresh_first_client_action
@@ -1324,6 +1331,7 @@ fn record_pending_quickbar_item_refresh_event(
                 .ui
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             event,
+            compact_candidate_object_id,
         );
     }
     record_quickbar_item_refresh_event_breakdown(
@@ -1331,12 +1339,14 @@ fn record_pending_quickbar_item_refresh_event(
             .ui
             .post_committed_quickbar_item_refresh_pending_event_breakdown,
         event,
+        compact_candidate_object_id,
     );
 }
 
 fn record_quickbar_item_refresh_event_breakdown(
     breakdown: &mut QuickbarItemRefreshEventBreakdown,
     event: &ProtocolEvent,
+    candidate_object_id: Option<u32>,
 ) {
     match event.observed().direction {
         Direction::ServerToClient | Direction::ServerToClientSynthetic => {
@@ -1347,8 +1357,29 @@ fn record_quickbar_item_refresh_event_breakdown(
         }
     }
     match event {
-        ProtocolEvent::LiveObject(_) => {
+        ProtocolEvent::LiveObject(event) => {
             breakdown.live_object_events = breakdown.live_object_events.saturating_add(1);
+            if event.quickbar_item_use_count_records != 0 {
+                breakdown.server_quickbar_item_use_count_events = breakdown
+                    .server_quickbar_item_use_count_events
+                    .saturating_add(1);
+                breakdown.server_quickbar_item_use_count_records = breakdown
+                    .server_quickbar_item_use_count_records
+                    .saturating_add(u64::from(event.quickbar_item_use_count_records));
+                breakdown.server_quickbar_item_use_count_rows = breakdown
+                    .server_quickbar_item_use_count_rows
+                    .saturating_add(u64::from(event.quickbar_item_use_count_rows));
+                if let Some(candidate_object_id) = candidate_object_id {
+                    let candidate_rows = event
+                        .quickbar_item_use_count_updates
+                        .iter()
+                        .filter(|update| update.object_id == candidate_object_id)
+                        .count();
+                    breakdown.server_quickbar_item_use_count_candidate_rows = breakdown
+                        .server_quickbar_item_use_count_candidate_rows
+                        .saturating_add(u64::try_from(candidate_rows).unwrap_or(u64::MAX));
+                }
+            }
         }
         ProtocolEvent::Quickbar(_) => {
             breakdown.quickbar_events = breakdown.quickbar_events.saturating_add(1);
@@ -1595,6 +1626,9 @@ fn quickbar_item_context_candidate_trace_fields(
 
 fn quickbar_item_refresh_event_kind(event: &ProtocolEvent) -> QuickbarItemRefreshEventKind {
     match event {
+        ProtocolEvent::LiveObject(event) if event.quickbar_item_use_count_records != 0 => {
+            QuickbarItemRefreshEventKind::ServerQuickbarItemUseCount
+        }
         ProtocolEvent::LiveObject(_) => QuickbarItemRefreshEventKind::LiveObject,
         ProtocolEvent::Quickbar(_) => QuickbarItemRefreshEventKind::ServerQuickbar,
         ProtocolEvent::Area(_) => QuickbarItemRefreshEventKind::Area,
@@ -1649,17 +1683,30 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-fn live_object_observations_from_payload(
-    payload: &[u8],
-) -> (
-    Vec<LiveObjectMention>,
-    Vec<u32>,
-    Vec<LiveObjectInventoryFeature25Reference>,
-) {
+struct LiveObjectObservationFacts {
+    mentions: Vec<LiveObjectMention>,
+    materialized_item_object_ids: Vec<u32>,
+    inventory_feature25_references: Vec<LiveObjectInventoryFeature25Reference>,
+    quickbar_item_use_count_records: u32,
+    quickbar_item_use_count_rows: u32,
+    quickbar_item_use_count_updates: Vec<live_object_update::LiveObjectQuickbarItemUseCountUpdate>,
+}
+
+fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservationFacts {
     let Some(claim) = live_object_update::claim_payload_if_verified(payload) else {
-        return (Vec::new(), Vec::new(), Vec::new());
+        return LiveObjectObservationFacts {
+            mentions: Vec::new(),
+            materialized_item_object_ids: Vec::new(),
+            inventory_feature25_references: Vec::new(),
+            quickbar_item_use_count_records: 0,
+            quickbar_item_use_count_rows: 0,
+            quickbar_item_use_count_updates: Vec::new(),
+        };
     };
     let materialized_item_object_ids = claim.materialized_item_object_ids;
+    let quickbar_item_use_count_records = claim.quickbar_item_use_count_records;
+    let quickbar_item_use_count_rows = claim.quickbar_item_use_count_rows;
+    let quickbar_item_use_count_updates = claim.quickbar_item_use_count_updates;
     let mut inventory_feature25_references = Vec::new();
     let mentions = claim
         .mentions
@@ -1731,11 +1778,14 @@ fn live_object_observations_from_payload(
             }
         })
         .collect();
-    (
+    LiveObjectObservationFacts {
         mentions,
         materialized_item_object_ids,
         inventory_feature25_references,
-    )
+        quickbar_item_use_count_records,
+        quickbar_item_use_count_rows,
+        quickbar_item_use_count_updates,
+    }
 }
 
 fn current_area_object_id_from_payload(payload: &[u8]) -> Option<u32> {
@@ -2567,6 +2617,8 @@ mod fixture_free_tests {
         };
         let mut response_breakdown = QuickbarItemRefreshEventBreakdown::default();
         response_breakdown.quickbar_events = 1;
+        let mut use_count_response_breakdown = QuickbarItemRefreshEventBreakdown::default();
+        use_count_response_breakdown.server_quickbar_item_use_count_events = 1;
         let active_signature = Some(quickbar::QuickbarActiveItemSignature {
             object_id: 0x8000_0100,
             base_item: 0x34,
@@ -2689,6 +2741,13 @@ mod fixture_free_tests {
             QuickbarItemRefreshActionOutcome::CandidateClientActionObservedServerQuickbar
         );
         assert_eq!(
+            QuickbarItemRefreshActionOutcome::from_pending_state(
+                Some(candidate_detail),
+                use_count_response_breakdown,
+            ),
+            QuickbarItemRefreshActionOutcome::CandidateClientActionObservedServerQuickbar
+        );
+        assert_eq!(
             QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
                 None,
                 Some(0x8000_0100),
@@ -2725,6 +2784,16 @@ mod fixture_free_tests {
                 2,
                 active_signature,
                 response_breakdown,
+            ),
+            QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemObservedServerQuickbar
+        );
+        assert_eq!(
+            QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
+                Some(use_item_detail),
+                Some(0x8000_0100),
+                2,
+                active_signature,
+                use_count_response_breakdown,
             ),
             QuickbarItemRefreshRecommendedActionOutcome::RecommendedUseItemObservedServerQuickbar
         );

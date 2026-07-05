@@ -230,6 +230,18 @@ impl SemanticSessionState {
                 summary.event_breakdown.client_to_server_events,
             live_object_events_since_pending_refresh = summary.event_breakdown.live_object_events,
             quickbar_events_since_pending_refresh = summary.event_breakdown.quickbar_events,
+            server_quickbar_item_use_count_events_since_pending_refresh = summary
+                .event_breakdown
+                .server_quickbar_item_use_count_events,
+            server_quickbar_item_use_count_records_since_pending_refresh = summary
+                .event_breakdown
+                .server_quickbar_item_use_count_records,
+            server_quickbar_item_use_count_rows_since_pending_refresh = summary
+                .event_breakdown
+                .server_quickbar_item_use_count_rows,
+            server_quickbar_item_use_count_candidate_rows_since_pending_refresh = summary
+                .event_breakdown
+                .server_quickbar_item_use_count_candidate_rows,
             area_events_since_pending_refresh = summary.event_breakdown.area_events,
             inventory_events_since_pending_refresh = summary.event_breakdown.inventory_events,
             client_gui_event_events_since_pending_refresh =
@@ -303,6 +315,18 @@ impl SemanticSessionState {
             quickbar_events_after_first_client_action = summary
                 .event_breakdown_after_first_client_action
                 .quickbar_events,
+            server_quickbar_item_use_count_events_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_events,
+            server_quickbar_item_use_count_records_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_records,
+            server_quickbar_item_use_count_rows_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_rows,
+            server_quickbar_item_use_count_candidate_rows_after_first_client_action = summary
+                .event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_candidate_rows,
             area_events_after_first_client_action = summary
                 .event_breakdown_after_first_client_action
                 .area_events,
@@ -615,7 +639,9 @@ impl QuickbarItemRefreshActionOutcome {
             return Self::AwaitingClientAction;
         };
         match detail.matches_candidate_object {
-            Some(true) if event_breakdown_after_first_client_action.quickbar_events != 0 => {
+            Some(true)
+                if event_breakdown_after_first_client_action.has_server_quickbar_response() =>
+            {
                 Self::CandidateClientActionObservedServerQuickbar
             }
             Some(true) => Self::CandidateClientActionNoServerQuickbar,
@@ -760,7 +786,7 @@ impl QuickbarItemRefreshRecommendedActionOutcome {
             return Self::NoRecommendedClientAction;
         };
         let observed_server_quickbar =
-            event_breakdown_after_first_client_action.quickbar_events != 0;
+            event_breakdown_after_first_client_action.has_server_quickbar_response();
         if detail.matches_recommended_client_use_item(candidate_object_id) {
             return if observed_server_quickbar {
                 Self::RecommendedUseItemObservedServerQuickbar
@@ -901,6 +927,7 @@ impl QuickbarItemRefreshProofClass {
 pub(crate) enum QuickbarItemRefreshEventKind {
     LiveObject,
     ServerQuickbar,
+    ServerQuickbarItemUseCount,
     Area,
     Inventory,
     ClientGuiEventNotify,
@@ -919,6 +946,7 @@ impl QuickbarItemRefreshEventKind {
         match self {
             Self::LiveObject => "live_object",
             Self::ServerQuickbar => "server_quickbar",
+            Self::ServerQuickbarItemUseCount => "server_quickbar_item_use_count",
             Self::Area => "area",
             Self::Inventory => "inventory",
             Self::ClientGuiEventNotify => "client_gui_event_notify",
@@ -1397,6 +1425,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"client_to_server_events_after_first_client_action\": {},\n",
                 "  \"live_object_events_after_first_client_action\": {},\n",
                 "  \"quickbar_events_after_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_events_after_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_records_after_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_rows_after_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_candidate_rows_after_first_client_action\": {},\n",
                 "  \"area_events_after_first_client_action\": {},\n",
                 "  \"inventory_events_after_first_client_action\": {},\n",
                 "  \"client_gui_event_events_after_first_client_action\": {},\n",
@@ -1418,6 +1450,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"compact_item_emission_shared_proof_objects\": {},\n",
                 "  \"live_object_events_since_pending_refresh\": {},\n",
                 "  \"quickbar_events_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_events_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_records_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_rows_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_candidate_rows_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
                 "  \"client_gui_event_events_since_pending_refresh\": {},\n",
@@ -1552,6 +1588,14 @@ impl QuickbarItemRefreshHarnessHint {
                 .live_object_events,
             self.event_breakdown_after_first_client_action
                 .quickbar_events,
+            self.event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_events,
+            self.event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_records,
+            self.event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_rows,
+            self.event_breakdown_after_first_client_action
+                .server_quickbar_item_use_count_candidate_rows,
             self.event_breakdown_after_first_client_action.area_events,
             self.event_breakdown_after_first_client_action
                 .inventory_events,
@@ -1583,6 +1627,11 @@ impl QuickbarItemRefreshHarnessHint {
             self.compact_item_emission_shared_proof_objects,
             self.event_breakdown.live_object_events,
             self.event_breakdown.quickbar_events,
+            self.event_breakdown.server_quickbar_item_use_count_events,
+            self.event_breakdown.server_quickbar_item_use_count_records,
+            self.event_breakdown.server_quickbar_item_use_count_rows,
+            self.event_breakdown
+                .server_quickbar_item_use_count_candidate_rows,
             self.event_breakdown.area_events,
             self.event_breakdown.inventory_events,
             self.event_breakdown.client_gui_event_events,
@@ -1746,6 +1795,10 @@ pub(crate) struct QuickbarItemRefreshEventBreakdown {
     pub(crate) client_to_server_events: u64,
     pub(crate) live_object_events: u64,
     pub(crate) quickbar_events: u64,
+    pub(crate) server_quickbar_item_use_count_events: u64,
+    pub(crate) server_quickbar_item_use_count_records: u64,
+    pub(crate) server_quickbar_item_use_count_rows: u64,
+    pub(crate) server_quickbar_item_use_count_candidate_rows: u64,
     pub(crate) area_events: u64,
     pub(crate) inventory_events: u64,
     pub(crate) client_gui_event_events: u64,
@@ -1759,6 +1812,12 @@ pub(crate) struct QuickbarItemRefreshEventBreakdown {
     pub(crate) client_quickbar_other_set_button_events: u64,
     pub(crate) chat_events: u64,
     pub(crate) other_events: u64,
+}
+
+impl QuickbarItemRefreshEventBreakdown {
+    pub(crate) fn has_server_quickbar_response(self) -> bool {
+        self.quickbar_events != 0 || self.server_quickbar_item_use_count_events != 0
+    }
 }
 
 impl ObjectRegistry {
@@ -4026,6 +4085,10 @@ impl UiState {
                 "  \"cleared_inventory_item_object_ids\": {},\n",
                 "  \"live_object_events_since_pending_refresh\": {},\n",
                 "  \"quickbar_events_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_events_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_records_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_rows_since_pending_refresh\": {},\n",
+                "  \"server_quickbar_item_use_count_candidate_rows_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
                 "  \"client_gui_event_events_since_pending_refresh\": {},\n",
@@ -4097,6 +4160,14 @@ impl UiState {
                 .live_object_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .quickbar_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_quickbar_item_use_count_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_quickbar_item_use_count_records,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_quickbar_item_use_count_rows,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_quickbar_item_use_count_candidate_rows,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .area_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -6627,6 +6698,10 @@ mod tests {
                 server_to_client_events: 10,
                 client_to_server_events: 1,
                 live_object_events: 7,
+                server_quickbar_item_use_count_events: 2,
+                server_quickbar_item_use_count_records: 3,
+                server_quickbar_item_use_count_rows: 4,
+                server_quickbar_item_use_count_candidate_rows: 1,
                 client_input_other_events: 1,
                 other_events: 3,
                 ..QuickbarItemRefreshEventBreakdown::default()
@@ -6845,6 +6920,16 @@ mod tests {
         assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(json.contains("\"server_to_client_events_since_pending_refresh\": 10"));
         assert!(json.contains("\"client_to_server_events_since_pending_refresh\": 1"));
+        assert!(
+            json.contains("\"server_quickbar_item_use_count_events_since_pending_refresh\": 2")
+        );
+        assert!(
+            json.contains("\"server_quickbar_item_use_count_records_since_pending_refresh\": 3")
+        );
+        assert!(json.contains("\"server_quickbar_item_use_count_rows_since_pending_refresh\": 4"));
+        assert!(json.contains(
+            "\"server_quickbar_item_use_count_candidate_rows_since_pending_refresh\": 1"
+        ));
         assert!(json.contains(
             "\"pending_item_refresh_action_outcome\": \"candidate_client_action_no_server_quickbar\""
         ));
@@ -6884,6 +6969,20 @@ mod tests {
         assert!(json.contains("\"server_to_client_events_after_first_client_action\": 1"));
         assert!(json.contains("\"client_to_server_events_after_first_client_action\": 1"));
         assert!(json.contains("\"live_object_events_after_first_client_action\": 1"));
+        assert!(
+            json.contains("\"server_quickbar_item_use_count_events_after_first_client_action\": 0")
+        );
+        assert!(
+            json.contains(
+                "\"server_quickbar_item_use_count_records_after_first_client_action\": 0"
+            )
+        );
+        assert!(
+            json.contains("\"server_quickbar_item_use_count_rows_after_first_client_action\": 0")
+        );
+        assert!(json.contains(
+            "\"server_quickbar_item_use_count_candidate_rows_after_first_client_action\": 0"
+        ));
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
 
         ui.post_committed_quickbar_item_refresh_first_client_action =

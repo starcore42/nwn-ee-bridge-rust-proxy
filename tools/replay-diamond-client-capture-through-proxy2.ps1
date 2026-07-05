@@ -1399,12 +1399,20 @@ try {
     $quickbarHintServerToClientEventsSincePendingRefresh = 0
     $quickbarHintClientToServerEventsSincePendingRefresh = 0
     $quickbarHintClientGuiEventEventsSincePendingRefresh = 0
+    $quickbarHintServerQuickbarItemUseCountEventsSincePendingRefresh = 0
+    $quickbarHintServerQuickbarItemUseCountRecordsSincePendingRefresh = 0
+    $quickbarHintServerQuickbarItemUseCountRowsSincePendingRefresh = 0
+    $quickbarHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh = 0
     $quickbarHintFirstEventAfterClientAction = ''
     $quickbarHintEventsAfterFirstClientAction = 0
     $quickbarHintServerToClientEventsAfterFirstClientAction = 0
     $quickbarHintClientToServerEventsAfterFirstClientAction = 0
     $quickbarHintLiveObjectEventsAfterFirstClientAction = 0
     $quickbarHintQuickbarEventsAfterFirstClientAction = 0
+    $quickbarHintServerQuickbarItemUseCountEventsAfterFirstClientAction = 0
+    $quickbarHintServerQuickbarItemUseCountRecordsAfterFirstClientAction = 0
+    $quickbarHintServerQuickbarItemUseCountRowsAfterFirstClientAction = 0
+    $quickbarHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction = 0
     $quickbarHintInventoryEventsAfterFirstClientAction = 0
     $quickbarHintClientGuiEventEventsAfterFirstClientAction = 0
     $quickbarHintOtherEventsAfterFirstClientAction = 0
@@ -1465,6 +1473,22 @@ try {
         if ($null -ne $sincePendingClientGuiEventProp -and $null -ne $sincePendingClientGuiEventProp.Value) {
             $quickbarHintClientGuiEventEventsSincePendingRefresh = [int64]$sincePendingClientGuiEventProp.Value
         }
+        $sincePendingUseCountEventsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_events_since_pending_refresh']
+        if ($null -ne $sincePendingUseCountEventsProp -and $null -ne $sincePendingUseCountEventsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountEventsSincePendingRefresh = [int64]$sincePendingUseCountEventsProp.Value
+        }
+        $sincePendingUseCountRecordsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_records_since_pending_refresh']
+        if ($null -ne $sincePendingUseCountRecordsProp -and $null -ne $sincePendingUseCountRecordsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountRecordsSincePendingRefresh = [int64]$sincePendingUseCountRecordsProp.Value
+        }
+        $sincePendingUseCountRowsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_rows_since_pending_refresh']
+        if ($null -ne $sincePendingUseCountRowsProp -and $null -ne $sincePendingUseCountRowsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountRowsSincePendingRefresh = [int64]$sincePendingUseCountRowsProp.Value
+        }
+        $sincePendingUseCountCandidateRowsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_candidate_rows_since_pending_refresh']
+        if ($null -ne $sincePendingUseCountCandidateRowsProp -and $null -ne $sincePendingUseCountCandidateRowsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh = [int64]$sincePendingUseCountCandidateRowsProp.Value
+        }
         $firstAfterActionProp = $quickbarHintJson.PSObject.Properties['first_event_after_client_action']
         if ($null -ne $firstAfterActionProp -and $null -ne $firstAfterActionProp.Value) {
             $quickbarHintFirstEventAfterClientAction = [string]$firstAfterActionProp.Value
@@ -1488,6 +1512,22 @@ try {
         $afterActionQuickbarProp = $quickbarHintJson.PSObject.Properties['quickbar_events_after_first_client_action']
         if ($null -ne $afterActionQuickbarProp -and $null -ne $afterActionQuickbarProp.Value) {
             $quickbarHintQuickbarEventsAfterFirstClientAction = [int64]$afterActionQuickbarProp.Value
+        }
+        $afterActionUseCountEventsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_events_after_first_client_action']
+        if ($null -ne $afterActionUseCountEventsProp -and $null -ne $afterActionUseCountEventsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountEventsAfterFirstClientAction = [int64]$afterActionUseCountEventsProp.Value
+        }
+        $afterActionUseCountRecordsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_records_after_first_client_action']
+        if ($null -ne $afterActionUseCountRecordsProp -and $null -ne $afterActionUseCountRecordsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountRecordsAfterFirstClientAction = [int64]$afterActionUseCountRecordsProp.Value
+        }
+        $afterActionUseCountRowsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_rows_after_first_client_action']
+        if ($null -ne $afterActionUseCountRowsProp -and $null -ne $afterActionUseCountRowsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountRowsAfterFirstClientAction = [int64]$afterActionUseCountRowsProp.Value
+        }
+        $afterActionUseCountCandidateRowsProp = $quickbarHintJson.PSObject.Properties['server_quickbar_item_use_count_candidate_rows_after_first_client_action']
+        if ($null -ne $afterActionUseCountCandidateRowsProp -and $null -ne $afterActionUseCountCandidateRowsProp.Value) {
+            $quickbarHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction = [int64]$afterActionUseCountCandidateRowsProp.Value
         }
         $afterActionInventoryProp = $quickbarHintJson.PSObject.Properties['inventory_events_after_first_client_action']
         if ($null -ne $afterActionInventoryProp -and $null -ne $afterActionInventoryProp.Value) {
@@ -1525,12 +1565,20 @@ try {
         QuickbarItemRefreshHintServerToClientEventsSincePendingRefresh = $quickbarHintServerToClientEventsSincePendingRefresh
         QuickbarItemRefreshHintClientToServerEventsSincePendingRefresh = $quickbarHintClientToServerEventsSincePendingRefresh
         QuickbarItemRefreshHintClientGuiEventEventsSincePendingRefresh = $quickbarHintClientGuiEventEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerQuickbarItemUseCountEventsSincePendingRefresh = $quickbarHintServerQuickbarItemUseCountEventsSincePendingRefresh
+        QuickbarItemRefreshHintServerQuickbarItemUseCountRecordsSincePendingRefresh = $quickbarHintServerQuickbarItemUseCountRecordsSincePendingRefresh
+        QuickbarItemRefreshHintServerQuickbarItemUseCountRowsSincePendingRefresh = $quickbarHintServerQuickbarItemUseCountRowsSincePendingRefresh
+        QuickbarItemRefreshHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh = $quickbarHintServerQuickbarItemUseCountCandidateRowsSincePendingRefresh
         QuickbarItemRefreshHintFirstEventAfterClientAction = $quickbarHintFirstEventAfterClientAction
         QuickbarItemRefreshHintEventsAfterFirstClientAction = $quickbarHintEventsAfterFirstClientAction
         QuickbarItemRefreshHintServerToClientEventsAfterFirstClientAction = $quickbarHintServerToClientEventsAfterFirstClientAction
         QuickbarItemRefreshHintClientToServerEventsAfterFirstClientAction = $quickbarHintClientToServerEventsAfterFirstClientAction
         QuickbarItemRefreshHintLiveObjectEventsAfterFirstClientAction = $quickbarHintLiveObjectEventsAfterFirstClientAction
         QuickbarItemRefreshHintQuickbarEventsAfterFirstClientAction = $quickbarHintQuickbarEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerQuickbarItemUseCountEventsAfterFirstClientAction = $quickbarHintServerQuickbarItemUseCountEventsAfterFirstClientAction
+        QuickbarItemRefreshHintServerQuickbarItemUseCountRecordsAfterFirstClientAction = $quickbarHintServerQuickbarItemUseCountRecordsAfterFirstClientAction
+        QuickbarItemRefreshHintServerQuickbarItemUseCountRowsAfterFirstClientAction = $quickbarHintServerQuickbarItemUseCountRowsAfterFirstClientAction
+        QuickbarItemRefreshHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction = $quickbarHintServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction
         QuickbarItemRefreshHintInventoryEventsAfterFirstClientAction = $quickbarHintInventoryEventsAfterFirstClientAction
         QuickbarItemRefreshHintClientGuiEventEventsAfterFirstClientAction = $quickbarHintClientGuiEventEventsAfterFirstClientAction
         QuickbarItemRefreshHintOtherEventsAfterFirstClientAction = $quickbarHintOtherEventsAfterFirstClientAction
@@ -1691,6 +1739,10 @@ try {
         QuickbarSemanticUnresolvedPendingItemRefreshClientToServerEvents = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'client_to_server_events_since_pending_refresh'
         QuickbarSemanticUnresolvedPendingItemRefreshLiveObjectEvents = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'live_object_events_since_pending_refresh'
         QuickbarSemanticUnresolvedPendingItemRefreshQuickbarEvents = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'quickbar_events_since_pending_refresh'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountEvents = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_events_since_pending_refresh'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountRecords = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_records_since_pending_refresh'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountRows = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_rows_since_pending_refresh'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountCandidateRows = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_candidate_rows_since_pending_refresh'
         QuickbarSemanticUnresolvedPendingItemRefreshAreaEvents = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'area_events_since_pending_refresh'
         QuickbarSemanticUnresolvedPendingItemRefreshInventoryEvents = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'inventory_events_since_pending_refresh'
         QuickbarSemanticUnresolvedPendingItemRefreshClientInputEvents = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'client_input_events_since_pending_refresh'
@@ -1741,6 +1793,7 @@ try {
         QuickbarSemanticUnresolvedPendingItemRefreshFirstClientActionMatchesCandidate = Get-SemanticUnresolvedQuickbarItemRefreshFlagCount -Text $proxyLogText -Field 'first_client_action_matches_candidate' -Value 'true'
         QuickbarSemanticUnresolvedPendingItemRefreshFirstEventAfterClientActionLiveObject = Get-SemanticUnresolvedQuickbarItemRefreshStringFieldCount -Text $proxyLogText -Field 'first_event_after_client_action' -Value 'live_object'
         QuickbarSemanticUnresolvedPendingItemRefreshFirstEventAfterClientActionQuickbar = Get-SemanticUnresolvedQuickbarItemRefreshStringFieldCount -Text $proxyLogText -Field 'first_event_after_client_action' -Value 'server_quickbar'
+        QuickbarSemanticUnresolvedPendingItemRefreshFirstEventAfterClientActionServerQuickbarItemUseCount = Get-SemanticUnresolvedQuickbarItemRefreshStringFieldCount -Text $proxyLogText -Field 'first_event_after_client_action' -Value 'server_quickbar_item_use_count'
         QuickbarSemanticUnresolvedPendingItemRefreshFirstEventAfterClientActionInventory = Get-SemanticUnresolvedQuickbarItemRefreshStringFieldCount -Text $proxyLogText -Field 'first_event_after_client_action' -Value 'inventory'
         QuickbarSemanticUnresolvedPendingItemRefreshFirstEventAfterClientActionOther = Get-SemanticUnresolvedQuickbarItemRefreshStringFieldCount -Text $proxyLogText -Field 'first_event_after_client_action' -Value 'other'
         QuickbarSemanticUnresolvedPendingItemRefreshEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'events_after_first_client_action'
@@ -1748,6 +1801,10 @@ try {
         QuickbarSemanticUnresolvedPendingItemRefreshClientToServerEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'client_to_server_events_after_first_client_action'
         QuickbarSemanticUnresolvedPendingItemRefreshLiveObjectEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'live_object_events_after_first_client_action'
         QuickbarSemanticUnresolvedPendingItemRefreshQuickbarEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'quickbar_events_after_first_client_action'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_events_after_first_client_action'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountRecordsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_records_after_first_client_action'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountRowsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_rows_after_first_client_action'
+        QuickbarSemanticUnresolvedPendingItemRefreshServerQuickbarItemUseCountCandidateRowsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'server_quickbar_item_use_count_candidate_rows_after_first_client_action'
         QuickbarSemanticUnresolvedPendingItemRefreshInventoryEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'inventory_events_after_first_client_action'
         QuickbarSemanticUnresolvedPendingItemRefreshClientGuiEventEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'client_gui_event_events_after_first_client_action'
         QuickbarSemanticUnresolvedPendingItemRefreshOtherEventsAfterFirstClientAction = Get-SemanticUnresolvedQuickbarItemRefreshTraceFieldMax -Text $proxyLogText -Field 'other_events_after_first_client_action'

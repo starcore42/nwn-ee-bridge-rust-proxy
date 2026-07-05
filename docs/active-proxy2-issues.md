@@ -17,6 +17,23 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 live-object `GQ` quickbar item-use-count response tracking:
+  live-data gate reused gameplay-reaching HG harness
+  `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T18:43:53+10:00`; about 1h34m old at gate). Gameplay was
+  reached through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, with no quarantine artifacts. EE server
+  decompile evidence shows quickbar item use-count refreshes are emitted as
+  live-object GUI `G Q` rows (`slot`, `button_type`, raw item object id,
+  active-property index, `use_count`), not only as full `GuiQuickbar`
+  packets. Proxy2 now exposes verified `GQ` rows as typed live-object
+  quickbar item-use-count updates, counts them separately in pending
+  item-refresh state and harness hints, and treats either full `GuiQuickbar` or
+  verified `GQ` as an observed server quickbar response. The latest live
+  capture still contained 0 such `GQ` rows after the matching subtype-low
+  UseItem action, so the active implementation target remains the generalized
+  original-client active-property action/state handoff.
 - 2026-07-05 UseItem subtype-low dispatch live result: live-data gate used
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-useobject-after-current-creature-20260705-121704\harness-proxy-20260705-121714`

@@ -4931,6 +4931,53 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_live_gui_quickbar_use_count_rows_expose_response_facts() {
+        let object_id = 0x8000_1020u32;
+        let second_object_id = 0x8000_1021u32;
+        let mut live = vec![b'G', b'Q', 2];
+        live.extend_from_slice(&[3, 4]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.push(7);
+        live.extend_from_slice(&11u16.to_le_bytes());
+        live.extend_from_slice(&[5, 6]);
+        live.extend_from_slice(&second_object_id.to_le_bytes());
+        live.push(8);
+        live.extend_from_slice(&12u16.to_le_bytes());
+
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("GQ live-object payload");
+
+        let claim = claim_payload_if_verified(&payload).expect("exact GQ claim");
+        assert_eq!(claim.live_gui_read_buffer_records, 1);
+        assert_eq!(claim.quickbar_item_use_count_records, 1);
+        assert_eq!(claim.quickbar_item_use_count_rows, 2);
+        assert_eq!(
+            claim.quickbar_item_use_count_updates,
+            vec![
+                LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 3,
+                    button_type: 4,
+                    object_id,
+                    active_property_index: 7,
+                    use_count: 11,
+                },
+                LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 5,
+                    button_type: 6,
+                    object_id: second_object_id,
+                    active_property_index: 8,
+                    use_count: 12,
+                },
+            ]
+        );
+        assert_eq!(
+            claim.materialized_item_object_ids,
+            vec![object_id, second_object_id]
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_and_update_mentions_expose_state_bits() {
         let object_id = 0x8000_34D8u32;
         let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
@@ -19899,6 +19946,15 @@ impl LiveObjectItemUpdateCursorHandoffVerdict {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectQuickbarItemUseCountUpdate {
+    pub slot: u8,
+    pub button_type: u8,
+    pub object_id: u32,
+    pub active_property_index: u8,
+    pub use_count: u16,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LiveObjectUpdateClaimSummary {
     pub declared: usize,
@@ -19913,6 +19969,9 @@ pub struct LiveObjectUpdateClaimSummary {
     pub last_live_gui_item_record_end: Option<usize>,
     pub last_live_gui_item_fragment_bit_end: Option<usize>,
     pub materialized_item_object_ids: Vec<u32>,
+    pub quickbar_item_use_count_records: u32,
+    pub quickbar_item_use_count_rows: u32,
+    pub quickbar_item_use_count_updates: Vec<LiveObjectQuickbarItemUseCountUpdate>,
     pub world_status_records: u32,
     pub read_buffer_only_records: u32,
     pub add_records: u32,
@@ -20520,6 +20579,18 @@ fn claim_payload_if_verified_with_reject(
             summary.materialized_item_object_ids.extend(
                 gui::verified_item_materialization_object_ids(live_bytes, offset, record_end),
             );
+            if let Some(row_count) =
+                gui::verified_quickbar_item_use_count_row_count(live_bytes, offset, record_end)
+            {
+                summary.quickbar_item_use_count_records =
+                    summary.quickbar_item_use_count_records.saturating_add(1);
+                summary.quickbar_item_use_count_rows = summary
+                    .quickbar_item_use_count_rows
+                    .saturating_add(u32::try_from(row_count).unwrap_or(u32::MAX));
+                summary.quickbar_item_use_count_updates.extend(
+                    gui::verified_quickbar_item_use_count_updates(live_bytes, offset, record_end),
+                );
+            }
             trace_claim_accept("live-gui", live_bytes, offset, record_end, bit_cursor);
             offset = record_end;
             continue;

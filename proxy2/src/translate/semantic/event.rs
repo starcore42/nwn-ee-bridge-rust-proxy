@@ -9,7 +9,8 @@ use crate::{
     translate::{
         VerifiedFamily, client_gui_event::ClientGuiEventClaimSummary,
         client_input::ClientInputClaimSummary, client_quickbar::ClientQuickbarClaimSummary,
-        player_list::PlayerListObjectIds, quickbar::QuickbarValidatedSlotProfile,
+        live_object_update::LiveObjectQuickbarItemUseCountUpdate, player_list::PlayerListObjectIds,
+        quickbar::QuickbarValidatedSlotProfile,
     },
 };
 
@@ -100,6 +101,9 @@ pub(crate) struct LiveObjectEvent {
     pub(crate) mentions: Vec<LiveObjectMention>,
     pub(crate) materialized_item_object_ids: Vec<u32>,
     pub(crate) inventory_feature25_references: Vec<LiveObjectInventoryFeature25Reference>,
+    pub(crate) quickbar_item_use_count_records: u32,
+    pub(crate) quickbar_item_use_count_rows: u32,
+    pub(crate) quickbar_item_use_count_updates: Vec<LiveObjectQuickbarItemUseCountUpdate>,
 }
 
 #[derive(Debug, Clone)]

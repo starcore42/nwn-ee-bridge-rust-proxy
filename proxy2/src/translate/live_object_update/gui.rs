@@ -38,7 +38,9 @@
 //! The translator rewrites that byte to `A`; the exact EE validator below never
 //! accepts the zero form.
 
-use super::{appearance, bits, boundary, read_u16_le, read_u32_le};
+use super::{
+    LiveObjectQuickbarItemUseCountUpdate, appearance, bits, boundary, read_u16_le, read_u32_le,
+};
 
 const LIVE_GUI_OPCODE: u8 = b'G';
 const GUI_INVENTORY_SUBOPCODE: u8 = b'I';
@@ -202,32 +204,12 @@ pub(super) fn verified_item_materialization_object_ids(
 
     match bytes.get(offset + 1).copied() {
         Some(QUICKBAR_ITEM_LINK_SUBOPCODE) => {
-            let Some(count) = bytes.get(offset + 2).copied() else {
-                return Vec::new();
-            };
-            let count = usize::from(count);
-            let expected_end = offset
-                .checked_add(QUICKBAR_ITEM_LINK_HEADER_BYTES)
-                .and_then(|start| {
-                    start.checked_add(count.checked_mul(QUICKBAR_ITEM_LINK_ROW_BYTES)?)
-                });
-            if expected_end != Some(record_end) {
-                return Vec::new();
-            }
-
-            let mut ids = Vec::new();
-            let mut cursor = offset + QUICKBAR_ITEM_LINK_HEADER_BYTES;
-            for _ in 0..count {
-                if let Some(object_id) =
-                    read_u32_le(bytes, cursor + QUICKBAR_ITEM_LINK_OBJECT_ID_OFFSET_IN_ROW)
-                {
-                    if is_materialized_item_object_id(object_id) {
-                        ids.push(object_id);
-                    }
-                }
-                cursor += QUICKBAR_ITEM_LINK_ROW_BYTES;
-            }
-            ids
+            verified_quickbar_item_use_count_updates(bytes, offset, record_end)
+                .into_iter()
+                .filter_map(|update| {
+                    is_materialized_item_object_id(update.object_id).then_some(update.object_id)
+                })
+                .collect()
         }
         Some(GUI_INVENTORY_SUBOPCODE)
         | Some(GUI_INVENTORY_LOWER_SUBOPCODE)
@@ -249,6 +231,71 @@ pub(super) fn verified_item_materialization_object_ids(
         }
         _ => Vec::new(),
     }
+}
+
+pub(super) fn verified_quickbar_item_use_count_row_count(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<usize> {
+    if record_end <= offset || bytes.get(offset).copied() != Some(LIVE_GUI_OPCODE) {
+        return None;
+    }
+    if bytes.get(offset + 1).copied() != Some(QUICKBAR_ITEM_LINK_SUBOPCODE) {
+        return None;
+    }
+
+    let count = usize::from(bytes.get(offset + 2).copied()?);
+    let expected_end = offset
+        .checked_add(QUICKBAR_ITEM_LINK_HEADER_BYTES)?
+        .checked_add(count.checked_mul(QUICKBAR_ITEM_LINK_ROW_BYTES)?)?;
+    (expected_end == record_end).then_some(count)
+}
+
+pub(super) fn verified_quickbar_item_use_count_updates(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Vec<LiveObjectQuickbarItemUseCountUpdate> {
+    let Some(count) = verified_quickbar_item_use_count_row_count(bytes, offset, record_end) else {
+        return Vec::new();
+    };
+
+    let mut updates = Vec::with_capacity(count);
+    let mut cursor = offset + QUICKBAR_ITEM_LINK_HEADER_BYTES;
+    for _ in 0..count {
+        let Some(slot) = bytes.get(cursor).copied() else {
+            return Vec::new();
+        };
+        let Some(button_type) = bytes.get(cursor + 1).copied() else {
+            return Vec::new();
+        };
+        let Some(object_id) =
+            read_u32_le(bytes, cursor + QUICKBAR_ITEM_LINK_OBJECT_ID_OFFSET_IN_ROW)
+        else {
+            return Vec::new();
+        };
+        let Some(active_property_index) = bytes
+            .get(cursor + QUICKBAR_ITEM_LINK_BUTTON_OFFSET_IN_ROW)
+            .copied()
+        else {
+            return Vec::new();
+        };
+        let Some(use_count) =
+            read_u16_le(bytes, cursor + QUICKBAR_ITEM_LINK_USE_COUNT_OFFSET_IN_ROW)
+        else {
+            return Vec::new();
+        };
+        updates.push(LiveObjectQuickbarItemUseCountUpdate {
+            slot,
+            button_type,
+            object_id,
+            active_property_index,
+            use_count,
+        });
+        cursor += QUICKBAR_ITEM_LINK_ROW_BYTES;
+    }
+    updates
 }
 
 fn is_materialized_item_object_id(object_id: u32) -> bool {
