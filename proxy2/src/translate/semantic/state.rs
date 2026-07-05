@@ -928,6 +928,7 @@ pub(crate) enum QuickbarItemRefreshEventKind {
     LiveObject,
     ServerQuickbar,
     ServerQuickbarItemUseCount,
+    ServerActiveItemProperties,
     Area,
     Inventory,
     ClientGuiEventNotify,
@@ -947,6 +948,7 @@ impl QuickbarItemRefreshEventKind {
             Self::LiveObject => "live_object",
             Self::ServerQuickbar => "server_quickbar",
             Self::ServerQuickbarItemUseCount => "server_quickbar_item_use_count",
+            Self::ServerActiveItemProperties => "server_active_item_properties",
             Self::Area => "area",
             Self::Inventory => "inventory",
             Self::ClientGuiEventNotify => "client_gui_event_notify",
@@ -1429,6 +1431,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"server_quickbar_item_use_count_records_after_first_client_action\": {},\n",
                 "  \"server_quickbar_item_use_count_rows_after_first_client_action\": {},\n",
                 "  \"server_quickbar_item_use_count_candidate_rows_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_events_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_uses_events_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_full_events_after_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_events_after_first_client_action\": {},\n",
                 "  \"area_events_after_first_client_action\": {},\n",
                 "  \"inventory_events_after_first_client_action\": {},\n",
                 "  \"client_gui_event_events_after_first_client_action\": {},\n",
@@ -1454,6 +1460,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"server_quickbar_item_use_count_records_since_pending_refresh\": {},\n",
                 "  \"server_quickbar_item_use_count_rows_since_pending_refresh\": {},\n",
                 "  \"server_quickbar_item_use_count_candidate_rows_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_uses_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_full_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_events_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
                 "  \"client_gui_event_events_since_pending_refresh\": {},\n",
@@ -1596,6 +1606,14 @@ impl QuickbarItemRefreshHarnessHint {
                 .server_quickbar_item_use_count_rows,
             self.event_breakdown_after_first_client_action
                 .server_quickbar_item_use_count_candidate_rows,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_events,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_uses_events,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_full_events,
+            self.event_breakdown_after_first_client_action
+                .server_active_item_property_candidate_events,
             self.event_breakdown_after_first_client_action.area_events,
             self.event_breakdown_after_first_client_action
                 .inventory_events,
@@ -1632,6 +1650,11 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown.server_quickbar_item_use_count_rows,
             self.event_breakdown
                 .server_quickbar_item_use_count_candidate_rows,
+            self.event_breakdown.server_active_item_property_events,
+            self.event_breakdown.server_active_item_property_uses_events,
+            self.event_breakdown.server_active_item_property_full_events,
+            self.event_breakdown
+                .server_active_item_property_candidate_events,
             self.event_breakdown.area_events,
             self.event_breakdown.inventory_events,
             self.event_breakdown.client_gui_event_events,
@@ -1799,6 +1822,10 @@ pub(crate) struct QuickbarItemRefreshEventBreakdown {
     pub(crate) server_quickbar_item_use_count_records: u64,
     pub(crate) server_quickbar_item_use_count_rows: u64,
     pub(crate) server_quickbar_item_use_count_candidate_rows: u64,
+    pub(crate) server_active_item_property_events: u64,
+    pub(crate) server_active_item_property_uses_events: u64,
+    pub(crate) server_active_item_property_full_events: u64,
+    pub(crate) server_active_item_property_candidate_events: u64,
     pub(crate) area_events: u64,
     pub(crate) inventory_events: u64,
     pub(crate) client_gui_event_events: u64,
@@ -4089,6 +4116,10 @@ impl UiState {
                 "  \"server_quickbar_item_use_count_records_since_pending_refresh\": {},\n",
                 "  \"server_quickbar_item_use_count_rows_since_pending_refresh\": {},\n",
                 "  \"server_quickbar_item_use_count_candidate_rows_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_uses_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_full_events_since_pending_refresh\": {},\n",
+                "  \"server_active_item_property_candidate_events_since_pending_refresh\": {},\n",
                 "  \"area_events_since_pending_refresh\": {},\n",
                 "  \"inventory_events_since_pending_refresh\": {},\n",
                 "  \"client_gui_event_events_since_pending_refresh\": {},\n",
@@ -4168,6 +4199,14 @@ impl UiState {
                 .server_quickbar_item_use_count_rows,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .server_quickbar_item_use_count_candidate_rows,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_uses_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_full_events,
+            self.post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_active_item_property_candidate_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .area_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -6702,6 +6741,10 @@ mod tests {
                 server_quickbar_item_use_count_records: 3,
                 server_quickbar_item_use_count_rows: 4,
                 server_quickbar_item_use_count_candidate_rows: 1,
+                server_active_item_property_events: 5,
+                server_active_item_property_uses_events: 3,
+                server_active_item_property_full_events: 2,
+                server_active_item_property_candidate_events: 1,
                 client_input_other_events: 1,
                 other_events: 3,
                 ..QuickbarItemRefreshEventBreakdown::default()
@@ -6930,6 +6973,18 @@ mod tests {
         assert!(json.contains(
             "\"server_quickbar_item_use_count_candidate_rows_since_pending_refresh\": 1"
         ));
+        assert!(json.contains("\"server_active_item_property_events_since_pending_refresh\": 5"));
+        assert!(
+            json.contains("\"server_active_item_property_uses_events_since_pending_refresh\": 3")
+        );
+        assert!(
+            json.contains("\"server_active_item_property_full_events_since_pending_refresh\": 2")
+        );
+        assert!(
+            json.contains(
+                "\"server_active_item_property_candidate_events_since_pending_refresh\": 1"
+            )
+        );
         assert!(json.contains(
             "\"pending_item_refresh_action_outcome\": \"candidate_client_action_no_server_quickbar\""
         ));
@@ -6982,6 +7037,12 @@ mod tests {
         );
         assert!(json.contains(
             "\"server_quickbar_item_use_count_candidate_rows_after_first_client_action\": 0"
+        ));
+        assert!(
+            json.contains("\"server_active_item_property_events_after_first_client_action\": 0")
+        );
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_events_after_first_client_action\": 0"
         ));
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
 

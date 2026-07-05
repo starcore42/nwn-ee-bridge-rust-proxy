@@ -17,6 +17,26 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-05 active item property update packet ownership: live-data gate reused
+  the gameplay-reaching HG proxy harness
+  `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T18:43:53+10:00`; about 3h35m old at gate). Gameplay was
+  reached through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, with no quarantine artifacts. EE decompile
+  evidence for `CNWSItem::UpdateUsedActiveProperties` shows active-property
+  server refresh state is emitted as high-level family `0x18`: minor `0x01`
+  writes OBJECTID, used mask, changed-uses mask, and one use-count byte for
+  each changed mask bit; minor `0x02` writes OBJECTID, active-property count,
+  7-byte property rows, used mask, `0xFF`, and eight use-count bytes. Proxy2
+  now owns those exact no-BOOL CNW cursor shapes as
+  `ItemUpdate_ActiveProperties`, registers them in strict/server dispatch and
+  the gameplay splitter, and exposes separate pending item-refresh hint
+  counters for active-property events, uses/full events, and candidate-object
+  hits. Active next path: run the next live subtype-low/active-property probe
+  and check whether HG replies with `0x18/0x01` or `0x18/0x02`; if still zero,
+  continue tracing the original-client active-property action/state handoff
+  rather than retesting exact probe identity.
 - 2026-07-05 live-object `GQ` quickbar item-use-count response tracking:
   live-data gate reused gameplay-reaching HG harness
   `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`

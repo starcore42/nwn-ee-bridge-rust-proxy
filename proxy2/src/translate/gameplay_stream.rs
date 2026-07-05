@@ -16,9 +16,9 @@ use super::{
     chat, client_area, client_char_list, client_character_sheet, client_device, client_gui_event,
     client_gui_inventory, client_input, client_login, client_module, client_quickbar,
     client_server_status, client_side_message, custom_token, cutscene, dialog, game_obj_update,
-    gui_timing_event, inventory, journal, loadbar, login, module, module_resources, module_time,
-    party, play_module_character_list, player_list, quickbar, safe_projectile, server_status,
-    sound,
+    gui_timing_event, inventory, item_update_active_props, journal, loadbar, login, module,
+    module_resources, module_time, party, play_module_character_list, player_list, quickbar,
+    safe_projectile, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -257,6 +257,7 @@ fn focused_high_level_unit_end_with_quickbar_materialization(
         (0x14, 0x01..=0x05) => focused_dialog_unit_end(bytes, offset),
         (0x15, 0x01) => focused_client_character_sheet_unit_end(bytes, offset),
         (0x17, 0x03) => focused_sound_unit_end(bytes, offset),
+        (0x18, 0x01 | 0x02) => focused_item_update_active_properties_unit_end(bytes, offset),
         (0x22, 0x01) => focused_safe_projectile_unit_end(bytes, offset),
         (0x28, 0x01..=0x08) => focused_ambient_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
@@ -746,6 +747,12 @@ fn focused_sound_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
     }
 
     FocusedUnitEnd::Invalid
+}
+
+fn focused_item_update_active_properties_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        item_update_active_props::claim_payload_if_verified(payload).is_some()
+    })
 }
 
 fn focused_custom_token_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -2541,7 +2548,6 @@ mod tests {
         }
     }
 
-    #[cfg(hgbridge_private_fixtures)]
     #[test]
     fn splits_declared_starcore_quickbar_before_following_status() {
         // Live HG Starcore quickbars carry a normal CNW declared read window

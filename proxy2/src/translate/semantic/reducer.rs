@@ -9,7 +9,7 @@ use crate::{
     packet::{Direction, m::HighLevel},
     translate::{
         VerifiedFamily, VerifiedProof, area, client_gui_event, client_input, client_quickbar,
-        gameplay_stream, live_object_update, player_list, quickbar,
+        gameplay_stream, item_update_active_props, live_object_update, player_list, quickbar,
     },
 };
 
@@ -21,8 +21,8 @@ use super::state::{
     QuickbarItemRefreshRecommendedActionOutcome,
 };
 use super::{
-    AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent, ClientQuickbarEvent,
-    InventoryEvent, InventoryItemContextSummary, LiveObjectEvent,
+    ActiveItemPropertiesEvent, AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent,
+    ClientQuickbarEvent, InventoryEvent, InventoryItemContextSummary, LiveObjectEvent,
     LiveObjectInventoryFeature25Reference, LiveObjectMention, LiveObjectOrientation,
     LiveObjectOrientationSource, LiveObjectOrientationVector, LiveObjectPlaceableState,
     LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel, PlayerListEvent,
@@ -146,6 +146,18 @@ fn observe_family_payload(
         }),
         VerifiedFamily::GuiQuickbarPlaceholder => {
             ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed })
+        }
+        VerifiedFamily::ItemUpdateActiveProperties => {
+            if let Some(claim) = item_update_active_props::claim_payload_if_verified(payload) {
+                ProtocolEvent::ActiveItemProperties(ActiveItemPropertiesEvent { observed, claim })
+            } else {
+                tracing::warn!(
+                    payload_len = observed.payload_len,
+                    declared_len = observed.declared_len,
+                    "verified ItemUpdate_ActiveProperties payload did not expose an exact claim"
+                );
+                ProtocolEvent::Other(observed)
+            }
         }
         VerifiedFamily::Inventory | VerifiedFamily::ClientGuiInventory => {
             ProtocolEvent::Inventory(InventoryEvent { observed })
@@ -717,6 +729,18 @@ fn apply_event(
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
             state.ui.quickbar_placeholders = state.ui.quickbar_placeholders.saturating_add(1);
             state.ui.last_quickbar_family = Some(observed.family);
+        }
+        ProtocolEvent::ActiveItemProperties(event) => {
+            tracing::debug!(
+                minor = event.claim.minor,
+                packet_name = event.claim.packet_name,
+                object_id = %format_args!("0x{:08X}", event.claim.object_id),
+                used_property_mask = event.claim.used_property_mask,
+                changed_uses_mask = event.claim.changed_uses_mask,
+                changed_use_count_rows = event.claim.changed_use_count_rows,
+                full_property_count = event.claim.full_property_count,
+                "semantic state observed verified active item property update"
+            );
         }
         ProtocolEvent::Inventory(_) => {
             state.ui.inventory_packets = state.ui.inventory_packets.saturating_add(1);
@@ -1384,6 +1408,29 @@ fn record_quickbar_item_refresh_event_breakdown(
         ProtocolEvent::Quickbar(_) => {
             breakdown.quickbar_events = breakdown.quickbar_events.saturating_add(1);
         }
+        ProtocolEvent::ActiveItemProperties(event) => {
+            breakdown.server_active_item_property_events = breakdown
+                .server_active_item_property_events
+                .saturating_add(1);
+            match event.claim.minor {
+                item_update_active_props::USES_MINOR => {
+                    breakdown.server_active_item_property_uses_events = breakdown
+                        .server_active_item_property_uses_events
+                        .saturating_add(1);
+                }
+                item_update_active_props::FULL_MINOR => {
+                    breakdown.server_active_item_property_full_events = breakdown
+                        .server_active_item_property_full_events
+                        .saturating_add(1);
+                }
+                _ => {}
+            }
+            if candidate_object_id == Some(event.claim.object_id) {
+                breakdown.server_active_item_property_candidate_events = breakdown
+                    .server_active_item_property_candidate_events
+                    .saturating_add(1);
+            }
+        }
         ProtocolEvent::Area(_) => {
             breakdown.area_events = breakdown.area_events.saturating_add(1);
         }
@@ -1631,6 +1678,9 @@ fn quickbar_item_refresh_event_kind(event: &ProtocolEvent) -> QuickbarItemRefres
         }
         ProtocolEvent::LiveObject(_) => QuickbarItemRefreshEventKind::LiveObject,
         ProtocolEvent::Quickbar(_) => QuickbarItemRefreshEventKind::ServerQuickbar,
+        ProtocolEvent::ActiveItemProperties(_) => {
+            QuickbarItemRefreshEventKind::ServerActiveItemProperties
+        }
         ProtocolEvent::Area(_) => QuickbarItemRefreshEventKind::Area,
         ProtocolEvent::Inventory(_) => QuickbarItemRefreshEventKind::Inventory,
         ProtocolEvent::ClientGuiEvent(_) => QuickbarItemRefreshEventKind::ClientGuiEventNotify,

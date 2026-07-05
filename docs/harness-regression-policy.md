@@ -33,20 +33,24 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-05 20:17 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-05 22:18 +10: the freshest
 gameplay-reaching proxy harness remains
 `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
 `GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
-`2026-07-05T18:43:53+10:00`, and produced no quarantine artifacts. The run
-confirmed completed quickbar stream-probe profiles now promote into committed
-semantic quickbar state from the focused `quickbar_stream` path. Proxy2 also
-now treats verified live-object GUI `G Q` quickbar item-use-count rows as a
-server quickbar response family distinct from full `GuiQuickbar`, exposing
-event/record/row/candidate-row counters in quickbar item-refresh hints. The
-18:43 live result still contained 0 server quickbar responses of either kind
-after the matching action. Candidate `0x80015989` came from `active_object` /
+`2026-07-05T18:43:53+10:00`, about 3h35m old at the gate, and produced no
+quarantine artifacts. The run confirmed completed quickbar stream-probe
+profiles now promote into committed semantic quickbar state from the focused
+`quickbar_stream` path. Proxy2 treats verified live-object GUI `G Q` quickbar
+item-use-count rows as a server quickbar response family distinct from full
+`GuiQuickbar`, exposing event/record/row/candidate-row counters in quickbar
+item-refresh hints. Current code also owns high-level `0x18/0x01` and
+`0x18/0x02` active item property update packets exactly, based on EE
+`SendServerToPlayerUpdateActiveItemProperties*` writer order, and exposes
+`server_active_item_property_*` event/full/uses/candidate counters. The 18:43
+live result still contained 0 server quickbar responses of either kind after
+the matching action. Candidate `0x80015989` came from `active_object` /
 `direct_only` proof and matched the preserved active-property quickbar item.
 The bridge dispatched the validated first-property subtype-low `Input_UseItem`
 payload

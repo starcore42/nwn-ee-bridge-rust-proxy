@@ -44,6 +44,7 @@ pub(crate) mod gameplay_stream;
 pub(crate) mod genericdoors;
 pub(crate) mod gui_timing_event;
 pub(crate) mod inventory;
+pub(crate) mod item_update_active_props;
 pub(crate) mod journal;
 mod live_object;
 pub(crate) mod live_object_update;
@@ -155,6 +156,7 @@ pub enum VerifiedFamily {
     GuiQuickbar,
     GuiQuickbarPlaceholder,
     Inventory,
+    ItemUpdateActiveProperties,
     Journal,
     LoadBar,
     Login,
@@ -220,6 +222,7 @@ impl VerifiedFamily {
             Self::GuiQuickbar => "GuiQuickbar",
             Self::GuiQuickbarPlaceholder => "GuiQuickbarPlaceholder",
             Self::Inventory => "Inventory",
+            Self::ItemUpdateActiveProperties => "ItemUpdate_ActiveProperties",
             Self::Journal => "Journal",
             Self::LoadBar => "LoadBar",
             Self::Login => "Login",

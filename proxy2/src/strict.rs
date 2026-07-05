@@ -20,9 +20,9 @@ use crate::{
         client_character_sheet, client_gui_event, client_gui_inventory, client_input, client_login,
         client_module, client_quickbar, client_server_admin, client_server_status,
         client_side_message, custom_token, cutscene, dialog, game_obj_update, gameplay_stream,
-        gui_timing_event, inventory, journal, live_object_update, loadbar, login, module,
-        module_resources, module_time, party, play_module_character_list, player_list, quickbar,
-        safe_projectile, server_status, sound,
+        gui_timing_event, inventory, item_update_active_props, journal, live_object_update,
+        loadbar, login, module, module_resources, module_time, party, play_module_character_list,
+        player_list, quickbar, safe_projectile, server_status, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -494,6 +494,7 @@ fn server_verified_family(family: VerifiedFamily) -> bool {
             | VerifiedFamily::GuiQuickbar
             | VerifiedFamily::GuiQuickbarPlaceholder
             | VerifiedFamily::Inventory
+            | VerifiedFamily::ItemUpdateActiveProperties
             | VerifiedFamily::Journal
             | VerifiedFamily::LoadBar
             | VerifiedFamily::Login
@@ -1489,6 +1490,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         }
         VerifiedFamily::GuiQuickbarPlaceholder => quickbar_placeholder_shape_valid(payload),
         VerifiedFamily::Inventory => inventory::claim_payload_if_verified(payload).is_some(),
+        VerifiedFamily::ItemUpdateActiveProperties => {
+            high.major == 0x18
+                && matches!(high.minor, 0x01 | 0x02)
+                && item_update_active_props::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::Journal => high.major == 0x1C && server_journal_shape_valid(payload),
         VerifiedFamily::LoadBar => {
             high.major == 0x2C
@@ -1570,6 +1576,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::GuiQuickbar
             | VerifiedFamily::GuiQuickbarPlaceholder
             | VerifiedFamily::Inventory
+            | VerifiedFamily::ItemUpdateActiveProperties
             | VerifiedFamily::Journal
             | VerifiedFamily::LoadBar
             | VerifiedFamily::Login
@@ -1763,6 +1770,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             HighPayloadValidation::Exact(dialog::claim_payload_if_verified(payload).is_some())
         }
         (0x17, 0x03) => HighPayloadValidation::Exact(sound_shape_valid(payload)),
+        (0x18, 0x01 | 0x02) => HighPayloadValidation::Exact(
+            item_update_active_props::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x1C, 0x01..=0x05 | 0x07 | 0x08 | 0x0A | 0x0B | 0x0C) => {
             HighPayloadValidation::Exact(journal_shape_valid(payload))
         }
@@ -4550,6 +4560,38 @@ mod tests {
             !exact_high_payload_shape_valid(&shifted_fragment),
             "known-opcode validation must reject the same shifted cursor"
         );
+    }
+
+    #[test]
+    fn active_item_properties_require_exact_sender_shape() {
+        let uses_delta = [
+            0x70, 0x18, 0x01, 0x0F, 0x00, 0x00, 0x00, 0x89, 0x59, 0x01, 0x80, 0x05, 0x05, 0x03,
+            0x07, 0x60,
+        ];
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ItemUpdateActiveProperties,
+            &uses_delta
+        ));
+        assert!(exact_high_payload_shape_valid(&uses_delta));
+
+        let mut shifted_tail = uses_delta;
+        *shifted_tail.last_mut().expect("test payload has tail") = 0x80;
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ItemUpdateActiveProperties,
+            &shifted_tail
+        ));
+        assert!(!exact_high_payload_shape_valid(&shifted_tail));
+
+        let full_refresh = [
+            0x70, 0x18, 0x02, 0x1D, 0x00, 0x00, 0x00, 0x89, 0x59, 0x01, 0x80, 0x01, 0x64, 0x00,
+            0x0D, 0x02, 0x03, 0x00, 0x04, 0x01, 0xFF, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02,
+            0x01, 0x60,
+        ];
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ItemUpdateActiveProperties,
+            &full_refresh
+        ));
+        assert!(exact_high_payload_shape_valid(&full_refresh));
     }
 
     #[test]

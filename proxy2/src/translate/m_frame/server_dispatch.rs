@@ -12,8 +12,9 @@ use crate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, ambient, area, area_change_day_night,
         area_visual_effect, camera, char_list, chat, client_side_message, cnw_message,
         custom_token, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
-        inventory, journal, live_object, loadbar, login, module, module_resources, module_time,
-        party, play_module_character_list, player_list, quickbar, safe_projectile, semantic, sound,
+        inventory, item_update_active_props, journal, live_object, loadbar, login, module,
+        module_resources, module_time, party, play_module_character_list, player_list, quickbar,
+        safe_projectile, semantic, sound,
     },
 };
 
@@ -780,6 +781,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_inventory,
     },
     ServerToClientTranslator {
+        family_name: "ItemUpdate_ActiveProperties",
+        verified_family: Some(VerifiedFamily::ItemUpdateActiveProperties),
+        translate: translate_item_update_active_properties,
+    },
+    ServerToClientTranslator {
         family_name: "GameObjUpdate_ObjControl",
         verified_family: Some(VerifiedFamily::GameObjUpdateObjectControl),
         translate: translate_game_obj_update_obj_control,
@@ -1248,6 +1254,7 @@ fn translator_may_claim_parsed_high_level(family_name: &str, high: HighLevel) ->
         "Ambient" => high.major == 0x28 && matches!(high.minor, 0x01..=0x08),
         "Dialog" => high.major == 0x14 && matches!(high.minor, 0x01 | 0x02 | 0x04 | 0x05),
         "Inventory" => high.major == 0x0C && matches!(high.minor, 0x01 | 0x02),
+        "ItemUpdate_ActiveProperties" => high.major == 0x18 && matches!(high.minor, 0x01 | 0x02),
         "GameObjUpdate_ObjControl" => high.major == 0x05 && high.minor == 0x02,
         "GameObjUpdate_VisEffect" => high.major == 0x05 && high.minor == 0x03,
         "GameObjUpdate_DestroyItem" => high.major == 0x05 && high.minor == 0x07,
@@ -3251,6 +3258,19 @@ fn translate_inventory(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if inventory::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_item_update_active_properties(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if item_update_active_props::claim_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None

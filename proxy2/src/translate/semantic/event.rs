@@ -9,6 +9,7 @@ use crate::{
     translate::{
         VerifiedFamily, client_gui_event::ClientGuiEventClaimSummary,
         client_input::ClientInputClaimSummary, client_quickbar::ClientQuickbarClaimSummary,
+        item_update_active_props::ActiveItemPropertiesClaimSummary,
         live_object_update::LiveObjectQuickbarItemUseCountUpdate, player_list::PlayerListObjectIds,
         quickbar::QuickbarValidatedSlotProfile,
     },
@@ -35,6 +36,7 @@ pub(crate) enum ProtocolEvent {
     LiveObject(LiveObjectEvent),
     PlayerList(PlayerListEvent),
     Quickbar(QuickbarEvent),
+    ActiveItemProperties(ActiveItemPropertiesEvent),
     Inventory(InventoryEvent),
     ClientGuiEvent(ClientGuiEventEvent),
     ClientInput(ClientInputEvent),
@@ -59,6 +61,7 @@ impl ProtocolEvent {
             ProtocolEvent::PlayerList(event) => &event.observed,
             ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed, .. })
             | ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed }) => observed,
+            ProtocolEvent::ActiveItemProperties(event) => &event.observed,
             ProtocolEvent::Inventory(event) => &event.observed,
             ProtocolEvent::ClientGuiEvent(event) => &event.observed,
             ProtocolEvent::ClientInput(event) => &event.observed,
@@ -195,6 +198,12 @@ pub(crate) enum QuickbarEvent {
     Placeholder {
         observed: ObservedHighLevel,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveItemPropertiesEvent {
+    pub(crate) observed: ObservedHighLevel,
+    pub(crate) claim: ActiveItemPropertiesClaimSummary,
 }
 
 #[derive(Debug, Clone)]
