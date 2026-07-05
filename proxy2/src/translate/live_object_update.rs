@@ -23882,11 +23882,26 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 }
             }
             if !creature_appearance_already_ee_shaped {
-                if let Some(legacy_end) = appearance::try_get_legacy_creature_appearance_record_end(
-                    &live_bytes,
-                    offset,
-                    live_bytes.len(),
-                ) {
+                if let Some(legacy_end) = bit_cursor_reliable
+                    .then(|| {
+                        appearance::try_get_verified_legacy_creature_appearance_record_end_and_cursor(
+                            &live_bytes,
+                            offset,
+                            live_bytes.len(),
+                            &fragment_bits,
+                            bit_cursor,
+                        )
+                        .map(|(record_end, _)| record_end)
+                    })
+                    .flatten()
+                    .or_else(|| {
+                        appearance::try_get_legacy_creature_appearance_record_end(
+                            &live_bytes,
+                            offset,
+                            live_bytes.len(),
+                        )
+                    })
+                {
                     // Full creature appearance records own a counted
                     // visible-equipment stream. Those embedded equipment rows
                     // can begin with live-object-looking `A`/`D` bytes, so the

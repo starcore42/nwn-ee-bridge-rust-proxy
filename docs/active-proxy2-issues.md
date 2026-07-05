@@ -51,11 +51,17 @@ not as standalone workaround targets.
   `no_hint_reason="no_committed_quickbar_profile"`. The same run quarantined a
   517-byte `GameObjUpdate_LiveObject` payload as
   `live-object-unclaimed-strict-family` after exact record-boundary validation
-  rejected the intermediate rewrite. Active next path: reduce/fix that
-  live-object strict-family gap and restore a committed quickbar profile in the
-  live probe before rerunning the UseObject driver to compare
-  `first_client_action_match_class="recommended_use_object"` against server
-  quickbar follow-up.
+  rejected the intermediate rewrite. Resolved 2026-07-05: the current-creature
+  full `P/5` appearance now proves the promoted `100` CNW header as a bounded
+  fence before the direct-name selector, accepts sentinel id `0xFFFF_FFF8`,
+  and owns all eight counted visible-equipment rows through the following
+  `U/5` boundary instead of splitting on the embedded item `A` rows or the
+  printable `W` inside "Wrap of the Dark Prince". Private live regression
+  coverage uses the quarantined seq28 payload and proves the appearance record
+  ends at live offset 407. Active next path: rerun the live HG UseObject driver
+  and verify the payload no longer quarantines, the committed quickbar profile
+  recovers, and `first_client_action_match_class="recommended_use_object"` can
+  be compared against server quickbar follow-up.
 - 2026-07-05 active-item action match-class slice: live-data gate used the
   gameplay-reaching proxy harness
   `C:\nwnbridge\codex-live-gui-event-shape-match-20260705-002118\harness-proxy-20260705-002126`

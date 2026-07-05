@@ -559,8 +559,129 @@ pub(super) fn try_get_legacy_creature_appearance_record_end(
             }
             search_from = candidate_end.saturating_add(1);
         }
+
+        let mut following_update_candidate_ends = Vec::new();
+        collect_verified_tail_candidate_ends_from_following_creature_updates(
+            bytes,
+            offset,
+            scan_end,
+            &mut following_update_candidate_ends,
+        );
+        dedup_verified_tail_candidate_ends_preserving_order(&mut following_update_candidate_ends);
+        for candidate_end in following_update_candidate_ends {
+            for name_shape in [
+                AppearanceNameShape::LocStringPair,
+                AppearanceNameShape::CExoString,
+            ] {
+                let Some(record) = parse_creature_appearance_record(
+                    bytes,
+                    offset,
+                    candidate_end,
+                    name_shape,
+                    CreatureAppearanceWireDialect::LegacyDiamond,
+                    None,
+                ) else {
+                    continue;
+                };
+                if record.record_end != candidate_end {
+                    continue;
+                }
+                if accepted
+                    .as_ref()
+                    .map(|current| {
+                        legacy_appearance_boundary_candidate_is_better(mask, &record, current)
+                    })
+                    .unwrap_or(true)
+                {
+                    accepted = Some(record);
+                }
+            }
+        }
     }
     accepted.map(|record| record.record_end)
+}
+
+pub(super) fn try_get_verified_legacy_creature_appearance_record_end_and_cursor(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(usize, usize)> {
+    let scan_end = scan_end.min(bytes.len());
+    if offset >= scan_end {
+        return None;
+    }
+    let mask = read_u16_le(bytes, offset.checked_add(6)?).unwrap_or(0);
+    let mut accepted: Option<VerifiedAppearanceParse> = None;
+    let mut consider = |candidate_end: usize| {
+        if candidate_end <= offset || candidate_end > scan_end {
+            return;
+        }
+        let Some(verified) = parse_verified_creature_appearance_with_optional_preceding_fence(
+            bytes,
+            offset,
+            candidate_end,
+            fragment_bits,
+            bit_cursor,
+            Some(candidate_end),
+            false,
+            true,
+        ) else {
+            return;
+        };
+        if verified.record.record_end != candidate_end
+            || verified.record.fragment_bits_consumed
+                > fragment_bits.len().saturating_sub(verified.proof_cursor)
+        {
+            return;
+        }
+        if accepted
+            .as_ref()
+            .map(|current| {
+                legacy_appearance_boundary_candidate_is_better(
+                    mask,
+                    &verified.record,
+                    &current.record,
+                ) || (verified.record.record_end == current.record.record_end
+                    && verified.record.equipment_records == current.record.equipment_records
+                    && verified.preceding_fence_bits < current.preceding_fence_bits)
+            })
+            .unwrap_or(true)
+        {
+            accepted = Some(verified);
+        }
+    };
+
+    consider(scan_end);
+    if mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK {
+        let mut search_from = offset.saturating_add(2);
+        while search_from < scan_end {
+            let candidate_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+                bytes,
+                search_from,
+                scan_end,
+            )
+            .min(scan_end);
+            if candidate_end <= offset || candidate_end > scan_end {
+                break;
+            }
+            consider(candidate_end);
+            if candidate_end == scan_end {
+                break;
+            }
+            search_from = candidate_end.saturating_add(1);
+        }
+    }
+
+    accepted.map(|verified| {
+        (
+            verified.record.record_end,
+            verified
+                .proof_cursor
+                .saturating_add(verified.record.fragment_bits_consumed),
+        )
+    })
 }
 
 pub(super) fn try_get_legacy_creature_appearance_record_end_for_transport(
@@ -4893,6 +5014,15 @@ fn parse_verified_creature_appearance_with_optional_preceding_fence(
                 bit_cursor,
                 preceding_fence_bits,
             )
+            && !legacy_full_appearance_preceding_direct_name_header_fence_is_proven(
+                bytes,
+                offset,
+                scan_end,
+                fragment_bits,
+                bit_cursor,
+                preceding_fence_bits,
+                preferred_record_end,
+            )
         {
             return None;
         }
@@ -5032,6 +5162,116 @@ fn legacy_full_appearance_preceding_fence_bits_are_proven(
         }
         _ => false,
     }
+}
+
+fn legacy_full_appearance_preceding_direct_name_header_fence_is_proven(
+    bytes: &[u8],
+    offset: usize,
+    limit: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    preceding_fence_bits: usize,
+    preferred_record_end: Option<usize>,
+) -> bool {
+    if preceding_fence_bits != CNW_FRAGMENT_HEADER_BITS
+        || read_u16_le(bytes, offset.saturating_add(6)) != Some(LEGACY_APPEARANCE_ALL_FIELDS_MASK)
+    {
+        if debug_live_claim_enabled_for_offset(offset) {
+            eprintln!(
+                "live-object direct-name appearance fence proof rejected: offset={offset} reason=header-or-mask preceding_fence_bits={preceding_fence_bits} mask={:?}",
+                read_u16_le(bytes, offset.saturating_add(6))
+            );
+        }
+        return false;
+    }
+    let Some(fence) =
+        fragment_bits.get(bit_cursor..bit_cursor.saturating_add(preceding_fence_bits))
+    else {
+        if debug_live_claim_enabled_for_offset(offset) {
+            eprintln!(
+                "live-object direct-name appearance fence proof rejected: offset={offset} reason=fence-bits-out-of-range bit_cursor={bit_cursor} preceding_fence_bits={preceding_fence_bits} fragment_bits={}",
+                fragment_bits.len()
+            );
+        }
+        return false;
+    };
+    let header_value = fence
+        .iter()
+        .fold(0usize, |value, bit| (value << 1) | usize::from(*bit));
+    let Some(name_selector) = fragment_bits.get(bit_cursor.saturating_add(preceding_fence_bits))
+    else {
+        if debug_live_claim_enabled_for_offset(offset) {
+            eprintln!(
+                "live-object direct-name appearance fence proof rejected: offset={offset} reason=name-selector-out-of-range bit_cursor={bit_cursor} preceding_fence_bits={preceding_fence_bits} fragment_bits={}",
+                fragment_bits.len()
+            );
+        }
+        return false;
+    };
+    if header_value != 0b100 || *name_selector {
+        if debug_live_claim_enabled_for_offset(offset) {
+            eprintln!(
+                "live-object direct-name appearance fence proof rejected: offset={offset} reason=header-or-selector header_value={header_value:#05b} name_selector={name_selector}"
+            );
+        }
+        return false;
+    }
+
+    // `100` is not admitted by the generic preceding-fence proof because it is
+    // a valid semantic prefix for some full appearance records. This narrower
+    // branch is anchored by the full Diamond reader shape: after the promoted
+    // header, the false selector owns a direct CExoString, the full mask tail,
+    // and the counted visible-equipment rows. Accept the promoted CNW header
+    // only when the shared parser lands exactly on the requested record
+    // boundary and owns at least one counted equipment row.
+    let Some(proof_cursor) = bit_cursor.checked_add(preceding_fence_bits) else {
+        return false;
+    };
+    let Some(record) = parse_creature_appearance_record(
+        bytes,
+        offset,
+        limit,
+        AppearanceNameShape::CExoString,
+        CreatureAppearanceWireDialect::LegacyDiamond,
+        Some(AppearanceBitProof {
+            bit_cursor: proof_cursor,
+            fragment_bits,
+            translated_ee: false,
+            allow_cross_record_fence: true,
+            owner_offset: offset,
+        }),
+    ) else {
+        if debug_live_claim_enabled_for_offset(offset) {
+            eprintln!(
+                "live-object direct-name appearance fence proof rejected: offset={offset} reason=legacy-direct-name-parser-failed proof_cursor={proof_cursor} limit={limit}"
+            );
+        }
+        return false;
+    };
+    if record.equipment_records == 0
+        || preferred_record_end.is_some_and(|preferred| preferred != record.record_end)
+    {
+        if debug_live_claim_enabled_for_offset(offset) {
+            eprintln!(
+                "live-object direct-name appearance fence proof rejected: offset={offset} reason=equipment-or-preferred equipment_records={} record_end={} preferred_record_end={preferred_record_end:?}",
+                record.equipment_records, record.record_end
+            );
+        }
+        return false;
+    }
+    let accepted = record.record_end == limit
+        || (record.record_end < limit
+            && boundary::looks_like_legacy_live_object_sub_message_boundary(
+                bytes,
+                record.record_end,
+            ));
+    if !accepted && debug_live_claim_enabled_for_offset(offset) {
+        eprintln!(
+            "live-object direct-name appearance fence proof rejected: offset={offset} reason=record-boundary record_end={} limit={limit}",
+            record.record_end
+        );
+    }
+    accepted
 }
 
 fn legacy_full_appearance_following_fence_bits_are_proven(
@@ -7886,7 +8126,13 @@ fn looks_like_top_level_live_object_boundary_inside_visible_equipment_item(
         return false;
     }
 
-    boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, offset)
+    // Keep this guard to typed object-bearing `A`/`D`/`U`/`P` rows inside
+    // visible-equipment item bodies. The generic live-object classifier also
+    // accepts printable opcodes such as `W` for work-remaining records; item
+    // names like "Wrap of the Dark Prince" can otherwise masquerade as a
+    // boundary even though Diamond's counted visible-equipment list still owns
+    // the bytes.
+    false
 }
 
 fn trace_visible_equipment_parse_skip(
@@ -9182,7 +9428,10 @@ fn looks_like_creature_or_legacy_sentinel_id(object_id: u32) -> bool {
     if object_id == 0 || object_id == u32::MAX {
         return false;
     }
-    if object_id == 0xFFFF_FFF7 || object_id == 0xFFFF_FFFD {
+    // Diamond current-creature live-object rows can use high sentinel ids in
+    // both the `A/5` add and following `P/5` appearance records before the
+    // bridge canonicalizes them to EE-facing session creature ids.
+    if matches!(object_id, 0xFFFF_FFF7 | 0xFFFF_FFF8 | 0xFFFF_FFFD) {
         return true;
     }
     super::object_ids::looks_like_legacy_live_object_id_value(object_id)
@@ -10759,6 +11008,54 @@ mod public_tests {
     }
 
     #[test]
+    fn full_appearance_direct_name_equipment_accepts_bounded_header_100_fence() {
+        let bytes = full_legacy_creature_appearance_with_direct_name_and_delete_equipment(5);
+        let fragment_bits = vec![
+            true, false, false, // promoted packetized header, not name bits.
+            false, // direct CExoString name selector.
+        ];
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor,
+            fragment_bits.len(),
+            "the 100 header is accepted only as a pre-name fence before the direct name bit"
+        );
+    }
+
+    #[test]
+    fn verified_legacy_end_proves_direct_name_equipment_after_header_100_fence() {
+        let bytes = full_legacy_creature_appearance_with_direct_name_and_delete_equipment(5);
+        let fragment_bits = vec![
+            true, false, false, // promoted packetized header, not name bits.
+            false, // direct CExoString name selector.
+        ];
+
+        let (record_end, next_cursor) =
+            try_get_verified_legacy_creature_appearance_record_end_and_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &fragment_bits,
+                0,
+            )
+            .expect("legacy direct-name full appearance should be bit-proven");
+        assert_eq!(record_end, bytes.len());
+        assert_eq!(
+            next_cursor,
+            fragment_bits.len(),
+            "the legacy-end probe must consume the same bounded header and direct-name bit"
+        );
+    }
+
+    #[test]
     fn byte_only_full_appearance_stream_keeps_following_u5_position_bits_owned_by_u5() {
         // This is the byte-only full-appearance shape behind the Sooty
         // `P/5 -> U/5 0x3967` cursor audit. Delete-only visible-equipment rows
@@ -11510,6 +11807,24 @@ mod tests {
         assert_eq!(claim.add_records, 1);
         assert_eq!(claim.creature_appearance_records, 1);
         assert_eq!(claim.creature_update_records, 1);
+    }
+
+    #[test]
+    fn live_hg_seq28_current_creature_direct_name_appearance_proves_legacy_end() {
+        let payload = include_bytes!(
+            "../../../fixtures/live_object/hg_live_useobject_retry_seq28_current_creature_visible_equipment_20260705_legacy.bin"
+        );
+        let declared = usize::try_from(read_u32_le(payload, 3).expect("declared")).unwrap();
+        let live = &payload[7..declared];
+
+        let equipment =
+            parse_legacy_visible_equipment_records(live, 112, 407, 8, false, None, 0, 0)
+                .expect("counted visible-equipment list should own all eight rows");
+        assert_eq!(equipment.end, 407);
+
+        let record_end = try_get_legacy_creature_appearance_record_end(live, 32, live.len())
+            .expect("live HG current-creature direct-name appearance should prove legacy end");
+        assert_eq!(record_end, 407);
     }
 
     #[test]

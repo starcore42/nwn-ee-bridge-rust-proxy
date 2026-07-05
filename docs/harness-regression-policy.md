@@ -44,11 +44,15 @@ gameplay evidence but not a clean protocol baseline: the hint stayed
 `pending_item_refresh=false` with `no_hint_reason="no_committed_quickbar_profile"`,
 so the new UseObject driver path did not dispatch, and the run quarantined a
 517-byte `GameObjUpdate_LiveObject` payload as
-`live-object-unclaimed-strict-family` under `quarantine\`. The immediate
-harness/protocol target is to reduce/fix that live-object strict-family gap and
-recover a committed quickbar profile before rerunning
-`-AutoQuickbarItemRefreshUseObject`. The previous clean gameplay-reaching
-baseline remains
+`live-object-unclaimed-strict-family` under `quarantine\`. Follow-up
+2026-07-05: proxy2 now claims that current-creature full `P/5` appearance by
+proving the promoted `100` CNW header as a bounded fence before the direct-name
+selector, owning all eight counted visible-equipment rows through the following
+`U/5` boundary, and rejecting printable item-name bytes such as `W` as
+top-level visible-equipment boundaries. The immediate harness/protocol target
+is to rerun `-AutoQuickbarItemRefreshUseObject` and verify that the seq28
+payload no longer quarantines and that a committed quickbar profile recovers.
+The previous clean gameplay-reaching baseline remains
 `C:\nwnbridge\codex-live-active-item-signature-current-20260705-041228\harness-proxy-20260705-041233`,
 which wrote its final hint at `2026-07-05T04:17:34+10:00` with no quarantine
 artifacts and matched the generated GUI-event probe against the preserved

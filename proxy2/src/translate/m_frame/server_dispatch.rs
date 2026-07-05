@@ -7438,4 +7438,33 @@ mod tests {
         assert!(claim.creature_appearance_records > 0);
         assert!(claim.creature_update_records > 0);
     }
+
+    #[test]
+    fn dispatcher_claims_live_hg_current_creature_visible_equipment_seq28() {
+        // Live HG 2026-07-05 UseObject probe seq28: the current creature add is
+        // followed by a full `P/5` appearance with visible equipment item bodies.
+        // Keep this on the typed live-object path so quickbar state can recover
+        // after area entry without a raw high-level passthrough.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_live_useobject_retry_seq28_current_creature_visible_equipment_20260705_legacy.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "dispatcher live-object seq28 claim must stay bounded, elapsed={elapsed:?}"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned live HG seq28 payload must exact-claim");
+        assert!(claim.add_records > 0);
+        assert!(claim.creature_appearance_records > 0);
+    }
 }
