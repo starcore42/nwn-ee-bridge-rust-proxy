@@ -988,6 +988,58 @@ impl QuickbarItemRefreshActivePropertyOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshServerQuickbarResponseTiming {
+    AwaitingClientAction,
+    NoServerQuickbarResponse,
+    ServerQuickbarResponseBeforeFirstClientAction,
+    ServerQuickbarResponseAfterFirstClientAction,
+    ServerQuickbarResponseBeforeAndAfterFirstClientAction,
+}
+
+impl Default for QuickbarItemRefreshServerQuickbarResponseTiming {
+    fn default() -> Self {
+        Self::AwaitingClientAction
+    }
+}
+
+impl QuickbarItemRefreshServerQuickbarResponseTiming {
+    pub(crate) fn from_pending_state(
+        first_client_action_detail: Option<QuickbarItemRefreshClientActionDetail>,
+        event_breakdown_before_first_client_action: QuickbarItemRefreshEventBreakdown,
+        event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown,
+    ) -> Self {
+        if first_client_action_detail.is_none() {
+            return Self::AwaitingClientAction;
+        }
+        match (
+            event_breakdown_before_first_client_action.has_server_quickbar_response(),
+            event_breakdown_after_first_client_action.has_server_quickbar_response(),
+        ) {
+            (false, false) => Self::NoServerQuickbarResponse,
+            (true, false) => Self::ServerQuickbarResponseBeforeFirstClientAction,
+            (false, true) => Self::ServerQuickbarResponseAfterFirstClientAction,
+            (true, true) => Self::ServerQuickbarResponseBeforeAndAfterFirstClientAction,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingClientAction => "awaiting_client_action",
+            Self::NoServerQuickbarResponse => "no_server_quickbar_response",
+            Self::ServerQuickbarResponseBeforeFirstClientAction => {
+                "server_quickbar_response_before_first_client_action"
+            }
+            Self::ServerQuickbarResponseAfterFirstClientAction => {
+                "server_quickbar_response_after_first_client_action"
+            }
+            Self::ServerQuickbarResponseBeforeAndAfterFirstClientAction => {
+                "server_quickbar_response_before_and_after_first_client_action"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshClientActionTiming {
     AwaitingClientAction,
     ImmediateAfterProof,
@@ -1413,6 +1465,16 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown_after_first_client_action,
         )
         .as_str();
+        let event_breakdown_before_first_client_action = self
+            .event_breakdown
+            .saturating_sub(self.event_breakdown_after_first_client_action);
+        let server_quickbar_response_timing =
+            QuickbarItemRefreshServerQuickbarResponseTiming::from_pending_state(
+                first_client_action_detail,
+                event_breakdown_before_first_client_action,
+                self.event_breakdown_after_first_client_action,
+            )
+            .as_str();
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             first_client_action_detail,
             self.followup_events_before_first_client_action,
@@ -1510,6 +1572,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_recommended_action_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_active_property_outcome\": \"{}\",\n",
+                "  \"pending_item_refresh_server_quickbar_response_timing\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
                 "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"first_followup_event\": \"{}\",\n",
@@ -1578,6 +1641,19 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"client_quickbar_other_set_button_events_after_first_client_action\": {},\n",
                 "  \"chat_events_after_first_client_action\": {},\n",
                 "  \"other_events_after_first_client_action\": {},\n",
+                "  \"quickbar_events_before_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_events_before_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_records_before_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_rows_before_first_client_action\": {},\n",
+                "  \"server_quickbar_item_use_count_candidate_rows_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_events_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_uses_events_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_full_events_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_events_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_uses_events_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_full_events_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_changed_use_count_rows_before_first_client_action\": {},\n",
+                "  \"server_active_item_property_candidate_full_property_rows_before_first_client_action\": {},\n",
                 "  \"direct_item_proof_objects\": {},\n",
                 "  \"feature25_item_proof_objects\": {},\n",
                 "  \"compact_item_emission_proof_objects\": {},\n",
@@ -1682,6 +1758,7 @@ impl QuickbarItemRefreshHarnessHint {
             action_outcome,
             recommended_action_outcome,
             active_property_outcome,
+            server_quickbar_response_timing,
             first_client_action_timing,
             self.followup_events_before_first_client_action,
             self.first_followup_event
@@ -1780,6 +1857,24 @@ impl QuickbarItemRefreshHarnessHint {
                 .client_quickbar_other_set_button_events,
             self.event_breakdown_after_first_client_action.chat_events,
             self.event_breakdown_after_first_client_action.other_events,
+            event_breakdown_before_first_client_action.quickbar_events,
+            event_breakdown_before_first_client_action.server_quickbar_item_use_count_events,
+            event_breakdown_before_first_client_action.server_quickbar_item_use_count_records,
+            event_breakdown_before_first_client_action.server_quickbar_item_use_count_rows,
+            event_breakdown_before_first_client_action
+                .server_quickbar_item_use_count_candidate_rows,
+            event_breakdown_before_first_client_action.server_active_item_property_events,
+            event_breakdown_before_first_client_action.server_active_item_property_uses_events,
+            event_breakdown_before_first_client_action.server_active_item_property_full_events,
+            event_breakdown_before_first_client_action.server_active_item_property_candidate_events,
+            event_breakdown_before_first_client_action
+                .server_active_item_property_candidate_uses_events,
+            event_breakdown_before_first_client_action
+                .server_active_item_property_candidate_full_events,
+            event_breakdown_before_first_client_action
+                .server_active_item_property_candidate_changed_use_count_rows,
+            event_breakdown_before_first_client_action
+                .server_active_item_property_candidate_full_property_rows,
             self.direct_item_proof_objects,
             self.feature25_item_proof_objects,
             self.compact_item_emission_proof_objects,
@@ -1999,6 +2094,88 @@ pub(crate) struct QuickbarItemRefreshEventBreakdown {
 impl QuickbarItemRefreshEventBreakdown {
     pub(crate) fn has_server_quickbar_response(self) -> bool {
         self.quickbar_events != 0 || self.server_quickbar_item_use_count_events != 0
+    }
+
+    pub(crate) fn saturating_sub(self, rhs: Self) -> Self {
+        Self {
+            server_to_client_events: self
+                .server_to_client_events
+                .saturating_sub(rhs.server_to_client_events),
+            client_to_server_events: self
+                .client_to_server_events
+                .saturating_sub(rhs.client_to_server_events),
+            live_object_events: self
+                .live_object_events
+                .saturating_sub(rhs.live_object_events),
+            quickbar_events: self.quickbar_events.saturating_sub(rhs.quickbar_events),
+            server_quickbar_item_use_count_events: self
+                .server_quickbar_item_use_count_events
+                .saturating_sub(rhs.server_quickbar_item_use_count_events),
+            server_quickbar_item_use_count_records: self
+                .server_quickbar_item_use_count_records
+                .saturating_sub(rhs.server_quickbar_item_use_count_records),
+            server_quickbar_item_use_count_rows: self
+                .server_quickbar_item_use_count_rows
+                .saturating_sub(rhs.server_quickbar_item_use_count_rows),
+            server_quickbar_item_use_count_candidate_rows: self
+                .server_quickbar_item_use_count_candidate_rows
+                .saturating_sub(rhs.server_quickbar_item_use_count_candidate_rows),
+            server_active_item_property_events: self
+                .server_active_item_property_events
+                .saturating_sub(rhs.server_active_item_property_events),
+            server_active_item_property_uses_events: self
+                .server_active_item_property_uses_events
+                .saturating_sub(rhs.server_active_item_property_uses_events),
+            server_active_item_property_full_events: self
+                .server_active_item_property_full_events
+                .saturating_sub(rhs.server_active_item_property_full_events),
+            server_active_item_property_candidate_events: self
+                .server_active_item_property_candidate_events
+                .saturating_sub(rhs.server_active_item_property_candidate_events),
+            server_active_item_property_candidate_uses_events: self
+                .server_active_item_property_candidate_uses_events
+                .saturating_sub(rhs.server_active_item_property_candidate_uses_events),
+            server_active_item_property_candidate_full_events: self
+                .server_active_item_property_candidate_full_events
+                .saturating_sub(rhs.server_active_item_property_candidate_full_events),
+            server_active_item_property_candidate_changed_use_count_rows: self
+                .server_active_item_property_candidate_changed_use_count_rows
+                .saturating_sub(rhs.server_active_item_property_candidate_changed_use_count_rows),
+            server_active_item_property_candidate_full_property_rows: self
+                .server_active_item_property_candidate_full_property_rows
+                .saturating_sub(rhs.server_active_item_property_candidate_full_property_rows),
+            area_events: self.area_events.saturating_sub(rhs.area_events),
+            inventory_events: self.inventory_events.saturating_sub(rhs.inventory_events),
+            client_gui_event_events: self
+                .client_gui_event_events
+                .saturating_sub(rhs.client_gui_event_events),
+            client_input_events: self
+                .client_input_events
+                .saturating_sub(rhs.client_input_events),
+            client_input_use_item_events: self
+                .client_input_use_item_events
+                .saturating_sub(rhs.client_input_use_item_events),
+            client_input_use_object_events: self
+                .client_input_use_object_events
+                .saturating_sub(rhs.client_input_use_object_events),
+            client_input_change_door_state_events: self
+                .client_input_change_door_state_events
+                .saturating_sub(rhs.client_input_change_door_state_events),
+            client_input_other_events: self
+                .client_input_other_events
+                .saturating_sub(rhs.client_input_other_events),
+            client_quickbar_events: self
+                .client_quickbar_events
+                .saturating_sub(rhs.client_quickbar_events),
+            client_quickbar_item_set_button_events: self
+                .client_quickbar_item_set_button_events
+                .saturating_sub(rhs.client_quickbar_item_set_button_events),
+            client_quickbar_other_set_button_events: self
+                .client_quickbar_other_set_button_events
+                .saturating_sub(rhs.client_quickbar_other_set_button_events),
+            chat_events: self.chat_events.saturating_sub(rhs.chat_events),
+            other_events: self.other_events.saturating_sub(rhs.other_events),
+        }
     }
 }
 
@@ -4170,6 +4347,18 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
         )
         .as_str();
+        let event_breakdown_before_first_client_action = self
+            .post_committed_quickbar_item_refresh_pending_event_breakdown
+            .saturating_sub(
+                self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            );
+        let server_quickbar_response_timing =
+            QuickbarItemRefreshServerQuickbarResponseTiming::from_pending_state(
+                self.post_committed_quickbar_item_refresh_first_client_action_detail,
+                event_breakdown_before_first_client_action,
+                self.post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
+            )
+            .as_str();
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             self.post_committed_quickbar_item_refresh_first_client_action_detail,
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
@@ -4254,6 +4443,7 @@ impl UiState {
                 "  \"pending_item_refresh_action_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_recommended_action_outcome\": \"{}\",\n",
                 "  \"pending_item_refresh_active_property_outcome\": \"{}\",\n",
+                "  \"pending_item_refresh_server_quickbar_response_timing\": \"{}\",\n",
                 "  \"first_client_action_timing\": \"{}\",\n",
                 "  \"followup_events_before_first_client_action\": {},\n",
                 "  \"candidate_known\": {},\n",
@@ -4336,6 +4526,7 @@ impl UiState {
             action_outcome,
             recommended_action_outcome,
             active_property_outcome,
+            server_quickbar_response_timing,
             first_client_action_timing,
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action,
             candidate_known,
@@ -7182,6 +7373,9 @@ mod tests {
         assert!(json.contains(
             "\"pending_item_refresh_active_property_outcome\": \"candidate_client_action_no_active_property_response\""
         ));
+        assert!(json.contains(
+            "\"pending_item_refresh_server_quickbar_response_timing\": \"server_quickbar_response_before_first_client_action\""
+        ));
         assert!(
             json.contains("\"first_client_action_timing\": \"delayed_after_pending_followup\"")
         );
@@ -7248,6 +7442,32 @@ mod tests {
             "\"server_active_item_property_candidate_full_property_rows_after_first_client_action\": 0"
         ));
         assert!(json.contains("\"other_events_after_first_client_action\": 1"));
+        assert!(json.contains("\"quickbar_events_before_first_client_action\": 0"));
+        assert!(
+            json.contains(
+                "\"server_quickbar_item_use_count_events_before_first_client_action\": 2"
+            )
+        );
+        assert!(
+            json.contains(
+                "\"server_quickbar_item_use_count_records_before_first_client_action\": 3"
+            )
+        );
+        assert!(
+            json.contains("\"server_quickbar_item_use_count_rows_before_first_client_action\": 4")
+        );
+        assert!(json.contains(
+            "\"server_quickbar_item_use_count_candidate_rows_before_first_client_action\": 1"
+        ));
+        assert!(
+            json.contains("\"server_active_item_property_events_before_first_client_action\": 5")
+        );
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_uses_events_before_first_client_action\": 1"
+        ));
+        assert!(json.contains(
+            "\"server_active_item_property_candidate_full_events_before_first_client_action\": 0"
+        ));
 
         let active_property_response_json = QuickbarItemRefreshHarnessHint {
             event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown {
@@ -7269,6 +7489,27 @@ mod tests {
         assert!(active_property_response_json.contains(
             "\"server_active_item_property_candidate_full_property_rows_after_first_client_action\": 1"
         ));
+
+        let quickbar_after_action_json = QuickbarItemRefreshHarnessHint {
+            event_breakdown: QuickbarItemRefreshEventBreakdown {
+                server_quickbar_item_use_count_events: 1,
+                ..QuickbarItemRefreshEventBreakdown::default()
+            },
+            event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown {
+                server_quickbar_item_use_count_events: 1,
+                ..QuickbarItemRefreshEventBreakdown::default()
+            },
+            ..hint
+        }
+        .to_json();
+        assert!(quickbar_after_action_json.contains(
+            "\"pending_item_refresh_server_quickbar_response_timing\": \"server_quickbar_response_after_first_client_action\""
+        ));
+        assert!(
+            quickbar_after_action_json.contains(
+                "\"server_quickbar_item_use_count_events_before_first_client_action\": 0"
+            )
+        );
 
         ui.post_committed_quickbar_item_refresh_first_client_action =
             Some(QuickbarItemRefreshEventKind::ClientInputUseItem);

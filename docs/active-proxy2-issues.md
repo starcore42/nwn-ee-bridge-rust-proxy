@@ -17,6 +17,33 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 server quickbar response timing diagnostics: live-data gate first
+  used gameplay-reaching HG proxy harness
+  `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`
+  (`quickbar-item-refresh-hint.json` last write
+  `2026-07-05T18:43:53+10:00`; about 7.6h old at gate). Fresh current-code
+  subtype-low probe
+  `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`
+  reached gameplay, wrote `quickbar-item-refresh-hint.json` at
+  `2026-07-06T02:26:01+10:00`, and produced no quarantine artifacts. Candidate
+  `0x80015D4C` matched the preserved active-property quickbar item and the
+  first client action was
+  `first_client_action_match_class="recommended_use_item_first_property_subtype_low"`.
+  After 293 post-action events (167 server-to-client, 89 live-object), HG sent
+  0 full `GuiQuickbar`, 0 live-object `GQ`, and 0 candidate `0x18/0x01` or
+  `0x18/0x02` active-property responses. The full pending window did contain
+  one live-object `GQ` event with four candidate rows before the injected
+  client action, so proxy2 now derives
+  `pending_item_refresh_server_quickbar_response_timing` and explicit
+  `*_before_first_client_action` response counters in the hint JSON, plus replay
+  summary readback for the timing field. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-server-response-timing-20260706-023636`
+  over the 2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304
+  strict allows, and 0 quarantines, with
+  `QuickbarItemRefreshHintServerQuickbarResponseTiming=awaiting_client_action`.
+  Active next path: trace why the original client receives/uses the pre-action
+  `GQ` refresh before our generated action, then implement the generalized
+  active-property state handoff instead of another exact action payload probe.
 - 2026-07-06 active-property response outcome diagnostics: live-data gate used
   gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-useitem-subtype-low-after-stream-promote-20260705-183917\harness-proxy-20260705-183926`
