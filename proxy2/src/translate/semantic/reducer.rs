@@ -32,6 +32,8 @@ use super::{
 
 #[cfg(test)]
 use super::InventoryItemObjectProof;
+#[cfg(test)]
+use super::state::QuickbarStreamProbeSummary;
 
 pub(crate) fn observe_verified_payload(
     state: &mut SemanticSessionState,
@@ -420,6 +422,9 @@ fn apply_event(
                 state
                     .ui
                     .post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
+                state
+                    .ui
+                    .post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state = false;
                 state
                     .ui
                     .post_committed_quickbar_item_refresh_pending_updates = 0;
@@ -849,6 +854,27 @@ fn apply_event(
         ProtocolEvent::Chat(_) | ProtocolEvent::Other(_) => {}
     }
     record_pending_quickbar_item_refresh_event(state, &event, pending_item_refresh_before_event);
+    if let Some(row) = state
+        .ui
+        .resolve_pending_quickbar_item_refresh_with_prior_use_count_state()
+    {
+        tracing::info!(
+            candidate_object_id = row.object_id,
+            candidate_slot = row.slot,
+            candidate_button_type = row.button_type,
+            active_property_index = row.active_property_index,
+            use_count = row.use_count,
+            pending_item_refresh_outcome = state
+                .ui
+                .last_committed_quickbar_item_refresh_outcome
+                .as_str(),
+            pending_item_refresh_action_outcome = state
+                .ui
+                .last_committed_quickbar_item_refresh_action_outcome
+                .as_str(),
+            "semantic state resolved pending quickbar item refresh from prior live-object GQ use-count state"
+        );
+    }
     state.remember_event(event);
 }
 
@@ -963,6 +989,9 @@ fn remember_quickbar_item_context_if_relevant(
         state
             .ui
             .post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
+        state
+            .ui
+            .post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state = false;
         state
             .ui
             .post_committed_quickbar_item_refresh_pending_updates = if pending_item_refresh {
@@ -3637,6 +3666,165 @@ mod fixture_free_tests {
                 .ui
                 .last_committed_quickbar_item_refresh_first_client_action,
             None
+        );
+    }
+
+    #[test]
+    fn pending_quickbar_refresh_resolves_on_prior_candidate_use_count_state() {
+        let owner_id = 0x8000_0010u32;
+        let candidate_id = 0x8000_0100u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&candidate_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&0x8000_0102u32.to_le_bytes());
+        let live_payload = live_object_payload_with_bits(&live, &[false, true, false]);
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+        state.ui.last_quickbar_stream_probe = Some(QuickbarStreamProbeSummary {
+            slot_records_owned: 36,
+            item_buttons_seen: 1,
+            item_buttons_preserved: 1,
+            first_preserved_active_item_signature: Some(quickbar::QuickbarActiveItemSignature {
+                object_id: candidate_id,
+                base_item: 0x34,
+                appearance_type: 0,
+                active_property_count: 1,
+                first_property: Some(quickbar::QuickbarActivePropertySignature {
+                    property: 15,
+                    subtype: 0x020D,
+                    cost_table_value: 13,
+                    param: 0,
+                }),
+                has_armor_word: false,
+                name_is_locstring: true,
+                state_mask: 1,
+                value_mask: 0xFF,
+            }),
+            first_preserved_active_item_slot: Some(7),
+            ..QuickbarStreamProbeSummary::default()
+        });
+
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 7,
+                    button_type: 1,
+                    object_id: candidate_id,
+                    active_property_index: 0xFF,
+                    use_count: 1,
+                },
+            ]),
+            None,
+        );
+        assert_eq!(state.ui.quickbar_item_use_count_state.len(), 1);
+        assert!(
+            state.ui.quickbar_item_refresh_harness_hint().is_none(),
+            "durable GQ state alone should not emit a pending hint"
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &live_payload,
+        );
+
+        assert!(
+            !state.ui.post_committed_quickbar_item_refresh_pending,
+            "matching durable GQ state for the visible active item should close the pending window"
+        );
+        assert_eq!(
+            state.ui.unresolved_pending_item_refresh(),
+            None,
+            "resolved durable state must stop emitting unresolved driver hints"
+        );
+        assert!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state,
+            "the active post-context should remember that prior GQ state resolved it"
+        );
+        assert!(
+            !state
+                .ui
+                .post_committed_quickbar_item_refresh_resolved_by_server_use_count,
+            "prior-state resolution is distinct from observing a new GQ row in the pending window"
+        );
+        assert_eq!(
+            state.ui.quickbar_item_refresh_harness_idle_reason(),
+            "post_context_resolved_by_prior_quickbar_use_count_state"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_pending, true,
+            "the resolved snapshot should still report that it consumed a pending refresh"
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_pending_events, 1,
+            "the proof-opening live-object event should be counted before prior-state resolution"
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_event_breakdown
+                .live_object_events,
+            1
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_quickbar_item_use_count_events,
+            0
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_first_candidate_use_count_row,
+            None
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_outcome,
+            QuickbarItemRefreshOutcome::PendingRefreshResolvedByUseCountState
+        );
+        assert_eq!(
+            state.ui.last_committed_quickbar_item_refresh_action_outcome,
+            QuickbarItemRefreshActionOutcome::AwaitingClientAction
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_first_followup_event,
+            None
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_first_client_action,
+            None
+        );
+        let idle_json = state.ui.quickbar_item_refresh_harness_idle_json();
+        assert!(idle_json.contains(
+            "\"no_hint_reason\": \"post_context_resolved_by_prior_quickbar_use_count_state\""
+        ));
+        assert!(idle_json.contains("\"candidate_quickbar_item_use_count_state_known\": true"));
+        assert!(idle_json.contains(
+            "\"candidate_quickbar_item_use_count_state_slot_relation\": \"matches_preserved_active_item_slot\""
+        ));
+        assert!(
+            idle_json
+                .contains("\"candidate_quickbar_item_use_count_state_active_property_index\": 255")
         );
     }
 

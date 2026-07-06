@@ -654,6 +654,7 @@ pub(crate) enum QuickbarItemRefreshOutcome {
     PendingRefreshStillBlank,
     PendingRefreshEmittedItemSlots,
     PendingRefreshObservedUseCountRows,
+    PendingRefreshResolvedByUseCountState,
 }
 
 impl Default for QuickbarItemRefreshOutcome {
@@ -669,6 +670,9 @@ impl QuickbarItemRefreshOutcome {
             Self::PendingRefreshStillBlank => "pending_refresh_still_blank",
             Self::PendingRefreshEmittedItemSlots => "pending_refresh_emitted_item_slots",
             Self::PendingRefreshObservedUseCountRows => "pending_refresh_observed_use_count_rows",
+            Self::PendingRefreshResolvedByUseCountState => {
+                "pending_refresh_resolved_by_use_count_state"
+            }
         }
     }
 }
@@ -1599,11 +1603,21 @@ impl QuickbarItemRefreshHarnessHint {
             .saturating_sub(self.event_breakdown_after_first_client_action);
         let server_quickbar_response_before_first_client_action =
             event_breakdown_before_first_client_action.has_server_quickbar_response();
+        let candidate_use_count_state_slot_relation =
+            QuickbarItemRefreshUseCountSlotRelation::from_row_and_preserved_slot(
+                self.candidate_use_count_state,
+                self.first_preserved_active_item_slot,
+            );
+        let matching_candidate_use_count_state = first_active_item_matches_candidate
+            && candidate_use_count_state_slot_relation.matches_preserved_active_item_slot();
         let recommended_client_action_should_dispatch =
-            !server_quickbar_response_before_first_client_action;
+            !server_quickbar_response_before_first_client_action
+                && !matching_candidate_use_count_state;
         let recommended_client_action_suppressed_reason =
             if server_quickbar_response_before_first_client_action {
                 "server_quickbar_response_before_first_client_action"
+            } else if matching_candidate_use_count_state {
+                "matching_quickbar_use_count_state"
             } else {
                 "none"
             };
@@ -1648,11 +1662,6 @@ impl QuickbarItemRefreshHarnessHint {
                 self.first_preserved_active_item_slot,
             );
         let candidate_use_count_state = self.candidate_use_count_state.unwrap_or_default();
-        let candidate_use_count_state_slot_relation =
-            QuickbarItemRefreshUseCountSlotRelation::from_row_and_preserved_slot(
-                self.candidate_use_count_state,
-                self.first_preserved_active_item_slot,
-            );
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             first_client_action_detail,
             self.followup_events_before_first_client_action,
@@ -4356,6 +4365,7 @@ pub(crate) struct UiState {
     pub(crate) inventory_item_context_after_committed_quickbar_updates: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending: bool,
     pub(crate) post_committed_quickbar_item_refresh_resolved_by_server_use_count: bool,
+    pub(crate) post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state: bool,
     pub(crate) post_committed_quickbar_item_refresh_pending_updates: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_events: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_event_breakdown:
@@ -4588,6 +4598,7 @@ impl UiState {
         self.inventory_item_context_after_committed_quickbar_updates = 0;
         self.post_committed_quickbar_item_refresh_pending = false;
         self.post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
+        self.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state = false;
         self.post_committed_quickbar_item_refresh_pending_updates = 0;
         self.post_committed_quickbar_item_refresh_pending_events = 0;
         self.post_committed_quickbar_item_refresh_pending_event_breakdown =
@@ -4606,20 +4617,13 @@ impl UiState {
         self.post_committed_quickbar_item_refresh_first_event_after_client_action = None;
     }
 
-    pub(crate) fn resolve_pending_quickbar_item_refresh_with_server_use_count(&mut self) -> bool {
-        if !self.post_committed_quickbar_item_refresh_pending {
-            return false;
-        }
-        if self
-            .post_committed_quickbar_item_refresh_first_candidate_use_count_row
-            .is_none()
-        {
-            return false;
-        }
-        let Some(item_context) = self.last_inventory_item_context_after_committed_quickbar else {
-            return false;
-        };
-
+    fn finish_pending_quickbar_item_refresh_resolution(
+        &mut self,
+        item_context: InventoryItemContextSummary,
+        outcome: QuickbarItemRefreshOutcome,
+        resolved_by_server_use_count: bool,
+        resolved_by_prior_use_count_state: bool,
+    ) {
         let pending_item_refresh_event_breakdown =
             self.post_committed_quickbar_item_refresh_pending_event_breakdown;
         let pending_item_refresh_event_breakdown_after_first_client_action =
@@ -4656,8 +4660,7 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_first_candidate_use_count_row_after_first_client_action;
         self.last_committed_quickbar_item_refresh_followup_events_before_first_client_action =
             self.post_committed_quickbar_item_refresh_followup_events_before_first_client_action;
-        self.last_committed_quickbar_item_refresh_outcome =
-            QuickbarItemRefreshOutcome::PendingRefreshObservedUseCountRows;
+        self.last_committed_quickbar_item_refresh_outcome = outcome;
         self.last_committed_quickbar_item_refresh_action_outcome =
             pending_item_refresh_action_outcome;
         self.last_committed_quickbar_item_refresh_proof_class =
@@ -4675,7 +4678,10 @@ impl UiState {
             Some(QuickbarItemContextSource::Current);
 
         self.post_committed_quickbar_item_refresh_pending = false;
-        self.post_committed_quickbar_item_refresh_resolved_by_server_use_count = true;
+        self.post_committed_quickbar_item_refresh_resolved_by_server_use_count =
+            resolved_by_server_use_count;
+        self.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state =
+            resolved_by_prior_use_count_state;
         self.post_committed_quickbar_item_refresh_pending_updates = 0;
         self.post_committed_quickbar_item_refresh_pending_events = 0;
         self.post_committed_quickbar_item_refresh_pending_event_breakdown =
@@ -4692,7 +4698,71 @@ impl UiState {
         self.post_committed_quickbar_item_refresh_first_client_action = None;
         self.post_committed_quickbar_item_refresh_first_client_action_detail = None;
         self.post_committed_quickbar_item_refresh_first_event_after_client_action = None;
+    }
+
+    pub(crate) fn resolve_pending_quickbar_item_refresh_with_server_use_count(&mut self) -> bool {
+        if !self.post_committed_quickbar_item_refresh_pending {
+            return false;
+        }
+        if self
+            .post_committed_quickbar_item_refresh_first_candidate_use_count_row
+            .is_none()
+        {
+            return false;
+        }
+        let Some(item_context) = self.last_inventory_item_context_after_committed_quickbar else {
+            return false;
+        };
+
+        self.finish_pending_quickbar_item_refresh_resolution(
+            item_context,
+            QuickbarItemRefreshOutcome::PendingRefreshObservedUseCountRows,
+            true,
+            false,
+        );
         true
+    }
+
+    pub(crate) fn resolve_pending_quickbar_item_refresh_with_prior_use_count_state(
+        &mut self,
+    ) -> Option<QuickbarItemRefreshUseCountRow> {
+        if !self.post_committed_quickbar_item_refresh_pending {
+            return None;
+        }
+        if self
+            .post_committed_quickbar_item_refresh_first_candidate_use_count_row
+            .is_some()
+        {
+            return None;
+        }
+        let item_context = self.last_inventory_item_context_after_committed_quickbar?;
+        let candidate = item_context.compact_item_emission_candidate?;
+        let first_active_item = self
+            .last_quickbar_stream_probe
+            .and_then(|probe| probe.first_preserved_active_item_signature)?;
+        if first_active_item.object_id != candidate.object_id {
+            return None;
+        }
+        let first_active_item_slot = self
+            .last_quickbar_stream_probe
+            .and_then(|probe| probe.first_preserved_active_item_slot)?;
+        let row = self.quickbar_item_use_count_state_for_candidate(
+            candidate.object_id,
+            Some(first_active_item_slot),
+        )?;
+        if row.slot != first_active_item_slot
+            || row.button_type != client_quickbar::ITEM_SET_BUTTON_TYPE
+        {
+            return None;
+        }
+
+        self.finish_pending_quickbar_item_refresh_resolution(
+            item_context,
+            QuickbarItemRefreshOutcome::PendingRefreshResolvedByUseCountState,
+            false,
+            true,
+        );
+        Some(row)
     }
 
     pub(crate) fn quickbar_item_refresh_harness_idle_reason(&self) -> &'static str {
@@ -4719,6 +4789,10 @@ impl UiState {
 
         if self.post_committed_quickbar_item_refresh_resolved_by_server_use_count {
             return "post_context_resolved_by_server_quickbar_use_count";
+        }
+
+        if self.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state {
+            return "post_context_resolved_by_prior_quickbar_use_count_state";
         }
 
         if context.cleared_inventory_item_object_ids != 0 {
@@ -4907,6 +4981,7 @@ impl UiState {
                 "  \"post_committed_item_context_known\": {},\n",
                 "  \"post_committed_item_refresh_pending\": {},\n",
                 "  \"post_committed_item_refresh_resolved_by_server_use_count\": {},\n",
+                "  \"post_committed_item_refresh_resolved_by_prior_use_count_state\": {},\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"server_to_client_events_since_pending_refresh\": {},\n",
@@ -5023,6 +5098,7 @@ impl UiState {
                 .is_some(),
             self.post_committed_quickbar_item_refresh_pending,
             self.post_committed_quickbar_item_refresh_resolved_by_server_use_count,
+            self.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state,
             self.inventory_item_context_after_committed_quickbar_updates,
             self.post_committed_quickbar_item_refresh_pending_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -5321,11 +5397,11 @@ mod tests {
         InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectStatus,
         LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
-        QuickbarActiveItemSignature, QuickbarItemRefreshClientActionDetail,
-        QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
-        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass,
-        QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary, QuickbarStreamProbeSummary,
-        QuickbarValidatedSlotProfile, UiState,
+        QuickbarActiveItemSignature, QuickbarItemRefreshActionOutcome,
+        QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
+        QuickbarItemRefreshEventKind, QuickbarItemRefreshHarnessHint,
+        QuickbarItemRefreshProofClass, QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary,
+        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -7917,6 +7993,40 @@ mod tests {
         assert!(json.contains(
             "\"recommended_client_action_suppressed_reason\": \"server_quickbar_response_before_first_client_action\""
         ));
+        let matching_prior_state_json = QuickbarItemRefreshHarnessHint {
+            event_breakdown: QuickbarItemRefreshEventBreakdown {
+                server_to_client_events: 1,
+                live_object_events: 1,
+                ..QuickbarItemRefreshEventBreakdown::default()
+            },
+            event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown::default(),
+            first_candidate_use_count_row: None,
+            first_candidate_use_count_row_before_first_client_action: None,
+            first_candidate_use_count_row_after_first_client_action: None,
+            first_followup_event: Some(QuickbarItemRefreshEventKind::LiveObject),
+            first_client_action: None,
+            first_client_action_detail: None,
+            first_event_after_client_action: None,
+            action_outcome: QuickbarItemRefreshActionOutcome::AwaitingClientAction,
+            followup_events_before_first_client_action: 0,
+            ..hint
+        }
+        .to_json();
+        assert!(
+            matching_prior_state_json
+                .contains("\"recommended_client_action_should_dispatch\": false")
+        );
+        assert!(matching_prior_state_json.contains(
+            "\"recommended_client_action_suppressed_reason\": \"matching_quickbar_use_count_state\""
+        ));
+        assert!(
+            matching_prior_state_json
+                .contains("\"pending_item_refresh_action_outcome\": \"awaiting_client_action\"")
+        );
+        assert!(
+            matching_prior_state_json
+                .contains("\"first_server_quickbar_item_use_count_candidate_row_known\": false")
+        );
         assert!(json.contains("\"recommended_client_gui_event_notify_payload_available\": true"));
         assert!(
             json.contains(
@@ -8430,6 +8540,11 @@ mod tests {
         assert!(
             initial.contains("\"post_committed_item_refresh_resolved_by_server_use_count\": false")
         );
+        assert!(
+            initial.contains(
+                "\"post_committed_item_refresh_resolved_by_prior_use_count_state\": false"
+            )
+        );
         assert!(initial.contains(
             "\"first_server_quickbar_item_use_count_candidate_row_slot_relation\": \"no_candidate_use_count_row\""
         ));
@@ -8579,6 +8694,11 @@ mod tests {
                 .contains("\"post_committed_item_refresh_resolved_by_server_use_count\": true")
         );
         assert!(
+            resolved_by_use_count.contains(
+                "\"post_committed_item_refresh_resolved_by_prior_use_count_state\": false"
+            )
+        );
+        assert!(
             resolved_by_use_count
                 .contains("\"first_server_quickbar_item_use_count_candidate_row_known\": true")
         );
@@ -8597,6 +8717,48 @@ mod tests {
         );
         assert!(resolved_by_use_count.contains(
             "\"first_server_quickbar_item_use_count_candidate_row_object_id_hex\": \"0x80000100\""
+        ));
+
+        ui.post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
+        ui.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state = true;
+        ui.last_inventory_item_context_after_committed_quickbar =
+            Some(InventoryItemContextSummary {
+                feature25_item_proof_objects: 1,
+                compact_item_emission_proof_objects: 1,
+                compact_item_emission_feature25_only_proof_objects: 1,
+                compact_item_emission_candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8000_0100,
+                    proof: InventoryItemObjectProof::Feature25SecondList,
+                    source: InventoryItemContextCandidateSource::Feature25Only,
+                }),
+                ..Default::default()
+            });
+        ui.observe_quickbar_item_use_count_updates(&[LiveObjectQuickbarItemUseCountUpdate {
+            slot: 9,
+            button_type: 1,
+            object_id: 0x8000_0100,
+            active_property_index: 2,
+            use_count: 3,
+        }]);
+        let resolved_by_prior_state = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(resolved_by_prior_state.contains(
+            "\"no_hint_reason\": \"post_context_resolved_by_prior_quickbar_use_count_state\""
+        ));
+        assert!(
+            resolved_by_prior_state
+                .contains("\"post_committed_item_refresh_resolved_by_server_use_count\": false")
+        );
+        assert!(
+            resolved_by_prior_state.contains(
+                "\"post_committed_item_refresh_resolved_by_prior_use_count_state\": true"
+            )
+        );
+        assert!(
+            resolved_by_prior_state
+                .contains("\"candidate_quickbar_item_use_count_state_known\": true")
+        );
+        assert!(resolved_by_prior_state.contains(
+            "\"candidate_quickbar_item_use_count_state_slot_relation\": \"matches_preserved_active_item_slot\""
         ));
     }
 

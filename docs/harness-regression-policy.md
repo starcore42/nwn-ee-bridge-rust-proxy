@@ -47,6 +47,24 @@ count 1. The first client action matched the subtype-low `UseItem`, and HG
 returned 0 full quickbar, 0 post-action `G Q`, and 0 candidate active-property
 uses/full responses after the action.
 
+As of 2026-07-06 18:50 +10, proxy2 resolves that no-server-response branch
+from prior durable typed `G Q` item-use-count state instead of asking the EE
+client to generate another action probe. When the pending candidate, preserved
+active item signature, preserved slot, and item button type match the durable
+row, the semantic state records
+`pending_refresh_resolved_by_use_count_state`, clears the pending hint,
+reports `post_context_resolved_by_prior_quickbar_use_count_state`, and
+suppresses generated client action hints with
+`matching_quickbar_use_count_state`. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-prior-gq-state-handoff-20260706-184640`
+against the 2026-07-03 Diamond autoplay capture stayed at 164 packet files,
+304 strict allows, 0 strict quarantines, and 0 quarantine files; that replay has
+no candidate durable use-count row, so the new resolved-by-use-count-state
+counter is expected to stay 0 there. The next live HG run should confirm the
+final `quickbar-item-refresh-hint.json` lands in the prior-state no-hint branch
+and that the harness no longer dispatches the subtype-low `UseItem` probe for
+this already-known active item state.
+
 As of 2026-07-06 16:45 +10, proxy2 also protects coalesced zlib stream tails
 from false high-level ownership. A current-code live probe
 `C:\nwnbridge\codex-live-use-count-state-current-20260706-162740\harness-proxy-20260706-162752`
@@ -70,9 +88,9 @@ and writes candidate state evidence into active and idle
 `candidate_quickbar_item_use_count_state_*` row/slot-relation fields. The
 replay summary exports the same fields. The current live result above confirms
 the active item row is available when the final hint lands in the
-no-server-response branch. The next production path is to implement the
-generalized EE client/visible quickbar state handoff from that durable typed
-`G Q` row rather than adding another generated action identity probe.
+no-server-response branch. The current production path now consumes that
+durable typed `G Q` row as the generalized EE client/visible quickbar state
+handoff.
 
 As of 2026-07-05 12:33 +10, proxy2 also writes
 `pending_item_refresh_recommended_action_outcome` into quickbar item-refresh
