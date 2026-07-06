@@ -33,7 +33,35 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-07 00:33 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-07 02:35 +10: the freshest
+gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-preserved-active-mismatch-confirm-20260707-023305\harness-proxy-20260707-023309`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+`GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
+`2026-07-07T02:35:01+10:00`, left `proxy.stdout.log` at
+`2026-07-07T02:35:02+10:00`, and produced no quarantine directory. Candidate
+`0x80015E43` resolved by pre-action server quickbar use-count state with
+`no_hint_reason="post_context_resolved_by_server_quickbar_use_count"` and
+`post_committed_item_refresh_resolution="resolved_by_server_quickbar_use_count"`;
+no generated client action was dispatched.
+
+As of 2026-07-07 02:55 +10, proxy2 also writes existing inventory Feature-25
+context into pending and idle `quickbar-item-refresh-hint.json` output:
+reference-record counts, first/second/legacy-tail item refs, materialized and
+deferred mention buckets, and cleared inventory item ids. The replay summary
+parser exports the same values under
+`QuickbarItemRefreshHintInventoryFeature25*`. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-feature25-counters-20260707-025012`
+over the 2026-07-03 Diamond autoplay packet set used 164 packet files, strict
+translation, 304 allow decisions, 0 strict quarantines, and 0 quarantine files;
+the pending Diamond path reported 23 Feature-25 reference records, 2 first-list
+refs with 11 deferred mentions, and 6 second-list refs with 16 deferred
+mentions. The next live HG run should use these current fields to compare live
+materialized/deferred inventory counters against the Diamond replay before
+changing inventory/equipment or live-object UI state rules.
+
+Previous live HG proxy status, as of 2026-07-07 00:33 +10: the
 gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-stream-materialization-current-20260707-003039\harness-proxy-20260707-003052`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached

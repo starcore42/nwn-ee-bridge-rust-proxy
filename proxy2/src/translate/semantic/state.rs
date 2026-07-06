@@ -1307,6 +1307,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) compact_item_emission_direct_only_proof_objects: usize,
     pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
     pub(crate) compact_item_emission_shared_proof_objects: usize,
+    pub(crate) item_context: InventoryItemContextSummary,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1975,6 +1976,20 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"compact_item_emission_direct_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_shared_proof_objects\": {},\n",
+                "  \"inventory_feature25_reference_records\": {},\n",
+                "  \"inventory_feature25_first_item_refs\": {},\n",
+                "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_first_deferred_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_second_item_refs\": {},\n",
+                "  \"inventory_feature25_second_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_second_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_second_deferred_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_legacy_tail_item_refs\": {},\n",
+                "  \"inventory_feature25_legacy_tail_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_legacy_tail_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_legacy_tail_deferred_item_ref_mentions\": {},\n",
+                "  \"cleared_inventory_item_object_ids\": {},\n",
                 "  \"live_object_events_since_pending_refresh\": {},\n",
                 "  \"quickbar_events_since_pending_refresh\": {},\n",
                 "  \"server_quickbar_item_use_count_events_since_pending_refresh\": {},\n",
@@ -2261,6 +2276,29 @@ impl QuickbarItemRefreshHarnessHint {
             self.compact_item_emission_direct_only_proof_objects,
             self.compact_item_emission_feature25_only_proof_objects,
             self.compact_item_emission_shared_proof_objects,
+            self.item_context.inventory_feature25_reference_records,
+            self.item_context.inventory_feature25_first_item_refs,
+            self.item_context
+                .inventory_feature25_first_item_ref_mentions,
+            self.item_context
+                .inventory_feature25_first_materialized_item_ref_mentions,
+            self.item_context
+                .inventory_feature25_first_deferred_item_ref_mentions,
+            self.item_context.inventory_feature25_second_item_refs,
+            self.item_context
+                .inventory_feature25_second_item_ref_mentions,
+            self.item_context
+                .inventory_feature25_second_materialized_item_ref_mentions,
+            self.item_context
+                .inventory_feature25_second_deferred_item_ref_mentions,
+            self.item_context.inventory_feature25_legacy_tail_item_refs,
+            self.item_context
+                .inventory_feature25_legacy_tail_item_ref_mentions,
+            self.item_context
+                .inventory_feature25_legacy_tail_materialized_item_ref_mentions,
+            self.item_context
+                .inventory_feature25_legacy_tail_deferred_item_ref_mentions,
+            self.item_context.cleared_inventory_item_object_ids,
             self.event_breakdown.live_object_events,
             self.event_breakdown.quickbar_events,
             self.event_breakdown.server_quickbar_item_use_count_events,
@@ -5220,9 +5258,19 @@ impl UiState {
                 "  \"compact_item_emission_direct_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_shared_proof_objects\": {},\n",
+                "  \"inventory_feature25_reference_records\": {},\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
+                "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_first_deferred_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_second_item_refs\": {},\n",
+                "  \"inventory_feature25_second_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_second_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_second_deferred_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_legacy_tail_item_refs\": {},\n",
+                "  \"inventory_feature25_legacy_tail_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_legacy_tail_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_legacy_tail_deferred_item_ref_mentions\": {},\n",
                 "  \"cleared_inventory_item_object_ids\": {},\n",
                 "  \"live_object_events_since_pending_refresh\": {},\n",
                 "  \"quickbar_events_since_pending_refresh\": {},\n",
@@ -5371,9 +5419,19 @@ impl UiState {
             context.compact_item_emission_direct_only_proof_objects,
             context.compact_item_emission_feature25_only_proof_objects,
             context.compact_item_emission_shared_proof_objects,
+            context.inventory_feature25_reference_records,
             context.inventory_feature25_first_item_refs,
+            context.inventory_feature25_first_item_ref_mentions,
+            context.inventory_feature25_first_materialized_item_ref_mentions,
+            context.inventory_feature25_first_deferred_item_ref_mentions,
             context.inventory_feature25_second_item_refs,
+            context.inventory_feature25_second_item_ref_mentions,
+            context.inventory_feature25_second_materialized_item_ref_mentions,
+            context.inventory_feature25_second_deferred_item_ref_mentions,
             context.inventory_feature25_legacy_tail_item_refs,
+            context.inventory_feature25_legacy_tail_item_ref_mentions,
+            context.inventory_feature25_legacy_tail_materialized_item_ref_mentions,
+            context.inventory_feature25_legacy_tail_deferred_item_ref_mentions,
             context.cleared_inventory_item_object_ids,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .live_object_events,
@@ -5526,6 +5584,7 @@ impl UiState {
             compact_item_emission_shared_proof_objects: summary
                 .item_context
                 .compact_item_emission_shared_proof_objects,
+            item_context: summary.item_context,
         })
     }
 
@@ -7948,7 +8007,20 @@ mod tests {
                 source: InventoryItemContextCandidateSource::Feature25Only,
             }),
             compact_item_emission_feature25_only_proof_objects: 1,
+            inventory_feature25_reference_records: 2,
+            inventory_feature25_first_item_refs: 1,
+            inventory_feature25_first_item_ref_mentions: 3,
+            inventory_feature25_first_materialized_item_ref_mentions: 1,
+            inventory_feature25_first_deferred_item_ref_mentions: 2,
             inventory_feature25_second_item_refs: 1,
+            inventory_feature25_second_item_ref_mentions: 4,
+            inventory_feature25_second_materialized_item_ref_mentions: 3,
+            inventory_feature25_second_deferred_item_ref_mentions: 1,
+            inventory_feature25_legacy_tail_item_refs: 1,
+            inventory_feature25_legacy_tail_item_ref_mentions: 5,
+            inventory_feature25_legacy_tail_materialized_item_ref_mentions: 2,
+            inventory_feature25_legacy_tail_deferred_item_ref_mentions: 3,
+            cleared_inventory_item_object_ids: 1,
             ..InventoryItemContextSummary::default()
         };
         ui.last_committed_quickbar_profile =
@@ -8194,6 +8266,22 @@ mod tests {
         assert!(
             json.contains("\"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": 15")
         );
+        assert!(json.contains("\"inventory_feature25_reference_records\": 2"));
+        assert!(json.contains("\"inventory_feature25_first_item_refs\": 1"));
+        assert!(json.contains("\"inventory_feature25_first_item_ref_mentions\": 3"));
+        assert!(json.contains("\"inventory_feature25_first_materialized_item_ref_mentions\": 1"));
+        assert!(json.contains("\"inventory_feature25_first_deferred_item_ref_mentions\": 2"));
+        assert!(json.contains("\"inventory_feature25_second_item_refs\": 1"));
+        assert!(json.contains("\"inventory_feature25_second_item_ref_mentions\": 4"));
+        assert!(json.contains("\"inventory_feature25_second_materialized_item_ref_mentions\": 3"));
+        assert!(json.contains("\"inventory_feature25_second_deferred_item_ref_mentions\": 1"));
+        assert!(json.contains("\"inventory_feature25_legacy_tail_item_refs\": 1"));
+        assert!(json.contains("\"inventory_feature25_legacy_tail_item_ref_mentions\": 5"));
+        assert!(
+            json.contains("\"inventory_feature25_legacy_tail_materialized_item_ref_mentions\": 2")
+        );
+        assert!(json.contains("\"inventory_feature25_legacy_tail_deferred_item_ref_mentions\": 3"));
+        assert!(json.contains("\"cleared_inventory_item_object_ids\": 1"));
         assert!(json.contains("\"recommended_use_item_payload_available\": true"));
         assert!(json.contains("\"recommended_use_item_payload_kind\": \"Input_UseItem\""));
         assert!(json.contains(
@@ -9163,6 +9251,11 @@ mod tests {
                 feature25_item_proof_objects: 1,
                 compact_item_emission_proof_objects: 1,
                 compact_item_emission_feature25_only_proof_objects: 1,
+                inventory_feature25_reference_records: 1,
+                inventory_feature25_first_item_refs: 2,
+                inventory_feature25_first_item_ref_mentions: 6,
+                inventory_feature25_first_materialized_item_ref_mentions: 4,
+                inventory_feature25_first_deferred_item_ref_mentions: 2,
                 ..Default::default()
             });
         let no_candidate = ui.quickbar_item_refresh_harness_idle_json();
@@ -9172,6 +9265,16 @@ mod tests {
         assert!(no_candidate.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(no_candidate.contains("\"candidate_known\": false"));
         assert!(no_candidate.contains("\"compact_item_emission_proof_objects\": 1"));
+        assert!(no_candidate.contains("\"inventory_feature25_reference_records\": 1"));
+        assert!(no_candidate.contains("\"inventory_feature25_first_item_refs\": 2"));
+        assert!(no_candidate.contains("\"inventory_feature25_first_item_ref_mentions\": 6"));
+        assert!(
+            no_candidate
+                .contains("\"inventory_feature25_first_materialized_item_ref_mentions\": 4")
+        );
+        assert!(
+            no_candidate.contains("\"inventory_feature25_first_deferred_item_ref_mentions\": 2")
+        );
 
         ui.post_committed_quickbar_item_refresh_pending = false;
         ui.post_committed_quickbar_item_refresh_resolved_by_server_use_count = true;
