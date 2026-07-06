@@ -1417,6 +1417,10 @@ try {
     $quickbarHintStreamProbeItemObjectsPreservedByFeature25Second = 0
     $quickbarHintStreamProbeItemObjectsPreservedByFeature25LegacyTail = 0
     $quickbarHintInventoryFeature25ReferenceRecords = 0
+    $quickbarHintInventoryFeature25ItemRefMentions = 0
+    $quickbarHintInventoryFeature25MaterializedItemRefMentions = 0
+    $quickbarHintInventoryFeature25DeferredItemRefMentions = 0
+    $quickbarHintInventoryFeature25MaterializationOutcome = ''
     $quickbarHintInventoryFeature25FirstItemRefs = 0
     $quickbarHintInventoryFeature25FirstItemRefMentions = 0
     $quickbarHintInventoryFeature25FirstMaterializedItemRefMentions = 0
@@ -1601,6 +1605,13 @@ try {
         $quickbarHintStreamProbeItemObjectsPreservedByFeature25Second = & $getQuickbarHintInt64 'stream_probe_item_objects_preserved_by_feature25_second'
         $quickbarHintStreamProbeItemObjectsPreservedByFeature25LegacyTail = & $getQuickbarHintInt64 'stream_probe_item_objects_preserved_by_feature25_legacy_tail'
         $quickbarHintInventoryFeature25ReferenceRecords = & $getQuickbarHintInt64 'inventory_feature25_reference_records'
+        $quickbarHintInventoryFeature25ItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_item_ref_mentions'
+        $quickbarHintInventoryFeature25MaterializedItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_materialized_item_ref_mentions'
+        $quickbarHintInventoryFeature25DeferredItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_deferred_item_ref_mentions'
+        $feature25OutcomeProp = $quickbarHintJson.PSObject.Properties['inventory_feature25_materialization_outcome']
+        if ($null -ne $feature25OutcomeProp -and $null -ne $feature25OutcomeProp.Value) {
+            $quickbarHintInventoryFeature25MaterializationOutcome = [string]$feature25OutcomeProp.Value
+        }
         $quickbarHintInventoryFeature25FirstItemRefs = & $getQuickbarHintInt64 'inventory_feature25_first_item_refs'
         $quickbarHintInventoryFeature25FirstItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_item_ref_mentions'
         $quickbarHintInventoryFeature25FirstMaterializedItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_materialized_item_ref_mentions'
@@ -1844,6 +1855,10 @@ try {
         QuickbarItemRefreshHintStreamProbeItemObjectsPreservedByFeature25Second = $quickbarHintStreamProbeItemObjectsPreservedByFeature25Second
         QuickbarItemRefreshHintStreamProbeItemObjectsPreservedByFeature25LegacyTail = $quickbarHintStreamProbeItemObjectsPreservedByFeature25LegacyTail
         QuickbarItemRefreshHintInventoryFeature25ReferenceRecords = $quickbarHintInventoryFeature25ReferenceRecords
+        QuickbarItemRefreshHintInventoryFeature25ItemRefMentions = $quickbarHintInventoryFeature25ItemRefMentions
+        QuickbarItemRefreshHintInventoryFeature25MaterializedItemRefMentions = $quickbarHintInventoryFeature25MaterializedItemRefMentions
+        QuickbarItemRefreshHintInventoryFeature25DeferredItemRefMentions = $quickbarHintInventoryFeature25DeferredItemRefMentions
+        QuickbarItemRefreshHintInventoryFeature25MaterializationOutcome = $quickbarHintInventoryFeature25MaterializationOutcome
         QuickbarItemRefreshHintInventoryFeature25FirstItemRefs = $quickbarHintInventoryFeature25FirstItemRefs
         QuickbarItemRefreshHintInventoryFeature25FirstItemRefMentions = $quickbarHintInventoryFeature25FirstItemRefMentions
         QuickbarItemRefreshHintInventoryFeature25FirstMaterializedItemRefMentions = $quickbarHintInventoryFeature25FirstMaterializedItemRefMentions

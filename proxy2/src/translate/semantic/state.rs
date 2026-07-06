@@ -629,6 +629,73 @@ impl InventoryItemContextSummary {
     pub(crate) fn has_compact_quickbar_item_proof(&self) -> bool {
         self.compact_item_emission_proof_objects != 0
     }
+
+    pub(crate) fn inventory_feature25_item_ref_mentions(&self) -> u64 {
+        self.inventory_feature25_first_item_ref_mentions
+            .saturating_add(self.inventory_feature25_second_item_ref_mentions)
+            .saturating_add(self.inventory_feature25_legacy_tail_item_ref_mentions)
+    }
+
+    pub(crate) fn inventory_feature25_materialized_item_ref_mentions(&self) -> u64 {
+        self.inventory_feature25_first_materialized_item_ref_mentions
+            .saturating_add(self.inventory_feature25_second_materialized_item_ref_mentions)
+            .saturating_add(self.inventory_feature25_legacy_tail_materialized_item_ref_mentions)
+    }
+
+    pub(crate) fn inventory_feature25_deferred_item_ref_mentions(&self) -> u64 {
+        self.inventory_feature25_first_deferred_item_ref_mentions
+            .saturating_add(self.inventory_feature25_second_deferred_item_ref_mentions)
+            .saturating_add(self.inventory_feature25_legacy_tail_deferred_item_ref_mentions)
+    }
+
+    pub(crate) fn inventory_feature25_materialization_outcome(
+        &self,
+    ) -> InventoryFeature25MaterializationOutcome {
+        let mentions = self.inventory_feature25_item_ref_mentions();
+        let materialized = self.inventory_feature25_materialized_item_ref_mentions();
+        let deferred = self.inventory_feature25_deferred_item_ref_mentions();
+
+        if mentions == 0 {
+            return if self.inventory_feature25_reference_records == 0 {
+                InventoryFeature25MaterializationOutcome::None
+            } else {
+                InventoryFeature25MaterializationOutcome::ReferencesWithoutItemMentions
+            };
+        }
+        if materialized == 0 && deferred == mentions {
+            return InventoryFeature25MaterializationOutcome::AllItemRefsDeferred;
+        }
+        if deferred == 0 && materialized == mentions {
+            return InventoryFeature25MaterializationOutcome::AllItemRefsMaterialized;
+        }
+        if materialized != 0 && deferred != 0 {
+            return InventoryFeature25MaterializationOutcome::MixedItemRefs;
+        }
+        InventoryFeature25MaterializationOutcome::UnclassifiedItemRefs
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InventoryFeature25MaterializationOutcome {
+    None,
+    ReferencesWithoutItemMentions,
+    AllItemRefsDeferred,
+    AllItemRefsMaterialized,
+    MixedItemRefs,
+    UnclassifiedItemRefs,
+}
+
+impl InventoryFeature25MaterializationOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ReferencesWithoutItemMentions => "references_without_item_mentions",
+            Self::AllItemRefsDeferred => "all_item_refs_deferred",
+            Self::AllItemRefsMaterialized => "all_item_refs_materialized",
+            Self::MixedItemRefs => "mixed_item_refs",
+            Self::UnclassifiedItemRefs => "unclassified_item_refs",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1977,6 +2044,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_shared_proof_objects\": {},\n",
                 "  \"inventory_feature25_reference_records\": {},\n",
+                "  \"inventory_feature25_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_deferred_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_materialization_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -2277,6 +2348,14 @@ impl QuickbarItemRefreshHarnessHint {
             self.compact_item_emission_feature25_only_proof_objects,
             self.compact_item_emission_shared_proof_objects,
             self.item_context.inventory_feature25_reference_records,
+            self.item_context.inventory_feature25_item_ref_mentions(),
+            self.item_context
+                .inventory_feature25_materialized_item_ref_mentions(),
+            self.item_context
+                .inventory_feature25_deferred_item_ref_mentions(),
+            self.item_context
+                .inventory_feature25_materialization_outcome()
+                .as_str(),
             self.item_context.inventory_feature25_first_item_refs,
             self.item_context
                 .inventory_feature25_first_item_ref_mentions,
@@ -5259,6 +5338,10 @@ impl UiState {
                 "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_shared_proof_objects\": {},\n",
                 "  \"inventory_feature25_reference_records\": {},\n",
+                "  \"inventory_feature25_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_materialized_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_deferred_item_ref_mentions\": {},\n",
+                "  \"inventory_feature25_materialization_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -5420,6 +5503,10 @@ impl UiState {
             context.compact_item_emission_feature25_only_proof_objects,
             context.compact_item_emission_shared_proof_objects,
             context.inventory_feature25_reference_records,
+            context.inventory_feature25_item_ref_mentions(),
+            context.inventory_feature25_materialized_item_ref_mentions(),
+            context.inventory_feature25_deferred_item_ref_mentions(),
+            context.inventory_feature25_materialization_outcome().as_str(),
             context.inventory_feature25_first_item_refs,
             context.inventory_feature25_first_item_ref_mentions,
             context.inventory_feature25_first_materialized_item_ref_mentions,
@@ -5650,6 +5737,8 @@ pub(crate) struct SyntheticState {
 
 #[cfg(test)]
 mod tests {
+    use super::InventoryFeature25MaterializationOutcome;
+
     use crate::translate::area::{
         AreaPlaceableContext, AreaPlaceableContextAppearanceConflict,
         AreaPlaceableContextIdentityConflict, AreaPlaceableContextObjectIdConfidence,
@@ -7798,6 +7887,48 @@ mod tests {
             summary.inventory_feature25_second_deferred_item_ref_mentions,
             1
         );
+        assert_eq!(
+            summary.inventory_feature25_legacy_tail_materialized_item_ref_mentions,
+            0
+        );
+        assert_eq!(
+            summary.inventory_feature25_legacy_tail_deferred_item_ref_mentions,
+            1
+        );
+        assert_eq!(summary.inventory_feature25_item_ref_mentions(), 5);
+        assert_eq!(
+            summary.inventory_feature25_materialized_item_ref_mentions(),
+            2
+        );
+        assert_eq!(summary.inventory_feature25_deferred_item_ref_mentions(), 3);
+        assert_eq!(
+            summary.inventory_feature25_materialization_outcome(),
+            InventoryFeature25MaterializationOutcome::MixedItemRefs
+        );
+        let live_like_deferred = InventoryItemContextSummary {
+            inventory_feature25_reference_records: 13,
+            inventory_feature25_first_item_ref_mentions: 6,
+            inventory_feature25_first_deferred_item_ref_mentions: 6,
+            inventory_feature25_second_item_ref_mentions: 7,
+            inventory_feature25_second_deferred_item_ref_mentions: 7,
+            ..Default::default()
+        };
+        assert_eq!(
+            live_like_deferred.inventory_feature25_item_ref_mentions(),
+            13
+        );
+        assert_eq!(
+            live_like_deferred.inventory_feature25_materialized_item_ref_mentions(),
+            0
+        );
+        assert_eq!(
+            live_like_deferred.inventory_feature25_deferred_item_ref_mentions(),
+            13
+        );
+        assert_eq!(
+            live_like_deferred.inventory_feature25_materialization_outcome(),
+            InventoryFeature25MaterializationOutcome::AllItemRefsDeferred
+        );
     }
 
     #[test]
@@ -8267,6 +8398,12 @@ mod tests {
             json.contains("\"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": 15")
         );
         assert!(json.contains("\"inventory_feature25_reference_records\": 2"));
+        assert!(json.contains("\"inventory_feature25_item_ref_mentions\": 12"));
+        assert!(json.contains("\"inventory_feature25_materialized_item_ref_mentions\": 6"));
+        assert!(json.contains("\"inventory_feature25_deferred_item_ref_mentions\": 6"));
+        assert!(
+            json.contains("\"inventory_feature25_materialization_outcome\": \"mixed_item_refs\"")
+        );
         assert!(json.contains("\"inventory_feature25_first_item_refs\": 1"));
         assert!(json.contains("\"inventory_feature25_first_item_ref_mentions\": 3"));
         assert!(json.contains("\"inventory_feature25_first_materialized_item_ref_mentions\": 1"));
@@ -9266,6 +9403,13 @@ mod tests {
         assert!(no_candidate.contains("\"candidate_known\": false"));
         assert!(no_candidate.contains("\"compact_item_emission_proof_objects\": 1"));
         assert!(no_candidate.contains("\"inventory_feature25_reference_records\": 1"));
+        assert!(no_candidate.contains("\"inventory_feature25_item_ref_mentions\": 6"));
+        assert!(no_candidate.contains("\"inventory_feature25_materialized_item_ref_mentions\": 4"));
+        assert!(no_candidate.contains("\"inventory_feature25_deferred_item_ref_mentions\": 2"));
+        assert!(
+            no_candidate
+                .contains("\"inventory_feature25_materialization_outcome\": \"mixed_item_refs\"")
+        );
         assert!(no_candidate.contains("\"inventory_feature25_first_item_refs\": 2"));
         assert!(no_candidate.contains("\"inventory_feature25_first_item_ref_mentions\": 6"));
         assert!(

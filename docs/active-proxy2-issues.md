@@ -17,31 +17,35 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
-- 2026-07-07 inventory Feature-25 hint counters: live-data gate found
+- 2026-07-07 inventory Feature-25 materialization outcome: live-data gate found
   gameplay-reaching HG proxy capture
-  `C:\nwnbridge\codex-live-stream-materialization-current-20260707-003039\harness-proxy-20260707-003052`
-  fresh (`proxy.stdout.log` last write `2026-07-07T00:33:54+10:00`, about
-  1.96h old at gate), with no quarantine directory. A fresh current-code
-  confirmation harness
   `C:\nwnbridge\codex-live-preserved-active-mismatch-confirm-20260707-023305\harness-proxy-20260707-023309`
-  reached gameplay, wrote `quickbar-item-refresh-hint.json` at
-  `2026-07-07T02:35:01+10:00`, and produced no quarantine directory. This run
-  did not reproduce the prior candidate/preserved-active mismatch; it resolved
-  by pre-action server `G Q` use-count state for candidate `0x80015E43`, with
-  no generated client action. Proxy2 now carries the existing
-  `InventoryItemContextSummary` Feature-25 reference records, first/second/
-  legacy-tail item refs, materialized/deferred mention buckets, and cleared
-  inventory item ids into pending and idle `quickbar-item-refresh-hint.json`
-  output, and the replay summary parser exports the same
-  `QuickbarItemRefreshHintInventoryFeature25*` fields. Bounded strict replay
-  `C:\nwnbridge\codex-proxy2-replay-inventory-feature25-counters-20260707-025012`
+  fresh (`proxy.stdout.log` last write `2026-07-07T02:48:23+10:00`, about
+  1h44m old at gate), with no quarantine directory. A fresh current-code
+  confirmation harness
+  `C:\nwnbridge\codex-live-inventory-feature25-current-20260707-043430\harness-proxy-20260707-043444`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, wrote `quickbar-item-refresh-hint.json` at
+  `2026-07-07T04:42:08+10:00`, and produced no quarantine directory. It
+  resolved by prior quickbar use-count state for candidate `0x80015270`, with
+  21 quickbar item buttons preserved by explicit self materialization, 42
+  Feature-25 reference records, 21 first-list deferred item-ref mentions, 21
+  second-list deferred item-ref mentions, 0 Feature-25 materialized mentions,
+  and 0 cleared inventory item ids. Proxy2 now derives aggregate
+  `InventoryItemContextSummary` Feature-25 item-ref mention totals and an
+  `inventory_feature25_materialization_outcome` for pending and idle
+  `quickbar-item-refresh-hint.json` output, semantic trace logs, and replay
+  summaries. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-feature25-outcome-20260707-045300`
   used 164 packet files, strict translation, 304 allow decisions, 0 strict
   quarantines, and 0 quarantine files; its pending Diamond path reported 23
-  Feature-25 reference records, 2 first-list refs with 11 deferred mentions,
-  and 6 second-list refs with 16 deferred mentions. Active next path: build the
-  proxy target and run a fresh live HG harness on these fields, then compare
-  live materialized/deferred inventory counters against the Diamond replay
-  before changing inventory/equipment or live-object UI state rules.
+  Feature-25 reference records, 27 item-ref mentions, 0 materialized mentions,
+  27 deferred mentions, and
+  `inventory_feature25_materialization_outcome="all_item_refs_deferred"`.
+  Active next path: use the live/replay all-deferred baseline to decide whether
+  deferred Feature-25 item refs should remain reference-only for inventory and
+  equipment, or whether a later visible inventory/equipment state handoff must
+  materialize them.
 - 2026-07-07 preserved-active quickbar `G Q` mismatch guard: live-data gate
   found the gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`

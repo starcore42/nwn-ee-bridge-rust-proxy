@@ -962,6 +962,15 @@ fn remember_quickbar_item_context_if_relevant(
                 item_context.inventory_feature25_second_item_refs,
             inventory_feature25_legacy_tail_item_refs =
                 item_context.inventory_feature25_legacy_tail_item_refs,
+            inventory_feature25_item_ref_mentions =
+                item_context.inventory_feature25_item_ref_mentions(),
+            inventory_feature25_materialized_item_ref_mentions =
+                item_context.inventory_feature25_materialized_item_ref_mentions(),
+            inventory_feature25_deferred_item_ref_mentions =
+                item_context.inventory_feature25_deferred_item_ref_mentions(),
+            inventory_feature25_materialization_outcome = item_context
+                .inventory_feature25_materialization_outcome()
+                .as_str(),
             cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
             "semantic state retained inventory item context for next GuiQuickbar"
         );
@@ -1372,6 +1381,15 @@ fn remember_quickbar_item_context_if_relevant(
                 item_context.inventory_feature25_second_item_refs,
             inventory_feature25_legacy_tail_item_refs =
                 item_context.inventory_feature25_legacy_tail_item_refs,
+            inventory_feature25_item_ref_mentions =
+                item_context.inventory_feature25_item_ref_mentions(),
+            inventory_feature25_materialized_item_ref_mentions = item_context
+                .inventory_feature25_materialized_item_ref_mentions(),
+            inventory_feature25_deferred_item_ref_mentions =
+                item_context.inventory_feature25_deferred_item_ref_mentions(),
+            inventory_feature25_materialization_outcome = item_context
+                .inventory_feature25_materialization_outcome()
+                .as_str(),
             cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
             "semantic state retained inventory item context after committed GuiQuickbar"
         );
