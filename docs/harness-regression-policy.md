@@ -33,8 +33,40 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-06 20:32 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-07 00:33 +10: the freshest
 gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-stream-materialization-current-20260707-003039\harness-proxy-20260707-003052`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+`GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
+`2026-07-07T00:33:48.7458235+10:00`, and produced no quarantine directory. The
+final hint showed candidate `0x80015D81` from active-object/direct-only proof,
+but the first preserved active quickbar item was `0x80015D89` in slot 0 with a
+durable typed item-button `G Q` row; the candidate had no matching use-count
+state row. This is a harness-driving state handoff issue, not a new packet
+bit-shape proof.
+
+As of 2026-07-07 00:50 +10, proxy2 also writes the first-preserved-active
+quickbar item `G Q` use-count state into pending and idle
+`quickbar-item-refresh-hint.json` output, and the replay summary parser exports
+the normalized
+`QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountState*` fields.
+When the pending candidate differs from the preserved active item, the candidate
+lacks matching slot state, and the preserved active item has a matching
+item-button use-count row, the harness hint now suppresses generated client
+actions with
+`preserved_active_item_quickbar_use_count_state_candidate_mismatch`. Bounded
+strict replay
+`C:\nwnbridge\codex-proxy2-replay-preserved-active-use-count-state-20260707-005028`
+over the 2026-07-03 Diamond autoplay packet set used 164 packet files, strict
+translation, 304 allow decisions, 0 strict quarantines, and 0 quarantine files;
+the replay path had no preserved-active row, so the new fields exported
+`known=false` and did not suppress. The next live HG run should confirm the
+00:33 mismatch now suppresses action dispatch before chasing the next visible
+inventory/equipment or live-object UI state gap.
+
+Previous live HG proxy status, as of 2026-07-06 20:32 +10: the
+gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained

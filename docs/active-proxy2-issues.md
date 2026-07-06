@@ -17,6 +17,34 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-07 preserved-active quickbar `G Q` mismatch guard: live-data gate
+  found the gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`
+  fresh (`quickbar-item-refresh-hint.json` last write
+  `2026-07-06T20:32:10+10:00`, about 4h old at gate), then a fresh current-code
+  live harness
+  `C:\nwnbridge\codex-live-stream-materialization-current-20260707-003039\harness-proxy-20260707-003052`
+  reached gameplay, wrote `quickbar-item-refresh-hint.json` at
+  `2026-07-07T00:33:48.7458235+10:00`, and produced no quarantine directory.
+  Live HG was the strongest reference setup because the issue is a live
+  harness-driving state handoff after stream-probe materialization. The final
+  hint showed candidate `0x80015D81` from active-object/direct-only proof, but
+  the first preserved active quickbar item was `0x80015D89` in slot 0 and had a
+  durable typed item-button `G Q` row; the candidate had no matching use-count
+  state row. Proxy2 now carries that first-preserved-active-item use-count row
+  through pending/idle quickbar item-refresh hints and replay summaries, and it
+  suppresses generated client actions with
+  `preserved_active_item_quickbar_use_count_state_candidate_mismatch` when the
+  candidate lacks matching slot state but the preserved active item has it.
+  Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-preserved-active-use-count-state-20260707-005028`
+  used 164 packet files, strict translation, 304 allow decisions, 0 strict
+  quarantines, and 0 quarantine files; this replay path has no preserved-active
+  row, so the new fields correctly exported `known=false` and did not suppress.
+  Active next path: rerun live HG on this build and confirm the final hint now
+  reports the preserved-active mismatch suppression with no generated client
+  action, then inspect the next visible inventory/equipment or live-object UI
+  divergence.
 - 2026-07-06 stream-probe item materialization counters: live-data gate used
   the gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`;

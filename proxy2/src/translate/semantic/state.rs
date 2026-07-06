@@ -1281,6 +1281,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) first_preserved_active_item_slot: Option<u8>,
     pub(crate) candidate_use_count_state: Option<QuickbarItemRefreshUseCountRow>,
+    pub(crate) first_preserved_active_item_use_count_state: Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) quickbar_item_use_count_state_rows: usize,
     pub(crate) quickbar_item_use_count_updates_observed: u64,
     pub(crate) updates_since_committed_quickbar: u64,
@@ -1654,16 +1655,30 @@ impl QuickbarItemRefreshHarnessHint {
                 self.candidate_use_count_state,
                 self.first_preserved_active_item_slot,
             );
+        let first_active_item_use_count_state_slot_relation =
+            QuickbarItemRefreshUseCountSlotRelation::from_row_and_preserved_slot(
+                self.first_preserved_active_item_use_count_state,
+                self.first_preserved_active_item_slot,
+            );
         let matching_candidate_use_count_state = first_active_item_matches_candidate
             && candidate_use_count_state_slot_relation.matches_preserved_active_item_slot();
+        let matching_preserved_active_item_use_count_state = !first_active_item_matches_candidate
+            && !candidate_use_count_state_slot_relation.matches_preserved_active_item_slot()
+            && first_active_item_use_count_state_slot_relation.matches_preserved_active_item_slot()
+            && self
+                .first_preserved_active_item_use_count_state
+                .is_some_and(|row| row.button_type == client_quickbar::ITEM_SET_BUTTON_TYPE);
         let recommended_client_action_should_dispatch =
             !server_quickbar_response_before_first_client_action
-                && !matching_candidate_use_count_state;
+                && !matching_candidate_use_count_state
+                && !matching_preserved_active_item_use_count_state;
         let recommended_client_action_suppressed_reason =
             if server_quickbar_response_before_first_client_action {
                 "server_quickbar_response_before_first_client_action"
             } else if matching_candidate_use_count_state {
                 "matching_quickbar_use_count_state"
+            } else if matching_preserved_active_item_use_count_state {
+                "preserved_active_item_quickbar_use_count_state_candidate_mismatch"
             } else {
                 "none"
             };
@@ -1708,6 +1723,9 @@ impl QuickbarItemRefreshHarnessHint {
                 self.first_preserved_active_item_slot,
             );
         let candidate_use_count_state = self.candidate_use_count_state.unwrap_or_default();
+        let first_active_item_use_count_state = self
+            .first_preserved_active_item_use_count_state
+            .unwrap_or_default();
         let first_client_action_timing = QuickbarItemRefreshClientActionTiming::from_pending_state(
             first_client_action_detail,
             self.followup_events_before_first_client_action,
@@ -1841,6 +1859,15 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"candidate_quickbar_item_use_count_state_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"candidate_quickbar_item_use_count_state_active_property_index\": {},\n",
                 "  \"candidate_quickbar_item_use_count_state_use_count\": {},\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_known\": {},\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_slot_relation\": \"{}\",\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_slot_matches_first_preserved_active_item\": {},\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_slot\": {},\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_button_type\": {},\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_object_id\": {},\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_active_property_index\": {},\n",
+                "  \"first_preserved_active_item_quickbar_use_count_state_use_count\": {},\n",
                 "  \"first_server_quickbar_item_use_count_candidate_row_known\": {},\n",
                 "  \"first_server_quickbar_item_use_count_candidate_row_timing\": \"{}\",\n",
                 "  \"first_server_quickbar_item_use_count_candidate_row_slot_relation\": \"{}\",\n",
@@ -2081,6 +2108,15 @@ impl QuickbarItemRefreshHarnessHint {
             candidate_use_count_state.object_id,
             candidate_use_count_state.active_property_index,
             candidate_use_count_state.use_count,
+            self.first_preserved_active_item_use_count_state.is_some(),
+            first_active_item_use_count_state_slot_relation.as_str(),
+            first_active_item_use_count_state_slot_relation.matches_preserved_active_item_slot(),
+            first_active_item_use_count_state.slot,
+            first_active_item_use_count_state.button_type,
+            first_active_item_use_count_state.object_id,
+            first_active_item_use_count_state.object_id,
+            first_active_item_use_count_state.active_property_index,
+            first_active_item_use_count_state.use_count,
             self.first_candidate_use_count_row.is_some(),
             first_candidate_use_count_row_timing,
             first_candidate_use_count_row_slot_relation.as_str(),
@@ -4543,6 +4579,23 @@ impl UiState {
             .find(|row| row.object_id == candidate_object_id)
     }
 
+    fn quickbar_item_use_count_state_for_preserved_active_item(
+        &self,
+        signature: Option<QuickbarActiveItemSignature>,
+        preserved_slot: Option<u8>,
+    ) -> Option<QuickbarItemRefreshUseCountRow> {
+        let signature = signature?;
+        let preserved_slot = preserved_slot?;
+        self.quickbar_item_use_count_state
+            .values()
+            .copied()
+            .find(|row| {
+                row.object_id == signature.object_id
+                    && row.slot == preserved_slot
+                    && row.button_type == client_quickbar::ITEM_SET_BUTTON_TYPE
+            })
+    }
+
     pub(crate) fn observe_quickbar_stream_probe(
         &mut self,
         summary: &QuickbarRewriteSummary,
@@ -4997,6 +5050,20 @@ impl UiState {
         let stream_probe_active_item_value_mask = stream_probe_active_item
             .map(|signature| signature.value_mask)
             .unwrap_or(0);
+        let stream_probe_active_item_use_count_state = self
+            .quickbar_item_use_count_state_for_preserved_active_item(
+                stream_probe_active_item,
+                stream_probe.first_preserved_active_item_slot,
+            );
+        let stream_probe_active_item_use_count_state_slot_relation =
+            QuickbarItemRefreshUseCountSlotRelation::from_row_and_preserved_slot(
+                stream_probe_active_item_use_count_state,
+                stream_probe.first_preserved_active_item_slot,
+            );
+        let stream_probe_active_item_use_count_state_known =
+            stream_probe_active_item_use_count_state.is_some();
+        let stream_probe_active_item_use_count_state =
+            stream_probe_active_item_use_count_state.unwrap_or_default();
         let first_candidate_use_count_row = self
             .post_committed_quickbar_item_refresh_first_candidate_use_count_row
             .or(self.last_committed_quickbar_item_refresh_first_candidate_use_count_row);
@@ -5083,6 +5150,15 @@ impl UiState {
                 "  \"stream_probe_first_preserved_active_item_state_mask_hex\": \"0x{:02X}\",\n",
                 "  \"stream_probe_first_preserved_active_item_value_mask\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_value_mask_hex\": \"0x{:02X}\",\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_known\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_slot_relation\": \"{}\",\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_slot_matches_first_preserved_active_item\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_slot\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_button_type\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_object_id\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_active_property_index\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_quickbar_use_count_state_use_count\": {},\n",
                 "  \"stream_probe_direct_item_proof_objects\": {},\n",
                 "  \"stream_probe_feature25_item_proof_objects\": {},\n",
                 "  \"stream_probe_compact_item_emission_proof_objects\": {},\n",
@@ -5215,6 +5291,16 @@ impl UiState {
             stream_probe_active_item_state_mask,
             stream_probe_active_item_value_mask,
             stream_probe_active_item_value_mask,
+            stream_probe_active_item_use_count_state_known,
+            stream_probe_active_item_use_count_state_slot_relation.as_str(),
+            stream_probe_active_item_use_count_state_slot_relation
+                .matches_preserved_active_item_slot(),
+            stream_probe_active_item_use_count_state.slot,
+            stream_probe_active_item_use_count_state.button_type,
+            stream_probe_active_item_use_count_state.object_id,
+            stream_probe_active_item_use_count_state.object_id,
+            stream_probe_active_item_use_count_state.active_property_index,
+            stream_probe_active_item_use_count_state.use_count,
             stream_probe_context.direct_item_proof_objects,
             stream_probe_context.feature25_item_proof_objects,
             stream_probe_context.compact_item_emission_proof_objects,
@@ -5400,6 +5486,11 @@ impl UiState {
                 candidate.object_id,
                 first_preserved_active_item_slot,
             ),
+            first_preserved_active_item_use_count_state: self
+                .quickbar_item_use_count_state_for_preserved_active_item(
+                    first_preserved_active_item_signature,
+                    first_preserved_active_item_slot,
+                ),
             quickbar_item_use_count_state_rows: self.quickbar_item_use_count_state.len(),
             quickbar_item_use_count_updates_observed: self.quickbar_item_use_count_updates_observed,
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
@@ -8038,6 +8129,10 @@ mod tests {
             hint.candidate_use_count_state,
             Some(pre_action_use_count_row)
         );
+        assert_eq!(
+            hint.first_preserved_active_item_use_count_state,
+            Some(pre_action_use_count_row)
+        );
 
         let json = hint.to_json();
         assert!(json.contains("\"post_committed_item_refresh_resolution\": \"pending\""));
@@ -8255,6 +8350,30 @@ mod tests {
             json.contains("\"candidate_quickbar_item_use_count_state_active_property_index\": 7")
         );
         assert!(json.contains("\"candidate_quickbar_item_use_count_state_use_count\": 4"));
+        assert!(
+            json.contains("\"first_preserved_active_item_quickbar_use_count_state_known\": true")
+        );
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_slot_relation\": \"matches_preserved_active_item_slot\""
+        ));
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_slot_matches_first_preserved_active_item\": true"
+        ));
+        assert!(json.contains("\"first_preserved_active_item_quickbar_use_count_state_slot\": 2"));
+        assert!(
+            json.contains(
+                "\"first_preserved_active_item_quickbar_use_count_state_button_type\": 1"
+            )
+        );
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_object_id_hex\": \"0x80000100\""
+        ));
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_active_property_index\": 7"
+        ));
+        assert!(
+            json.contains("\"first_preserved_active_item_quickbar_use_count_state_use_count\": 4")
+        );
         assert!(json.contains("\"server_to_client_events_since_pending_refresh\": 10"));
         assert!(json.contains("\"client_to_server_events_since_pending_refresh\": 1"));
         assert!(
@@ -8712,6 +8831,126 @@ mod tests {
     }
 
     #[test]
+    fn quickbar_item_refresh_harness_hint_suppresses_candidate_mismatch_when_preserved_active_item_has_use_count_state()
+     {
+        let mut ui = UiState::default();
+        let item_context = InventoryItemContextSummary {
+            direct_item_proof_objects: 2,
+            compact_item_emission_proof_objects: 2,
+            compact_item_emission_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0101,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            compact_item_emission_direct_only_proof_objects: 2,
+            ..InventoryItemContextSummary::default()
+        };
+        ui.last_committed_quickbar_profile =
+            Some(crate::translate::quickbar::QuickbarValidatedSlotProfile {
+                slot_records: 36,
+                blank_slots: 34,
+                item_slots: 2,
+                first_blank_slot: Some(5),
+                first_item_slot: Some(0),
+                ..crate::translate::quickbar::QuickbarValidatedSlotProfile::default()
+            });
+        ui.last_inventory_item_context_after_committed_quickbar = Some(item_context);
+        ui.inventory_item_context_after_committed_quickbar_updates = 4;
+        ui.post_committed_quickbar_item_refresh_pending = true;
+        ui.post_committed_quickbar_item_refresh_pending_events = 6;
+        ui.post_committed_quickbar_item_refresh_pending_event_breakdown =
+            QuickbarItemRefreshEventBreakdown {
+                server_to_client_events: 5,
+                live_object_events: 3,
+                other_events: 2,
+                ..QuickbarItemRefreshEventBreakdown::default()
+            };
+        ui.post_committed_quickbar_item_refresh_proof_class =
+            Some(QuickbarItemRefreshProofClass::DirectOnly);
+        ui.last_quickbar_stream_probe = Some(QuickbarStreamProbeSummary {
+            slot_records_owned: 36,
+            item_buttons_seen: 21,
+            item_buttons_preserved: 21,
+            item_objects_preserved_by_explicit_self_materialization: 21,
+            first_preserved_active_item_signature: Some(QuickbarActiveItemSignature {
+                object_id: 0x8000_0100,
+                base_item: 0x34,
+                appearance_type: 0,
+                active_property_count: 1,
+                first_property: Some(
+                    crate::translate::quickbar::QuickbarActivePropertySignature {
+                        property: 15,
+                        subtype: 525,
+                        cost_table_value: 0,
+                        param: 0,
+                    },
+                ),
+                has_armor_word: false,
+                name_is_locstring: false,
+                state_mask: 0x01,
+                value_mask: 0xFF,
+            }),
+            first_preserved_active_item_slot: Some(0),
+            ..QuickbarStreamProbeSummary::default()
+        });
+        let preserved_active_item_row = QuickbarItemRefreshUseCountRow {
+            slot: 0,
+            button_type: client_quickbar::ITEM_SET_BUTTON_TYPE,
+            object_id: 0x8000_0100,
+            active_property_index: 255,
+            use_count: 1,
+        };
+        ui.observe_quickbar_item_use_count_updates(&[LiveObjectQuickbarItemUseCountUpdate {
+            slot: preserved_active_item_row.slot,
+            button_type: preserved_active_item_row.button_type,
+            object_id: preserved_active_item_row.object_id,
+            active_property_index: preserved_active_item_row.active_property_index,
+            use_count: preserved_active_item_row.use_count,
+        }]);
+
+        let hint = ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("pending candidate should expose mismatch diagnostics");
+        assert_eq!(hint.candidate.object_id, 0x8000_0101);
+        assert_eq!(hint.candidate_use_count_state, None);
+        assert_eq!(
+            hint.first_preserved_active_item_use_count_state,
+            Some(preserved_active_item_row)
+        );
+
+        let json = hint.to_json();
+        assert!(json.contains("\"first_preserved_active_item_matches_candidate\": false"));
+        assert!(json.contains("\"candidate_quickbar_item_use_count_state_known\": false"));
+        assert!(json.contains(
+            "\"candidate_quickbar_item_use_count_state_slot_relation\": \"no_candidate_use_count_row\""
+        ));
+        assert!(
+            json.contains("\"first_preserved_active_item_quickbar_use_count_state_known\": true")
+        );
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_slot_relation\": \"matches_preserved_active_item_slot\""
+        ));
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_slot_matches_first_preserved_active_item\": true"
+        ));
+        assert!(json.contains("\"first_preserved_active_item_quickbar_use_count_state_slot\": 0"));
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_object_id_hex\": \"0x80000100\""
+        ));
+        assert!(json.contains(
+            "\"first_preserved_active_item_quickbar_use_count_state_active_property_index\": 255"
+        ));
+        assert!(json.contains("\"recommended_client_action_should_dispatch\": false"));
+        assert!(json.contains(
+            "\"recommended_client_action_suppressed_reason\": \"preserved_active_item_quickbar_use_count_state_candidate_mismatch\""
+        ));
+        assert!(json.contains("\"recommended_use_item_item_object_id_hex\": \"0x80000101\""));
+        assert!(json.contains(
+            "\"recommended_client_quickbar_set_button_item_object_id_hex\": \"0x80000101\""
+        ));
+    }
+
+    #[test]
     fn quickbar_item_refresh_idle_hint_serializes_absence_reason() {
         let mut ui = UiState::default();
 
@@ -8727,6 +8966,9 @@ mod tests {
         );
         assert!(initial.contains(
             "\"first_server_quickbar_item_use_count_candidate_row_slot_relation\": \"no_candidate_use_count_row\""
+        ));
+        assert!(initial.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_known\": false"
         ));
         assert!(initial.contains("\"no_hint_reason\": \"no_committed_quickbar_profile\""));
         assert!(initial.contains("\"committed_quickbar_seen\": false"));
@@ -8885,6 +9127,9 @@ mod tests {
             stream_probe_no_commit
                 .contains("\"stream_probe_first_preserved_active_item_state_mask_hex\": \"0x05\"")
         );
+        assert!(stream_probe_no_commit.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_known\": false"
+        ));
         assert!(stream_probe_no_commit.contains("\"stream_probe_direct_item_proof_objects\": 1"));
 
         ui.last_committed_quickbar_profile =
@@ -9021,6 +9266,24 @@ mod tests {
         );
         assert!(resolved_by_prior_state.contains(
             "\"candidate_quickbar_item_use_count_state_slot_relation\": \"matches_preserved_active_item_slot\""
+        ));
+        assert!(resolved_by_prior_state.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_known\": true"
+        ));
+        assert!(resolved_by_prior_state.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_slot_relation\": \"matches_preserved_active_item_slot\""
+        ));
+        assert!(resolved_by_prior_state.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_slot_matches_first_preserved_active_item\": true"
+        ));
+        assert!(resolved_by_prior_state.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_slot\": 9"
+        ));
+        assert!(resolved_by_prior_state.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_object_id_hex\": \"0x80000100\""
+        ));
+        assert!(resolved_by_prior_state.contains(
+            "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_active_property_index\": 2"
         ));
     }
 

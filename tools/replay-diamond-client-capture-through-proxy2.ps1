@@ -1426,6 +1426,14 @@ try {
     $quickbarHintCandidateQuickbarItemUseCountStateObjectId = 0
     $quickbarHintCandidateQuickbarItemUseCountStateActivePropertyIndex = 0
     $quickbarHintCandidateQuickbarItemUseCountStateUseCount = 0
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateKnown = $false
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlotRelation = ''
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlotMatchesFirstPreservedActiveItem = $false
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlot = 0
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateButtonType = 0
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateObjectId = 0
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateActivePropertyIndex = 0
+    $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateUseCount = 0
     $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown = $false
     $quickbarHintFirstServerQuickbarItemUseCountCandidateRowTiming = ''
     $quickbarHintFirstServerQuickbarItemUseCountCandidateRowSlotRelation = ''
@@ -1491,6 +1499,36 @@ try {
                 return [int64]$prop.Value
             }
             return 0
+        }
+        $getQuickbarHintInt64Any = {
+            param([string[]]$Names)
+            foreach ($name in $Names) {
+                $prop = $quickbarHintJson.PSObject.Properties[$name]
+                if ($null -ne $prop -and $null -ne $prop.Value) {
+                    return [int64]$prop.Value
+                }
+            }
+            return 0
+        }
+        $getQuickbarHintBoolAny = {
+            param([string[]]$Names)
+            foreach ($name in $Names) {
+                $prop = $quickbarHintJson.PSObject.Properties[$name]
+                if ($null -ne $prop -and $null -ne $prop.Value) {
+                    return [bool]$prop.Value
+                }
+            }
+            return $false
+        }
+        $getQuickbarHintStringAny = {
+            param([string[]]$Names)
+            foreach ($name in $Names) {
+                $prop = $quickbarHintJson.PSObject.Properties[$name]
+                if ($null -ne $prop -and $null -ne $prop.Value) {
+                    return [string]$prop.Value
+                }
+            }
+            return ''
         }
         $pendingProp = $quickbarHintJson.PSObject.Properties['pending_item_refresh']
         if ($null -ne $pendingProp) {
@@ -1587,6 +1625,14 @@ try {
         $quickbarHintCandidateQuickbarItemUseCountStateObjectId = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_object_id'
         $quickbarHintCandidateQuickbarItemUseCountStateActivePropertyIndex = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_active_property_index'
         $quickbarHintCandidateQuickbarItemUseCountStateUseCount = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_use_count'
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateKnown = & $getQuickbarHintBoolAny -Names @('first_preserved_active_item_quickbar_use_count_state_known', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_known')
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlotRelation = & $getQuickbarHintStringAny -Names @('first_preserved_active_item_quickbar_use_count_state_slot_relation', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_slot_relation')
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlotMatchesFirstPreservedActiveItem = & $getQuickbarHintBoolAny -Names @('first_preserved_active_item_quickbar_use_count_state_slot_matches_first_preserved_active_item', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_slot_matches_first_preserved_active_item')
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlot = & $getQuickbarHintInt64Any -Names @('first_preserved_active_item_quickbar_use_count_state_slot', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_slot')
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateButtonType = & $getQuickbarHintInt64Any -Names @('first_preserved_active_item_quickbar_use_count_state_button_type', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_button_type')
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateObjectId = & $getQuickbarHintInt64Any -Names @('first_preserved_active_item_quickbar_use_count_state_object_id', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_object_id')
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateActivePropertyIndex = & $getQuickbarHintInt64Any -Names @('first_preserved_active_item_quickbar_use_count_state_active_property_index', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_active_property_index')
+        $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateUseCount = & $getQuickbarHintInt64Any -Names @('first_preserved_active_item_quickbar_use_count_state_use_count', 'stream_probe_first_preserved_active_item_quickbar_use_count_state_use_count')
         $firstUseCountCandidateRowKnownProp = $quickbarHintJson.PSObject.Properties['first_server_quickbar_item_use_count_candidate_row_known']
         if ($null -ne $firstUseCountCandidateRowKnownProp -and $null -ne $firstUseCountCandidateRowKnownProp.Value) {
             $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown = [bool]$firstUseCountCandidateRowKnownProp.Value
@@ -1779,6 +1825,14 @@ try {
         QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateObjectId = $quickbarHintCandidateQuickbarItemUseCountStateObjectId
         QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateActivePropertyIndex = $quickbarHintCandidateQuickbarItemUseCountStateActivePropertyIndex
         QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateUseCount = $quickbarHintCandidateQuickbarItemUseCountStateUseCount
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateKnown = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateKnown
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateSlotRelation = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlotRelation
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateSlotMatchesFirstPreservedActiveItem = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlotMatchesFirstPreservedActiveItem
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateSlot = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateSlot
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateButtonType = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateButtonType
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateObjectId = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateObjectId
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateActivePropertyIndex = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateActivePropertyIndex
+        QuickbarItemRefreshHintFirstPreservedActiveItemQuickbarUseCountStateUseCount = $quickbarHintFirstPreservedActiveItemQuickbarUseCountStateUseCount
         QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowKnown = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown
         QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowTiming = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowTiming
         QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowSlotRelation = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowSlotRelation
