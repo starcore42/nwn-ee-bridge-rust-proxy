@@ -1390,6 +1390,7 @@ try {
     $quickbarHintCandidateProof = ''
     $quickbarHintCandidateSource = ''
     $quickbarHintNoHintReason = ''
+    $quickbarHintPostCommittedItemRefreshResolution = ''
     $quickbarHintFirstActionMatchesCandidate = $false
     $quickbarHintFirstActionMatchesPreservedActiveItem = $false
     $quickbarHintFirstPreservedActiveItemSlotKnown = $false
@@ -1532,6 +1533,10 @@ try {
         $serverQuickbarResponseTimingProp = $quickbarHintJson.PSObject.Properties['pending_item_refresh_server_quickbar_response_timing']
         if ($null -ne $serverQuickbarResponseTimingProp -and $null -ne $serverQuickbarResponseTimingProp.Value) {
             $quickbarHintServerQuickbarResponseTiming = [string]$serverQuickbarResponseTimingProp.Value
+        }
+        $postCommittedItemRefreshResolutionProp = $quickbarHintJson.PSObject.Properties['post_committed_item_refresh_resolution']
+        if ($null -ne $postCommittedItemRefreshResolutionProp -and $null -ne $postCommittedItemRefreshResolutionProp.Value) {
+            $quickbarHintPostCommittedItemRefreshResolution = [string]$postCommittedItemRefreshResolutionProp.Value
         }
         $quickbarHintQuickbarItemUseCountStateRows = & $getQuickbarHintInt64 'quickbar_item_use_count_state_rows'
         $quickbarHintQuickbarItemUseCountUpdatesObserved = & $getQuickbarHintInt64 'quickbar_item_use_count_updates_observed'
@@ -1708,6 +1713,7 @@ try {
         QuickbarItemRefreshHintCandidateProof = $quickbarHintCandidateProof
         QuickbarItemRefreshHintCandidateSource = $quickbarHintCandidateSource
         QuickbarItemRefreshHintNoHintReason = $quickbarHintNoHintReason
+        QuickbarItemRefreshHintPostCommittedItemRefreshResolution = $quickbarHintPostCommittedItemRefreshResolution
         QuickbarItemRefreshHintFirstActionMatchesCandidate = $quickbarHintFirstActionMatchesCandidate
         QuickbarItemRefreshHintFirstActionMatchesPreservedActiveItem = $quickbarHintFirstActionMatchesPreservedActiveItem
         QuickbarItemRefreshHintFirstPreservedActiveItemSlotKnown = $quickbarHintFirstPreservedActiveItemSlotKnown

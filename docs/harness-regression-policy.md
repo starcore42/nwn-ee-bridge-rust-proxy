@@ -33,8 +33,35 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-06 16:44 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-06 20:32 +10: the freshest
 gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+`GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
+`2026-07-06T20:32:10+10:00`, and produced no quarantine directory. Candidate
+`0x80015CCF` came from active-object/direct-only proof and matched durable
+typed `G Q` item-use-count state for quickbar slot 0/button 1/property index
+255/use count 1. The final hint reported `pending_item_refresh=false` and
+`no_hint_reason="post_context_resolved_by_prior_quickbar_use_count_state"`, and
+no `UseItem` subtype-low client action was observed or injected.
+
+As of 2026-07-06 20:40 +10, proxy2 also writes
+`post_committed_item_refresh_resolution` into pending and idle
+`quickbar-item-refresh-hint.json` output, and the replay summary parser exports
+it as `QuickbarItemRefreshHintPostCommittedItemRefreshResolution`. The field is
+the machine-readable summary for the post-committed quickbar item-refresh state:
+`pending`, `resolved_by_server_quickbar_use_count`,
+`resolved_by_prior_quickbar_use_count_state`, or `none`. Keep the older
+booleans for compatibility, but prefer this field when comparing current live
+and replay artifacts. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-resolution-field-pending-20260706-204746`
+confirmed the field on the current pending replay path
+(`QuickbarItemRefreshHintPostCommittedItemRefreshResolution=pending`, 164 packet
+files, strict translation, zero quarantines).
+
+Previous live HG proxy status, as of 2026-07-06 16:44 +10: the
+gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-coalesced-continuation-fix-20260706-164042\harness-proxy-20260706-164049`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained

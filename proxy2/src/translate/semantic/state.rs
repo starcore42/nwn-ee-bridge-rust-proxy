@@ -1672,6 +1672,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "{{\n",
                 "  \"kind\": \"quickbar_item_refresh_candidate\",\n",
                 "  \"pending_item_refresh\": true,\n",
+                "  \"post_committed_item_refresh_resolution\": \"pending\",\n",
                 "  \"candidate_object_id\": {},\n",
                 "  \"candidate_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"candidate_proof\": \"{}\",\n",
@@ -4765,6 +4766,18 @@ impl UiState {
         Some(row)
     }
 
+    fn post_committed_quickbar_item_refresh_resolution(&self) -> &'static str {
+        if self.post_committed_quickbar_item_refresh_pending {
+            "pending"
+        } else if self.post_committed_quickbar_item_refresh_resolved_by_server_use_count {
+            "resolved_by_server_quickbar_use_count"
+        } else if self.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state {
+            "resolved_by_prior_quickbar_use_count_state"
+        } else {
+            "none"
+        }
+    }
+
     pub(crate) fn quickbar_item_refresh_harness_idle_reason(&self) -> &'static str {
         if self.last_committed_quickbar_profile.is_none() {
             if let Some(probe) = self.last_quickbar_stream_probe {
@@ -4982,6 +4995,7 @@ impl UiState {
                 "  \"post_committed_item_refresh_pending\": {},\n",
                 "  \"post_committed_item_refresh_resolved_by_server_use_count\": {},\n",
                 "  \"post_committed_item_refresh_resolved_by_prior_use_count_state\": {},\n",
+                "  \"post_committed_item_refresh_resolution\": \"{}\",\n",
                 "  \"updates_since_committed_quickbar\": {},\n",
                 "  \"events_since_pending_refresh\": {},\n",
                 "  \"server_to_client_events_since_pending_refresh\": {},\n",
@@ -5099,6 +5113,7 @@ impl UiState {
             self.post_committed_quickbar_item_refresh_pending,
             self.post_committed_quickbar_item_refresh_resolved_by_server_use_count,
             self.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state,
+            self.post_committed_quickbar_item_refresh_resolution(),
             self.inventory_item_context_after_committed_quickbar_updates,
             self.post_committed_quickbar_item_refresh_pending_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
@@ -7898,6 +7913,7 @@ mod tests {
         );
 
         let json = hint.to_json();
+        assert!(json.contains("\"post_committed_item_refresh_resolution\": \"pending\""));
         assert!(json.contains("\"candidate_object_id\": 2147483904"));
         assert!(json.contains("\"candidate_object_id_hex\": \"0x80000100\""));
         assert!(json.contains("\"candidate_proof\": \"feature25_second_list\""));
@@ -8668,6 +8684,7 @@ mod tests {
         let no_candidate = ui.quickbar_item_refresh_harness_idle_json();
         assert!(no_candidate.contains("\"no_hint_reason\": \"pending_refresh_without_candidate\""));
         assert!(no_candidate.contains("\"post_committed_item_refresh_pending\": true"));
+        assert!(no_candidate.contains("\"post_committed_item_refresh_resolution\": \"pending\""));
         assert!(no_candidate.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
         assert!(no_candidate.contains("\"candidate_known\": false"));
         assert!(no_candidate.contains("\"compact_item_emission_proof_objects\": 1"));
@@ -8698,6 +8715,9 @@ mod tests {
                 "\"post_committed_item_refresh_resolved_by_prior_use_count_state\": false"
             )
         );
+        assert!(resolved_by_use_count.contains(
+            "\"post_committed_item_refresh_resolution\": \"resolved_by_server_quickbar_use_count\""
+        ));
         assert!(
             resolved_by_use_count
                 .contains("\"first_server_quickbar_item_use_count_candidate_row_known\": true")
@@ -8753,6 +8773,9 @@ mod tests {
                 "\"post_committed_item_refresh_resolved_by_prior_use_count_state\": true"
             )
         );
+        assert!(resolved_by_prior_state.contains(
+            "\"post_committed_item_refresh_resolution\": \"resolved_by_prior_quickbar_use_count_state\""
+        ));
         assert!(
             resolved_by_prior_state
                 .contains("\"candidate_quickbar_item_use_count_state_known\": true")

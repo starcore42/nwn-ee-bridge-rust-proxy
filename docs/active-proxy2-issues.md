@@ -17,6 +17,33 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 current-code prior `G Q` state live confirmation: live-data gate
+  found gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-coalesced-continuation-fix-20260706-164042\harness-proxy-20260706-164049`
+  fresh (`quickbar-item-refresh-hint.json` last write
+  `2026-07-06T16:44:44+10:00`; about 3.7h old at gate). A fresh current-code
+  harness
+  `C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, wrote the final hint at
+  `2026-07-06T20:32:10+10:00`, and produced no quarantine directory. The final
+  hint has `pending_item_refresh=false`,
+  `no_hint_reason="post_context_resolved_by_prior_quickbar_use_count_state"`,
+  candidate `0x80015CCF`, and a matching durable typed `G Q` state row for
+  quickbar slot 0/button 1/property index 255/use count 1. No client action was
+  observed or injected. Proxy2 now also serializes
+  `post_committed_item_refresh_resolution` in pending and idle quickbar
+  item-refresh hints, and the replay summary parser exports it, so future
+  live/replay artifacts can distinguish `pending`, server-`G Q` resolution,
+  prior-state resolution, and no-resolution states without interpreting the
+  older boolean pair. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-resolution-field-pending-20260706-204746`
+  confirmed the new summary field on a pending hint
+  (`QuickbarItemRefreshHintPostCommittedItemRefreshResolution=pending`, 164
+  packet files, strict translation, zero quarantines). Active next path: use the
+  fresh no-action resolution as the baseline for the next visible gameplay
+  state gap, especially inventory/equipment or remaining live-object UI state
+  that still diverges after quickbar active-property use counts are owned.
 - 2026-07-06 prior durable `G Q` quickbar state handoff: live-data gate reused
   gameplay-reaching HG capture
   `C:\nwnbridge\codex-live-coalesced-continuation-fix-20260706-164042\harness-proxy-20260706-164049`
