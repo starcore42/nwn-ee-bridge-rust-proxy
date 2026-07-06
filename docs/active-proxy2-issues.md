@@ -57,6 +57,27 @@ not as standalone workaround targets.
   rules. Next path: trace original client handling of active-property use-count
   rows and why live HG sometimes emits pre-action `G Q` and sometimes no
   quickbar/property response.
+- 2026-07-06 `G Q` slot-relation discriminator: live-data gate reused
+  gameplay-reaching proxy harness
+  `C:\nwnbridge\codex-live-gq-resolution-current-20260706-102406\harness-proxy-20260706-102502`
+  (`quickbar-item-refresh-hint.json` last write `2026-07-06T10:28:23+10:00`;
+  about two hours old at the gate). Gameplay reached through `Module_Loaded`,
+  `Area_ClientArea`, and sustained live-object traffic, with no quarantine
+  artifacts. Proxy2 now derives
+  `first_server_quickbar_item_use_count_candidate_row_slot_relation` and a
+  boolean slot-match flag between a typed candidate live-object `G Q` use-count
+  row and the first preserved active quickbar item slot. The fields are present
+  in both pending hints and idle hints after a server-`G Q` resolution, so a
+  successful pre-action row no longer clears the evidence needed for the next
+  live comparison. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-gq-slot-relation-20260706-1240` over the
+  2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304 strict
+  allows, 0 strict quarantines, and 0 quarantine files; that replay correctly
+  reported `no_candidate_use_count_row` because it has no candidate `G Q` row.
+  Active next path: run the live HG harness on current code and compare
+  `matches_preserved_active_item_slot` versus
+  `differs_from_preserved_active_item_slot` when HG emits the candidate `G Q`
+  row.
 - 2026-07-06 pre-action `G Q` quickbar response suppression: live-data gate
   first reused the gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`

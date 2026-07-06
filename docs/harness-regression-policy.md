@@ -52,6 +52,21 @@ active quickbar slot before changing action/state rules. The next harness
 target is another live HG rerun after tracing original-client handling of
 active-property use-count rows and the inconsistent pre-action `G Q` timing.
 
+As of 2026-07-06 12:40 +10, that 10:28 gameplay-reaching live proxy capture
+remained fresh and no new live capture was required for the slot-relation
+diagnostic slice. Proxy2 now writes
+`first_server_quickbar_item_use_count_candidate_row_slot_relation` plus
+`first_server_quickbar_item_use_count_candidate_row_slot_matches_first_preserved_active_item`
+in both active pending hints and idle hints after a server-`G Q` resolution.
+The replay summary exports the same fields. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-gq-slot-relation-20260706-1240` against the
+2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304 strict
+allows, 0 strict quarantines, and 0 quarantine files; its pending hint reports
+`no_candidate_use_count_row`, matching that capture's lack of candidate `G Q`
+rows. The next live HG rerun should compare `matches_preserved_active_item_slot`
+against `differs_from_preserved_active_item_slot` when HG emits a candidate
+pre-action `G Q` row.
+
 As of 2026-07-05 12:33 +10, proxy2 also writes
 `pending_item_refresh_recommended_action_outcome` into quickbar item-refresh
 hints and semantic traces, and the replay summary exports it as
