@@ -182,6 +182,7 @@ pub struct QuickbarRewriteSummary {
     pub item_objects_preserved_by_feature25_second: u32,
     pub item_objects_preserved_by_feature25_legacy_tail: u32,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+    pub(crate) first_preserved_active_item_slot: Option<u8>,
     pub(crate) validated_slot_profile: Option<QuickbarValidatedSlotProfile>,
 }
 

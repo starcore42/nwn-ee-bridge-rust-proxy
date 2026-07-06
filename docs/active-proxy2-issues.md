@@ -43,6 +43,20 @@ not as standalone workaround targets.
   the resolved row. Next verification path: run the live HG harness on the
   current build and confirm the final hint resolves by server quickbar use-count
   rows without dispatching another generated active-property action.
+- 2026-07-06 current-code `G Q` resolution rerun: fresh live HG harness
+  `C:\nwnbridge\codex-live-gq-resolution-current-20260706-102406\harness-proxy-20260706-102502`
+  reached gameplay, wrote the final quickbar item-refresh hint at
+  `2026-07-06T10:28:23+10:00`, and produced no quarantine artifacts. This run
+  did not reproduce the earlier pre-action `G Q` row: candidate `0x80015A29`
+  dispatched the matched subtype-low `UseItem`, and HG returned 0 full quickbar,
+  0 `G Q`, and 0 candidate active-property uses/full responses after 167
+  post-action events. Proxy2 now carries the parsed quickbar slot of the first
+  preserved active item into quickbar rewrite summaries, semantic harness hints,
+  and replay summaries so the next live comparison can check whether `G Q` rows
+  line up with the actual active quickbar slot before changing action/state
+  rules. Next path: trace original client handling of active-property use-count
+  rows and why live HG sometimes emits pre-action `G Q` and sometimes no
+  quickbar/property response.
 - 2026-07-06 pre-action `G Q` quickbar response suppression: live-data gate
   first reused the gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-active-property-outcome-20260706-022124\harness-proxy-20260706-022134`

@@ -392,7 +392,8 @@ fn summarize_quickbar_rewrite(
     let mut missing_state_object_counts = QuickbarMissingStateObjectCounts::default();
     let mut materialization_counts = QuickbarMaterializationCounts::default();
     let mut first_preserved_active_item_signature = None;
-    for button in &parsed.buttons {
+    let mut first_preserved_active_item_slot = None;
+    for (slot_index, button) in parsed.buttons.iter().enumerate() {
         let QuickbarButtonKind::Item {
             primary,
             secondary,
@@ -448,8 +449,12 @@ fn summarize_quickbar_rewrite(
         item_buttons_emitted = item_buttons_emitted.saturating_add(1);
         materialization_counts.observe(proofs);
         if first_preserved_active_item_signature.is_none() {
-            first_preserved_active_item_signature = quickbar_active_item_signature(primary)
+            let signature = quickbar_active_item_signature(primary)
                 .or_else(|| quickbar_active_item_signature(secondary));
+            if signature.is_some() {
+                first_preserved_active_item_signature = signature;
+                first_preserved_active_item_slot = u8::try_from(slot_index).ok();
+            }
         }
     }
     let item_buttons_blanked_by_policy = item_buttons_total.saturating_sub(item_buttons_emitted);
@@ -564,6 +569,7 @@ fn summarize_quickbar_rewrite(
         item_objects_preserved_by_feature25_legacy_tail: materialization_counts
             .feature25_legacy_tail,
         first_preserved_active_item_signature,
+        first_preserved_active_item_slot,
         validated_slot_profile: super::validator::validated_set_all_buttons_slot_profile(
             rewritten_payload,
         ),
@@ -846,6 +852,8 @@ fn trace_quickbar_rewrite_summary(
             summary.item_objects_preserved_by_feature25_second,
         item_objects_preserved_by_feature25_legacy_tail =
             summary.item_objects_preserved_by_feature25_legacy_tail,
+        first_preserved_active_item_slot_known = summary.first_preserved_active_item_slot.is_some(),
+        first_preserved_active_item_slot = summary.first_preserved_active_item_slot.unwrap_or(0),
         validated_slot_profile = summary.validated_slot_profile.is_some(),
         validated_slot_records = summary
             .validated_slot_profile

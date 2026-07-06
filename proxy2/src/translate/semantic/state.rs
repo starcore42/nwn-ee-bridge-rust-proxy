@@ -1202,6 +1202,7 @@ pub(crate) struct QuickbarStreamProbeSummary {
     pub(crate) item_buttons_rejected_missing_state_proof: u32,
     pub(crate) item_buttons_rejected_missing_state_unknown: u32,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+    pub(crate) first_preserved_active_item_slot: Option<u8>,
 }
 
 impl QuickbarStreamProbeSummary {
@@ -1218,6 +1219,7 @@ impl QuickbarStreamProbeSummary {
             item_buttons_rejected_missing_state_unknown: summary
                 .item_buttons_rejected_missing_state_unknown,
             first_preserved_active_item_signature: summary.first_preserved_active_item_signature,
+            first_preserved_active_item_slot: summary.first_preserved_active_item_slot,
         }
     }
 }
@@ -1228,6 +1230,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) recommended_set_button_slot: u8,
     pub(crate) recommended_set_button_slot_source: &'static str,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+    pub(crate) first_preserved_active_item_slot: Option<u8>,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
@@ -1283,6 +1286,15 @@ impl QuickbarItemRefreshHarnessHint {
         let first_active_item_known = first_active_item.is_some();
         let first_active_item_matches_candidate = first_active_item
             .map(|signature| signature.object_id == self.candidate.object_id)
+            .unwrap_or(false);
+        let first_active_item_slot_known = self.first_preserved_active_item_slot.is_some();
+        let first_active_item_slot = self.first_preserved_active_item_slot.unwrap_or(0);
+        let first_active_item_first_page_slot = self
+            .first_preserved_active_item_slot
+            .is_some_and(|slot| slot < 12);
+        let first_active_item_slot_matches_recommended_set_button_slot = self
+            .first_preserved_active_item_slot
+            .map(|slot| slot == self.recommended_set_button_slot)
             .unwrap_or(false);
         let first_property_subtype_low_byte = first_property_subtype_low_byte_for_candidate(
             first_active_item,
@@ -1570,6 +1582,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"candidate_source\": \"{}\",\n",
                 "  \"first_preserved_active_item_known\": {},\n",
                 "  \"first_preserved_active_item_matches_candidate\": {},\n",
+                "  \"first_preserved_active_item_slot_known\": {},\n",
+                "  \"first_preserved_active_item_slot\": {},\n",
+                "  \"first_preserved_active_item_first_page_slot\": {},\n",
+                "  \"first_preserved_active_item_slot_matches_recommended_set_button_slot\": {},\n",
                 "  \"first_preserved_active_item_object_id\": {},\n",
                 "  \"first_preserved_active_item_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"first_preserved_active_item_base_item\": {},\n",
@@ -1794,6 +1810,10 @@ impl QuickbarItemRefreshHarnessHint {
             self.candidate.source.as_str(),
             first_active_item_known,
             first_active_item_matches_candidate,
+            first_active_item_slot_known,
+            first_active_item_slot,
+            first_active_item_first_page_slot,
+            first_active_item_slot_matches_recommended_set_button_slot,
             first_active_item_object_id,
             first_active_item_object_id,
             first_active_item_base_item,
@@ -4623,6 +4643,13 @@ impl UiState {
         let stream_probe_active_item_first_property =
             stream_probe_active_item.and_then(|signature| signature.first_property);
         let stream_probe_active_item_known = stream_probe_active_item.is_some();
+        let stream_probe_active_item_slot_known =
+            stream_probe.first_preserved_active_item_slot.is_some();
+        let stream_probe_active_item_slot =
+            stream_probe.first_preserved_active_item_slot.unwrap_or(0);
+        let stream_probe_active_item_first_page_slot = stream_probe
+            .first_preserved_active_item_slot
+            .is_some_and(|slot| slot < 12);
         let stream_probe_active_item_object_id = stream_probe_active_item
             .map(|signature| signature.object_id)
             .unwrap_or(0);
@@ -4668,6 +4695,9 @@ impl UiState {
                 "  \"stream_probe_item_buttons_rejected_missing_state_proof\": {},\n",
                 "  \"stream_probe_item_buttons_rejected_missing_state_unknown\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_known\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_slot_known\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_slot\": {},\n",
+                "  \"stream_probe_first_preserved_active_item_first_page_slot\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_object_id\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"stream_probe_first_preserved_active_item_base_item\": {},\n",
@@ -4749,6 +4779,9 @@ impl UiState {
             stream_probe.item_buttons_rejected_missing_state_proof,
             stream_probe.item_buttons_rejected_missing_state_unknown,
             stream_probe_active_item_known,
+            stream_probe_active_item_slot_known,
+            stream_probe_active_item_slot,
+            stream_probe_active_item_first_page_slot,
             stream_probe_active_item_object_id,
             stream_probe_active_item_object_id,
             stream_probe_active_item_base_item,
@@ -4898,6 +4931,9 @@ impl UiState {
             first_preserved_active_item_signature: self
                 .last_quickbar_stream_probe
                 .and_then(|probe| probe.first_preserved_active_item_signature),
+            first_preserved_active_item_slot: self
+                .last_quickbar_stream_probe
+                .and_then(|probe| probe.first_preserved_active_item_slot),
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
             events_since_pending_refresh: summary.events_since_pending_refresh,
             event_breakdown: summary.event_breakdown,
@@ -7264,6 +7300,7 @@ mod tests {
             item_objects_preserved_by_feature25_second: 0,
             item_objects_preserved_by_feature25_legacy_tail: 0,
             first_preserved_active_item_signature: None,
+            first_preserved_active_item_slot: None,
             validated_slot_profile: profile,
         }
     }
@@ -7464,6 +7501,7 @@ mod tests {
                 state_mask: 0x05,
                 value_mask: 0x08,
             }),
+            first_preserved_active_item_slot: Some(2),
         });
 
         assert_eq!(
@@ -7501,6 +7539,12 @@ mod tests {
         assert!(json.contains("\"candidate_source\": \"feature25_only\""));
         assert!(json.contains("\"first_preserved_active_item_known\": true"));
         assert!(json.contains("\"first_preserved_active_item_matches_candidate\": true"));
+        assert!(json.contains("\"first_preserved_active_item_slot_known\": true"));
+        assert!(json.contains("\"first_preserved_active_item_slot\": 2"));
+        assert!(json.contains("\"first_preserved_active_item_first_page_slot\": true"));
+        assert!(json.contains(
+            "\"first_preserved_active_item_slot_matches_recommended_set_button_slot\": false"
+        ));
         assert!(json.contains("\"first_preserved_active_item_object_id_hex\": \"0x80000100\""));
         assert!(json.contains("\"first_preserved_active_item_base_item_hex\": \"0x00000011\""));
         assert!(json.contains("\"first_preserved_active_item_appearance_type\": 2"));
@@ -8103,6 +8147,7 @@ mod tests {
                 state_mask: 0x05,
                 value_mask: 0x08,
             }),
+            first_preserved_active_item_slot: Some(9),
         });
         ui.last_quickbar_stream_probe_materialization_context = Some(InventoryItemContextSummary {
             direct_item_proof_objects: 1,
@@ -8122,6 +8167,17 @@ mod tests {
         assert!(
             stream_probe_no_commit
                 .contains("\"stream_probe_first_preserved_active_item_known\": true")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_first_preserved_active_item_slot_known\": true")
+        );
+        assert!(
+            stream_probe_no_commit.contains("\"stream_probe_first_preserved_active_item_slot\": 9")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_first_preserved_active_item_first_page_slot\": true")
         );
         assert!(stream_probe_no_commit.contains(
             "\"stream_probe_first_preserved_active_item_object_id_hex\": \"0x80000100\""

@@ -76,6 +76,7 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
         item_objects_preserved_by_feature25_second: 0,
         item_objects_preserved_by_feature25_legacy_tail: 0,
         first_preserved_active_item_signature: None,
+        first_preserved_active_item_slot: None,
         validated_slot_profile: None,
     };
 
@@ -135,6 +136,7 @@ fn owned_quickbar_boundary_with_only_blank_slots_does_not_wait_for_placeholder()
         item_objects_preserved_by_feature25_second: 0,
         item_objects_preserved_by_feature25_legacy_tail: 0,
         first_preserved_active_item_signature: None,
+        first_preserved_active_item_slot: None,
         validated_slot_profile: None,
     };
 
@@ -194,6 +196,7 @@ fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
         item_objects_preserved_by_feature25_second: 0,
         item_objects_preserved_by_feature25_legacy_tail: 0,
         first_preserved_active_item_signature: None,
+        first_preserved_active_item_slot: None,
         validated_slot_profile: None,
     };
 

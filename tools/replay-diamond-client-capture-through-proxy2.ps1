@@ -1392,6 +1392,10 @@ try {
     $quickbarHintNoHintReason = ''
     $quickbarHintFirstActionMatchesCandidate = $false
     $quickbarHintFirstActionMatchesPreservedActiveItem = $false
+    $quickbarHintFirstPreservedActiveItemSlotKnown = $false
+    $quickbarHintFirstPreservedActiveItemSlot = 0
+    $quickbarHintFirstPreservedActiveItemFirstPageSlot = $false
+    $quickbarHintFirstPreservedActiveItemSlotMatchesRecommendedSetButtonSlot = $false
     $quickbarHintFirstActionMatchClass = ''
     $quickbarHintRecommendedActionOutcome = ''
     $quickbarHintActivePropertyOutcome = ''
@@ -1487,6 +1491,19 @@ try {
         $preservedMatchProp = $quickbarHintJson.PSObject.Properties['first_client_action_matches_preserved_active_item']
         if ($null -ne $preservedMatchProp -and $null -ne $preservedMatchProp.Value) {
             $quickbarHintFirstActionMatchesPreservedActiveItem = [bool]$preservedMatchProp.Value
+        }
+        $firstPreservedActiveItemSlotKnownProp = $quickbarHintJson.PSObject.Properties['first_preserved_active_item_slot_known']
+        if ($null -ne $firstPreservedActiveItemSlotKnownProp -and $null -ne $firstPreservedActiveItemSlotKnownProp.Value) {
+            $quickbarHintFirstPreservedActiveItemSlotKnown = [bool]$firstPreservedActiveItemSlotKnownProp.Value
+        }
+        $quickbarHintFirstPreservedActiveItemSlot = & $getQuickbarHintInt64 'first_preserved_active_item_slot'
+        $firstPreservedActiveItemFirstPageSlotProp = $quickbarHintJson.PSObject.Properties['first_preserved_active_item_first_page_slot']
+        if ($null -ne $firstPreservedActiveItemFirstPageSlotProp -and $null -ne $firstPreservedActiveItemFirstPageSlotProp.Value) {
+            $quickbarHintFirstPreservedActiveItemFirstPageSlot = [bool]$firstPreservedActiveItemFirstPageSlotProp.Value
+        }
+        $firstPreservedActiveItemSlotMatchesRecommendedSetButtonSlotProp = $quickbarHintJson.PSObject.Properties['first_preserved_active_item_slot_matches_recommended_set_button_slot']
+        if ($null -ne $firstPreservedActiveItemSlotMatchesRecommendedSetButtonSlotProp -and $null -ne $firstPreservedActiveItemSlotMatchesRecommendedSetButtonSlotProp.Value) {
+            $quickbarHintFirstPreservedActiveItemSlotMatchesRecommendedSetButtonSlot = [bool]$firstPreservedActiveItemSlotMatchesRecommendedSetButtonSlotProp.Value
         }
         $matchClassProp = $quickbarHintJson.PSObject.Properties['first_client_action_match_class']
         if ($null -ne $matchClassProp -and $null -ne $matchClassProp.Value) {
@@ -1654,6 +1671,10 @@ try {
         QuickbarItemRefreshHintNoHintReason = $quickbarHintNoHintReason
         QuickbarItemRefreshHintFirstActionMatchesCandidate = $quickbarHintFirstActionMatchesCandidate
         QuickbarItemRefreshHintFirstActionMatchesPreservedActiveItem = $quickbarHintFirstActionMatchesPreservedActiveItem
+        QuickbarItemRefreshHintFirstPreservedActiveItemSlotKnown = $quickbarHintFirstPreservedActiveItemSlotKnown
+        QuickbarItemRefreshHintFirstPreservedActiveItemSlot = $quickbarHintFirstPreservedActiveItemSlot
+        QuickbarItemRefreshHintFirstPreservedActiveItemFirstPageSlot = $quickbarHintFirstPreservedActiveItemFirstPageSlot
+        QuickbarItemRefreshHintFirstPreservedActiveItemSlotMatchesRecommendedSetButtonSlot = $quickbarHintFirstPreservedActiveItemSlotMatchesRecommendedSetButtonSlot
         QuickbarItemRefreshHintFirstActionMatchClass = $quickbarHintFirstActionMatchClass
         QuickbarItemRefreshHintRecommendedActionOutcome = $quickbarHintRecommendedActionOutcome
         QuickbarItemRefreshHintActivePropertyOutcome = $quickbarHintActivePropertyOutcome
