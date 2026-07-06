@@ -1401,6 +1401,21 @@ try {
     $quickbarHintRecommendedActionOutcome = ''
     $quickbarHintActivePropertyOutcome = ''
     $quickbarHintServerQuickbarResponseTiming = ''
+    $quickbarHintStreamProbeItemButtonsRejectedMissingStateClearedDelete = 0
+    $quickbarHintStreamProbeItemButtonsRejectedMissingStateClearedAreaReset = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateProven = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateActive = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25First = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25Second = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25LegacyTail = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateUnknown = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateClearedDelete = 0
+    $quickbarHintStreamProbeItemObjectsRejectedMissingStateClearedAreaReset = 0
+    $quickbarHintStreamProbeItemObjectsPreservedByExplicitSelfMaterialization = 0
+    $quickbarHintStreamProbeItemObjectsPreservedByActiveState = 0
+    $quickbarHintStreamProbeItemObjectsPreservedByFeature25First = 0
+    $quickbarHintStreamProbeItemObjectsPreservedByFeature25Second = 0
+    $quickbarHintStreamProbeItemObjectsPreservedByFeature25LegacyTail = 0
     $quickbarHintQuickbarItemUseCountStateRows = 0
     $quickbarHintQuickbarItemUseCountUpdatesObserved = 0
     $quickbarHintCandidateQuickbarItemUseCountStateKnown = $false
@@ -1518,6 +1533,21 @@ try {
         if ($null -ne $firstPreservedActiveItemSlotMatchesRecommendedSetButtonSlotProp -and $null -ne $firstPreservedActiveItemSlotMatchesRecommendedSetButtonSlotProp.Value) {
             $quickbarHintFirstPreservedActiveItemSlotMatchesRecommendedSetButtonSlot = [bool]$firstPreservedActiveItemSlotMatchesRecommendedSetButtonSlotProp.Value
         }
+        $quickbarHintStreamProbeItemButtonsRejectedMissingStateClearedDelete = & $getQuickbarHintInt64 'stream_probe_item_buttons_rejected_missing_state_cleared_delete'
+        $quickbarHintStreamProbeItemButtonsRejectedMissingStateClearedAreaReset = & $getQuickbarHintInt64 'stream_probe_item_buttons_rejected_missing_state_cleared_area_reset'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateProven = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_proven'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateActive = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_active'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25First = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_feature25_first'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25Second = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_feature25_second'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25LegacyTail = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_feature25_legacy_tail'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateUnknown = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_unknown'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateClearedDelete = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_cleared_delete'
+        $quickbarHintStreamProbeItemObjectsRejectedMissingStateClearedAreaReset = & $getQuickbarHintInt64 'stream_probe_item_objects_rejected_missing_state_cleared_area_reset'
+        $quickbarHintStreamProbeItemObjectsPreservedByExplicitSelfMaterialization = & $getQuickbarHintInt64 'stream_probe_item_objects_preserved_by_explicit_self_materialization'
+        $quickbarHintStreamProbeItemObjectsPreservedByActiveState = & $getQuickbarHintInt64 'stream_probe_item_objects_preserved_by_active_state'
+        $quickbarHintStreamProbeItemObjectsPreservedByFeature25First = & $getQuickbarHintInt64 'stream_probe_item_objects_preserved_by_feature25_first'
+        $quickbarHintStreamProbeItemObjectsPreservedByFeature25Second = & $getQuickbarHintInt64 'stream_probe_item_objects_preserved_by_feature25_second'
+        $quickbarHintStreamProbeItemObjectsPreservedByFeature25LegacyTail = & $getQuickbarHintInt64 'stream_probe_item_objects_preserved_by_feature25_legacy_tail'
         $matchClassProp = $quickbarHintJson.PSObject.Properties['first_client_action_match_class']
         if ($null -ne $matchClassProp -and $null -ne $matchClassProp.Value) {
             $quickbarHintFirstActionMatchClass = [string]$matchClassProp.Value
@@ -1724,6 +1754,21 @@ try {
         QuickbarItemRefreshHintRecommendedActionOutcome = $quickbarHintRecommendedActionOutcome
         QuickbarItemRefreshHintActivePropertyOutcome = $quickbarHintActivePropertyOutcome
         QuickbarItemRefreshHintServerQuickbarResponseTiming = $quickbarHintServerQuickbarResponseTiming
+        QuickbarItemRefreshHintStreamProbeItemButtonsRejectedMissingStateClearedDelete = $quickbarHintStreamProbeItemButtonsRejectedMissingStateClearedDelete
+        QuickbarItemRefreshHintStreamProbeItemButtonsRejectedMissingStateClearedAreaReset = $quickbarHintStreamProbeItemButtonsRejectedMissingStateClearedAreaReset
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateProven = $quickbarHintStreamProbeItemObjectsRejectedMissingStateProven
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateActive = $quickbarHintStreamProbeItemObjectsRejectedMissingStateActive
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateFeature25First = $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25First
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateFeature25Second = $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25Second
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateFeature25LegacyTail = $quickbarHintStreamProbeItemObjectsRejectedMissingStateFeature25LegacyTail
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateUnknown = $quickbarHintStreamProbeItemObjectsRejectedMissingStateUnknown
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateClearedDelete = $quickbarHintStreamProbeItemObjectsRejectedMissingStateClearedDelete
+        QuickbarItemRefreshHintStreamProbeItemObjectsRejectedMissingStateClearedAreaReset = $quickbarHintStreamProbeItemObjectsRejectedMissingStateClearedAreaReset
+        QuickbarItemRefreshHintStreamProbeItemObjectsPreservedByExplicitSelfMaterialization = $quickbarHintStreamProbeItemObjectsPreservedByExplicitSelfMaterialization
+        QuickbarItemRefreshHintStreamProbeItemObjectsPreservedByActiveState = $quickbarHintStreamProbeItemObjectsPreservedByActiveState
+        QuickbarItemRefreshHintStreamProbeItemObjectsPreservedByFeature25First = $quickbarHintStreamProbeItemObjectsPreservedByFeature25First
+        QuickbarItemRefreshHintStreamProbeItemObjectsPreservedByFeature25Second = $quickbarHintStreamProbeItemObjectsPreservedByFeature25Second
+        QuickbarItemRefreshHintStreamProbeItemObjectsPreservedByFeature25LegacyTail = $quickbarHintStreamProbeItemObjectsPreservedByFeature25LegacyTail
         QuickbarItemRefreshHintQuickbarItemUseCountStateRows = $quickbarHintQuickbarItemUseCountStateRows
         QuickbarItemRefreshHintQuickbarItemUseCountUpdatesObserved = $quickbarHintQuickbarItemUseCountUpdatesObserved
         QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateKnown = $quickbarHintCandidateQuickbarItemUseCountStateKnown

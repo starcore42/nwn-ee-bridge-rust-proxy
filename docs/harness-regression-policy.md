@@ -60,6 +60,23 @@ confirmed the field on the current pending replay path
 (`QuickbarItemRefreshHintPostCommittedItemRefreshResolution=pending`, 164 packet
 files, strict translation, zero quarantines).
 
+As of 2026-07-06 22:49 +10, proxy2 also writes the stream-probe quickbar item
+materialization proof/missing-state counters into pending and idle
+`quickbar-item-refresh-hint.json` output, and the replay summary parser exports
+them as `QuickbarItemRefreshHintStreamProbe*` fields. These counters come from
+the typed quickbar writer's existing item materialization decision path and
+separate preserved active-object/Feature-25 proofs from unknown, item-delete
+cleared, and area-reset cleared missing-state rejects. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-stream-materialization-counters-bounded-20260706-2250`
+over the 2026-07-03 Diamond autoplay packet set used 164 packet files, strict
+translation, 304 allow decisions, 0 strict quarantines, and 0 quarantine files;
+the replay's pending feature-25-only candidate had zero stream-probe
+preserved/rejected item-object counters, as expected for that replay path. The
+next live HG run should use these fields to decide whether remaining visible
+inventory/equipment divergence is caused by absent item materialization proof,
+a cleared item id, or a later UI state handoff rather than by another quickbar
+action probe.
+
 Previous live HG proxy status, as of 2026-07-06 16:44 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-coalesced-continuation-fix-20260706-164042\harness-proxy-20260706-164049`.

@@ -1205,6 +1205,21 @@ pub(crate) struct QuickbarStreamProbeSummary {
     pub(crate) item_buttons_blanked_candidate: u32,
     pub(crate) item_buttons_rejected_missing_state_proof: u32,
     pub(crate) item_buttons_rejected_missing_state_unknown: u32,
+    pub(crate) item_buttons_rejected_missing_state_cleared_delete: u32,
+    pub(crate) item_buttons_rejected_missing_state_cleared_area_reset: u32,
+    pub(crate) item_objects_rejected_missing_state_proven: u32,
+    pub(crate) item_objects_rejected_missing_state_active: u32,
+    pub(crate) item_objects_rejected_missing_state_feature25_first: u32,
+    pub(crate) item_objects_rejected_missing_state_feature25_second: u32,
+    pub(crate) item_objects_rejected_missing_state_feature25_legacy_tail: u32,
+    pub(crate) item_objects_rejected_missing_state_unknown: u32,
+    pub(crate) item_objects_rejected_missing_state_cleared_delete: u32,
+    pub(crate) item_objects_rejected_missing_state_cleared_area_reset: u32,
+    pub(crate) item_objects_preserved_by_explicit_self_materialization: u32,
+    pub(crate) item_objects_preserved_by_active_state: u32,
+    pub(crate) item_objects_preserved_by_feature25_first: u32,
+    pub(crate) item_objects_preserved_by_feature25_second: u32,
+    pub(crate) item_objects_preserved_by_feature25_legacy_tail: u32,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) first_preserved_active_item_slot: Option<u8>,
 }
@@ -1222,6 +1237,35 @@ impl QuickbarStreamProbeSummary {
                 .item_buttons_rejected_missing_state_proof,
             item_buttons_rejected_missing_state_unknown: summary
                 .item_buttons_rejected_missing_state_unknown,
+            item_buttons_rejected_missing_state_cleared_delete: summary
+                .item_buttons_rejected_missing_state_cleared_delete,
+            item_buttons_rejected_missing_state_cleared_area_reset: summary
+                .item_buttons_rejected_missing_state_cleared_area_reset,
+            item_objects_rejected_missing_state_proven: summary
+                .item_objects_rejected_missing_state_proven,
+            item_objects_rejected_missing_state_active: summary
+                .item_objects_rejected_missing_state_active,
+            item_objects_rejected_missing_state_feature25_first: summary
+                .item_objects_rejected_missing_state_feature25_first,
+            item_objects_rejected_missing_state_feature25_second: summary
+                .item_objects_rejected_missing_state_feature25_second,
+            item_objects_rejected_missing_state_feature25_legacy_tail: summary
+                .item_objects_rejected_missing_state_feature25_legacy_tail,
+            item_objects_rejected_missing_state_unknown: summary
+                .item_objects_rejected_missing_state_unknown,
+            item_objects_rejected_missing_state_cleared_delete: summary
+                .item_objects_rejected_missing_state_cleared_delete,
+            item_objects_rejected_missing_state_cleared_area_reset: summary
+                .item_objects_rejected_missing_state_cleared_area_reset,
+            item_objects_preserved_by_explicit_self_materialization: summary
+                .item_objects_preserved_by_explicit_self_materialization,
+            item_objects_preserved_by_active_state: summary.item_objects_preserved_by_active_state,
+            item_objects_preserved_by_feature25_first: summary
+                .item_objects_preserved_by_feature25_first,
+            item_objects_preserved_by_feature25_second: summary
+                .item_objects_preserved_by_feature25_second,
+            item_objects_preserved_by_feature25_legacy_tail: summary
+                .item_objects_preserved_by_feature25_legacy_tail,
             first_preserved_active_item_signature: summary.first_preserved_active_item_signature,
             first_preserved_active_item_slot: summary.first_preserved_active_item_slot,
         }
@@ -1233,6 +1277,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) candidate: InventoryItemContextCandidate,
     pub(crate) recommended_set_button_slot: u8,
     pub(crate) recommended_set_button_slot_source: &'static str,
+    pub(crate) stream_probe: QuickbarStreamProbeSummary,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) first_preserved_active_item_slot: Option<u8>,
     pub(crate) candidate_use_count_state: Option<QuickbarItemRefreshUseCountRow>,
@@ -1365,6 +1410,7 @@ fn quickbar_item_refresh_use_count_row_timing(
 impl QuickbarItemRefreshHarnessHint {
     pub(crate) fn to_json(self) -> String {
         let first_client_action_detail = self.first_client_action_detail;
+        let stream_probe = self.stream_probe;
         let first_active_item = self.first_preserved_active_item_signature;
         let first_active_item_first_property =
             first_active_item.and_then(|signature| signature.first_property);
@@ -1700,6 +1746,23 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"first_preserved_active_item_state_mask_hex\": \"0x{:02X}\",\n",
                 "  \"first_preserved_active_item_value_mask\": {},\n",
                 "  \"first_preserved_active_item_value_mask_hex\": \"0x{:02X}\",\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_proof\": {},\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_unknown\": {},\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_cleared_delete\": {},\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_cleared_area_reset\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_proven\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_active\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_feature25_first\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_feature25_second\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_feature25_legacy_tail\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_unknown\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_cleared_delete\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_cleared_area_reset\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_explicit_self_materialization\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_active_state\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
                 "  \"recommended_client_action\": \"target_candidate_with_use_item_use_object_quickbar_set_button_or_gui_event_notify_probe\",\n",
                 "  \"recommended_client_action_should_dispatch\": {},\n",
                 "  \"recommended_client_action_suppressed_reason\": \"{}\",\n",
@@ -1941,6 +2004,23 @@ impl QuickbarItemRefreshHarnessHint {
             first_active_item_state_mask,
             first_active_item_value_mask,
             first_active_item_value_mask,
+            stream_probe.item_buttons_rejected_missing_state_proof,
+            stream_probe.item_buttons_rejected_missing_state_unknown,
+            stream_probe.item_buttons_rejected_missing_state_cleared_delete,
+            stream_probe.item_buttons_rejected_missing_state_cleared_area_reset,
+            stream_probe.item_objects_rejected_missing_state_proven,
+            stream_probe.item_objects_rejected_missing_state_active,
+            stream_probe.item_objects_rejected_missing_state_feature25_first,
+            stream_probe.item_objects_rejected_missing_state_feature25_second,
+            stream_probe.item_objects_rejected_missing_state_feature25_legacy_tail,
+            stream_probe.item_objects_rejected_missing_state_unknown,
+            stream_probe.item_objects_rejected_missing_state_cleared_delete,
+            stream_probe.item_objects_rejected_missing_state_cleared_area_reset,
+            stream_probe.item_objects_preserved_by_explicit_self_materialization,
+            stream_probe.item_objects_preserved_by_active_state,
+            stream_probe.item_objects_preserved_by_feature25_first,
+            stream_probe.item_objects_preserved_by_feature25_second,
+            stream_probe.item_objects_preserved_by_feature25_legacy_tail,
             recommended_client_action_should_dispatch,
             recommended_client_action_suppressed_reason,
             recommended_use_item_payload_available,
@@ -4971,6 +5051,21 @@ impl UiState {
                 "  \"stream_probe_item_buttons_blanked_candidate\": {},\n",
                 "  \"stream_probe_item_buttons_rejected_missing_state_proof\": {},\n",
                 "  \"stream_probe_item_buttons_rejected_missing_state_unknown\": {},\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_cleared_delete\": {},\n",
+                "  \"stream_probe_item_buttons_rejected_missing_state_cleared_area_reset\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_proven\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_active\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_feature25_first\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_feature25_second\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_feature25_legacy_tail\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_unknown\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_cleared_delete\": {},\n",
+                "  \"stream_probe_item_objects_rejected_missing_state_cleared_area_reset\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_explicit_self_materialization\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_active_state\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
+                "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot\": {},\n",
@@ -5088,6 +5183,21 @@ impl UiState {
             stream_probe.item_buttons_blanked_candidate,
             stream_probe.item_buttons_rejected_missing_state_proof,
             stream_probe.item_buttons_rejected_missing_state_unknown,
+            stream_probe.item_buttons_rejected_missing_state_cleared_delete,
+            stream_probe.item_buttons_rejected_missing_state_cleared_area_reset,
+            stream_probe.item_objects_rejected_missing_state_proven,
+            stream_probe.item_objects_rejected_missing_state_active,
+            stream_probe.item_objects_rejected_missing_state_feature25_first,
+            stream_probe.item_objects_rejected_missing_state_feature25_second,
+            stream_probe.item_objects_rejected_missing_state_feature25_legacy_tail,
+            stream_probe.item_objects_rejected_missing_state_unknown,
+            stream_probe.item_objects_rejected_missing_state_cleared_delete,
+            stream_probe.item_objects_rejected_missing_state_cleared_area_reset,
+            stream_probe.item_objects_preserved_by_explicit_self_materialization,
+            stream_probe.item_objects_preserved_by_active_state,
+            stream_probe.item_objects_preserved_by_feature25_first,
+            stream_probe.item_objects_preserved_by_feature25_second,
+            stream_probe.item_objects_preserved_by_feature25_legacy_tail,
             stream_probe_active_item_known,
             stream_probe_active_item_slot_known,
             stream_probe_active_item_slot,
@@ -5283,6 +5393,7 @@ impl UiState {
             candidate,
             recommended_set_button_slot,
             recommended_set_button_slot_source,
+            stream_probe: self.last_quickbar_stream_probe.unwrap_or_default(),
             first_preserved_active_item_signature,
             first_preserved_active_item_slot,
             candidate_use_count_state: self.quickbar_item_use_count_state_for_candidate(
@@ -7841,6 +7952,21 @@ mod tests {
             item_buttons_blanked_candidate: 0,
             item_buttons_rejected_missing_state_proof: 0,
             item_buttons_rejected_missing_state_unknown: 0,
+            item_buttons_rejected_missing_state_cleared_delete: 1,
+            item_buttons_rejected_missing_state_cleared_area_reset: 2,
+            item_objects_rejected_missing_state_proven: 3,
+            item_objects_rejected_missing_state_active: 4,
+            item_objects_rejected_missing_state_feature25_first: 5,
+            item_objects_rejected_missing_state_feature25_second: 6,
+            item_objects_rejected_missing_state_feature25_legacy_tail: 7,
+            item_objects_rejected_missing_state_unknown: 8,
+            item_objects_rejected_missing_state_cleared_delete: 9,
+            item_objects_rejected_missing_state_cleared_area_reset: 10,
+            item_objects_preserved_by_explicit_self_materialization: 11,
+            item_objects_preserved_by_active_state: 12,
+            item_objects_preserved_by_feature25_first: 13,
+            item_objects_preserved_by_feature25_second: 14,
+            item_objects_preserved_by_feature25_legacy_tail: 15,
             first_preserved_active_item_signature: Some(QuickbarActiveItemSignature {
                 object_id: 0x8000_0100,
                 base_item: 0x11,
@@ -7860,6 +7986,7 @@ mod tests {
                 value_mask: 0x08,
             }),
             first_preserved_active_item_slot: Some(2),
+            ..QuickbarStreamProbeSummary::default()
         });
         ui.observe_quickbar_item_use_count_updates(&[
             LiveObjectQuickbarItemUseCountUpdate {
@@ -7935,6 +8062,43 @@ mod tests {
         assert!(json.contains("\"first_preserved_active_item_first_property_subtype\": 2"));
         assert!(json.contains("\"first_preserved_active_item_state_mask_hex\": \"0x05\""));
         assert!(json.contains("\"first_preserved_active_item_value_mask_hex\": \"0x08\""));
+        assert!(
+            json.contains("\"stream_probe_item_buttons_rejected_missing_state_cleared_delete\": 1")
+        );
+        assert!(json.contains(
+            "\"stream_probe_item_buttons_rejected_missing_state_cleared_area_reset\": 2"
+        ));
+        assert!(json.contains("\"stream_probe_item_objects_rejected_missing_state_proven\": 3"));
+        assert!(json.contains("\"stream_probe_item_objects_rejected_missing_state_active\": 4"));
+        assert!(
+            json.contains(
+                "\"stream_probe_item_objects_rejected_missing_state_feature25_first\": 5"
+            )
+        );
+        assert!(
+            json.contains(
+                "\"stream_probe_item_objects_rejected_missing_state_feature25_second\": 6"
+            )
+        );
+        assert!(json.contains(
+            "\"stream_probe_item_objects_rejected_missing_state_feature25_legacy_tail\": 7"
+        ));
+        assert!(json.contains("\"stream_probe_item_objects_rejected_missing_state_unknown\": 8"));
+        assert!(
+            json.contains("\"stream_probe_item_objects_rejected_missing_state_cleared_delete\": 9")
+        );
+        assert!(json.contains(
+            "\"stream_probe_item_objects_rejected_missing_state_cleared_area_reset\": 10"
+        ));
+        assert!(json.contains(
+            "\"stream_probe_item_objects_preserved_by_explicit_self_materialization\": 11"
+        ));
+        assert!(json.contains("\"stream_probe_item_objects_preserved_by_active_state\": 12"));
+        assert!(json.contains("\"stream_probe_item_objects_preserved_by_feature25_first\": 13"));
+        assert!(json.contains("\"stream_probe_item_objects_preserved_by_feature25_second\": 14"));
+        assert!(
+            json.contains("\"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": 15")
+        );
         assert!(json.contains("\"recommended_use_item_payload_available\": true"));
         assert!(json.contains("\"recommended_use_item_payload_kind\": \"Input_UseItem\""));
         assert!(json.contains(
@@ -8578,6 +8742,21 @@ mod tests {
             item_buttons_blanked_candidate: 7,
             item_buttons_rejected_missing_state_proof: 3,
             item_buttons_rejected_missing_state_unknown: 3,
+            item_buttons_rejected_missing_state_cleared_delete: 1,
+            item_buttons_rejected_missing_state_cleared_area_reset: 2,
+            item_objects_rejected_missing_state_proven: 4,
+            item_objects_rejected_missing_state_active: 5,
+            item_objects_rejected_missing_state_feature25_first: 6,
+            item_objects_rejected_missing_state_feature25_second: 7,
+            item_objects_rejected_missing_state_feature25_legacy_tail: 8,
+            item_objects_rejected_missing_state_unknown: 9,
+            item_objects_rejected_missing_state_cleared_delete: 10,
+            item_objects_rejected_missing_state_cleared_area_reset: 11,
+            item_objects_preserved_by_explicit_self_materialization: 12,
+            item_objects_preserved_by_active_state: 13,
+            item_objects_preserved_by_feature25_first: 14,
+            item_objects_preserved_by_feature25_second: 15,
+            item_objects_preserved_by_feature25_legacy_tail: 16,
             first_preserved_active_item_signature: Some(QuickbarActiveItemSignature {
                 object_id: 0x8000_0100,
                 base_item: 0x11,
@@ -8597,6 +8776,7 @@ mod tests {
                 value_mask: 0x08,
             }),
             first_preserved_active_item_slot: Some(9),
+            ..QuickbarStreamProbeSummary::default()
         });
         ui.last_quickbar_stream_probe_materialization_context = Some(InventoryItemContextSummary {
             direct_item_proof_objects: 1,
@@ -8612,6 +8792,65 @@ mod tests {
         assert!(
             stream_probe_no_commit
                 .contains("\"stream_probe_item_buttons_rejected_missing_state_proof\": 3")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_buttons_rejected_missing_state_cleared_delete\": 1")
+        );
+        assert!(stream_probe_no_commit.contains(
+            "\"stream_probe_item_buttons_rejected_missing_state_cleared_area_reset\": 2"
+        ));
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_objects_rejected_missing_state_proven\": 4")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_objects_rejected_missing_state_active\": 5")
+        );
+        assert!(
+            stream_probe_no_commit.contains(
+                "\"stream_probe_item_objects_rejected_missing_state_feature25_first\": 6"
+            )
+        );
+        assert!(
+            stream_probe_no_commit.contains(
+                "\"stream_probe_item_objects_rejected_missing_state_feature25_second\": 7"
+            )
+        );
+        assert!(stream_probe_no_commit.contains(
+            "\"stream_probe_item_objects_rejected_missing_state_feature25_legacy_tail\": 8"
+        ));
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_objects_rejected_missing_state_unknown\": 9")
+        );
+        assert!(
+            stream_probe_no_commit.contains(
+                "\"stream_probe_item_objects_rejected_missing_state_cleared_delete\": 10"
+            )
+        );
+        assert!(stream_probe_no_commit.contains(
+            "\"stream_probe_item_objects_rejected_missing_state_cleared_area_reset\": 11"
+        ));
+        assert!(stream_probe_no_commit.contains(
+            "\"stream_probe_item_objects_preserved_by_explicit_self_materialization\": 12"
+        ));
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_objects_preserved_by_active_state\": 13")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_objects_preserved_by_feature25_first\": 14")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_objects_preserved_by_feature25_second\": 15")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": 16")
         );
         assert!(
             stream_probe_no_commit

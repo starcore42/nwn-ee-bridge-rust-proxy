@@ -17,6 +17,30 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 stream-probe item materialization counters: live-data gate used
+  the gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`;
+  `quickbar-item-refresh-hint.json` last write was
+  `2026-07-06T20:32:10+10:00`, about 1h56m old at gate. Gameplay reached
+  through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, with no quarantine directory. Current work used
+  the Diamond autoplay replay as the strongest reference setup because the live
+  gate was fresh and the slice only surfaces already-owned quickbar/inventory
+  materialization decisions. Proxy2 now carries the quickbar writer's
+  stream-probe item materialization proof and missing-state counters into
+  pending and idle `quickbar-item-refresh-hint.json` output, and the replay
+  summary parser exports the same `QuickbarItemRefreshHintStreamProbe*`
+  counters. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-stream-materialization-counters-bounded-20260706-2250`
+  used 164 packet files, strict translation, 304 allow decisions, 0 strict
+  quarantines, and 0 quarantine files. The replay's pending feature-25-only
+  candidate `0x80015DAA` correctly reported zero stream-probe preserved/rejected
+  item-object counters because that capture has no stream-probe preserved item
+  profile in the pending hint path, while semantic post-context still carried 6
+  Feature-25 second-list refs. Active next path: run a fresh live HG harness on
+  this build and compare the new stream-probe preserved/rejected counters
+  against visible inventory/equipment state after the prior-`G Q` quickbar
+  resolution.
 - 2026-07-06 current-code prior `G Q` state live confirmation: live-data gate
   found gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-coalesced-continuation-fix-20260706-164042\harness-proxy-20260706-164049`
