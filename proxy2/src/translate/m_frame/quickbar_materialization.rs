@@ -88,6 +88,11 @@ fn quickbar_materialization_status_from_registry(
                 quickbar_materialization_proof_from_registry(proof),
             )
         }
+        semantic::InventoryItemObjectStatus::DeferredFeature25(proof) => {
+            quickbar::QuickbarItemMaterializationStatus::DeferredFeature25(
+                quickbar_materialization_proof_from_registry(proof),
+            )
+        }
         semantic::InventoryItemObjectStatus::ClearedByItemDelete => {
             quickbar::QuickbarItemMaterializationStatus::ClearedByItemDelete
         }

@@ -31,9 +31,9 @@ use super::{
 };
 
 #[cfg(test)]
-use super::InventoryItemObjectProof;
-#[cfg(test)]
 use super::state::QuickbarStreamProbeSummary;
+#[cfg(test)]
+use super::{InventoryItemObjectProof, InventoryItemObjectStatus};
 
 pub(crate) fn observe_verified_payload(
     state: &mut SemanticSessionState,
@@ -2192,12 +2192,26 @@ mod fixture_free_tests {
 
         assert_eq!(
             state.objects.inventory_item_object_proof(first_item_id),
-            Some(InventoryItemObjectProof::Feature25FirstList),
-            "Feature-25 first-list refs should retain their proof source"
+            None,
+            "Feature-25 first-list refs are reference-only until an item materialization record appears"
+        );
+        assert_eq!(
+            state.objects.inventory_item_object_status(first_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25FirstList
+            ),
+            "Feature-25 first-list refs should retain their deferred source"
         );
         assert_eq!(
             state.objects.inventory_item_object_proof(second_item_id),
-            Some(InventoryItemObjectProof::Feature25SecondList),
+            None,
+            "Feature-25 second-list refs are reference-only until an item materialization record appears"
+        );
+        assert_eq!(
+            state.objects.inventory_item_object_status(second_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25SecondList
+            ),
             "Feature-25 second-list refs should stay distinguishable from first-list refs"
         );
         assert!(

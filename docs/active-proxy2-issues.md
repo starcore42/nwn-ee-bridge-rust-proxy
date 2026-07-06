@@ -17,6 +17,51 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-07 deferred Feature-25 refs are reference-only for compact quickbar
+  emission: live-data gate reused the fresh gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`
+  (`quickbar-item-refresh-hint.json`
+  `2026-07-07T07:17:18.6853537+10:00`, about 1h15m old at gate). It reached
+  `Module_Loaded`, `Area_ClientArea`, and sustained `GameObjUpdate_LiveObject`
+  traffic with no quarantine directory; the hint had 7 Feature-25 reference
+  records, 7 deferred item-ref mentions, 0 materialized item-ref mentions, and
+  `inventory_feature25_materialization_outcome="all_item_refs_deferred"`.
+  Proxy2 now keeps unmaterialized Feature-25 first/second/legacy-tail object
+  ids as `DeferredFeature25` status for diagnostics and candidate tracking, but
+  `inventory_item_object_proof` and the quickbar writer do not treat them as
+  item materialization proof. Compact quickbar item emission with only deferred
+  Feature-25 evidence now rejects with `MissingStateProof` and records the
+  Feature-25 bucket in missing-state diagnostics. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-deferred-feature25-reference-only-20260707-0854`
+  used alternate ports 59121/59133 because Windows refused the default replay
+  port 55121, processed 164 packet files with strict translation, 304 allow
+  decisions, 0 strict quarantines, and 0 quarantine files; the pending Diamond
+  path still reports Feature-25 candidate counts as diagnostics, with 23
+  feature25-only candidate selections and 15 second-list unmaterialized refs.
+  Active next path: run the next live HG harness on this build and confirm any
+  later item-bearing `SetAllButtons` path no longer materializes all-deferred
+  Feature-25 refs, then continue the inventory/equipment UI handoff audit.
+- 2026-07-07 `P/5` appearance followed by `U/5 0x3967` boundary fix:
+  live-data gate found the gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-feature25-current-20260707-043430\harness-proxy-20260707-043444`
+  fresh (final hint `2026-07-07T04:42:08+10:00`, about 1h51m old at
+  gate). A fresh pre-fix harness
+  `C:\nwnbridge\codex-live-feature25-outcome-current-20260707-063346\harness-proxy-20260707-063402`
+  reached gameplay but quarantined seq48 as
+  `live-object-unclaimed-strict-family-GameObjUpdate_LiveObject-seq48-frames1-1783370159548.bin`
+  after an exact I/0x2000 Feature-25 row, legacy `A/5`, full `P/5`
+  appearance/name row, and following `U/5 0x3967` row. Proxy2 now tries later
+  boundary-looking record ends only for the decompile-audited `U/5 0x3967`
+  tail class and requires the focused creature-update exact/legacy cursor proof
+  before accepting the end; other creature update masks keep the historical
+  first-boundary behavior. Patched live verification
+  `C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, wrote `quickbar-item-refresh-hint.json` at
+  `2026-07-07T07:17:18.6853537+10:00`, and produced no quarantine directory.
+  Active next path: with this live-object quarantine cleared, continue the
+  Feature-25 all-deferred inventory/equipment materialization decision and keep
+  the older broad live-object fixture failure cluster as separate debt.
 - 2026-07-07 inventory Feature-25 materialization outcome: live-data gate found
   gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-preserved-active-mismatch-confirm-20260707-023305\harness-proxy-20260707-023309`
@@ -42,10 +87,9 @@ not as standalone workaround targets.
   Feature-25 reference records, 27 item-ref mentions, 0 materialized mentions,
   27 deferred mentions, and
   `inventory_feature25_materialization_outcome="all_item_refs_deferred"`.
-  Active next path: use the live/replay all-deferred baseline to decide whether
-  deferred Feature-25 item refs should remain reference-only for inventory and
-  equipment, or whether a later visible inventory/equipment state handoff must
-  materialize them.
+  The later 08:53 run used this baseline to keep deferred Feature-25 refs
+  reference-only for compact quickbar emission while leaving inventory/equipment
+  UI handoff as the next live-confirmation target.
 - 2026-07-07 preserved-active quickbar `G Q` mismatch guard: live-data gate
   found the gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-prior-gq-state-handoff-current-20260706-202809\harness-proxy-20260706-202815`

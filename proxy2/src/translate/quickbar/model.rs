@@ -19,6 +19,7 @@ pub(crate) enum QuickbarItemMaterializationProof {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemMaterializationStatus {
     Proven(QuickbarItemMaterializationProof),
+    DeferredFeature25(QuickbarItemMaterializationProof),
     ClearedByItemDelete,
     ClearedByAreaReset,
     Unknown,
@@ -81,7 +82,8 @@ impl<'a> QuickbarMaterializationContext<'a> {
     ) -> Option<QuickbarItemMaterializationProof> {
         match self.item_object_materialization_status(object_id) {
             QuickbarItemMaterializationStatus::Proven(proof) => Some(proof),
-            QuickbarItemMaterializationStatus::ClearedByItemDelete
+            QuickbarItemMaterializationStatus::DeferredFeature25(_)
+            | QuickbarItemMaterializationStatus::ClearedByItemDelete
             | QuickbarItemMaterializationStatus::ClearedByAreaReset
             | QuickbarItemMaterializationStatus::Unknown => None,
         }

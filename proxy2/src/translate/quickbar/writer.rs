@@ -406,6 +406,7 @@ pub(super) fn quickbar_item_button_missing_state_status(
     secondary: &QuickbarItemObject,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> QuickbarItemMaterializationStatus {
+    let mut deferred_feature25 = None;
     for status in
         quickbar_item_button_missing_state_object_statuses(primary, secondary, materialization)
             .into_iter()
@@ -414,11 +415,14 @@ pub(super) fn quickbar_item_button_missing_state_status(
         match status {
             QuickbarItemMaterializationStatus::ClearedByItemDelete
             | QuickbarItemMaterializationStatus::ClearedByAreaReset => return status,
+            QuickbarItemMaterializationStatus::DeferredFeature25(_) => {
+                deferred_feature25.get_or_insert(status);
+            }
             QuickbarItemMaterializationStatus::Unknown => {}
             QuickbarItemMaterializationStatus::Proven(_) => {}
         }
     }
-    QuickbarItemMaterializationStatus::Unknown
+    deferred_feature25.unwrap_or(QuickbarItemMaterializationStatus::Unknown)
 }
 
 pub(super) fn quickbar_item_button_missing_state_object_statuses(
@@ -809,6 +813,44 @@ mod tests {
                 Some(QuickbarItemMaterializationProof::InventoryFeature25SecondList),
                 None
             ]
+        );
+    }
+
+    #[test]
+    fn compact_item_materialization_rejects_deferred_feature25_reference() {
+        let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+        let item_object_id = item.object_id;
+        let item_object_status = |object_id| {
+            if object_id == item_object_id {
+                QuickbarItemMaterializationStatus::DeferredFeature25(
+                    QuickbarItemMaterializationProof::InventoryFeature25SecondList,
+                )
+            } else {
+                QuickbarItemMaterializationStatus::Unknown
+            }
+        };
+        let materialization = QuickbarMaterializationContext::new_with_status(&item_object_status);
+
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &item,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::CompactByteOwnedWithSourceType,
+                false,
+                Some(&materialization),
+            ),
+            Err(QuickbarItemMaterializationRejectReason::MissingStateProof),
+            "Feature-25 refs that were deferred at observation time are not EE item materialization proof"
+        );
+        assert_eq!(
+            quickbar_item_button_missing_state_status(
+                &item,
+                &QuickbarItemObject::default(),
+                Some(&materialization),
+            ),
+            QuickbarItemMaterializationStatus::DeferredFeature25(
+                QuickbarItemMaterializationProof::InventoryFeature25SecondList
+            )
         );
     }
 

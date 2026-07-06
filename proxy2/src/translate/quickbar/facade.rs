@@ -652,6 +652,7 @@ impl QuickbarItemRejectionCounts {
     fn observe_missing_state_status(&mut self, status: QuickbarItemMaterializationStatus) {
         match status {
             QuickbarItemMaterializationStatus::Proven(_) => {}
+            QuickbarItemMaterializationStatus::DeferredFeature25(_) => {}
             QuickbarItemMaterializationStatus::ClearedByItemDelete => {
                 self.missing_state_cleared_delete =
                     self.missing_state_cleared_delete.saturating_add(1);
@@ -702,6 +703,21 @@ impl QuickbarMissingStateObjectCounts {
                         }
                     }
                 }
+                QuickbarItemMaterializationStatus::DeferredFeature25(proof) => match proof {
+                    QuickbarItemMaterializationProof::ExplicitSelfMaterialization => {}
+                    QuickbarItemMaterializationProof::ActiveObject => {
+                        self.active_state = self.active_state.saturating_add(1);
+                    }
+                    QuickbarItemMaterializationProof::InventoryFeature25FirstList => {
+                        self.feature25_first = self.feature25_first.saturating_add(1);
+                    }
+                    QuickbarItemMaterializationProof::InventoryFeature25SecondList => {
+                        self.feature25_second = self.feature25_second.saturating_add(1);
+                    }
+                    QuickbarItemMaterializationProof::InventoryFeature25LegacyTail => {
+                        self.feature25_legacy_tail = self.feature25_legacy_tail.saturating_add(1);
+                    }
+                },
                 QuickbarItemMaterializationStatus::Unknown => {
                     self.unknown = self.unknown.saturating_add(1);
                 }
@@ -1093,6 +1109,21 @@ fn quickbar_item_object_registry_status_label(
         QuickbarItemMaterializationStatus::Proven(proof) => {
             quickbar_materialization_proof_label(proof)
         }
+        QuickbarItemMaterializationStatus::DeferredFeature25(proof) => match proof {
+            QuickbarItemMaterializationProof::ExplicitSelfMaterialization => {
+                "deferred_explicit_self_materialization"
+            }
+            QuickbarItemMaterializationProof::ActiveObject => "deferred_active_object",
+            QuickbarItemMaterializationProof::InventoryFeature25FirstList => {
+                "deferred_inventory_feature25_first_list"
+            }
+            QuickbarItemMaterializationProof::InventoryFeature25SecondList => {
+                "deferred_inventory_feature25_second_list"
+            }
+            QuickbarItemMaterializationProof::InventoryFeature25LegacyTail => {
+                "deferred_inventory_feature25_legacy_tail"
+            }
+        },
         QuickbarItemMaterializationStatus::ClearedByItemDelete => "cleared_by_item_delete",
         QuickbarItemMaterializationStatus::ClearedByAreaReset => "cleared_by_area_reset",
         QuickbarItemMaterializationStatus::Unknown => "unknown",
@@ -1223,6 +1254,51 @@ mod tests {
         );
         assert_eq!(
             summary.item_objects_rejected_missing_state_cleared_area_reset,
+            1
+        );
+        assert_eq!(summary.item_objects_rejected_missing_state_unknown, 0);
+    }
+
+    #[test]
+    fn summary_counts_deferred_feature25_refs_as_missing_state_not_proven() {
+        let primary = shield_item(0x8000_0101);
+        let primary_object_id = primary.object_id;
+        let materialization_status = |object_id| {
+            if object_id == primary_object_id {
+                QuickbarItemMaterializationStatus::DeferredFeature25(
+                    QuickbarItemMaterializationProof::InventoryFeature25SecondList,
+                )
+            } else {
+                QuickbarItemMaterializationStatus::Unknown
+            }
+        };
+        let materialization =
+            QuickbarMaterializationContext::new_with_status(&materialization_status);
+        let parsed = QuickbarParse {
+            envelope: b'P',
+            declared: 0,
+            read_size: 0,
+            fragment_size: 1,
+            final_cursor: 0,
+            buttons: vec![QuickbarButton {
+                kind: QuickbarButtonKind::Item {
+                    primary,
+                    secondary: QuickbarItemObject::default(),
+                    source: QuickbarItemSource::CompactByteOwnedWithSourceType,
+                    recovered_type_tag: false,
+                },
+            }],
+            direct_opcode_stream: false,
+        };
+
+        let summary = summarize_quickbar_rewrite(&parsed, &[], 0, 0, 0, 0, Some(&materialization));
+
+        assert_eq!(summary.item_buttons_seen, 1);
+        assert_eq!(summary.item_buttons_preserved, 0);
+        assert_eq!(summary.item_buttons_rejected_missing_state_proof, 1);
+        assert_eq!(summary.item_objects_rejected_missing_state_proven, 0);
+        assert_eq!(
+            summary.item_objects_rejected_missing_state_feature25_second,
             1
         );
         assert_eq!(summary.item_objects_rejected_missing_state_unknown, 0);

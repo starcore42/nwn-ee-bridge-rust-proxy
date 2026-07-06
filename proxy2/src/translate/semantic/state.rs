@@ -535,6 +535,7 @@ impl InventoryItemObjectProof {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InventoryItemObjectStatus {
     Proven(InventoryItemObjectProof),
+    DeferredFeature25(InventoryItemObjectProof),
     ClearedByItemDelete,
     ClearedByAreaReset,
     Unknown,
@@ -3368,7 +3369,8 @@ impl ObjectRegistry {
     ) -> Option<InventoryItemObjectProof> {
         match self.inventory_item_object_status(object_id) {
             InventoryItemObjectStatus::Proven(proof) => Some(proof),
-            InventoryItemObjectStatus::ClearedByItemDelete
+            InventoryItemObjectStatus::DeferredFeature25(_)
+            | InventoryItemObjectStatus::ClearedByItemDelete
             | InventoryItemObjectStatus::ClearedByAreaReset
             | InventoryItemObjectStatus::Unknown => None,
         }
@@ -3407,13 +3409,15 @@ impl ObjectRegistry {
             .inventory_feature25_first_item_refs
             .contains(&object_id)
         {
-            return InventoryItemObjectStatus::Proven(InventoryItemObjectProof::Feature25FirstList);
+            return InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25FirstList,
+            );
         }
         if self
             .inventory_feature25_second_item_refs
             .contains(&object_id)
         {
-            return InventoryItemObjectStatus::Proven(
+            return InventoryItemObjectStatus::DeferredFeature25(
                 InventoryItemObjectProof::Feature25SecondList,
             );
         }
@@ -3421,7 +3425,7 @@ impl ObjectRegistry {
             .inventory_feature25_legacy_tail_item_refs
             .contains(&object_id)
         {
-            return InventoryItemObjectStatus::Proven(
+            return InventoryItemObjectStatus::DeferredFeature25(
                 InventoryItemObjectProof::Feature25LegacyTail,
             );
         }
@@ -7707,15 +7711,31 @@ mod tests {
         }]);
         assert_eq!(
             registry.inventory_item_object_proof(first_item_id),
-            Some(InventoryItemObjectProof::Feature25FirstList)
+            None,
+            "Feature-25 refs are reference-only until item materialization is observed"
         );
         assert_eq!(
-            registry.inventory_item_object_proof(second_item_id),
-            Some(InventoryItemObjectProof::Feature25SecondList)
+            registry.inventory_item_object_status(first_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25FirstList
+            )
+        );
+        assert_eq!(registry.inventory_item_object_proof(second_item_id), None);
+        assert_eq!(
+            registry.inventory_item_object_status(second_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25SecondList
+            )
         );
         assert_eq!(
             registry.inventory_item_object_proof(legacy_tail_item_id),
-            Some(InventoryItemObjectProof::Feature25LegacyTail)
+            None
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(legacy_tail_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25LegacyTail
+            )
         );
 
         registry.observe_mentions(&[LiveObjectMention {
@@ -7742,18 +7762,39 @@ mod tests {
         );
         assert_eq!(
             registry.inventory_item_object_proof(first_item_id),
-            Some(InventoryItemObjectProof::Feature25FirstList),
+            None,
+            "deleting one item must not turn unrelated reference-only refs into proof"
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(first_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25FirstList
+            ),
             "deleting one item must not clear unrelated first-list refs"
         );
         assert_eq!(
             registry.inventory_item_object_proof(legacy_tail_item_id),
-            Some(InventoryItemObjectProof::Feature25LegacyTail),
+            None,
+            "deleting one item must not turn unrelated reference-only refs into proof"
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(legacy_tail_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25LegacyTail
+            ),
             "deleting one item must not clear unrelated legacy-tail refs"
         );
         assert_eq!(
             registry.inventory_item_object_proof(survivor_item_id),
-            Some(InventoryItemObjectProof::Feature25FirstList),
-            "other refs in the same Feature-25 claim remain usable evidence"
+            None,
+            "other refs in the same Feature-25 claim remain reference-only evidence"
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(survivor_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25FirstList
+            ),
+            "other refs in the same Feature-25 claim remain visible as deferred status"
         );
     }
 
@@ -7818,16 +7859,34 @@ mod tests {
         );
         assert_eq!(
             registry.inventory_item_object_proof(first_deferred_item_id),
-            Some(InventoryItemObjectProof::Feature25FirstList),
-            "deferred Feature-25 refs remain existing quickbar proof until a later evidence audit changes policy"
+            None,
+            "live 2026-07-07 evidence keeps deferred Feature-25 refs reference-only for compact item emission"
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(first_deferred_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25FirstList
+            )
         );
         assert_eq!(
             registry.inventory_item_object_proof(second_deferred_item_id),
-            Some(InventoryItemObjectProof::Feature25SecondList)
+            None
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(second_deferred_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25SecondList
+            )
         );
         assert_eq!(
             registry.inventory_item_object_proof(legacy_tail_deferred_item_id),
-            Some(InventoryItemObjectProof::Feature25LegacyTail)
+            None
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(legacy_tail_deferred_item_id),
+            InventoryItemObjectStatus::DeferredFeature25(
+                InventoryItemObjectProof::Feature25LegacyTail
+            )
         );
 
         let summary = registry.inventory_item_context_summary();
