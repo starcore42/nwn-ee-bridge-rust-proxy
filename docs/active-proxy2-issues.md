@@ -17,6 +17,28 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 durable `G Q` quickbar use-count state: live-data gate found
+  gameplay-reaching HG capture
+  `C:\nwnbridge\codex-live-gq-resolution-current-20260706-102406\harness-proxy-20260706-102502`
+  fresh, then a current-code live harness
+  `C:\nwnbridge\codex-live-gq-slot-relation-current-20260706-142738\harness-proxy-20260706-142747`
+  also reached gameplay, wrote `quickbar-item-refresh-hint.json` at
+  `2026-07-06T14:41:03+10:00`, and produced no quarantine artifacts. The final
+  live hint selected candidate `0x80015AE3`, matched the first preserved active
+  item in quickbar slot 0, dispatched the subtype-low `UseItem`, and again saw
+  no server quickbar, no `G Q`, and no active-property response after the
+  action. Proxy2 now keeps a durable semantic table of verified typed
+  live-object `G Q` item-use-count rows keyed by slot/button/object/property,
+  exposes the candidate table row in active and idle quickbar item-refresh
+  hints, and exports the same fields in replay summaries. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-use-count-state-20260706-144554` over the
+  2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304 strict
+  allows, 0 strict quarantines, and 0 quarantine files; its pending hint
+  correctly reported 0 durable use-count state rows and
+  `candidate_quickbar_item_use_count_state_slot_relation="no_candidate_use_count_row"`.
+  Active next path: rerun live HG after this state-table slice and compare
+  whether any prior durable `G Q` row exists for the selected active item when
+  the final hint lands in the no-server-response branch.
 - 2026-07-06 pre-action `G Q` quickbar state handoff: live-data gate reused
   the gameplay-reaching HG proxy harness
   `C:\nwnbridge\codex-live-preaction-gq-suppression-20260706-070013\harness-proxy-20260706-070018`

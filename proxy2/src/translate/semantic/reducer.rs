@@ -238,6 +238,9 @@ fn apply_event(
             state
                 .objects
                 .observe_inventory_feature25_references(&event.inventory_feature25_references);
+            state
+                .ui
+                .observe_quickbar_item_use_count_updates(&event.quickbar_item_use_count_updates);
             remember_quickbar_item_context_if_relevant(state, "live-object");
         }
         ProtocolEvent::PlayerList(event) => {

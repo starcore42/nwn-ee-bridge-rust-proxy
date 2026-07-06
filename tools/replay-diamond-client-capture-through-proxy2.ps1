@@ -1400,6 +1400,16 @@ try {
     $quickbarHintRecommendedActionOutcome = ''
     $quickbarHintActivePropertyOutcome = ''
     $quickbarHintServerQuickbarResponseTiming = ''
+    $quickbarHintQuickbarItemUseCountStateRows = 0
+    $quickbarHintQuickbarItemUseCountUpdatesObserved = 0
+    $quickbarHintCandidateQuickbarItemUseCountStateKnown = $false
+    $quickbarHintCandidateQuickbarItemUseCountStateSlotRelation = ''
+    $quickbarHintCandidateQuickbarItemUseCountStateSlotMatchesFirstPreservedActiveItem = $false
+    $quickbarHintCandidateQuickbarItemUseCountStateSlot = 0
+    $quickbarHintCandidateQuickbarItemUseCountStateButtonType = 0
+    $quickbarHintCandidateQuickbarItemUseCountStateObjectId = 0
+    $quickbarHintCandidateQuickbarItemUseCountStateActivePropertyIndex = 0
+    $quickbarHintCandidateQuickbarItemUseCountStateUseCount = 0
     $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown = $false
     $quickbarHintFirstServerQuickbarItemUseCountCandidateRowTiming = ''
     $quickbarHintFirstServerQuickbarItemUseCountCandidateRowSlotRelation = ''
@@ -1523,6 +1533,25 @@ try {
         if ($null -ne $serverQuickbarResponseTimingProp -and $null -ne $serverQuickbarResponseTimingProp.Value) {
             $quickbarHintServerQuickbarResponseTiming = [string]$serverQuickbarResponseTimingProp.Value
         }
+        $quickbarHintQuickbarItemUseCountStateRows = & $getQuickbarHintInt64 'quickbar_item_use_count_state_rows'
+        $quickbarHintQuickbarItemUseCountUpdatesObserved = & $getQuickbarHintInt64 'quickbar_item_use_count_updates_observed'
+        $candidateUseCountStateKnownProp = $quickbarHintJson.PSObject.Properties['candidate_quickbar_item_use_count_state_known']
+        if ($null -ne $candidateUseCountStateKnownProp -and $null -ne $candidateUseCountStateKnownProp.Value) {
+            $quickbarHintCandidateQuickbarItemUseCountStateKnown = [bool]$candidateUseCountStateKnownProp.Value
+        }
+        $candidateUseCountStateSlotRelationProp = $quickbarHintJson.PSObject.Properties['candidate_quickbar_item_use_count_state_slot_relation']
+        if ($null -ne $candidateUseCountStateSlotRelationProp -and $null -ne $candidateUseCountStateSlotRelationProp.Value) {
+            $quickbarHintCandidateQuickbarItemUseCountStateSlotRelation = [string]$candidateUseCountStateSlotRelationProp.Value
+        }
+        $candidateUseCountStateSlotMatchesFirstPreservedActiveItemProp = $quickbarHintJson.PSObject.Properties['candidate_quickbar_item_use_count_state_slot_matches_first_preserved_active_item']
+        if ($null -ne $candidateUseCountStateSlotMatchesFirstPreservedActiveItemProp -and $null -ne $candidateUseCountStateSlotMatchesFirstPreservedActiveItemProp.Value) {
+            $quickbarHintCandidateQuickbarItemUseCountStateSlotMatchesFirstPreservedActiveItem = [bool]$candidateUseCountStateSlotMatchesFirstPreservedActiveItemProp.Value
+        }
+        $quickbarHintCandidateQuickbarItemUseCountStateSlot = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_slot'
+        $quickbarHintCandidateQuickbarItemUseCountStateButtonType = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_button_type'
+        $quickbarHintCandidateQuickbarItemUseCountStateObjectId = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_object_id'
+        $quickbarHintCandidateQuickbarItemUseCountStateActivePropertyIndex = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_active_property_index'
+        $quickbarHintCandidateQuickbarItemUseCountStateUseCount = & $getQuickbarHintInt64 'candidate_quickbar_item_use_count_state_use_count'
         $firstUseCountCandidateRowKnownProp = $quickbarHintJson.PSObject.Properties['first_server_quickbar_item_use_count_candidate_row_known']
         if ($null -ne $firstUseCountCandidateRowKnownProp -and $null -ne $firstUseCountCandidateRowKnownProp.Value) {
             $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown = [bool]$firstUseCountCandidateRowKnownProp.Value
@@ -1689,6 +1718,16 @@ try {
         QuickbarItemRefreshHintRecommendedActionOutcome = $quickbarHintRecommendedActionOutcome
         QuickbarItemRefreshHintActivePropertyOutcome = $quickbarHintActivePropertyOutcome
         QuickbarItemRefreshHintServerQuickbarResponseTiming = $quickbarHintServerQuickbarResponseTiming
+        QuickbarItemRefreshHintQuickbarItemUseCountStateRows = $quickbarHintQuickbarItemUseCountStateRows
+        QuickbarItemRefreshHintQuickbarItemUseCountUpdatesObserved = $quickbarHintQuickbarItemUseCountUpdatesObserved
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateKnown = $quickbarHintCandidateQuickbarItemUseCountStateKnown
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateSlotRelation = $quickbarHintCandidateQuickbarItemUseCountStateSlotRelation
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateSlotMatchesFirstPreservedActiveItem = $quickbarHintCandidateQuickbarItemUseCountStateSlotMatchesFirstPreservedActiveItem
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateSlot = $quickbarHintCandidateQuickbarItemUseCountStateSlot
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateButtonType = $quickbarHintCandidateQuickbarItemUseCountStateButtonType
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateObjectId = $quickbarHintCandidateQuickbarItemUseCountStateObjectId
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateActivePropertyIndex = $quickbarHintCandidateQuickbarItemUseCountStateActivePropertyIndex
+        QuickbarItemRefreshHintCandidateQuickbarItemUseCountStateUseCount = $quickbarHintCandidateQuickbarItemUseCountStateUseCount
         QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowKnown = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowKnown
         QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowTiming = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowTiming
         QuickbarItemRefreshHintFirstServerQuickbarItemUseCountCandidateRowSlotRelation = $quickbarHintFirstServerQuickbarItemUseCountCandidateRowSlotRelation
