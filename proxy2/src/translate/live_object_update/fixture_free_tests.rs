@@ -7671,6 +7671,54 @@ fn hg_live_mixed_inventory_placeable_stream_rewrites_to_exact_shape() {
 }
 
 #[test]
+fn hg_live_inventory_feature25_before_creature_add_rewrites_to_exact_shape() {
+    // Live HG 2026-07-07 seq48: an I/0x2000 current-player Feature-25 row is
+    // followed immediately by a legacy A/5 creature add and a P/5 full
+    // appearance/name row. The inventory row is already exact; the add rewrite
+    // inserts the EE object visual-transform identity map, then the full
+    // appearance rewrite owns the counted visible-equipment substream before the
+    // following U/5 0x3967 row resumes from the exact fragment cursor.
+    let mut payload = bytes_from_hex(
+        "50 05 01 38 01 00 00 49 FC FF FF FF 00 20 00 00 \
+         00 00 01 00 00 00 B5 57 01 80 41 05 B5 57 01 80 \
+         7C 58 27 42 73 0A 2B 42 00 00 00 00 B0 00 6B 3F \
+         E2 12 CB 3E 00 00 00 00 02 00 50 05 B5 57 01 80 \
+         FF FF 0F 00 00 00 4E 6F 72 74 68 65 72 6E 20 54 \
+         72 61 64 65 72 00 00 00 00 06 00 00 00 12 00 00 \
+         00 00 00 00 00 00 01 13 01 01 13 01 01 01 01 01 \
+         01 01 01 00 01 01 01 01 01 00 00 01 01 00 98 00 \
+         FF FF FF FF 06 44 00 00 00 7F 02 00 00 00 44 00 \
+         00 00 7F 01 00 00 00 44 00 00 00 7F 20 00 00 00 \
+         44 00 00 00 7F 10 00 00 00 44 00 00 00 7F 40 00 \
+         00 00 41 B6 57 01 80 02 00 00 00 10 00 00 00 9E \
+         9E 98 98 97 97 03 6E 00 01 96 96 96 96 00 00 01 \
+         01 00 0B 0B 0B 13 03 12 00 00 D6 75 00 01 01 00 \
+         00 00 01 00 00 00 00 00 FF 00 00 00 00 00 00 00 \
+         00 55 05 B5 57 01 80 67 39 00 00 57 10 B4 10 0F \
+         0F B7 5F 00 00 00 80 3F 02 00 00 01 00 E6 10 F1 \
+         10 FF FF 01 00 00 00 00 C0 DA 44 00 C0 5A 45 00 \
+         06 00 00 00 00 00 00 00 00 00 00 32 00 32 00 01 \
+         04 01 00 00 00 7F 00 00 CA 6C 0A 03",
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("legacy A/5 before P/5 full appearance should rewrite");
+    assert_eq!(
+        rewrite.bytes_inserted, 169,
+        "A/5 visual-transform identity plus P/5 visible-equipment EE byte inserts"
+    );
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.bits_removed, 0);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten Feature-25/A5/P5/U5 stream should exact-claim");
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.creature_appearance_records, 1);
+    assert_eq!(claim.creature_update_records, 1);
+}
+
+#[test]
 fn unclassified_inter_record_span_summary_reports_next_boundary_and_cnw_shape() {
     let mut live = vec![0x00, 0x00, 0x00, 0x3C];
     live.extend_from_slice(&[

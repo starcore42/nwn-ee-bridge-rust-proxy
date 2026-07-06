@@ -1452,44 +1452,34 @@ fn find_verified_following_creature_update_offset_after_appearance(
         // the preceding appearance parser has already left an exact cursor, so
         // each candidate below is accepted only if the focused creature-update
         // simulator can consume the record from that cursor.
-        let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
-            bytes,
-            following_offset,
-            bytes.len(),
-        )
-        .min(bytes.len());
-        if following_end <= following_offset {
-            continue;
-        }
-
-        let mut following_cursor = bit_cursor_after_appearance;
-        let exact_ee_update =
-            super::creature::advance_verified_noop_creature_update_record_exact_cursor(
-                bytes,
-                following_offset,
-                following_end,
-                fragment_bits,
-                &mut following_cursor,
-            );
-        let legacy_rewriteable_update = if exact_ee_update {
-            false
-        } else {
-            following_cursor = bit_cursor_after_appearance;
-            super::creature::advance_verified_legacy_creature_update_record_for_span_owner(
-                bytes,
-                following_offset,
-                following_end,
-                fragment_bits,
-                &mut following_cursor,
-            )
-        };
-        let legacy_update_before_empty_fragment_span =
-            if exact_ee_update || legacy_rewriteable_update {
-                false
-            } else if following_offset <= appearance_end {
+        for following_end in
+            candidate_following_creature_update_record_ends(bytes, following_offset)
+        {
+            let mut following_cursor = bit_cursor_after_appearance;
+            let exact_ee_update =
+                super::creature::advance_verified_noop_creature_update_record_exact_cursor(
+                    bytes,
+                    following_offset,
+                    following_end,
+                    fragment_bits,
+                    &mut following_cursor,
+                );
+            let legacy_rewriteable_update = if exact_ee_update {
                 false
             } else {
-                super::creature::legacy_creature_update_3967_read_end_before_fragment_span(
+                following_cursor = bit_cursor_after_appearance;
+                super::creature::advance_verified_legacy_creature_update_record_for_span_owner(
+                    bytes,
+                    following_offset,
+                    following_end,
+                    fragment_bits,
+                    &mut following_cursor,
+                )
+            };
+            let legacy_update_before_empty_fragment_span = !exact_ee_update
+                && !legacy_rewriteable_update
+                && following_offset > appearance_end
+                && super::creature::legacy_creature_update_3967_read_end_before_fragment_span(
                     bytes,
                     following_offset,
                     following_end,
@@ -1501,15 +1491,55 @@ fn find_verified_following_creature_update_offset_after_appearance(
                     appearance_following_creature_update_trailing_span_is_empty_fragment_storage(
                         bytes.get(read_end..following_end).unwrap_or(&[]),
                     )
-                })
-            };
-        if exact_ee_update || legacy_rewriteable_update || legacy_update_before_empty_fragment_span
-        {
-            return Some(following_offset);
+                });
+            if exact_ee_update
+                || legacy_rewriteable_update
+                || legacy_update_before_empty_fragment_span
+            {
+                return Some(following_offset);
+            }
         }
     }
 
     None
+}
+
+fn candidate_following_creature_update_record_ends(
+    bytes: &[u8],
+    following_offset: usize,
+) -> Vec<usize> {
+    let mut candidate_ends = Vec::new();
+    let Some(min_end) = following_offset.checked_add(super::LEGACY_UPDATE_HEADER_BYTES) else {
+        return candidate_ends;
+    };
+    if min_end > bytes.len() {
+        return candidate_ends;
+    }
+
+    let first_boundary = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        bytes,
+        following_offset,
+        bytes.len(),
+    )
+    .min(bytes.len());
+    if first_boundary >= min_end {
+        candidate_ends.push(first_boundary);
+    }
+
+    if read_u32_le(bytes, following_offset.saturating_add(6)) != Some(0x0000_3967) {
+        return candidate_ends;
+    }
+
+    let mut cursor = first_boundary.saturating_add(1).max(min_end);
+    while cursor < bytes.len() {
+        if boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, cursor) {
+            candidate_ends.push(cursor);
+        }
+        cursor = cursor.saturating_add(1);
+    }
+    candidate_ends.push(bytes.len());
+    dedup_verified_tail_candidate_ends_preserving_order(&mut candidate_ends);
+    candidate_ends
 }
 
 fn appearance_following_creature_update_trailing_span_is_empty_fragment_storage(

@@ -20461,6 +20461,19 @@ fn claim_payload_if_verified_with_reject(
                 record_end = verified_end;
             }
         }
+        if live_bytes.get(offset).copied() == Some(b'U')
+            && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+        {
+            if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
+                live_bytes,
+                offset,
+                live_bytes.len(),
+                &fragment_bits,
+                bit_cursor,
+            ) {
+                record_end = verified_end;
+            }
+        }
         if live_bytes.get(offset).copied() == Some(b'U') {
             if let Some(verified_end) =
                 effects::try_get_verified_ee_looping_visual_effect_update_record_end(
@@ -21570,6 +21583,82 @@ pub(crate) fn try_get_verified_creature_update_record_end_for_transport(
     scan_end: usize,
 ) -> Option<usize> {
     boundary::try_get_ee_creature_update_record_end_for_transport(live_bytes, offset, scan_end)
+}
+
+fn try_get_verified_creature_update_record_end_for_ee(
+    live_bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    let scan_end = scan_end.min(live_bytes.len());
+    let min_end = offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?;
+    if min_end > scan_end
+        || live_bytes.get(offset).copied()? != b'U'
+        || live_bytes.get(offset + 1).copied()? != CREATURE_OBJECT_TYPE
+        || read_u32_le(live_bytes, offset + 6)? != 0x0000_3967
+    {
+        return None;
+    }
+
+    let mut candidate_ends = Vec::new();
+    let first_boundary = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        live_bytes, offset, scan_end,
+    )
+    .min(scan_end);
+    if first_boundary >= min_end {
+        candidate_ends.push(first_boundary);
+    }
+
+    let mut cursor = first_boundary.saturating_add(1).max(min_end);
+    while cursor < scan_end {
+        if boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, cursor) {
+            candidate_ends.push(cursor);
+        }
+        cursor = cursor.saturating_add(1);
+    }
+    candidate_ends.push(scan_end);
+    dedup_usize_preserving_order(&mut candidate_ends);
+
+    for candidate_end in candidate_ends {
+        let mut exact_cursor = bit_cursor;
+        if creature::advance_verified_noop_creature_update_record_exact_cursor(
+            live_bytes,
+            offset,
+            candidate_end,
+            fragment_bits,
+            &mut exact_cursor,
+        ) {
+            return Some(candidate_end);
+        }
+
+        let mut legacy_cursor = bit_cursor;
+        if creature::advance_verified_legacy_creature_update_record_for_span_owner(
+            live_bytes,
+            offset,
+            candidate_end,
+            fragment_bits,
+            &mut legacy_cursor,
+        ) {
+            return Some(candidate_end);
+        }
+    }
+
+    None
+}
+
+fn dedup_usize_preserving_order(values: &mut Vec<usize>) {
+    let mut write = 0usize;
+    for read in 0..values.len() {
+        let value = values[read];
+        if values[..write].contains(&value) {
+            continue;
+        }
+        values[write] = value;
+        write = write.saturating_add(1);
+    }
+    values.truncate(write);
 }
 
 pub(crate) fn try_get_verified_door_placeable_update_record_end_for_transport(
@@ -24032,6 +24121,17 @@ fn rewrite_update_records_payload_with_area_context_inner(
         }
         if opcode == b'G' && bit_cursor_reliable {
             if let Some(verified_end) = gui::try_get_legacy_live_gui_record_end_with_fragment_proof(
+                &live_bytes,
+                offset,
+                live_bytes.len(),
+                &fragment_bits,
+                bit_cursor,
+            ) {
+                record_end = verified_end;
+            }
+        }
+        if opcode == b'U' && object_type == CREATURE_OBJECT_TYPE && bit_cursor_reliable {
+            if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
                 &live_bytes,
                 offset,
                 live_bytes.len(),
