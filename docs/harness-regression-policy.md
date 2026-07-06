@@ -33,17 +33,33 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-06 14:41 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-06 16:44 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-gq-slot-relation-current-20260706-142738\harness-proxy-20260706-142747`.
+`C:\nwnbridge\codex-live-coalesced-continuation-fix-20260706-164042\harness-proxy-20260706-164049`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
 `GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
-`2026-07-06T14:41:03+10:00`, and produced no quarantine artifacts. Candidate
-`0x80015AE3` came from `active_object` / `direct_only` proof, matched the
-preserved active-property quickbar item in quickbar slot 0, dispatched the
-subtype-low `UseItem`, and HG returned 0 full quickbar, 0 `G Q`, and 0
-candidate active-property uses/full responses after the action.
+`2026-07-06T16:44:44+10:00`, and produced no quarantine directory. Candidate
+`0x800155A9` came from `active_object` / `direct_only` proof, matched the
+preserved active-property quickbar item in quickbar slot 0, and matched durable
+typed `G Q` item-use-count state for slot 0/button 1/property index 255/use
+count 1. The first client action matched the subtype-low `UseItem`, and HG
+returned 0 full quickbar, 0 post-action `G Q`, and 0 candidate active-property
+uses/full responses after the action.
+
+As of 2026-07-06 16:45 +10, proxy2 also protects coalesced zlib stream tails
+from false high-level ownership. A current-code live probe
+`C:\nwnbridge\codex-live-use-count-state-current-20260706-162740\harness-proxy-20260706-162752`
+reached gameplay but emitted five identical 241-byte
+`unclaimed-unknown-high-level` quarantine files for an inflated gameplay stream
+tail that the splitter had already classified as an incomplete/non-header
+continuation. The fixed coalesced rewrite path now checks for a single
+incomplete stream unit before high-level parse fallback, keeping those payloads
+on the stream-continuation path. Patched live verification produced no
+quarantine directory. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-coalesced-continuation-fix-20260706-164526`
+against the 2026-07-03 Diamond autoplay capture stayed at 164 packet files,
+304 strict allows, 0 strict quarantines, and 0 quarantine files.
 
 As of 2026-07-06 14:45 +10, proxy2 keeps a durable semantic table of verified
 typed live-object `G Q` item-use-count rows keyed by slot/button/object/property
@@ -52,14 +68,11 @@ and writes candidate state evidence into active and idle
 `quickbar_item_use_count_state_rows`,
 `quickbar_item_use_count_updates_observed`, and the
 `candidate_quickbar_item_use_count_state_*` row/slot-relation fields. The
-replay summary exports the same fields. Strict replay
-`C:\nwnbridge\codex-proxy2-replay-use-count-state-20260706-144554` against the
-2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304 strict
-allows, 0 strict quarantines, and 0 quarantine files; its pending hint reports
-0 durable state rows and `no_candidate_use_count_row`, matching that capture's
-lack of candidate `G Q` rows. The next live HG rerun should use these durable
-state fields to decide whether any prior `G Q` row exists for the active item
-when the final hint lands in the no-server-response branch.
+replay summary exports the same fields. The current live result above confirms
+the active item row is available when the final hint lands in the
+no-server-response branch. The next production path is to implement the
+generalized EE client/visible quickbar state handoff from that durable typed
+`G Q` row rather than adding another generated action identity probe.
 
 As of 2026-07-05 12:33 +10, proxy2 also writes
 `pending_item_refresh_recommended_action_outcome` into quickbar item-refresh
@@ -925,6 +938,7 @@ work.
 | Strict replay fails before launch with `Access is denied` while replacing `target\debug\hgbridge_proxy2.exe` | A stale replay proxy is still holding the debug executable | List `hgbridge_proxy2.exe` processes, stop only the stale debug replay process, or pass `-ProxyExe` with an isolated build output. Leave unrelated live/public proxy processes alone. |
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
 | Strict replay proxy exits before packet replay with `Access is denied. (os error 10013)` while binding the default listen endpoint, such as `127.0.0.1:55121` | Local port reservation, policy, or a stale process owns the default proxy listen port | Retry with an explicit free port pair, for example `-ListenPort 56121 -ServerPort 56133`, and keep `-DrainReceiveTimeoutMilliseconds 5` for automation replays. |
+| Live HG reaches gameplay but writes identical `unclaimed-unknown-high-level` quarantine files for payloads that logs call incomplete/non-header stream continuations | A coalesced zlib stream tail is being passed to high-level packet ownership instead of the stream-continuation path | Fixed 2026-07-06 by classifying single incomplete inflated stream units before high-level parse fallback. If this recurs, inspect `coalesced` stream-continuation handling and require a no-quarantine live rerun before new packet-family work. |
 | Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch, or `-SkipBuild` uses an older proxy than the one just built | The wrapper selected a stale proxy2 executable before a fresher compatible build | Use the resolver that checks `--help` for the hint flag, skips stale candidates, selects the newest compatible executable by `LastWriteTime`, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
 | GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Historical proxy/module-load handoff blocker: Rust was parsing the EE `Device_AdvertiseProperty` name length where the CNW declared read-buffer length lives | Use the shared `translate::client_device` classifier. Fresh 2026-07-04 14:27 rerun consumed 70 device-property frames and reached gameplay; if this recurs, verify those logs before unrelated action-family work. |
 | GUI-event notify probe reaches gameplay but final hint says `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but semantic state has no committed quickbar profile/candidate | Inspect quickbar stream commitment and profile promotion before injecting GUI-event/UseItem actions. The 2026-07-04 16:22 run added a guarded promotion path; if this recurs, confirm whether `promoted_committed_profile=true` is absent and whether normal `GuiQuickbar` proof was also absent. |

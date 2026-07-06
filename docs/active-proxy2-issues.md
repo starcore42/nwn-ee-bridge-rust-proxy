@@ -17,6 +17,37 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-06 coalesced zlib stream continuation gate: live-data gate found
+  gameplay-reaching HG capture
+  `C:\nwnbridge\codex-live-gq-slot-relation-current-20260706-142738\harness-proxy-20260706-142747`
+  fresh (`quickbar-item-refresh-hint.json` last write
+  `2026-07-06T14:45:21+10:00`; about 1h40m old at gate). A current-code live
+  probe
+  `C:\nwnbridge\codex-live-use-count-state-current-20260706-162740\harness-proxy-20260706-162752`
+  reached gameplay but produced five identical 241-byte
+  `unclaimed-unknown-high-level` quarantine files. Each payload was an
+  inflated gameplay stream tail beginning `70 5E 51 F2 6E 9E F9 CF`, and the
+  proxy log had already classified it as a single incomplete/non-header stream
+  continuation. Proxy2 now tests inflated coalesced payloads with the shared
+  gameplay-stream splitter before high-level parse fallback, so a single
+  incomplete continuation/pending-fragment/unknown stream unit stays on the
+  stream-continuation path instead of masquerading as a new high-level family.
+  Patched live verification
+  `C:\nwnbridge\codex-live-coalesced-continuation-fix-20260706-164042\harness-proxy-20260706-164049`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, wrote the final hint at
+  `2026-07-06T16:44:44+10:00`, and produced no quarantine directory. The final
+  hint still shows the active quickbar issue: candidate `0x800155A9` matched
+  durable `G Q` state for quickbar slot 0/button 1/property index 255/use
+  count 1, the first client action matched the subtype-low `UseItem`, and HG
+  sent 0 full quickbar, 0 post-action `G Q`, and 0 candidate active-property
+  responses. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-coalesced-continuation-fix-20260706-164526`
+  over the 2026-07-03 Diamond autoplay capture stayed at 164 packet files, 304
+  strict allows, 0 strict quarantines, and 0 quarantine files. Active next
+  path: implement the generalized EE client/visible quickbar state handoff
+  from the durable typed `G Q` use-count row instead of adding another generated
+  action identity probe.
 - 2026-07-06 durable `G Q` quickbar use-count state: live-data gate found
   gameplay-reaching HG capture
   `C:\nwnbridge\codex-live-gq-resolution-current-20260706-102406\harness-proxy-20260706-102502`

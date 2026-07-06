@@ -833,7 +833,9 @@ fn rewrite_coalesced_record_for_ee(
     )?;
 
     server_dispatch::wrap_legacy_live_object_continuation_if_needed(&mut inflated);
-    if HighLevel::parse(&inflated).is_none() {
+    let single_incomplete_stream_unit =
+        server_dispatch::inflated_payload_is_single_incomplete_stream_unit(&inflated);
+    if single_incomplete_stream_unit || HighLevel::parse(&inflated).is_none() {
         if let Some(outcome) = rewrite_coalesced_stream_continuation_for_ee(
             record,
             offset,
@@ -855,15 +857,21 @@ fn rewrite_coalesced_record_for_ee(
             }
             return Ok(outcome);
         }
-        dump_invalid_inflated_payload_for_span(&inflated, sequence, "coalesced-no-high-level");
+        let reason = if single_incomplete_stream_unit {
+            "coalesced-incomplete-stream-unit"
+        } else {
+            "coalesced-no-high-level"
+        };
+        dump_invalid_inflated_payload_for_span(&inflated, sequence, reason);
         tracing::warn!(
             offset,
             inflated = inflated.len(),
             prefix = %hex_prefix(&inflated, 32),
             used_server_stream,
-            "server coalesced M deflated record quarantined: no high-level payload"
+            single_incomplete_stream_unit,
+            "server coalesced M deflated record quarantined: no complete high-level payload"
         );
-        let outcome = consume_coalesced_record(record, offset, "deflated-no-high-level")?;
+        let outcome = consume_coalesced_record(record, offset, reason)?;
         if used_server_stream {
             remember_completed_coalesced_stream_record(
                 state,
@@ -1287,6 +1295,19 @@ mod tests {
                 stream_epoch: 9,
                 first_sequence: 42,
             })
+        );
+    }
+
+    #[test]
+    fn p_like_zlib_stream_tail_is_not_reclassified_as_unknown_high_level() {
+        let inflated = [
+            0x70, 0x5E, 0x51, 0xF2, 0x6E, 0x9E, 0xF9, 0xCF, 0x07, 0x56, 0x82, 0xF5,
+        ];
+
+        assert!(HighLevel::parse(&inflated).is_some());
+        assert!(
+            server_dispatch::inflated_payload_is_single_incomplete_stream_unit(&inflated),
+            "P-like zlib stream tails with impossible declared lengths must stay on the continuation path"
         );
     }
 

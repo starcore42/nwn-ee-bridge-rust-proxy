@@ -971,6 +971,17 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     rewrite
 }
 
+pub(super) fn inflated_payload_is_single_incomplete_stream_unit(payload: &[u8]) -> bool {
+    let split = gameplay_stream::split_inflated_gameplay(payload);
+    !split.complete
+        && matches!(
+            split.units.as_slice(),
+            [gameplay_stream::GameplayUnit::Continuation(_)]
+                | [gameplay_stream::GameplayUnit::PendingFragment(_)]
+                | [gameplay_stream::GameplayUnit::Unknown(_)]
+        )
+}
+
 #[derive(Debug)]
 enum OwnedGameplayUnit {
     HighLevel(Vec<u8>),
