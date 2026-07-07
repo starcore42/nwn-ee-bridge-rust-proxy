@@ -33,8 +33,43 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-07 16:49 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-07 21:04 +10: the freshest
 gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
+`Area_AreaLoaded`, the post-area hold gate opening, held post-area packet
+release, and sustained `GameObjUpdate_LiveObject` traffic. It wrote
+`quickbar-item-refresh-hint.json` and `proxy.structured.log` through
+`2026-07-07T21:04:06+10:00` and produced no quarantine directory. The final
+pending hint proved the current build's per-consumer inventory/equipment
+handoff buckets on live HG traffic: 19 handoff events, 19 ready events, 0
+blocked-without-ready events, 1 ready-with-deferred-Feature-25 event, 18
+`ClientGuiInventory` events/ready events, and 1 server `Inventory` event/ready
+event. The same hint reported candidate `0x80015386` from active-object
+direct-only proof, 66 direct item proof objects, 2 Feature-25 item proof
+objects, 66 compact-emission ready objects, 2 deferred Feature-25-only
+objects, 6 Feature-25 reference records, 6 deferred item-ref mentions, 0
+materialized item-ref mentions,
+`inventory_feature25_materialization_outcome="all_item_refs_deferred"`,
+`inventory_feature25_handoff_outcome="all_item_refs_deferred_with_ready_item_state"`,
+`inventory_equipment_handoff_ready=true`, and
+`inventory_equipment_handoff_outcome="ready_item_state_with_deferred_feature25_refs"`.
+No generated client action was dispatched because the preserved active item
+quickbar use-count state still mismatched the selected candidate. The next
+implementation target is bounded bridge/writer behavior that uses the retained
+ready direct item state for inventory/equipment UI consumers while keeping
+later deferred Feature-25-only references reference-only.
+
+As of 2026-07-07 21:04 +10, proxy2 also exports per-consumer
+inventory/equipment handoff counters in pending and idle
+`quickbar-item-refresh-hint.json` plus the Diamond replay summary. Focused
+state tests prove both the idle and pending hint JSON carry the aggregate
+handoff counters and the `ClientGuiInventory`/server `Inventory` splits, and
+PowerShell replay parsing now surfaces matching summary fields.
+
+Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
+gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
@@ -68,10 +103,9 @@ strict translation, 304 allow decisions, 0 strict quarantines, and 0 quarantine
 files. That replay baseline had 1 inventory/equipment handoff event but no
 ready direct/materialized item state, so it correctly stayed blocked with
 `inventory_equipment_handoff_outcome="feature25_refs_without_ready_item_state"`.
-The next live HG harness should confirm this build still reaches gameplay and
-should check whether real `ClientGuiInventory`/`Inventory` traffic increments
-`inventory_equipment_handoff_ready_events` using the 18 ready direct objects
-seen in the latest live HG capture before adding any bridge/writer behavior.
+The 2026-07-07 21:04 live HG harness above confirmed this build still reaches
+gameplay and real `ClientGuiInventory`/`Inventory` traffic increments the
+per-consumer ready buckets against retained ready direct item state.
 
 Previous live HG proxy status, as of 2026-07-07 12:58 +10: the
 gameplay-reaching proxy harness was

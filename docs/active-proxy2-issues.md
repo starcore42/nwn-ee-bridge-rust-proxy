@@ -44,6 +44,30 @@ not as standalone workaround targets.
   The 2026-07-07 consumer slice below now owns this handoff readiness in shared
   UI state. If BNK2/no-BNK3 recurs, use the new proxy BNK diagnostics plus the
   opt-in driver BNK handler trace before unrelated packet work.
+- 2026-07-07 inventory/equipment handoff consumer buckets live confirmation:
+  live-data gate reused the fresh gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
+  (`quickbar-item-refresh-hint.json` `2026-07-07T16:49:38+10:00`, about
+  3h47m old at gate). The current-code live HG harness
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
+  `Area_AreaLoaded`, the post-area hold gate opening, held post-area packet
+  release, and sustained `GameObjUpdate_LiveObject` traffic with no quarantine
+  directory. Its final pending `quickbar-item-refresh-hint.json` at
+  `2026-07-07T21:04:06+10:00` proved the new consumer buckets on live HG
+  traffic: 19 handoff events, 19 ready events, 0 blocked-without-ready events,
+  1 ready-with-deferred-Feature-25 event, 18 `ClientGuiInventory`
+  events/ready events, and 1 server `Inventory` event/ready event. The same
+  hint reported candidate `0x80015386` from active-object/direct-only proof,
+  66 direct item proof objects, 2 Feature-25 item proof objects, 66
+  compact-emission ready objects, 2 deferred Feature-25-only objects, 6
+  deferred Feature-25 item-ref mentions, and
+  `inventory_equipment_handoff_outcome="ready_item_state_with_deferred_feature25_refs"`.
+  Proxy2 now exports the per-consumer handoff counters in pending and idle
+  `quickbar-item-refresh-hint.json` plus the Diamond replay summary. Active
+  next path: implement bounded bridge/writer behavior from the retained ready
+  direct item state for `ClientGuiInventory`/server `Inventory` consumers while
+  keeping later deferred Feature-25-only refs reference-only.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
@@ -56,8 +80,9 @@ not as standalone workaround targets.
   evidence. Proxy2 now observes verified `Inventory` and `ClientGuiInventory`
   events as inventory/equipment handoff consumers, consumes the best retained
   direct/materialized item context without materializing deferred
-  Feature-25-only refs, and exports per-run counters plus the last handoff
-  snapshot in idle `quickbar-item-refresh-hint.json` and replay summaries.
+  Feature-25-only refs, and exports aggregate/per-consumer counters in pending
+  and idle `quickbar-item-refresh-hint.json` plus replay summaries. Idle hints
+  also retain the last handoff snapshot.
   Focused state/reducer tests prove ready direct item state is consumed while
   deferred Feature-25-only refs remain reference-only. Bounded strict replay
   `C:\nwnbridge\codex-proxy2-replay-inventory-equipment-handoff-consumer-20260707-185513`
@@ -66,12 +91,11 @@ not as standalone workaround targets.
   baseline had 1 handoff event and correctly classified it as blocked without
   ready state:
   `inventory_equipment_handoff_outcome="feature25_refs_without_ready_item_state"`.
-  Active next path: run a fresh live HG harness on this build and confirm real
-  `ClientGuiInventory`/`Inventory` events increment
-  `inventory_equipment_handoff_ready_events` against the 18 ready direct
-  objects seen in the latest live HG capture; if visible inventory/equipment
-  still diverges, implement the bounded bridge/writer behavior from those
-  consumer snapshots.
+  The 2026-07-07 21:04 live HG harness above confirmed real
+  `ClientGuiInventory`/`Inventory` events increment the ready buckets against
+  retained ready direct item state. If visible inventory/equipment still
+  diverges, implement the bounded bridge/writer behavior from those consumer
+  snapshots.
 - 2026-07-07 inventory/equipment handoff readiness classifier: live-data gate
   reused the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`

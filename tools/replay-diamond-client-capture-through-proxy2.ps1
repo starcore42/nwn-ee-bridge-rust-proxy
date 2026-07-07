@@ -1428,6 +1428,12 @@ try {
     $quickbarHintInventoryEquipmentHandoffReadyEvents = 0
     $quickbarHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents = 0
     $quickbarHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events = 0
+    $quickbarHintInventoryEquipmentHandoffServerInventoryEvents = 0
+    $quickbarHintInventoryEquipmentHandoffServerInventoryReadyEvents = 0
+    $quickbarHintInventoryEquipmentHandoffServerInventoryBlockedWithoutReadyStateEvents = 0
+    $quickbarHintInventoryEquipmentHandoffClientGuiInventoryEvents = 0
+    $quickbarHintInventoryEquipmentHandoffClientGuiInventoryReadyEvents = 0
+    $quickbarHintInventoryEquipmentHandoffClientGuiInventoryBlockedWithoutReadyStateEvents = 0
     $quickbarHintLastInventoryEquipmentHandoffKnown = $false
     $quickbarHintLastInventoryEquipmentHandoffConsumer = ''
     $quickbarHintLastInventoryEquipmentHandoffEventIndex = 0
@@ -1653,6 +1659,12 @@ try {
         $quickbarHintInventoryEquipmentHandoffReadyEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_ready_events'
         $quickbarHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_blocked_without_ready_state_events'
         $quickbarHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events = & $getQuickbarHintInt64 'inventory_equipment_handoff_ready_with_deferred_feature25_events'
+        $quickbarHintInventoryEquipmentHandoffServerInventoryEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_server_inventory_events'
+        $quickbarHintInventoryEquipmentHandoffServerInventoryReadyEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_server_inventory_ready_events'
+        $quickbarHintInventoryEquipmentHandoffServerInventoryBlockedWithoutReadyStateEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events'
+        $quickbarHintInventoryEquipmentHandoffClientGuiInventoryEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_client_gui_inventory_events'
+        $quickbarHintInventoryEquipmentHandoffClientGuiInventoryReadyEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_client_gui_inventory_ready_events'
+        $quickbarHintInventoryEquipmentHandoffClientGuiInventoryBlockedWithoutReadyStateEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events'
         $lastInventoryEquipmentHandoffKnownProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_known']
         if ($null -ne $lastInventoryEquipmentHandoffKnownProp -and $null -ne $lastInventoryEquipmentHandoffKnownProp.Value) {
             $quickbarHintLastInventoryEquipmentHandoffKnown = [bool]$lastInventoryEquipmentHandoffKnownProp.Value
@@ -1935,6 +1947,12 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentHandoffReadyEvents = $quickbarHintInventoryEquipmentHandoffReadyEvents
         QuickbarItemRefreshHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents = $quickbarHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents
         QuickbarItemRefreshHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events = $quickbarHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events
+        QuickbarItemRefreshHintInventoryEquipmentHandoffServerInventoryEvents = $quickbarHintInventoryEquipmentHandoffServerInventoryEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffServerInventoryReadyEvents = $quickbarHintInventoryEquipmentHandoffServerInventoryReadyEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffServerInventoryBlockedWithoutReadyStateEvents = $quickbarHintInventoryEquipmentHandoffServerInventoryBlockedWithoutReadyStateEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffClientGuiInventoryEvents = $quickbarHintInventoryEquipmentHandoffClientGuiInventoryEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffClientGuiInventoryReadyEvents = $quickbarHintInventoryEquipmentHandoffClientGuiInventoryReadyEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffClientGuiInventoryBlockedWithoutReadyStateEvents = $quickbarHintInventoryEquipmentHandoffClientGuiInventoryBlockedWithoutReadyStateEvents
         QuickbarItemRefreshHintLastInventoryEquipmentHandoffKnown = $quickbarHintLastInventoryEquipmentHandoffKnown
         QuickbarItemRefreshHintLastInventoryEquipmentHandoffConsumer = $quickbarHintLastInventoryEquipmentHandoffConsumer
         QuickbarItemRefreshHintLastInventoryEquipmentHandoffEventIndex = $quickbarHintLastInventoryEquipmentHandoffEventIndex

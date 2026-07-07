@@ -1539,6 +1539,17 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
     pub(crate) compact_item_emission_shared_proof_objects: usize,
     pub(crate) item_context: InventoryItemContextSummary,
+    pub(crate) inventory_equipment_handoff_events: u64,
+    pub(crate) inventory_equipment_handoff_ready_events: u64,
+    pub(crate) inventory_equipment_handoff_blocked_without_ready_state_events: u64,
+    pub(crate) inventory_equipment_handoff_ready_with_deferred_feature25_events: u64,
+    pub(crate) inventory_equipment_handoff_server_inventory_events: u64,
+    pub(crate) inventory_equipment_handoff_server_inventory_ready_events: u64,
+    pub(crate) inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events: u64,
+    pub(crate) inventory_equipment_handoff_client_gui_inventory_events: u64,
+    pub(crate) inventory_equipment_handoff_client_gui_inventory_ready_events: u64,
+    pub(crate) inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events:
+        u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2217,6 +2228,16 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"inventory_feature25_handoff_outcome\": \"{}\",\n",
                 "  \"inventory_equipment_handoff_ready\": {},\n",
                 "  \"inventory_equipment_handoff_outcome\": \"{}\",\n",
+                "  \"inventory_equipment_handoff_events\": {},\n",
+                "  \"inventory_equipment_handoff_ready_events\": {},\n",
+                "  \"inventory_equipment_handoff_blocked_without_ready_state_events\": {},\n",
+                "  \"inventory_equipment_handoff_ready_with_deferred_feature25_events\": {},\n",
+                "  \"inventory_equipment_handoff_server_inventory_events\": {},\n",
+                "  \"inventory_equipment_handoff_server_inventory_ready_events\": {},\n",
+                "  \"inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events\": {},\n",
+                "  \"inventory_equipment_handoff_client_gui_inventory_events\": {},\n",
+                "  \"inventory_equipment_handoff_client_gui_inventory_ready_events\": {},\n",
+                "  \"inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events\": {},\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -2535,6 +2556,16 @@ impl QuickbarItemRefreshHarnessHint {
             self.item_context
                 .inventory_equipment_handoff_outcome()
                 .as_str(),
+            self.inventory_equipment_handoff_events,
+            self.inventory_equipment_handoff_ready_events,
+            self.inventory_equipment_handoff_blocked_without_ready_state_events,
+            self.inventory_equipment_handoff_ready_with_deferred_feature25_events,
+            self.inventory_equipment_handoff_server_inventory_events,
+            self.inventory_equipment_handoff_server_inventory_ready_events,
+            self.inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events,
+            self.inventory_equipment_handoff_client_gui_inventory_events,
+            self.inventory_equipment_handoff_client_gui_inventory_ready_events,
+            self.inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events,
             self.item_context.inventory_feature25_first_item_refs,
             self.item_context
                 .inventory_feature25_first_item_ref_mentions,
@@ -4804,6 +4835,13 @@ pub(crate) struct UiState {
     pub(crate) inventory_equipment_handoff_ready_events: u64,
     pub(crate) inventory_equipment_handoff_blocked_without_ready_state_events: u64,
     pub(crate) inventory_equipment_handoff_ready_with_deferred_feature25_events: u64,
+    pub(crate) inventory_equipment_handoff_server_inventory_events: u64,
+    pub(crate) inventory_equipment_handoff_server_inventory_ready_events: u64,
+    pub(crate) inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events: u64,
+    pub(crate) inventory_equipment_handoff_client_gui_inventory_events: u64,
+    pub(crate) inventory_equipment_handoff_client_gui_inventory_ready_events: u64,
+    pub(crate) inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events:
+        u64,
     pub(crate) last_inventory_equipment_handoff: Option<InventoryEquipmentHandoffSnapshot>,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
     pub(crate) quickbar_stream_probe_summaries: u64,
@@ -4891,17 +4929,56 @@ impl UiState {
     ) -> bool {
         self.inventory_equipment_handoff_events =
             self.inventory_equipment_handoff_events.saturating_add(1);
+        match consumer {
+            InventoryEquipmentHandoffConsumer::ServerInventory => {
+                self.inventory_equipment_handoff_server_inventory_events = self
+                    .inventory_equipment_handoff_server_inventory_events
+                    .saturating_add(1);
+            }
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory => {
+                self.inventory_equipment_handoff_client_gui_inventory_events = self
+                    .inventory_equipment_handoff_client_gui_inventory_events
+                    .saturating_add(1);
+            }
+            InventoryEquipmentHandoffConsumer::Unknown => {}
+        }
 
         if !item_context.inventory_equipment_handoff_ready() {
             self.inventory_equipment_handoff_blocked_without_ready_state_events = self
                 .inventory_equipment_handoff_blocked_without_ready_state_events
                 .saturating_add(1);
+            match consumer {
+                InventoryEquipmentHandoffConsumer::ServerInventory => {
+                    self.inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events = self
+                        .inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events
+                        .saturating_add(1);
+                }
+                InventoryEquipmentHandoffConsumer::ClientGuiInventory => {
+                    self.inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events = self
+                        .inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events
+                        .saturating_add(1);
+                }
+                InventoryEquipmentHandoffConsumer::Unknown => {}
+            }
             return false;
         }
 
         self.inventory_equipment_handoff_ready_events = self
             .inventory_equipment_handoff_ready_events
             .saturating_add(1);
+        match consumer {
+            InventoryEquipmentHandoffConsumer::ServerInventory => {
+                self.inventory_equipment_handoff_server_inventory_ready_events = self
+                    .inventory_equipment_handoff_server_inventory_ready_events
+                    .saturating_add(1);
+            }
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory => {
+                self.inventory_equipment_handoff_client_gui_inventory_ready_events = self
+                    .inventory_equipment_handoff_client_gui_inventory_ready_events
+                    .saturating_add(1);
+            }
+            InventoryEquipmentHandoffConsumer::Unknown => {}
+        }
         if item_context.has_deferred_feature25_refs() {
             self.inventory_equipment_handoff_ready_with_deferred_feature25_events = self
                 .inventory_equipment_handoff_ready_with_deferred_feature25_events
@@ -5635,6 +5712,12 @@ impl UiState {
                 "  \"inventory_equipment_handoff_ready_events\": {},\n",
                 "  \"inventory_equipment_handoff_blocked_without_ready_state_events\": {},\n",
                 "  \"inventory_equipment_handoff_ready_with_deferred_feature25_events\": {},\n",
+                "  \"inventory_equipment_handoff_server_inventory_events\": {},\n",
+                "  \"inventory_equipment_handoff_server_inventory_ready_events\": {},\n",
+                "  \"inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events\": {},\n",
+                "  \"inventory_equipment_handoff_client_gui_inventory_events\": {},\n",
+                "  \"inventory_equipment_handoff_client_gui_inventory_ready_events\": {},\n",
+                "  \"inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events\": {},\n",
                 "  \"last_inventory_equipment_handoff_known\": {},\n",
                 "  \"last_inventory_equipment_handoff_consumer\": \"{}\",\n",
                 "  \"last_inventory_equipment_handoff_event_index\": {},\n",
@@ -5822,6 +5905,12 @@ impl UiState {
             self.inventory_equipment_handoff_ready_events,
             self.inventory_equipment_handoff_blocked_without_ready_state_events,
             self.inventory_equipment_handoff_ready_with_deferred_feature25_events,
+            self.inventory_equipment_handoff_server_inventory_events,
+            self.inventory_equipment_handoff_server_inventory_ready_events,
+            self.inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events,
+            self.inventory_equipment_handoff_client_gui_inventory_events,
+            self.inventory_equipment_handoff_client_gui_inventory_ready_events,
+            self.inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events,
             last_inventory_equipment_handoff_known,
             last_inventory_equipment_handoff_consumer,
             last_inventory_equipment_handoff_event_index,
@@ -6001,6 +6090,24 @@ impl UiState {
                 .item_context
                 .compact_item_emission_shared_proof_objects,
             item_context: summary.item_context,
+            inventory_equipment_handoff_events: self.inventory_equipment_handoff_events,
+            inventory_equipment_handoff_ready_events: self.inventory_equipment_handoff_ready_events,
+            inventory_equipment_handoff_blocked_without_ready_state_events: self
+                .inventory_equipment_handoff_blocked_without_ready_state_events,
+            inventory_equipment_handoff_ready_with_deferred_feature25_events: self
+                .inventory_equipment_handoff_ready_with_deferred_feature25_events,
+            inventory_equipment_handoff_server_inventory_events: self
+                .inventory_equipment_handoff_server_inventory_events,
+            inventory_equipment_handoff_server_inventory_ready_events: self
+                .inventory_equipment_handoff_server_inventory_ready_events,
+            inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events: self
+                .inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events,
+            inventory_equipment_handoff_client_gui_inventory_events: self
+                .inventory_equipment_handoff_client_gui_inventory_events,
+            inventory_equipment_handoff_client_gui_inventory_ready_events: self
+                .inventory_equipment_handoff_client_gui_inventory_ready_events,
+            inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events: self
+                .inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events,
         })
     }
 
@@ -8525,6 +8632,27 @@ mod tests {
             ui.inventory_equipment_handoff_ready_with_deferred_feature25_events, 1,
             "ready direct item state is consumed while deferred Feature-25 refs remain reference-only"
         );
+        assert_eq!(
+            ui.inventory_equipment_handoff_client_gui_inventory_events,
+            1
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_client_gui_inventory_ready_events,
+            1
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events,
+            0
+        );
+        assert_eq!(ui.inventory_equipment_handoff_server_inventory_events, 1);
+        assert_eq!(
+            ui.inventory_equipment_handoff_server_inventory_ready_events,
+            0
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events,
+            1
+        );
         let snapshot = ui
             .last_inventory_equipment_handoff
             .expect("ready handoff snapshot should be retained");
@@ -8546,6 +8674,18 @@ mod tests {
                 "\"inventory_equipment_handoff_ready_with_deferred_feature25_events\": 1"
             )
         );
+        assert!(json.contains("\"inventory_equipment_handoff_client_gui_inventory_events\": 1"));
+        assert!(
+            json.contains("\"inventory_equipment_handoff_client_gui_inventory_ready_events\": 1")
+        );
+        assert!(json.contains(
+            "\"inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events\": 0"
+        ));
+        assert!(json.contains("\"inventory_equipment_handoff_server_inventory_events\": 1"));
+        assert!(json.contains("\"inventory_equipment_handoff_server_inventory_ready_events\": 0"));
+        assert!(json.contains(
+            "\"inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events\": 1"
+        ));
         assert!(json.contains("\"last_inventory_equipment_handoff_known\": true"));
         assert!(
             json.contains(
@@ -8867,6 +9007,14 @@ mod tests {
                 use_count: 4,
             },
         ]);
+        assert!(ui.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            item_context
+        ));
+        assert!(ui.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ServerInventory,
+            item_context
+        ));
 
         assert_eq!(
             ui.quickbar_item_refresh_harness_hint(),
@@ -8901,6 +9049,37 @@ mod tests {
         assert_eq!(
             hint.first_preserved_active_item_use_count_state,
             Some(pre_action_use_count_row)
+        );
+        assert_eq!(hint.inventory_equipment_handoff_events, 2);
+        assert_eq!(hint.inventory_equipment_handoff_ready_events, 2);
+        assert_eq!(
+            hint.inventory_equipment_handoff_blocked_without_ready_state_events,
+            0
+        );
+        assert_eq!(
+            hint.inventory_equipment_handoff_ready_with_deferred_feature25_events,
+            2
+        );
+        assert_eq!(
+            hint.inventory_equipment_handoff_client_gui_inventory_events,
+            1
+        );
+        assert_eq!(
+            hint.inventory_equipment_handoff_client_gui_inventory_ready_events,
+            1
+        );
+        assert_eq!(
+            hint.inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events,
+            0
+        );
+        assert_eq!(hint.inventory_equipment_handoff_server_inventory_events, 1);
+        assert_eq!(
+            hint.inventory_equipment_handoff_server_inventory_ready_events,
+            1
+        );
+        assert_eq!(
+            hint.inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events,
+            0
         );
 
         let json = hint.to_json();
@@ -8978,6 +9157,28 @@ mod tests {
         assert!(json.contains("\"inventory_equipment_handoff_ready\": true"));
         assert!(json.contains(
             "\"inventory_equipment_handoff_outcome\": \"ready_item_state_with_deferred_feature25_refs\""
+        ));
+        assert!(json.contains("\"inventory_equipment_handoff_events\": 2"));
+        assert!(json.contains("\"inventory_equipment_handoff_ready_events\": 2"));
+        assert!(
+            json.contains("\"inventory_equipment_handoff_blocked_without_ready_state_events\": 0")
+        );
+        assert!(
+            json.contains(
+                "\"inventory_equipment_handoff_ready_with_deferred_feature25_events\": 2"
+            )
+        );
+        assert!(json.contains("\"inventory_equipment_handoff_client_gui_inventory_events\": 1"));
+        assert!(
+            json.contains("\"inventory_equipment_handoff_client_gui_inventory_ready_events\": 1")
+        );
+        assert!(json.contains(
+            "\"inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events\": 0"
+        ));
+        assert!(json.contains("\"inventory_equipment_handoff_server_inventory_events\": 1"));
+        assert!(json.contains("\"inventory_equipment_handoff_server_inventory_ready_events\": 1"));
+        assert!(json.contains(
+            "\"inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events\": 0"
         ));
         assert!(json.contains("\"inventory_feature25_first_item_refs\": 1"));
         assert!(json.contains("\"inventory_feature25_first_item_ref_mentions\": 3"));
