@@ -11,7 +11,7 @@ use crate::translate::{VerifiedFamily, inventory, semantic::InventoryEquipmentHa
 
 use super::{
     sequence::{SequenceShift, shift_sequence_for_peer, trim_sequence_shifts},
-    state::SessionState,
+    state::{InventoryEquipmentBridgeQueuedOutput, SessionState},
     synthetic_area::{self, PendingServerPacket, PendingServerPacketPlacement},
 };
 
@@ -41,6 +41,10 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     }
 
     if update.consumer != InventoryEquipmentHandoffConsumer::ServerInventory {
+        state.inventory_equipment.deferred_client_gui_updates = state
+            .inventory_equipment
+            .deferred_client_gui_updates
+            .saturating_add(1);
         tracing::debug!(
             update_index = update.update_index,
             consumer = update.consumer.as_str(),
@@ -50,6 +54,10 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     }
 
     let Some(claim) = update.server_inventory_claim else {
+        state.inventory_equipment.deferred_missing_claim_updates = state
+            .inventory_equipment
+            .deferred_missing_claim_updates
+            .saturating_add(1);
         tracing::debug!(
             update_index = update.update_index,
             "inventory/equipment bridge output deferred: drained update lacks server Inventory claim"
@@ -58,6 +66,10 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     };
 
     if claim.object_id != update.candidate.object_id {
+        state.inventory_equipment.blocked_candidate_mismatch_updates = state
+            .inventory_equipment
+            .blocked_candidate_mismatch_updates
+            .saturating_add(1);
         tracing::warn!(
             update_index = update.update_index,
             claim_object_id = %format_args!("0x{:08X}", claim.object_id),
@@ -99,6 +111,19 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
         });
     state.inventory_equipment.last_queued_state_update_index = Some(update.update_index);
+    state.inventory_equipment.queued_outputs =
+        state.inventory_equipment.queued_outputs.saturating_add(1);
+    state.inventory_equipment.last_queued_output = Some(InventoryEquipmentBridgeQueuedOutput {
+        update_index: update.update_index,
+        emission_index: update.emission_index,
+        event_index: update.event_index,
+        minor: claim.minor,
+        object_id: claim.object_id,
+        result: claim.result,
+        equip_slot: claim.equip_slot,
+        trigger_sequence,
+        synthetic_sequence,
+    });
 
     tracing::info!(
         update_index = update.update_index,
@@ -166,6 +191,21 @@ mod tests {
             state.inventory_equipment.last_queued_state_update_index,
             Some(1)
         );
+        assert_eq!(state.inventory_equipment.queued_outputs, 1);
+        assert_eq!(
+            state.inventory_equipment.last_queued_output,
+            Some(InventoryEquipmentBridgeQueuedOutput {
+                update_index: 1,
+                emission_index: 1,
+                event_index: 1,
+                minor: 0x01,
+                object_id: 0x8000_1234,
+                result: true,
+                equip_slot: 4,
+                trigger_sequence: 10,
+                synthetic_sequence: 11,
+            })
+        );
         assert_eq!(
             state.synthetic_area.pending_server_to_client_packets.len(),
             1
@@ -209,5 +249,7 @@ mod tests {
                 .is_empty()
         );
         assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(state.inventory_equipment.deferred_client_gui_updates, 1);
+        assert_eq!(state.inventory_equipment.queued_outputs, 0);
     }
 }

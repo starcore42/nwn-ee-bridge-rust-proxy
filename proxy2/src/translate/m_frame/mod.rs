@@ -595,6 +595,8 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         Some(hint) => hint.to_json(),
         None => state.semantic.quickbar_item_refresh_harness_idle_json(),
     };
+    let body =
+        augment_quickbar_item_refresh_hint_with_bridge_output(body, &state.inventory_equipment);
 
     if state.quickbar_item_refresh_hint_last_body.as_deref() == Some(body.as_str()) {
         return;
@@ -638,6 +640,56 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         no_hint_reason,
         "updated quickbar item-refresh harness hint"
     );
+}
+
+fn augment_quickbar_item_refresh_hint_with_bridge_output(
+    body: String,
+    bridge: &state::InventoryEquipmentBridgeState,
+) -> String {
+    let last = bridge.last_queued_output.unwrap_or_default();
+    let last_known = bridge.last_queued_output.is_some();
+    let fields = format!(
+        concat!(
+            ",\n",
+            "  \"inventory_equipment_bridge_output_queued_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_deferred_client_gui_updates\": {},\n",
+            "  \"inventory_equipment_bridge_output_deferred_missing_claim_updates\": {},\n",
+            "  \"inventory_equipment_bridge_output_blocked_candidate_mismatch_updates\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_emission_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_event_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_minor\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_queued_result\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_equip_slot\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_trigger_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_synthetic_sequence\": {}\n"
+        ),
+        bridge.queued_outputs,
+        bridge.deferred_client_gui_updates,
+        bridge.deferred_missing_claim_updates,
+        bridge.blocked_candidate_mismatch_updates,
+        last_known,
+        last.update_index,
+        last.emission_index,
+        last.event_index,
+        last.minor,
+        last.object_id,
+        last.object_id,
+        last.result,
+        last.equip_slot,
+        last.trigger_sequence,
+        last.synthetic_sequence
+    );
+    if let Some(prefix) = body.strip_suffix("\n}\n") {
+        format!("{prefix}{fields}}}\n")
+    } else if let Some(prefix) = body.strip_suffix('}') {
+        format!("{prefix}{fields}}}")
+    } else {
+        body
+    }
 }
 
 fn observe_quickbar_stream_probe_from_rewrite(
@@ -1226,6 +1278,46 @@ mod tests {
         packet[7] = 0x10;
         assert!(encode_legacy_m_crc(&mut packet));
         packet
+    }
+
+    #[test]
+    fn quickbar_hint_augmentation_serializes_inventory_bridge_output_queue_state() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.queued_outputs = 1;
+        bridge.deferred_client_gui_updates = 2;
+        bridge.deferred_missing_claim_updates = 3;
+        bridge.blocked_candidate_mismatch_updates = 4;
+        bridge.last_queued_output = Some(state::InventoryEquipmentBridgeQueuedOutput {
+            update_index: 5,
+            emission_index: 6,
+            event_index: 7,
+            minor: 1,
+            object_id: 0x8000_1234,
+            result: true,
+            equip_slot: 0x0002_0000,
+            trigger_sequence: 10,
+            synthetic_sequence: 11,
+        });
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.ends_with("\n}\n"));
+        assert!(body.contains("\"inventory_equipment_bridge_output_queued_packets\": 1"));
+        assert!(
+            body.contains("\"inventory_equipment_bridge_output_deferred_client_gui_updates\": 2")
+        );
+        assert!(body.contains("\"inventory_equipment_bridge_output_last_queued_known\": true"));
+        assert!(body.contains("\"inventory_equipment_bridge_output_last_queued_update_index\": 5"));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_queued_object_id_hex\": \"0x80001234\""
+        ));
+        assert!(body.contains("\"inventory_equipment_bridge_output_last_queued_result\": true"));
+        assert!(
+            body.contains("\"inventory_equipment_bridge_output_last_queued_equip_slot\": 131072")
+        );
     }
 
     #[test]

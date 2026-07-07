@@ -163,6 +163,27 @@ not as standalone workaround targets.
   whether real ready server-Inventory traffic produces the queued exact
   `Inventory` output and whether remaining visible equipment divergence needs
   a separate ClientGui inventory writer.
+- 2026-07-08 inventory/equipment bridge output observability: live-data gate
+  reused the current gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`proxy.stdout.log` `2026-07-07T21:05:54+10:00`, about 9h36m old at gate).
+  It reached gameplay and had no quarantine directory, so the strongest
+  reference for this instrumentation slice was the deterministic Diamond
+  autoplay replay. Proxy2 now records inventory/equipment bridge output queue
+  counters, safe deferral buckets, and last queued synthetic `Inventory`
+  metadata in the m-frame bridge state; `quickbar-item-refresh-hint.json` and
+  the replay summary export those fields. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-summary-20260708-0648`
+  processed 164 Diamond autoplay packet files with strict translation, 303
+  allow decisions, 0 strict quarantines, 0 quarantine files, and 0 live-object
+  terminal residuals. The Feature-25-only baseline still reported 1 blocked
+  server-Inventory handoff, 0 ready handoffs, 0 bridge state updates, and
+  `inventory_equipment_bridge_output_queued_packets=0`. Active next path: run a
+  fresh live HG confirmation when the 2026-07-07 21:05 capture becomes stale
+  and verify whether real ready server-Inventory traffic increments
+  `inventory_equipment_bridge_output_queued_packets`; if not, use the new
+  deferral/mismatch buckets to choose between server-Inventory claim repair and
+  a separately proven ClientGui inventory writer.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

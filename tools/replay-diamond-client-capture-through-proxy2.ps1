@@ -1473,6 +1473,20 @@ try {
     $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateCandidateSource = ''
     $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects = 0
     $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects = 0
+    $quickbarHintInventoryEquipmentBridgeOutputQueuedPackets = 0
+    $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = 0
+    $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedKnown = $false
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedUpdateIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEmissionIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEventIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedMinor = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedObjectId = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedResult = $false
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedSyntheticSequence = 0
     $quickbarHintCompactItemEmissionReadyObjects = 0
     $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects = 0
     $quickbarHintStreamProbeCompactItemEmissionReadyObjects = 0
@@ -1793,6 +1807,26 @@ try {
         }
         $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_last_state_update_ready_objects'
         $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_last_state_update_deferred_feature25_only_objects'
+        $quickbarHintInventoryEquipmentBridgeOutputQueuedPackets = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_queued_packets'
+        $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_client_gui_updates'
+        $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_missing_claim_updates'
+        $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_blocked_candidate_mismatch_updates'
+        $inventoryEquipmentBridgeOutputLastQueuedKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_queued_known']
+        if ($null -ne $inventoryEquipmentBridgeOutputLastQueuedKnownProp -and $null -ne $inventoryEquipmentBridgeOutputLastQueuedKnownProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputLastQueuedKnown = [bool]$inventoryEquipmentBridgeOutputLastQueuedKnownProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_update_index'
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEmissionIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_emission_index'
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEventIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_event_index'
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedMinor = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_minor'
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedObjectId = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_object_id'
+        $inventoryEquipmentBridgeOutputLastQueuedResultProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_queued_result']
+        if ($null -ne $inventoryEquipmentBridgeOutputLastQueuedResultProp -and $null -ne $inventoryEquipmentBridgeOutputLastQueuedResultProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputLastQueuedResult = [bool]$inventoryEquipmentBridgeOutputLastQueuedResultProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_equip_slot'
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_trigger_sequence'
+        $quickbarHintInventoryEquipmentBridgeOutputLastQueuedSyntheticSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_synthetic_sequence'
         $quickbarHintInventoryFeature25FirstItemRefs = & $getQuickbarHintInt64 'inventory_feature25_first_item_refs'
         $quickbarHintInventoryFeature25FirstItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_item_ref_mentions'
         $quickbarHintInventoryFeature25FirstMaterializedItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_materialized_item_ref_mentions'
@@ -2092,6 +2126,20 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffLastStateUpdateCandidateSource = $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateCandidateSource
         QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects = $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects
         QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects = $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputQueuedPackets = $quickbarHintInventoryEquipmentBridgeOutputQueuedPackets
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedKnown = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedKnown
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedUpdateIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedEmissionIndex = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEmissionIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedEventIndex = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEventIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedMinor = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedMinor
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedObjectId
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedResult = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedResult
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedSyntheticSequence = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedSyntheticSequence
         QuickbarItemRefreshHintCompactItemEmissionReadyObjects = $quickbarHintCompactItemEmissionReadyObjects
         QuickbarItemRefreshHintCompactItemEmissionDeferredFeature25OnlyObjects = $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintStreamProbeCompactItemEmissionReadyObjects = $quickbarHintStreamProbeCompactItemEmissionReadyObjects

@@ -130,6 +130,20 @@ whether real ready server-Inventory traffic queues the exact `Inventory` output
 and whether any remaining visible equipment divergence belongs to a separate
 ClientGui inventory writer.
 
+As of 2026-07-08 06:56 +10, proxy2 also exports inventory/equipment bridge
+output queue counters in `quickbar-item-refresh-hint.json` and the Diamond
+replay summary. The fields include queued packet count, client-GUI deferrals,
+missing-claim deferrals, candidate/claim mismatch blocks, and the last queued
+synthetic `Inventory` metadata. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-summary-20260708-0648`
+over the same 164 Diamond autoplay packets reported 303 strict allow decisions,
+0 strict quarantines, 0 quarantine files, 0 live-object terminal residuals, 1
+blocked server-inventory handoff, 0 ready handoffs, 0 bridge state updates, and
+`inventory_equipment_bridge_output_queued_packets=0`. The next live HG run
+should inspect this field directly; a zero value with ready server-Inventory
+handoffs means use the new deferral/mismatch buckets before implementing any
+ClientGui inventory writer.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

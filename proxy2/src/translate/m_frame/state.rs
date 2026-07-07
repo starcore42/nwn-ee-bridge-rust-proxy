@@ -79,9 +79,27 @@ pub(super) struct LoginWaypointState {
     pub(super) synthetic_empty_response_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct InventoryEquipmentBridgeQueuedOutput {
+    pub(super) update_index: u64,
+    pub(super) emission_index: u64,
+    pub(super) event_index: u64,
+    pub(super) minor: u8,
+    pub(super) object_id: u32,
+    pub(super) result: bool,
+    pub(super) equip_slot: u32,
+    pub(super) trigger_sequence: u16,
+    pub(super) synthetic_sequence: u16,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_queued_state_update_index: Option<u64>,
+    pub(super) queued_outputs: u64,
+    pub(super) deferred_client_gui_updates: u64,
+    pub(super) deferred_missing_claim_updates: u64,
+    pub(super) blocked_candidate_mismatch_updates: u64,
+    pub(super) last_queued_output: Option<InventoryEquipmentBridgeQueuedOutput>,
 }
 
 #[derive(Debug)]
