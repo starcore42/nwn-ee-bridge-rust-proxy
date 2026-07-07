@@ -91,6 +91,27 @@ not as standalone workaround targets.
   implement the bounded writer/bridge consumer that uses
   `emit_ready_item_state` live snapshots for `ClientGuiInventory`/server
   `Inventory` without materializing deferred Feature-25 references.
+- 2026-07-08 inventory/equipment bridge handoff emission: live-data gate reused
+  the same current gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`quickbar-item-refresh-hint.json` and `proxy.structured.log`
+  `2026-07-07T21:05:54+10:00`, about 3h34m old at gate). It reached
+  gameplay through module load, area load, held-packet release, and sustained
+  live-object traffic with no quarantine directory, so no fresh live harness
+  run was required. Proxy2 now records a one-shot
+  `InventoryEquipmentHandoffBridgeEmission` whenever a verified
+  `Inventory`/`ClientGuiInventory` handoff plan is `emit_ready_item_state`
+  with a direct/materialized candidate; blocked deferred Feature-25-only refs
+  remain reference-only and do not emit. Pending/idle
+  `quickbar-item-refresh-hint.json`, reducer diagnostics, and the Diamond
+  replay summary now expose emission counts and the last emitted consumer,
+  event index, candidate object, and candidate source. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-emission-20260708-0055`
+  processed 164 Diamond autoplay packets with strict translation, no quarantine
+  directory, 1 blocked server-inventory handoff, and 0 bridge emissions, proving
+  the Feature-25-only baseline still does not synthesize item state. Active
+  next path: implement the writer/bridge consumer that drains these ready
+  emissions into the EE-facing inventory/equipment state update.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

@@ -85,6 +85,19 @@ next production target is the bounded writer/bridge consumer that uses
 `emit_ready_item_state` live snapshots for `ClientGuiInventory`/server
 `Inventory` while keeping later deferred Feature-25-only refs reference-only.
 
+As of 2026-07-08 00:55 +10, proxy2 also records one-shot
+`InventoryEquipmentHandoffBridgeEmission` records from ready bridge plans.
+Pending/idle `quickbar-item-refresh-hint.json`, reducer diagnostics, and the
+Diamond replay summary now expose the emission count plus the last emitted
+consumer, event index, candidate object, and candidate source. Bounded strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-emission-20260708-0055`
+over the same 164 Diamond autoplay packets kept strict translation enabled,
+produced no quarantine directory, saw 1 blocked server-inventory handoff, and
+reported 0 bridge emissions because the baseline evidence was Feature-25-only.
+The next production target remains the writer/bridge consumer, now consuming
+these emitted ready item-state records rather than re-deriving handoff state.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

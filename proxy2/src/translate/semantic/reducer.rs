@@ -801,9 +801,17 @@ fn apply_event(
             let consumed = state
                 .ui
                 .observe_inventory_equipment_handoff(consumer, item_context);
+            let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
+            let last_bridge_emission = state.ui.last_inventory_equipment_bridge_handoff_emission;
             tracing::debug!(
                 consumer = consumer.as_str(),
                 consumed,
+                inventory_equipment_bridge_handoff_ready = bridge_plan.ready_to_emit(),
+                inventory_equipment_bridge_handoff_emissions =
+                    state.ui.inventory_equipment_bridge_handoff_emissions,
+                inventory_equipment_bridge_handoff_last_emitted_event_index = last_bridge_emission
+                    .map(|emission| emission.plan.event_index)
+                    .unwrap_or(0),
                 inventory_equipment_handoff_ready =
                     item_context.inventory_equipment_handoff_ready(),
                 inventory_equipment_handoff_outcome =
