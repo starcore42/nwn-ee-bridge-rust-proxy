@@ -51,6 +51,26 @@ objects, 2 deferred Feature-25-only objects, 17 Feature-25 reference records,
 `inventory_feature25_materialization_outcome="all_item_refs_deferred"`, and
 `inventory_feature25_handoff_outcome="all_item_refs_deferred_with_ready_item_state"`.
 
+As of 2026-07-07 14:56 +10, proxy2 also reports
+`inventory_equipment_handoff_ready` and
+`inventory_equipment_handoff_outcome` in semantic traces, pending/idle
+`quickbar-item-refresh-hint.json`, and the Diamond replay summary. These fields
+generalize the Feature-25 handoff classifier for the inventory/equipment UI:
+direct or materialized compact item state is ready for handoff even when
+Feature-25 item refs are all deferred, while Feature-25 reference-only evidence
+is not ready. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-equipment-handoff-bounded-20260707-145448`
+over the 2026-07-03 Diamond autoplay packet set processed 164 packet files with
+strict translation, 304 allow decisions, 0 strict quarantines, and 0 quarantine
+files. Its final hint reported `pending_item_refresh=false`,
+`no_hint_reason="post_context_without_compact_item_proof"`,
+`inventory_equipment_handoff_ready=false`,
+`inventory_equipment_handoff_outcome="feature25_refs_without_ready_item_state"`,
+0 ready compact item objects, and 6 deferred Feature-25-only objects. The next
+live HG harness should confirm this build still reaches gameplay and should use
+the new ready/outcome fields to choose the shared inventory/equipment UI
+handoff rule instead of materializing deferred Feature-25 refs.
+
 As of 2026-07-07 11:02 +10, proxy2 separates deferred Feature-25 refs from
 emission-ready compact quickbar item proof. The semantic registry still reports
 the union as `compact_item_emission_proof_objects` for diagnostics and

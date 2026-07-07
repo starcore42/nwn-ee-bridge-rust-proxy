@@ -639,6 +639,10 @@ impl InventoryItemContextSummary {
         self.compact_item_emission_ready_objects != 0
     }
 
+    pub(crate) fn inventory_equipment_handoff_ready(&self) -> bool {
+        self.compact_item_emission_ready_objects != 0
+    }
+
     pub(crate) fn inventory_feature25_item_ref_mentions(&self) -> u64 {
         self.inventory_feature25_first_item_ref_mentions
             .saturating_add(self.inventory_feature25_second_item_ref_mentions)
@@ -714,6 +718,34 @@ impl InventoryItemContextSummary {
             }
         }
     }
+
+    pub(crate) fn inventory_equipment_handoff_outcome(&self) -> InventoryEquipmentHandoffOutcome {
+        if self.inventory_equipment_handoff_ready() {
+            return if self.inventory_feature25_deferred_item_ref_mentions() != 0
+                || self.compact_item_emission_deferred_feature25_only_objects != 0
+            {
+                InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs
+            } else {
+                InventoryEquipmentHandoffOutcome::ReadyItemState
+            };
+        }
+
+        if self.cleared_inventory_item_object_ids != 0 {
+            return InventoryEquipmentHandoffOutcome::ClearedItemState;
+        }
+
+        if self.inventory_feature25_item_ref_mentions() != 0
+            || self.compact_item_emission_deferred_feature25_only_objects != 0
+        {
+            return InventoryEquipmentHandoffOutcome::Feature25RefsWithoutReadyItemState;
+        }
+
+        if self.has_quickbar_item_context_evidence() {
+            return InventoryEquipmentHandoffOutcome::ItemEvidenceWithoutReadyItemState;
+        }
+
+        InventoryEquipmentHandoffOutcome::NoItemEvidence
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -766,6 +798,31 @@ impl InventoryFeature25HandoffOutcome {
             Self::MixedItemRefsWithReadyItemState => "mixed_item_refs_with_ready_item_state",
             Self::MixedItemRefsWithoutReadyItemState => "mixed_item_refs_without_ready_item_state",
             Self::UnclassifiedItemRefs => "unclassified_item_refs",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InventoryEquipmentHandoffOutcome {
+    NoItemEvidence,
+    ReadyItemState,
+    ReadyItemStateWithDeferredFeature25Refs,
+    Feature25RefsWithoutReadyItemState,
+    ClearedItemState,
+    ItemEvidenceWithoutReadyItemState,
+}
+
+impl InventoryEquipmentHandoffOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NoItemEvidence => "no_item_evidence",
+            Self::ReadyItemState => "ready_item_state",
+            Self::ReadyItemStateWithDeferredFeature25Refs => {
+                "ready_item_state_with_deferred_feature25_refs"
+            }
+            Self::Feature25RefsWithoutReadyItemState => "feature25_refs_without_ready_item_state",
+            Self::ClearedItemState => "cleared_item_state",
+            Self::ItemEvidenceWithoutReadyItemState => "item_evidence_without_ready_item_state",
         }
     }
 }
@@ -2123,6 +2180,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"inventory_feature25_deferred_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_materialization_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_handoff_outcome\": \"{}\",\n",
+                "  \"inventory_equipment_handoff_ready\": {},\n",
+                "  \"inventory_equipment_handoff_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -2436,6 +2495,10 @@ impl QuickbarItemRefreshHarnessHint {
                 .as_str(),
             self.item_context
                 .inventory_feature25_handoff_outcome()
+                .as_str(),
+            self.item_context.inventory_equipment_handoff_ready(),
+            self.item_context
+                .inventory_equipment_handoff_outcome()
                 .as_str(),
             self.item_context.inventory_feature25_first_item_refs,
             self.item_context
@@ -5468,6 +5531,8 @@ impl UiState {
                 "  \"inventory_feature25_deferred_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_materialization_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_handoff_outcome\": \"{}\",\n",
+                "  \"inventory_equipment_handoff_ready\": {},\n",
+                "  \"inventory_equipment_handoff_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -5638,6 +5703,8 @@ impl UiState {
             context.inventory_feature25_deferred_item_ref_mentions(),
             context.inventory_feature25_materialization_outcome().as_str(),
             context.inventory_feature25_handoff_outcome().as_str(),
+            context.inventory_equipment_handoff_ready(),
+            context.inventory_equipment_handoff_outcome().as_str(),
             context.inventory_feature25_first_item_refs,
             context.inventory_feature25_first_item_ref_mentions,
             context.inventory_feature25_first_materialized_item_ref_mentions,
@@ -5868,7 +5935,10 @@ pub(crate) struct SyntheticState {
 
 #[cfg(test)]
 mod tests {
-    use super::{InventoryFeature25HandoffOutcome, InventoryFeature25MaterializationOutcome};
+    use super::{
+        InventoryEquipmentHandoffOutcome, InventoryFeature25HandoffOutcome,
+        InventoryFeature25MaterializationOutcome,
+    };
 
     use crate::translate::area::{
         AreaPlaceableContext, AreaPlaceableContextAppearanceConflict,
@@ -8113,6 +8183,12 @@ mod tests {
             InventoryFeature25HandoffOutcome::MixedItemRefsWithReadyItemState,
             "mixed Feature-25 refs plus direct item state can hand off to the quickbar/UI writer"
         );
+        assert!(summary.inventory_equipment_handoff_ready());
+        assert_eq!(
+            summary.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs,
+            "ready direct/materialized item state drives UI handoff while deferred Feature-25 refs stay reference-only"
+        );
         let live_like_deferred = InventoryItemContextSummary {
             inventory_feature25_reference_records: 13,
             inventory_feature25_first_item_ref_mentions: 6,
@@ -8142,6 +8218,12 @@ mod tests {
             InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithoutReadyItemState,
             "deferred-only Feature-25 refs are reference-only unless separate ready item state exists"
         );
+        assert!(!live_like_deferred.inventory_equipment_handoff_ready());
+        assert_eq!(
+            live_like_deferred.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::Feature25RefsWithoutReadyItemState,
+            "Feature-25-only refs are not an inventory/equipment UI handoff source"
+        );
         let live_like_deferred_with_ready_state = InventoryItemContextSummary {
             compact_item_emission_ready_objects: 18,
             ..live_like_deferred
@@ -8150,6 +8232,12 @@ mod tests {
             live_like_deferred_with_ready_state.inventory_feature25_handoff_outcome(),
             InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithReadyItemState,
             "2026-07-07 live HG shape keeps Feature-25 refs deferred while direct state carries quickbar handoff"
+        );
+        assert!(live_like_deferred_with_ready_state.inventory_equipment_handoff_ready());
+        assert_eq!(
+            live_like_deferred_with_ready_state.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs,
+            "2026-07-07 live HG shape consumes ready direct item state without materializing deferred Feature-25 refs"
         );
     }
 
@@ -8179,6 +8267,20 @@ mod tests {
         assert_eq!(
             direct_only_summary.compact_item_emission_ready_candidate,
             direct_only_summary.compact_item_emission_candidate
+        );
+        assert_eq!(
+            direct_only_summary.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs
+        );
+
+        let mut pure_ready = ObjectRegistry::default();
+        pure_ready.observe_materialized_item_object_ids(&[0x8000_0100]);
+        assert_eq!(
+            pure_ready
+                .inventory_item_context_summary()
+                .inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::ReadyItemState,
+            "ready direct/materialized state without deferred Feature-25 refs uses the simple ready outcome"
         );
 
         let mut shared = ObjectRegistry::default();
@@ -8235,6 +8337,10 @@ mod tests {
         assert_eq!(
             feature25_only_summary.compact_item_emission_deferred_feature25_only_objects,
             1
+        );
+        assert_eq!(
+            feature25_only_summary.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::Feature25RefsWithoutReadyItemState
         );
     }
 
@@ -8652,6 +8758,10 @@ mod tests {
         );
         assert!(json.contains(
             "\"inventory_feature25_handoff_outcome\": \"mixed_item_refs_with_ready_item_state\""
+        ));
+        assert!(json.contains("\"inventory_equipment_handoff_ready\": true"));
+        assert!(json.contains(
+            "\"inventory_equipment_handoff_outcome\": \"ready_item_state_with_deferred_feature25_refs\""
         ));
         assert!(json.contains("\"inventory_feature25_first_item_refs\": 1"));
         assert!(json.contains("\"inventory_feature25_first_item_ref_mentions\": 3"));
@@ -9667,6 +9777,10 @@ mod tests {
         );
         assert!(no_candidate.contains(
             "\"inventory_feature25_handoff_outcome\": \"mixed_item_refs_without_ready_item_state\""
+        ));
+        assert!(no_candidate.contains("\"inventory_equipment_handoff_ready\": false"));
+        assert!(no_candidate.contains(
+            "\"inventory_equipment_handoff_outcome\": \"feature25_refs_without_ready_item_state\""
         ));
         assert!(no_candidate.contains("\"inventory_feature25_first_item_refs\": 2"));
         assert!(no_candidate.contains("\"inventory_feature25_first_item_ref_mentions\": 6"));

@@ -17,6 +17,33 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-07 inventory/equipment handoff readiness classifier: live-data gate
+  reused the fresh gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`
+  (`quickbar-item-refresh-hint.json` `2026-07-07T12:58:45+10:00`,
+  about 1h36m old at gate). It reached `Module_Loaded`, `Area_ClientArea`,
+  and sustained `GameObjUpdate_LiveObject` traffic with no quarantine
+  directory. Proxy2 now reports
+  `inventory_equipment_handoff_ready` and
+  `inventory_equipment_handoff_outcome` beside the Feature-25 materialization
+  and handoff outcome fields in semantic traces, pending/idle
+  `quickbar-item-refresh-hint.json`, and replay summaries. The rule treats
+  direct/materialized compact item state as ready for the inventory/equipment
+  UI handoff even when all Feature-25 item refs remain deferred, while keeping
+  pure Feature-25 reference-only evidence classified as not ready. Bounded
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-equipment-handoff-bounded-20260707-145448`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, and 0 quarantine files; its final hint
+  reported `inventory_equipment_handoff_ready=false`,
+  `inventory_equipment_handoff_outcome="feature25_refs_without_ready_item_state"`,
+  `inventory_feature25_handoff_outcome="all_item_refs_deferred_without_ready_item_state"`,
+  0 ready compact item objects, and 6 deferred Feature-25-only objects. Active
+  next path: run the next live HG harness on this build and use the new
+  ready/outcome fields to audit the visible inventory/equipment UI handoff; if
+  live still reports ready direct item state with deferred Feature-25 refs,
+  implement the shared UI handoff consumer instead of materializing deferred
+  Feature-25 references.
 - 2026-07-07 Feature-25 handoff outcome classifier: live-data gate reused the
   fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`
