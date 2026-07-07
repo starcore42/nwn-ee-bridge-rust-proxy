@@ -144,6 +144,20 @@ should inspect this field directly; a zero value with ready server-Inventory
 handoffs means use the new deferral/mismatch buckets before implementing any
 ClientGui inventory writer.
 
+As of 2026-07-08 08:56 +10, proxy2 also makes inventory/equipment bridge-output
+decisions idempotent per drained state update and exports the last
+decision/deferred/block update indexes. This keeps live deferral/mismatch
+counters from growing repeatedly for the same immutable handoff update. Bounded
+strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-decision-20260708-085235`
+over the same 164 Diamond autoplay packets reported 304 strict allow decisions,
+0 strict quarantines, 0 quarantine files, 0 live-object terminal residuals, 1
+blocked server-inventory handoff, 0 ready handoffs, 0 bridge state updates, and
+`inventory_equipment_bridge_output_queued_packets=0`. The next live HG run
+should inspect the queued/deferral/mismatch buckets together with the last
+decision indexes before deciding on server-Inventory claim repair versus a
+separately proven ClientGui inventory writer.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

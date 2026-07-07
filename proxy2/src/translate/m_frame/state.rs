@@ -94,11 +94,15 @@ pub(super) struct InventoryEquipmentBridgeQueuedOutput {
 
 #[derive(Debug, Default)]
 pub(super) struct InventoryEquipmentBridgeState {
+    pub(super) last_decision_state_update_index: Option<u64>,
     pub(super) last_queued_state_update_index: Option<u64>,
     pub(super) queued_outputs: u64,
     pub(super) deferred_client_gui_updates: u64,
     pub(super) deferred_missing_claim_updates: u64,
     pub(super) blocked_candidate_mismatch_updates: u64,
+    pub(super) last_deferred_client_gui_update_index: Option<u64>,
+    pub(super) last_deferred_missing_claim_update_index: Option<u64>,
+    pub(super) last_blocked_candidate_mismatch_update_index: Option<u64>,
     pub(super) last_queued_output: Option<InventoryEquipmentBridgeQueuedOutput>,
 }
 

@@ -1477,6 +1477,10 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = 0
     $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = 0
     $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastDeferredClientGuiUpdateIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastDeferredMissingClaimUpdateIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastBlockedCandidateMismatchUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedKnown = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEmissionIndex = 0
@@ -1811,6 +1815,10 @@ try {
         $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_client_gui_updates'
         $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_missing_claim_updates'
         $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_blocked_candidate_mismatch_updates'
+        $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_decision_update_index'
+        $quickbarHintInventoryEquipmentBridgeOutputLastDeferredClientGuiUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_deferred_client_gui_update_index'
+        $quickbarHintInventoryEquipmentBridgeOutputLastDeferredMissingClaimUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_deferred_missing_claim_update_index'
+        $quickbarHintInventoryEquipmentBridgeOutputLastBlockedCandidateMismatchUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_blocked_candidate_mismatch_update_index'
         $inventoryEquipmentBridgeOutputLastQueuedKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_queued_known']
         if ($null -ne $inventoryEquipmentBridgeOutputLastQueuedKnownProp -and $null -ne $inventoryEquipmentBridgeOutputLastQueuedKnownProp.Value) {
             $quickbarHintInventoryEquipmentBridgeOutputLastQueuedKnown = [bool]$inventoryEquipmentBridgeOutputLastQueuedKnownProp.Value
@@ -2130,6 +2138,10 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDeferredClientGuiUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastDeferredClientGuiUpdateIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDeferredMissingClaimUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastDeferredMissingClaimUpdateIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastBlockedCandidateMismatchUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastBlockedCandidateMismatchUpdateIndex
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedKnown = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedKnown
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedUpdateIndex
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedEmissionIndex = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEmissionIndex

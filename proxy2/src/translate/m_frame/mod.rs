@@ -655,6 +655,10 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_deferred_client_gui_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_missing_claim_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_blocked_candidate_mismatch_updates\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_deferred_client_gui_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_deferred_missing_claim_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_blocked_candidate_mismatch_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_known\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_emission_index\": {},\n",
@@ -671,6 +675,12 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         bridge.deferred_client_gui_updates,
         bridge.deferred_missing_claim_updates,
         bridge.blocked_candidate_mismatch_updates,
+        bridge.last_decision_state_update_index.unwrap_or(0),
+        bridge.last_deferred_client_gui_update_index.unwrap_or(0),
+        bridge.last_deferred_missing_claim_update_index.unwrap_or(0),
+        bridge
+            .last_blocked_candidate_mismatch_update_index
+            .unwrap_or(0),
         last_known,
         last.update_index,
         last.emission_index,
@@ -1287,6 +1297,10 @@ mod tests {
         bridge.deferred_client_gui_updates = 2;
         bridge.deferred_missing_claim_updates = 3;
         bridge.blocked_candidate_mismatch_updates = 4;
+        bridge.last_decision_state_update_index = Some(8);
+        bridge.last_deferred_client_gui_update_index = Some(9);
+        bridge.last_deferred_missing_claim_update_index = Some(10);
+        bridge.last_blocked_candidate_mismatch_update_index = Some(11);
         bridge.last_queued_output = Some(state::InventoryEquipmentBridgeQueuedOutput {
             update_index: 5,
             emission_index: 6,
@@ -1309,6 +1323,18 @@ mod tests {
         assert!(
             body.contains("\"inventory_equipment_bridge_output_deferred_client_gui_updates\": 2")
         );
+        assert!(
+            body.contains("\"inventory_equipment_bridge_output_last_decision_update_index\": 8")
+        );
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_deferred_client_gui_update_index\": 9"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_deferred_missing_claim_update_index\": 10"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_blocked_candidate_mismatch_update_index\": 11"
+        ));
         assert!(body.contains("\"inventory_equipment_bridge_output_last_queued_known\": true"));
         assert!(body.contains("\"inventory_equipment_bridge_output_last_queued_update_index\": 5"));
         assert!(body.contains(

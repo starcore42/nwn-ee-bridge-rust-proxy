@@ -34,13 +34,17 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
 
     if state
         .inventory_equipment
-        .last_queued_state_update_index
-        .is_some_and(|queued| queued == update.update_index)
+        .last_decision_state_update_index
+        .is_some_and(|handled| handled == update.update_index)
     {
         return Ok(());
     }
 
     if update.consumer != InventoryEquipmentHandoffConsumer::ServerInventory {
+        state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+        state
+            .inventory_equipment
+            .last_deferred_client_gui_update_index = Some(update.update_index);
         state.inventory_equipment.deferred_client_gui_updates = state
             .inventory_equipment
             .deferred_client_gui_updates
@@ -54,6 +58,10 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     }
 
     let Some(claim) = update.server_inventory_claim else {
+        state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+        state
+            .inventory_equipment
+            .last_deferred_missing_claim_update_index = Some(update.update_index);
         state.inventory_equipment.deferred_missing_claim_updates = state
             .inventory_equipment
             .deferred_missing_claim_updates
@@ -66,6 +74,10 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     };
 
     if claim.object_id != update.candidate.object_id {
+        state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+        state
+            .inventory_equipment
+            .last_blocked_candidate_mismatch_update_index = Some(update.update_index);
         state.inventory_equipment.blocked_candidate_mismatch_updates = state
             .inventory_equipment
             .blocked_candidate_mismatch_updates
@@ -110,6 +122,7 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
             reason: INVENTORY_EQUIPMENT_BRIDGE_REASON,
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
         });
+    state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
     state.inventory_equipment.last_queued_state_update_index = Some(update.update_index);
     state.inventory_equipment.queued_outputs =
         state.inventory_equipment.queued_outputs.saturating_add(1);
@@ -188,6 +201,10 @@ mod tests {
             .expect("inventory bridge output should queue");
 
         assert_eq!(
+            state.inventory_equipment.last_decision_state_update_index,
+            Some(1)
+        );
+        assert_eq!(
             state.inventory_equipment.last_queued_state_update_index,
             Some(1)
         );
@@ -249,7 +266,102 @@ mod tests {
                 .is_empty()
         );
         assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(
+            state.inventory_equipment.last_decision_state_update_index,
+            Some(1)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_deferred_client_gui_update_index,
+            Some(1)
+        );
         assert_eq!(state.inventory_equipment.deferred_client_gui_updates, 1);
+        assert_eq!(state.inventory_equipment.queued_outputs, 0);
+
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 11, 77)
+            .expect("same client GUI update should remain handled");
+
+        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(state.inventory_equipment.deferred_client_gui_updates, 1);
+        assert_eq!(state.inventory_equipment.queued_outputs, 0);
+    }
+
+    #[test]
+    fn handles_missing_server_inventory_claim_once_per_state_update() {
+        let mut update = ready_server_inventory_update();
+        update.server_inventory_claim = None;
+        let mut state = SessionState::default();
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 10, 77)
+            .expect("missing claim should defer without error");
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 11, 77)
+            .expect("same missing-claim update should remain handled");
+
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert_eq!(
+            state.inventory_equipment.last_decision_state_update_index,
+            Some(1)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_deferred_missing_claim_update_index,
+            Some(1)
+        );
+        assert_eq!(state.inventory_equipment.deferred_missing_claim_updates, 1);
+        assert_eq!(state.inventory_equipment.queued_outputs, 0);
+    }
+
+    #[test]
+    fn handles_candidate_mismatch_once_per_state_update() {
+        let mut update = ready_server_inventory_update();
+        update.server_inventory_claim = Some(InventoryEquipmentServerInventoryClaim::new(
+            0x01,
+            0x8000_5678,
+            true,
+            4,
+        ));
+        let mut state = SessionState::default();
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 10, 77)
+            .expect("mismatch should block without error");
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 11, 77)
+            .expect("same mismatch update should remain handled");
+
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert_eq!(
+            state.inventory_equipment.last_decision_state_update_index,
+            Some(1)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_blocked_candidate_mismatch_update_index,
+            Some(1)
+        );
+        assert_eq!(
+            state.inventory_equipment.blocked_candidate_mismatch_updates,
+            1
+        );
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
     }
 }

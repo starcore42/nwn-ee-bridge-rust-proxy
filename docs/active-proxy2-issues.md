@@ -184,6 +184,28 @@ not as standalone workaround targets.
   `inventory_equipment_bridge_output_queued_packets`; if not, use the new
   deferral/mismatch buckets to choose between server-Inventory claim repair and
   a separately proven ClientGui inventory writer.
+- 2026-07-08 inventory/equipment bridge output decision idempotence: live-data
+  gate reused the same gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`proxy.stdout.log` `2026-07-07T21:05:54+10:00`, about 11h36m old at gate).
+  It reached gameplay and had no quarantine directory, so the strongest
+  reference for this state-machine slice was the deterministic Diamond autoplay
+  replay. Proxy2 now makes one bridge-output decision per drained
+  inventory/equipment state update, preventing repeated client-GUI deferral,
+  missing-claim deferral, or candidate-mismatch block counts from accumulating
+  on later frames for the same immutable update. Pending/idle
+  `quickbar-item-refresh-hint.json` and replay summaries also export the last
+  decision/deferred/block update indexes. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-decision-20260708-085235`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, 0 quarantine files, and 0 live-object
+  terminal residuals; the Feature-25-only baseline still reported 1 blocked
+  server-Inventory handoff, 0 ready handoffs, 0 bridge state updates, and
+  `inventory_equipment_bridge_output_queued_packets=0`. Active next path: when
+  the 2026-07-07 21:05 live capture is stale, run fresh HG confirmation and use
+  the idempotent decision indexes plus queued/deferral/mismatch buckets to
+  choose between server-Inventory claim repair and a separately proven
+  ClientGui inventory writer.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
