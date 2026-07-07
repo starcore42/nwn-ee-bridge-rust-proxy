@@ -17,6 +17,35 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-07 BNK2 stall diagnostic and inventory/equipment handoff live
+  confirmation: live-data gate first found the gameplay-reaching HG proxy
+  capture
+  `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`
+  current (`proxy.structured.log` last write
+  `2026-07-07T12:58:49+10:00`, about 3h36m old at gate). The first fresh
+  current-build harness
+  `C:\nwnbridge\codex-live-inventory-equipment-handoff-current-20260707-163707\harness-proxy-20260707-163721`
+  failed before gameplay: EE received raw `BNK2` at `2026-07-07T16:37:38+10:00`
+  but never entered the `NonWindow`/`HandleBNK2Message` path, emitted no BNK3,
+  and wrote crash report
+  `C:\Users\User\Documents\Neverwinter Nights\crashreport\nwmain-crash-1783406258.nwcrash.txt`.
+  Proxy2 now records deferred BNK2 handoff progress in production diagnostics:
+  successful `BNK3` observation, handshake restart before BNK3, or a 2s
+  `BNK3` stall warning. Retry harness
+  `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, produced no quarantine directory, and logged
+  `observed EE BNK3 after deferred BNK2` after 106ms. Its final
+  `quickbar-item-refresh-hint.json` at `2026-07-07T16:49:38+10:00` resolved by
+  prior quickbar use-count state with
+  `inventory_equipment_handoff_ready=true`,
+  `inventory_equipment_handoff_outcome="ready_item_state_with_deferred_feature25_refs"`,
+  18 ready direct item-proof objects, and 2 deferred Feature-25-only objects.
+  Active next path: implement the shared inventory/equipment UI handoff
+  consumer for ready direct/materialized item state without materializing
+  deferred Feature-25 references; if BNK2/no-BNK3 recurs, use the new proxy
+  BNK diagnostics plus the opt-in driver BNK handler trace before unrelated
+  packet work.
 - 2026-07-07 inventory/equipment handoff readiness classifier: live-data gate
   reused the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`

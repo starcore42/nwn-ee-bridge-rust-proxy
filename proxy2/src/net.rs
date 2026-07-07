@@ -23,6 +23,7 @@ const MAX_DATAGRAM: usize = 65_535;
 const LOOP_SLEEP: Duration = Duration::from_millis(1);
 const EE_CRYPTO_DEFAULT_RESPONSE_DEFER: Duration = Duration::from_millis(100);
 const EE_CRYPTO_BNK2_RESPONSE_DEFER: Duration = Duration::from_millis(500);
+const EE_CRYPTO_BNK3_EXPECTED_AFTER_BNK2_WARN: Duration = Duration::from_secs(2);
 const MAX_SERVER_DATAGRAMS_PER_TICK_PER_SESSION: usize = 16;
 
 #[derive(Debug)]
@@ -32,7 +33,15 @@ struct Session {
     ee_crypto: EeCrypto,
     translator: SessionTranslator,
     pending_ee_crypto_responses: Vec<(Instant, Vec<u8>)>,
+    pending_bnk2_handshake: Option<PendingBnk2Handshake>,
     last_seen: Instant,
+}
+
+#[derive(Debug)]
+struct PendingBnk2Handshake {
+    sent_at: Instant,
+    response_len: usize,
+    warned: bool,
 }
 
 pub fn run(config: Config, nwsync_runtime: Option<nwsync::Runtime>) -> Result<()> {
@@ -55,6 +64,7 @@ pub fn run(config: Config, nwsync_runtime: Option<nwsync::Runtime>) -> Result<()
 
     loop {
         drain_pending_ee_crypto_responses(&listen, &mut sessions)?;
+        warn_on_stalled_ee_crypto_handshakes(&mut sessions);
         drain_pending_proxy_packets_for_all_sessions(&config, &listen, &mut sessions)?;
         drain_client_socket(
             &config,
@@ -94,6 +104,7 @@ fn drain_client_socket(
                 let mut retire_session_after_emit: Option<&'static str> = None;
                 let session = ensure_session(config, translator_template, sessions, client)?;
                 session.last_seen = Instant::now();
+                observe_client_ee_crypto_progress(session, bytes);
                 let plain = match session.ee_crypto.preprocess_client_packet(bytes) {
                     Ok(ClientPacket::Plain(plain)) => plain,
                     Ok(ClientPacket::ServerResponse(response)) => {
@@ -434,6 +445,7 @@ fn ensure_session<'a>(
                 ee_crypto: EeCrypto::new().context("initializing EE crypto for proxy2 session")?,
                 translator: translator_template.new_session(legacy_udp_port),
                 pending_ee_crypto_responses: Vec::new(),
+                pending_bnk2_handshake: None,
                 last_seen: Instant::now(),
             },
         );
@@ -466,9 +478,64 @@ fn drain_pending_ee_crypto_responses(
                     session.client
                 )
             })?;
+            if response.get(..4) == Some(b"BNK2") {
+                session.pending_bnk2_handshake = Some(PendingBnk2Handshake {
+                    sent_at: now,
+                    response_len: response.len(),
+                    warned: false,
+                });
+            }
         }
     }
     Ok(())
+}
+
+fn observe_client_ee_crypto_progress(session: &mut Session, bytes: &[u8]) {
+    match bytes.get(..4) {
+        Some(b"BNK3") => {
+            if let Some(pending) = session.pending_bnk2_handshake.take() {
+                tracing::info!(
+                    client = %session.client,
+                    elapsed_ms = pending.sent_at.elapsed().as_millis(),
+                    bnk2_len = pending.response_len,
+                    bnk3_len = bytes.len(),
+                    "observed EE BNK3 after deferred BNK2"
+                );
+            }
+        }
+        Some(b"BNK0") | Some(b"BNK1") => {
+            if let Some(pending) = session.pending_bnk2_handshake.take() {
+                tracing::warn!(
+                    client = %session.client,
+                    elapsed_ms = pending.sent_at.elapsed().as_millis(),
+                    bnk2_len = pending.response_len,
+                    next_tag = %String::from_utf8_lossy(bytes.get(..4).unwrap_or(&[])),
+                    next_len = bytes.len(),
+                    "EE crypto handshake restarted before BNK3 arrived"
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn warn_on_stalled_ee_crypto_handshakes(sessions: &mut HashMap<SocketAddr, Session>) {
+    for session in sessions.values_mut() {
+        let Some(pending) = session.pending_bnk2_handshake.as_mut() else {
+            continue;
+        };
+        let elapsed = pending.sent_at.elapsed();
+        if pending.warned || elapsed < EE_CRYPTO_BNK3_EXPECTED_AFTER_BNK2_WARN {
+            continue;
+        }
+        pending.warned = true;
+        tracing::warn!(
+            client = %session.client,
+            elapsed_ms = elapsed.as_millis(),
+            bnk2_len = pending.response_len,
+            "EE crypto handshake stalled after BNK2; no BNK3 received"
+        );
+    }
 }
 
 fn ee_crypto_response_defer(response: &[u8]) -> Duration {

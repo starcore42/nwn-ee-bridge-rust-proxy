@@ -33,8 +33,30 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-07 12:58 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-07 16:49 +10: the freshest
 gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+`GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
+`2026-07-07T16:49:38+10:00`, left `proxy.structured.log` active through
+`2026-07-07T16:49:38+10:00`, and produced no quarantine directory. The same
+run logged `observed EE BNK3 after deferred BNK2` with `elapsed_ms=106`, so the
+prior fresh-run BNK2/no-BNK3 crash did not reproduce. The final hint resolved
+by prior quickbar use-count state with
+`no_hint_reason="post_context_resolved_by_prior_quickbar_use_count_state"`,
+`post_committed_item_refresh_resolution="resolved_by_prior_quickbar_use_count_state"`,
+candidate `0x80015219` from active-object/direct-only proof, 18 direct item
+proof objects, 2 Feature-25 item proof objects, 18 compact-emission ready
+objects, 2 deferred Feature-25-only objects, 7 Feature-25 reference records, 7
+deferred item-ref mentions, 0 materialized item-ref mentions,
+`inventory_feature25_materialization_outcome="all_item_refs_deferred"`,
+`inventory_feature25_handoff_outcome="all_item_refs_deferred_with_ready_item_state"`,
+and
+`inventory_equipment_handoff_outcome="ready_item_state_with_deferred_feature25_refs"`.
+
+Previous live HG proxy status, as of 2026-07-07 12:58 +10: the
+gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
@@ -1133,6 +1155,7 @@ work.
 | --- | --- | --- |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
+| Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-07 16:37 failure was followed by a 16:47 retry that observed BNK3 after 106ms and reached gameplay. |
 | Capture reaches `BNVR A` and one `P/01/03` response, but never sends client `P/11/01` | Driver fell back to native DirectConnect after missing or discarding the server-list path | Keep using the server-list DirectConnect path; if Diamond's app-state server-list slot is empty, retry with the remembered `SERVERLIST_PANEL` from the constructor hook before native fallback. |
 | `PRE_PLAYMOD` selection fires with `entries=0 count=0` | Auto-character path is too early or lacks refresh/retry | Add wait/refresh/retry instrumentation and rerun until the character list is populated or a new blocker is proven. |
 | Player-password prompt or native connect overlay appears | Harness regressed to the wrong login path or password handling | Keep the old driver connect path; do not pass native `+password`; seed the player password internally with default `A`. |
