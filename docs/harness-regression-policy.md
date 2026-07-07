@@ -55,6 +55,24 @@ deferred item-ref mentions, 0 materialized item-ref mentions,
 and
 `inventory_equipment_handoff_outcome="ready_item_state_with_deferred_feature25_refs"`.
 
+As of 2026-07-07 19:00 +10, proxy2 also consumes inventory/equipment handoff
+readiness in shared UI state. Verified `Inventory` and `ClientGuiInventory`
+events now increment handoff counters, consume the best retained
+direct/materialized item context, keep deferred Feature-25-only refs
+reference-only, and write the last handoff snapshot into idle
+`quickbar-item-refresh-hint.json` plus the Diamond replay summary. Bounded
+strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-equipment-handoff-consumer-20260707-185513`
+over the 2026-07-03 Diamond autoplay packet set processed 164 packet files with
+strict translation, 304 allow decisions, 0 strict quarantines, and 0 quarantine
+files. That replay baseline had 1 inventory/equipment handoff event but no
+ready direct/materialized item state, so it correctly stayed blocked with
+`inventory_equipment_handoff_outcome="feature25_refs_without_ready_item_state"`.
+The next live HG harness should confirm this build still reaches gameplay and
+should check whether real `ClientGuiInventory`/`Inventory` traffic increments
+`inventory_equipment_handoff_ready_events` using the 18 ready direct objects
+seen in the latest live HG capture before adding any bridge/writer behavior.
+
 Previous live HG proxy status, as of 2026-07-07 12:58 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`.

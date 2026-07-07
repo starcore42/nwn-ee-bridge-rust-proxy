@@ -1424,6 +1424,20 @@ try {
     $quickbarHintInventoryFeature25HandoffOutcome = ''
     $quickbarHintInventoryEquipmentHandoffReady = $false
     $quickbarHintInventoryEquipmentHandoffOutcome = ''
+    $quickbarHintInventoryEquipmentHandoffEvents = 0
+    $quickbarHintInventoryEquipmentHandoffReadyEvents = 0
+    $quickbarHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents = 0
+    $quickbarHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events = 0
+    $quickbarHintLastInventoryEquipmentHandoffKnown = $false
+    $quickbarHintLastInventoryEquipmentHandoffConsumer = ''
+    $quickbarHintLastInventoryEquipmentHandoffEventIndex = 0
+    $quickbarHintLastInventoryEquipmentHandoffOutcome = ''
+    $quickbarHintLastInventoryEquipmentHandoffReadyObjects = 0
+    $quickbarHintLastInventoryEquipmentHandoffDeferredFeature25OnlyObjects = 0
+    $quickbarHintLastInventoryEquipmentHandoffCandidateKnown = $false
+    $quickbarHintLastInventoryEquipmentHandoffCandidateObjectId = 0
+    $quickbarHintLastInventoryEquipmentHandoffCandidateProof = ''
+    $quickbarHintLastInventoryEquipmentHandoffCandidateSource = ''
     $quickbarHintCompactItemEmissionReadyObjects = 0
     $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects = 0
     $quickbarHintStreamProbeCompactItemEmissionReadyObjects = 0
@@ -1634,6 +1648,38 @@ try {
         $inventoryEquipmentHandoffOutcomeProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_handoff_outcome']
         if ($null -ne $inventoryEquipmentHandoffOutcomeProp -and $null -ne $inventoryEquipmentHandoffOutcomeProp.Value) {
             $quickbarHintInventoryEquipmentHandoffOutcome = [string]$inventoryEquipmentHandoffOutcomeProp.Value
+        }
+        $quickbarHintInventoryEquipmentHandoffEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_events'
+        $quickbarHintInventoryEquipmentHandoffReadyEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_ready_events'
+        $quickbarHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents = & $getQuickbarHintInt64 'inventory_equipment_handoff_blocked_without_ready_state_events'
+        $quickbarHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events = & $getQuickbarHintInt64 'inventory_equipment_handoff_ready_with_deferred_feature25_events'
+        $lastInventoryEquipmentHandoffKnownProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_known']
+        if ($null -ne $lastInventoryEquipmentHandoffKnownProp -and $null -ne $lastInventoryEquipmentHandoffKnownProp.Value) {
+            $quickbarHintLastInventoryEquipmentHandoffKnown = [bool]$lastInventoryEquipmentHandoffKnownProp.Value
+        }
+        $lastInventoryEquipmentHandoffConsumerProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_consumer']
+        if ($null -ne $lastInventoryEquipmentHandoffConsumerProp -and $null -ne $lastInventoryEquipmentHandoffConsumerProp.Value) {
+            $quickbarHintLastInventoryEquipmentHandoffConsumer = [string]$lastInventoryEquipmentHandoffConsumerProp.Value
+        }
+        $quickbarHintLastInventoryEquipmentHandoffEventIndex = & $getQuickbarHintInt64 'last_inventory_equipment_handoff_event_index'
+        $lastInventoryEquipmentHandoffOutcomeProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_outcome']
+        if ($null -ne $lastInventoryEquipmentHandoffOutcomeProp -and $null -ne $lastInventoryEquipmentHandoffOutcomeProp.Value) {
+            $quickbarHintLastInventoryEquipmentHandoffOutcome = [string]$lastInventoryEquipmentHandoffOutcomeProp.Value
+        }
+        $quickbarHintLastInventoryEquipmentHandoffReadyObjects = & $getQuickbarHintInt64 'last_inventory_equipment_handoff_ready_objects'
+        $quickbarHintLastInventoryEquipmentHandoffDeferredFeature25OnlyObjects = & $getQuickbarHintInt64 'last_inventory_equipment_handoff_deferred_feature25_only_objects'
+        $lastInventoryEquipmentHandoffCandidateKnownProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_candidate_known']
+        if ($null -ne $lastInventoryEquipmentHandoffCandidateKnownProp -and $null -ne $lastInventoryEquipmentHandoffCandidateKnownProp.Value) {
+            $quickbarHintLastInventoryEquipmentHandoffCandidateKnown = [bool]$lastInventoryEquipmentHandoffCandidateKnownProp.Value
+        }
+        $quickbarHintLastInventoryEquipmentHandoffCandidateObjectId = & $getQuickbarHintInt64 'last_inventory_equipment_handoff_candidate_object_id'
+        $lastInventoryEquipmentHandoffCandidateProofProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_candidate_proof']
+        if ($null -ne $lastInventoryEquipmentHandoffCandidateProofProp -and $null -ne $lastInventoryEquipmentHandoffCandidateProofProp.Value) {
+            $quickbarHintLastInventoryEquipmentHandoffCandidateProof = [string]$lastInventoryEquipmentHandoffCandidateProofProp.Value
+        }
+        $lastInventoryEquipmentHandoffCandidateSourceProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_candidate_source']
+        if ($null -ne $lastInventoryEquipmentHandoffCandidateSourceProp -and $null -ne $lastInventoryEquipmentHandoffCandidateSourceProp.Value) {
+            $quickbarHintLastInventoryEquipmentHandoffCandidateSource = [string]$lastInventoryEquipmentHandoffCandidateSourceProp.Value
         }
         $quickbarHintInventoryFeature25FirstItemRefs = & $getQuickbarHintInt64 'inventory_feature25_first_item_refs'
         $quickbarHintInventoryFeature25FirstItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_item_ref_mentions'
@@ -1885,6 +1931,20 @@ try {
         QuickbarItemRefreshHintInventoryFeature25HandoffOutcome = $quickbarHintInventoryFeature25HandoffOutcome
         QuickbarItemRefreshHintInventoryEquipmentHandoffReady = $quickbarHintInventoryEquipmentHandoffReady
         QuickbarItemRefreshHintInventoryEquipmentHandoffOutcome = $quickbarHintInventoryEquipmentHandoffOutcome
+        QuickbarItemRefreshHintInventoryEquipmentHandoffEvents = $quickbarHintInventoryEquipmentHandoffEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffReadyEvents = $quickbarHintInventoryEquipmentHandoffReadyEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents = $quickbarHintInventoryEquipmentHandoffBlockedWithoutReadyStateEvents
+        QuickbarItemRefreshHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events = $quickbarHintInventoryEquipmentHandoffReadyWithDeferredFeature25Events
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffKnown = $quickbarHintLastInventoryEquipmentHandoffKnown
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffConsumer = $quickbarHintLastInventoryEquipmentHandoffConsumer
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffEventIndex = $quickbarHintLastInventoryEquipmentHandoffEventIndex
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffOutcome = $quickbarHintLastInventoryEquipmentHandoffOutcome
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffReadyObjects = $quickbarHintLastInventoryEquipmentHandoffReadyObjects
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffDeferredFeature25OnlyObjects = $quickbarHintLastInventoryEquipmentHandoffDeferredFeature25OnlyObjects
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffCandidateKnown = $quickbarHintLastInventoryEquipmentHandoffCandidateKnown
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffCandidateObjectId = $quickbarHintLastInventoryEquipmentHandoffCandidateObjectId
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffCandidateProof = $quickbarHintLastInventoryEquipmentHandoffCandidateProof
+        QuickbarItemRefreshHintLastInventoryEquipmentHandoffCandidateSource = $quickbarHintLastInventoryEquipmentHandoffCandidateSource
         QuickbarItemRefreshHintCompactItemEmissionReadyObjects = $quickbarHintCompactItemEmissionReadyObjects
         QuickbarItemRefreshHintCompactItemEmissionDeferredFeature25OnlyObjects = $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintStreamProbeCompactItemEmissionReadyObjects = $quickbarHintStreamProbeCompactItemEmissionReadyObjects

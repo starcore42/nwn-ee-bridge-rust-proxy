@@ -643,6 +643,11 @@ impl InventoryItemContextSummary {
         self.compact_item_emission_ready_objects != 0
     }
 
+    pub(crate) fn has_deferred_feature25_refs(&self) -> bool {
+        self.inventory_feature25_deferred_item_ref_mentions() != 0
+            || self.compact_item_emission_deferred_feature25_only_objects != 0
+    }
+
     pub(crate) fn inventory_feature25_item_ref_mentions(&self) -> u64 {
         self.inventory_feature25_first_item_ref_mentions
             .saturating_add(self.inventory_feature25_second_item_ref_mentions)
@@ -721,9 +726,7 @@ impl InventoryItemContextSummary {
 
     pub(crate) fn inventory_equipment_handoff_outcome(&self) -> InventoryEquipmentHandoffOutcome {
         if self.inventory_equipment_handoff_ready() {
-            return if self.inventory_feature25_deferred_item_ref_mentions() != 0
-                || self.compact_item_emission_deferred_feature25_only_objects != 0
-            {
+            return if self.has_deferred_feature25_refs() {
                 InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs
             } else {
                 InventoryEquipmentHandoffOutcome::ReadyItemState
@@ -746,6 +749,38 @@ impl InventoryItemContextSummary {
 
         InventoryEquipmentHandoffOutcome::NoItemEvidence
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InventoryEquipmentHandoffConsumer {
+    ServerInventory,
+    ClientGuiInventory,
+    Unknown,
+}
+
+impl InventoryEquipmentHandoffConsumer {
+    pub(crate) fn from_verified_family(family: VerifiedFamily) -> Self {
+        match family {
+            VerifiedFamily::Inventory => Self::ServerInventory,
+            VerifiedFamily::ClientGuiInventory => Self::ClientGuiInventory,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ServerInventory => "server_inventory",
+            Self::ClientGuiInventory => "client_gui_inventory",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InventoryEquipmentHandoffSnapshot {
+    pub(crate) consumer: InventoryEquipmentHandoffConsumer,
+    pub(crate) item_context: InventoryItemContextSummary,
+    pub(crate) event_index: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4765,6 +4800,11 @@ pub(crate) struct UiState {
     pub(crate) client_gui_event_packets: u64,
     pub(crate) client_quickbar_packets: u64,
     pub(crate) inventory_packets: u64,
+    pub(crate) inventory_equipment_handoff_events: u64,
+    pub(crate) inventory_equipment_handoff_ready_events: u64,
+    pub(crate) inventory_equipment_handoff_blocked_without_ready_state_events: u64,
+    pub(crate) inventory_equipment_handoff_ready_with_deferred_feature25_events: u64,
+    pub(crate) last_inventory_equipment_handoff: Option<InventoryEquipmentHandoffSnapshot>,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
     pub(crate) quickbar_stream_probe_summaries: u64,
     pub(crate) last_quickbar_stream_probe: Option<QuickbarStreamProbeSummary>,
@@ -4844,6 +4884,37 @@ pub(crate) struct UiState {
 }
 
 impl UiState {
+    pub(crate) fn observe_inventory_equipment_handoff(
+        &mut self,
+        consumer: InventoryEquipmentHandoffConsumer,
+        item_context: InventoryItemContextSummary,
+    ) -> bool {
+        self.inventory_equipment_handoff_events =
+            self.inventory_equipment_handoff_events.saturating_add(1);
+
+        if !item_context.inventory_equipment_handoff_ready() {
+            self.inventory_equipment_handoff_blocked_without_ready_state_events = self
+                .inventory_equipment_handoff_blocked_without_ready_state_events
+                .saturating_add(1);
+            return false;
+        }
+
+        self.inventory_equipment_handoff_ready_events = self
+            .inventory_equipment_handoff_ready_events
+            .saturating_add(1);
+        if item_context.has_deferred_feature25_refs() {
+            self.inventory_equipment_handoff_ready_with_deferred_feature25_events = self
+                .inventory_equipment_handoff_ready_with_deferred_feature25_events
+                .saturating_add(1);
+        }
+        self.last_inventory_equipment_handoff = Some(InventoryEquipmentHandoffSnapshot {
+            consumer,
+            item_context,
+            event_index: self.inventory_equipment_handoff_events,
+        });
+        true
+    }
+
     pub(crate) fn observe_quickbar_item_use_count_updates(
         &mut self,
         updates: &[LiveObjectQuickbarItemUseCountUpdate],
@@ -5402,6 +5473,33 @@ impl UiState {
             first_candidate_use_count_row_before_first_client_action.unwrap_or_default();
         let first_candidate_use_count_row_after_first_client_action =
             first_candidate_use_count_row_after_first_client_action.unwrap_or_default();
+        let last_inventory_equipment_handoff = self.last_inventory_equipment_handoff;
+        let last_inventory_equipment_handoff_known = last_inventory_equipment_handoff.is_some();
+        let last_inventory_equipment_handoff_consumer = last_inventory_equipment_handoff
+            .map(|snapshot| snapshot.consumer.as_str())
+            .unwrap_or("none");
+        let last_inventory_equipment_handoff_event_index = last_inventory_equipment_handoff
+            .map(|snapshot| snapshot.event_index)
+            .unwrap_or(0);
+        let last_inventory_equipment_handoff_context = last_inventory_equipment_handoff
+            .map(|snapshot| snapshot.item_context)
+            .unwrap_or_default();
+        let last_inventory_equipment_handoff_candidate =
+            last_inventory_equipment_handoff_context.compact_item_emission_ready_candidate;
+        let last_inventory_equipment_handoff_candidate_known =
+            last_inventory_equipment_handoff_candidate.is_some();
+        let last_inventory_equipment_handoff_candidate_object_id =
+            last_inventory_equipment_handoff_candidate
+                .map(|candidate| candidate.object_id)
+                .unwrap_or(0);
+        let last_inventory_equipment_handoff_candidate_proof =
+            last_inventory_equipment_handoff_candidate
+                .map(|candidate| candidate.proof.as_str())
+                .unwrap_or("none");
+        let last_inventory_equipment_handoff_candidate_source =
+            last_inventory_equipment_handoff_candidate
+                .map(|candidate| candidate.source.as_str())
+                .unwrap_or("none");
         format!(
             concat!(
                 "{{\n",
@@ -5533,6 +5631,21 @@ impl UiState {
                 "  \"inventory_feature25_handoff_outcome\": \"{}\",\n",
                 "  \"inventory_equipment_handoff_ready\": {},\n",
                 "  \"inventory_equipment_handoff_outcome\": \"{}\",\n",
+                "  \"inventory_equipment_handoff_events\": {},\n",
+                "  \"inventory_equipment_handoff_ready_events\": {},\n",
+                "  \"inventory_equipment_handoff_blocked_without_ready_state_events\": {},\n",
+                "  \"inventory_equipment_handoff_ready_with_deferred_feature25_events\": {},\n",
+                "  \"last_inventory_equipment_handoff_known\": {},\n",
+                "  \"last_inventory_equipment_handoff_consumer\": \"{}\",\n",
+                "  \"last_inventory_equipment_handoff_event_index\": {},\n",
+                "  \"last_inventory_equipment_handoff_outcome\": \"{}\",\n",
+                "  \"last_inventory_equipment_handoff_ready_objects\": {},\n",
+                "  \"last_inventory_equipment_handoff_deferred_feature25_only_objects\": {},\n",
+                "  \"last_inventory_equipment_handoff_candidate_known\": {},\n",
+                "  \"last_inventory_equipment_handoff_candidate_object_id\": {},\n",
+                "  \"last_inventory_equipment_handoff_candidate_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"last_inventory_equipment_handoff_candidate_proof\": \"{}\",\n",
+                "  \"last_inventory_equipment_handoff_candidate_source\": \"{}\",\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -5705,6 +5818,24 @@ impl UiState {
             context.inventory_feature25_handoff_outcome().as_str(),
             context.inventory_equipment_handoff_ready(),
             context.inventory_equipment_handoff_outcome().as_str(),
+            self.inventory_equipment_handoff_events,
+            self.inventory_equipment_handoff_ready_events,
+            self.inventory_equipment_handoff_blocked_without_ready_state_events,
+            self.inventory_equipment_handoff_ready_with_deferred_feature25_events,
+            last_inventory_equipment_handoff_known,
+            last_inventory_equipment_handoff_consumer,
+            last_inventory_equipment_handoff_event_index,
+            last_inventory_equipment_handoff_context
+                .inventory_equipment_handoff_outcome()
+                .as_str(),
+            last_inventory_equipment_handoff_context.compact_item_emission_ready_objects,
+            last_inventory_equipment_handoff_context
+                .compact_item_emission_deferred_feature25_only_objects,
+            last_inventory_equipment_handoff_candidate_known,
+            last_inventory_equipment_handoff_candidate_object_id,
+            last_inventory_equipment_handoff_candidate_object_id,
+            last_inventory_equipment_handoff_candidate_proof,
+            last_inventory_equipment_handoff_candidate_source,
             context.inventory_feature25_first_item_refs,
             context.inventory_feature25_first_item_ref_mentions,
             context.inventory_feature25_first_materialized_item_ref_mentions,
@@ -5959,15 +6090,16 @@ mod tests {
     use super::{
         AreaStaticPlaceableConflictRecordObservation,
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
-        ITEM_OBJECT_TYPE, InventoryItemContextCandidate, InventoryItemContextCandidateSource,
-        InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectStatus,
-        LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
-        QuickbarActiveItemSignature, QuickbarItemRefreshActionOutcome,
-        QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
-        QuickbarItemRefreshEventKind, QuickbarItemRefreshHarnessHint,
-        QuickbarItemRefreshProofClass, QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary,
-        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
+        ITEM_OBJECT_TYPE, InventoryEquipmentHandoffConsumer, InventoryItemContextCandidate,
+        InventoryItemContextCandidateSource, InventoryItemContextSummary, InventoryItemObjectProof,
+        InventoryItemObjectStatus, LiveObjectBounds, LiveObjectMention, LiveObjectOrientation,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition,
+        ObjectRegistry, PlayerListObjectIds, QuickbarActiveItemSignature,
+        QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
+        QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
+        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass,
+        QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary, QuickbarStreamProbeSummary,
+        QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -8342,6 +8474,90 @@ mod tests {
             feature25_only_summary.inventory_equipment_handoff_outcome(),
             InventoryEquipmentHandoffOutcome::Feature25RefsWithoutReadyItemState
         );
+    }
+
+    #[test]
+    fn inventory_equipment_handoff_consumes_ready_state_without_feature25_materialization() {
+        let ready_with_deferred = InventoryItemContextSummary {
+            direct_item_proof_objects: 18,
+            compact_item_emission_proof_objects: 20,
+            compact_item_emission_ready_objects: 18,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8001_5219,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            compact_item_emission_deferred_feature25_only_objects: 2,
+            inventory_feature25_reference_records: 7,
+            inventory_feature25_first_item_ref_mentions: 4,
+            inventory_feature25_first_deferred_item_ref_mentions: 4,
+            inventory_feature25_second_item_ref_mentions: 3,
+            inventory_feature25_second_deferred_item_ref_mentions: 3,
+            ..Default::default()
+        };
+        let blocked_feature25_only = InventoryItemContextSummary {
+            feature25_item_proof_objects: 2,
+            compact_item_emission_proof_objects: 2,
+            compact_item_emission_deferred_feature25_only_objects: 2,
+            inventory_feature25_reference_records: 2,
+            inventory_feature25_first_item_ref_mentions: 2,
+            inventory_feature25_first_deferred_item_ref_mentions: 2,
+            ..Default::default()
+        };
+        let mut ui = UiState::default();
+
+        assert!(ui.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            ready_with_deferred
+        ));
+        assert!(!ui.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ServerInventory,
+            blocked_feature25_only
+        ));
+
+        assert_eq!(ui.inventory_equipment_handoff_events, 2);
+        assert_eq!(ui.inventory_equipment_handoff_ready_events, 1);
+        assert_eq!(
+            ui.inventory_equipment_handoff_blocked_without_ready_state_events,
+            1
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_ready_with_deferred_feature25_events, 1,
+            "ready direct item state is consumed while deferred Feature-25 refs remain reference-only"
+        );
+        let snapshot = ui
+            .last_inventory_equipment_handoff
+            .expect("ready handoff snapshot should be retained");
+        assert_eq!(
+            snapshot.consumer,
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory
+        );
+        assert_eq!(snapshot.event_index, 1);
+        assert_eq!(snapshot.item_context, ready_with_deferred);
+
+        let json = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(json.contains("\"inventory_equipment_handoff_events\": 2"));
+        assert!(json.contains("\"inventory_equipment_handoff_ready_events\": 1"));
+        assert!(
+            json.contains("\"inventory_equipment_handoff_blocked_without_ready_state_events\": 1")
+        );
+        assert!(
+            json.contains(
+                "\"inventory_equipment_handoff_ready_with_deferred_feature25_events\": 1"
+            )
+        );
+        assert!(json.contains("\"last_inventory_equipment_handoff_known\": true"));
+        assert!(
+            json.contains(
+                "\"last_inventory_equipment_handoff_consumer\": \"client_gui_inventory\""
+            )
+        );
+        assert!(json.contains(
+            "\"last_inventory_equipment_handoff_outcome\": \"ready_item_state_with_deferred_feature25_refs\""
+        ));
+        assert!(json.contains(
+            "\"last_inventory_equipment_handoff_candidate_object_id_hex\": \"0x80015219\""
+        ));
     }
 
     fn stream_probe_rewrite_summary_with_profile(

@@ -41,11 +41,37 @@ not as standalone workaround targets.
   `inventory_equipment_handoff_ready=true`,
   `inventory_equipment_handoff_outcome="ready_item_state_with_deferred_feature25_refs"`,
   18 ready direct item-proof objects, and 2 deferred Feature-25-only objects.
-  Active next path: implement the shared inventory/equipment UI handoff
-  consumer for ready direct/materialized item state without materializing
-  deferred Feature-25 references; if BNK2/no-BNK3 recurs, use the new proxy
-  BNK diagnostics plus the opt-in driver BNK handler trace before unrelated
-  packet work.
+  The 2026-07-07 consumer slice below now owns this handoff readiness in shared
+  UI state. If BNK2/no-BNK3 recurs, use the new proxy BNK diagnostics plus the
+  opt-in driver BNK handler trace before unrelated packet work.
+- 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
+  the fresh gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
+  (`quickbar-item-refresh-hint.json` `2026-07-07T16:49:38+10:00`, about
+  1h47m old at gate). It reached `Module_Loaded`, `Area_ClientArea`, and
+  sustained `GameObjUpdate_LiveObject` traffic with no quarantine directory.
+  The strongest reference setup for this slice was the Diamond autoplay replay
+  after the fresh live gate, because the code only consumes already-verified
+  semantic item state and the replay gives deterministic strict-regression
+  evidence. Proxy2 now observes verified `Inventory` and `ClientGuiInventory`
+  events as inventory/equipment handoff consumers, consumes the best retained
+  direct/materialized item context without materializing deferred
+  Feature-25-only refs, and exports per-run counters plus the last handoff
+  snapshot in idle `quickbar-item-refresh-hint.json` and replay summaries.
+  Focused state/reducer tests prove ready direct item state is consumed while
+  deferred Feature-25-only refs remain reference-only. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-equipment-handoff-consumer-20260707-185513`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, and 0 quarantine files; this Diamond
+  baseline had 1 handoff event and correctly classified it as blocked without
+  ready state:
+  `inventory_equipment_handoff_outcome="feature25_refs_without_ready_item_state"`.
+  Active next path: run a fresh live HG harness on this build and confirm real
+  `ClientGuiInventory`/`Inventory` events increment
+  `inventory_equipment_handoff_ready_events` against the 18 ready direct
+  objects seen in the latest live HG capture; if visible inventory/equipment
+  still diverges, implement the bounded bridge/writer behavior from those
+  consumer snapshots.
 - 2026-07-07 inventory/equipment handoff readiness classifier: live-data gate
   reused the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`

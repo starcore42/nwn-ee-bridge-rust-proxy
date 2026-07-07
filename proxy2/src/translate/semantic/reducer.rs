@@ -14,10 +14,10 @@ use crate::{
 };
 
 use super::state::{
-    InventoryItemContextCandidate, QuickbarItemRefreshActionOutcome,
-    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
-    QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
-    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    InventoryEquipmentHandoffConsumer, InventoryItemContextCandidate,
+    QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
+    QuickbarItemRefreshClientActionMatchClass, QuickbarItemRefreshClientActionTiming,
+    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
     QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshUseCountRow,
 };
 use super::{
@@ -30,6 +30,8 @@ use super::{
     SemanticSessionState, ServerStatusEvent,
 };
 
+#[cfg(test)]
+use super::state::InventoryItemContextCandidateSource;
 #[cfg(test)]
 use super::state::QuickbarStreamProbeSummary;
 #[cfg(test)]
@@ -791,8 +793,29 @@ fn apply_event(
                 "semantic state observed verified active item property update"
             );
         }
-        ProtocolEvent::Inventory(_) => {
+        ProtocolEvent::Inventory(event) => {
             state.ui.inventory_packets = state.ui.inventory_packets.saturating_add(1);
+            let consumer =
+                InventoryEquipmentHandoffConsumer::from_verified_family(event.observed.family);
+            let item_context = inventory_equipment_handoff_context(state);
+            let consumed = state
+                .ui
+                .observe_inventory_equipment_handoff(consumer, item_context);
+            tracing::debug!(
+                consumer = consumer.as_str(),
+                consumed,
+                inventory_equipment_handoff_ready =
+                    item_context.inventory_equipment_handoff_ready(),
+                inventory_equipment_handoff_outcome =
+                    item_context.inventory_equipment_handoff_outcome().as_str(),
+                compact_item_emission_ready_objects =
+                    item_context.compact_item_emission_ready_objects,
+                compact_item_emission_deferred_feature25_only_objects =
+                    item_context.compact_item_emission_deferred_feature25_only_objects,
+                inventory_feature25_deferred_item_ref_mentions =
+                    item_context.inventory_feature25_deferred_item_ref_mentions(),
+                "semantic state observed inventory/equipment handoff consumer"
+            );
         }
         ProtocolEvent::ClientGuiEvent(event) => {
             state.ui.client_gui_event_packets = state.ui.client_gui_event_packets.saturating_add(1);
@@ -901,6 +924,37 @@ fn best_committed_quickbar_item_context(
         return (Some(prior), Some(QuickbarItemContextSource::Prior));
     }
     (None, None)
+}
+
+fn inventory_equipment_handoff_context(
+    state: &SemanticSessionState,
+) -> InventoryItemContextSummary {
+    let current = state.objects.inventory_item_context_summary();
+    if current.inventory_equipment_handoff_ready() {
+        return current;
+    }
+    if let Some(post_quickbar) = state
+        .ui
+        .last_inventory_item_context_after_committed_quickbar
+        .filter(InventoryItemContextSummary::inventory_equipment_handoff_ready)
+    {
+        return post_quickbar;
+    }
+    if let Some(best_committed) = state
+        .ui
+        .last_committed_quickbar_best_item_context
+        .filter(InventoryItemContextSummary::inventory_equipment_handoff_ready)
+    {
+        return best_committed;
+    }
+    if current.has_quickbar_item_context_evidence() {
+        return current;
+    }
+    state
+        .ui
+        .last_inventory_item_context_after_committed_quickbar
+        .or(state.ui.last_committed_quickbar_best_item_context)
+        .unwrap_or(current)
 }
 
 fn committed_quickbar_item_refresh_outcome(
@@ -2233,6 +2287,75 @@ mod fixture_free_tests {
         assert!(
             !state.objects.has_active_object_id(second_item_id),
             "deferred Feature-25 refs must not become active lifecycle materialization"
+        );
+    }
+
+    #[test]
+    fn inventory_event_consumes_retained_ready_equipment_handoff_context() {
+        let item_context = InventoryItemContextSummary {
+            direct_item_proof_objects: 18,
+            compact_item_emission_proof_objects: 20,
+            compact_item_emission_ready_objects: 18,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8001_5219,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            compact_item_emission_deferred_feature25_only_objects: 2,
+            inventory_feature25_reference_records: 7,
+            inventory_feature25_first_item_ref_mentions: 4,
+            inventory_feature25_first_deferred_item_ref_mentions: 4,
+            inventory_feature25_second_item_ref_mentions: 3,
+            inventory_feature25_second_deferred_item_ref_mentions: 3,
+            ..Default::default()
+        };
+        let mut state = SemanticSessionState::default();
+        state
+            .ui
+            .last_inventory_item_context_after_committed_quickbar = Some(item_context);
+
+        apply_event(
+            &mut state,
+            ProtocolEvent::Inventory(InventoryEvent {
+                observed: observed_high_level(
+                    Direction::ClientToServer,
+                    VerifiedFamily::ClientGuiInventory,
+                    &[0x70, 0x0D, 0x01],
+                ),
+            }),
+            None,
+        );
+
+        assert_eq!(state.ui.inventory_packets, 1);
+        assert_eq!(state.ui.inventory_equipment_handoff_events, 1);
+        assert_eq!(state.ui.inventory_equipment_handoff_ready_events, 1);
+        assert_eq!(
+            state
+                .ui
+                .inventory_equipment_handoff_ready_with_deferred_feature25_events,
+            1
+        );
+        assert_eq!(
+            state
+                .ui
+                .inventory_equipment_handoff_blocked_without_ready_state_events,
+            0
+        );
+        let snapshot = state
+            .ui
+            .last_inventory_equipment_handoff
+            .expect("ClientGuiInventory should consume retained ready item state");
+        assert_eq!(
+            snapshot.consumer,
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory
+        );
+        assert_eq!(snapshot.item_context, item_context);
+        assert_eq!(
+            snapshot
+                .item_context
+                .inventory_feature25_materialized_item_ref_mentions(),
+            0,
+            "handoff consumption must not materialize deferred Feature-25 refs"
         );
     }
 
