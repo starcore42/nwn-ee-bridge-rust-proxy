@@ -929,7 +929,7 @@ fn quickbar_item_refresh_proof_class(
     let shared = item_context.compact_item_emission_shared_proof_objects != 0;
     match (direct_only, feature25_only, shared) {
         (true, false, false) => Some(QuickbarItemRefreshProofClass::DirectOnly),
-        (false, true, false) => Some(QuickbarItemRefreshProofClass::Feature25Only),
+        (false, true, false) => None,
         (false, false, true) => Some(QuickbarItemRefreshProofClass::Shared),
         _ => Some(QuickbarItemRefreshProofClass::Mixed),
     }
@@ -951,12 +951,15 @@ fn remember_quickbar_item_context_if_relevant(
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
+            compact_item_emission_ready_objects = item_context.compact_item_emission_ready_objects,
             compact_item_emission_direct_only_proof_objects =
                 item_context.compact_item_emission_direct_only_proof_objects,
             compact_item_emission_feature25_only_proof_objects =
                 item_context.compact_item_emission_feature25_only_proof_objects,
             compact_item_emission_shared_proof_objects =
                 item_context.compact_item_emission_shared_proof_objects,
+            compact_item_emission_deferred_feature25_only_objects =
+                item_context.compact_item_emission_deferred_feature25_only_objects,
             inventory_feature25_first_item_refs = item_context.inventory_feature25_first_item_refs,
             inventory_feature25_second_item_refs =
                 item_context.inventory_feature25_second_item_refs,
@@ -1366,6 +1369,7 @@ fn remember_quickbar_item_context_if_relevant(
             direct_item_proof_objects = item_context.direct_item_proof_objects,
             feature25_item_proof_objects = item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects = item_context.compact_item_emission_proof_objects,
+            compact_item_emission_ready_objects = item_context.compact_item_emission_ready_objects,
             compact_item_emission_candidate_known,
             compact_item_emission_candidate_object_id,
             compact_item_emission_candidate_proof,
@@ -1376,6 +1380,8 @@ fn remember_quickbar_item_context_if_relevant(
                 item_context.compact_item_emission_feature25_only_proof_objects,
             compact_item_emission_shared_proof_objects =
                 item_context.compact_item_emission_shared_proof_objects,
+            compact_item_emission_deferred_feature25_only_objects =
+                item_context.compact_item_emission_deferred_feature25_only_objects,
             inventory_feature25_first_item_refs = item_context.inventory_feature25_first_item_refs,
             inventory_feature25_second_item_refs =
                 item_context.inventory_feature25_second_item_refs,
@@ -2301,12 +2307,17 @@ mod fixture_free_tests {
         assert_eq!(context.direct_item_proof_objects, 0);
         assert_eq!(context.feature25_item_proof_objects, 2);
         assert_eq!(context.compact_item_emission_proof_objects, 2);
+        assert_eq!(context.compact_item_emission_ready_objects, 0);
         assert_eq!(context.compact_item_emission_direct_only_proof_objects, 0);
         assert_eq!(
             context.compact_item_emission_feature25_only_proof_objects,
             2
         );
         assert_eq!(context.compact_item_emission_shared_proof_objects, 0);
+        assert_eq!(
+            context.compact_item_emission_deferred_feature25_only_objects,
+            2
+        );
         assert_eq!(context.inventory_feature25_first_item_refs, 1);
         assert_eq!(context.inventory_feature25_second_item_refs, 1);
         assert_eq!(context.inventory_feature25_reference_records, 1);
@@ -2510,19 +2521,16 @@ mod fixture_free_tests {
             0
         );
 
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(first_item_id), None);
 
         let post_context = state
             .ui
             .last_inventory_item_context_after_committed_quickbar
-            .expect("later Feature-25 refs should be retained after the committed quickbar");
-        assert_eq!(post_context.feature25_item_proof_objects, 2);
-        assert_eq!(post_context.compact_item_emission_proof_objects, 2);
+            .expect("later direct item proof should be retained after the committed quickbar");
+        assert_eq!(post_context.direct_item_proof_objects, 1);
+        assert_eq!(post_context.feature25_item_proof_objects, 0);
+        assert_eq!(post_context.compact_item_emission_proof_objects, 1);
+        assert_eq!(post_context.compact_item_emission_ready_objects, 1);
         assert_eq!(
             state
                 .ui
@@ -2541,8 +2549,8 @@ mod fixture_free_tests {
         );
         assert_eq!(
             state.ui.post_committed_quickbar_item_refresh_proof_class,
-            Some(QuickbarItemRefreshProofClass::Feature25Only),
-            "the pending post-quickbar proof should preserve its Feature-25-only class"
+            Some(QuickbarItemRefreshProofClass::DirectOnly),
+            "the pending post-quickbar proof should preserve its direct item class"
         );
         assert_eq!(
             state.ui.post_committed_quickbar_item_refresh_pending_events, 1,
@@ -2627,7 +2635,7 @@ mod fixture_free_tests {
         );
         assert_eq!(
             unresolved.proof_class,
-            Some(QuickbarItemRefreshProofClass::Feature25Only)
+            Some(QuickbarItemRefreshProofClass::DirectOnly)
         );
 
         observe_verified_payload(
@@ -2722,7 +2730,7 @@ mod fixture_free_tests {
         );
         assert_eq!(
             state.ui.last_committed_quickbar_item_refresh_proof_class,
-            Some(QuickbarItemRefreshProofClass::Feature25Only),
+            Some(QuickbarItemRefreshProofClass::DirectOnly),
             "the consumed pending refresh should retain the proof class seen after the prior quickbar"
         );
         assert_eq!(
@@ -2793,6 +2801,7 @@ mod fixture_free_tests {
         );
         assert_eq!(
             quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_ready_objects: 1,
                 compact_item_emission_proof_objects: 1,
                 compact_item_emission_direct_only_proof_objects: 1,
                 ..Default::default()
@@ -2801,14 +2810,16 @@ mod fixture_free_tests {
         );
         assert_eq!(
             quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_ready_objects: 0,
                 compact_item_emission_proof_objects: 1,
                 compact_item_emission_feature25_only_proof_objects: 1,
                 ..Default::default()
             }),
-            Some(QuickbarItemRefreshProofClass::Feature25Only)
+            None
         );
         assert_eq!(
             quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_ready_objects: 1,
                 compact_item_emission_proof_objects: 1,
                 compact_item_emission_shared_proof_objects: 1,
                 ..Default::default()
@@ -2817,6 +2828,7 @@ mod fixture_free_tests {
         );
         assert_eq!(
             quickbar_item_refresh_proof_class(InventoryItemContextSummary {
+                compact_item_emission_ready_objects: 1,
                 compact_item_emission_proof_objects: 2,
                 compact_item_emission_direct_only_proof_objects: 1,
                 compact_item_emission_feature25_only_proof_objects: 1,
@@ -3300,12 +3312,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
             Direction::ClientToServer,
@@ -3327,8 +3334,8 @@ mod fixture_free_tests {
             unresolved.item_context.compact_item_emission_candidate,
             Some(InventoryItemContextCandidate {
                 object_id: first_item_id,
-                proof: InventoryItemObjectProof::Feature25FirstList,
-                source: crate::translate::semantic::state::InventoryItemContextCandidateSource::Feature25Only,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: crate::translate::semantic::state::InventoryItemContextCandidateSource::DirectOnly,
             }),
             "the pending refresh should retain the deterministic object id for the harness action"
         );
@@ -3570,12 +3577,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(candidate_id), None);
 
         apply_event(
             &mut state,
@@ -3766,12 +3768,7 @@ mod fixture_free_tests {
             "durable GQ state alone should not emit a pending hint"
         );
 
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(candidate_id), None);
 
         assert!(
             !state.ui.post_committed_quickbar_item_refresh_pending,
@@ -3884,12 +3881,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
             Direction::ServerToClient,
@@ -3979,12 +3971,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
             Direction::ClientToServer,
@@ -4000,8 +3987,8 @@ mod fixture_free_tests {
             unresolved.item_context.compact_item_emission_candidate,
             Some(InventoryItemContextCandidate {
                 object_id: first_item_id,
-                proof: InventoryItemObjectProof::Feature25FirstList,
-                source: crate::translate::semantic::state::InventoryItemContextCandidateSource::Feature25Only,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: crate::translate::semantic::state::InventoryItemContextCandidateSource::DirectOnly,
             })
         );
         assert_eq!(
@@ -4065,12 +4052,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
             Direction::ClientToServer,
@@ -4161,12 +4143,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        observe_verified_payload(
-            &mut state,
-            Direction::ServerToClient,
-            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
-            &live_payload,
-        );
+        apply_event(&mut state, direct_item_live_event(first_item_id), None);
 
         assert!(state.ui.post_committed_quickbar_item_refresh_pending);
 
@@ -4182,7 +4159,7 @@ mod fixture_free_tests {
             .last_inventory_item_context_after_committed_quickbar
             .expect("area reset should retain cleared post-quickbar context");
         assert_eq!(cleared_context.compact_item_emission_proof_objects, 0);
-        assert_eq!(cleared_context.cleared_inventory_item_object_ids, 2);
+        assert_eq!(cleared_context.cleared_inventory_item_object_ids, 1);
         assert_eq!(
             state
                 .ui
@@ -4304,6 +4281,32 @@ mod fixture_free_tests {
             quickbar_item_use_count_records: 1,
             quickbar_item_use_count_rows: u32::try_from(updates.len()).unwrap_or(u32::MAX),
             quickbar_item_use_count_updates: updates,
+        })
+    }
+
+    fn direct_item_live_event(object_id: u32) -> ProtocolEvent {
+        ProtocolEvent::LiveObject(LiveObjectEvent {
+            observed: observed_high_level(
+                Direction::ServerToClient,
+                VerifiedFamily::GameObjUpdateLiveObject,
+                &[],
+            ),
+            mentions: vec![LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x06,
+                object_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            }],
+            materialized_item_object_ids: Vec::new(),
+            inventory_feature25_references: Vec::new(),
+            quickbar_item_use_count_records: 0,
+            quickbar_item_use_count_rows: 0,
+            quickbar_item_use_count_updates: Vec::new(),
         })
     }
 

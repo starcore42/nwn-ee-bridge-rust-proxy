@@ -17,6 +17,35 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-07 deferred Feature-25 ready/emission split: live-data gate reused
+  the fresh gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`
+  (`quickbar-item-refresh-hint.json`
+  `2026-07-07T07:17:18.6853537+10:00`, about 3h16m old at gate). It reached
+  `Module_Loaded`, `Area_ClientArea`, and sustained `GameObjUpdate_LiveObject`
+  traffic with no quarantine directory; the hint still resolved by prior
+  quickbar use-count state and reported 7 deferred Feature-25 item-ref
+  mentions, 0 materialized mentions, and
+  `inventory_feature25_materialization_outcome="all_item_refs_deferred"`.
+  Proxy2 now splits diagnostic compact item refs from EE quickbar emission-ready
+  item proof: `compact_item_emission_proof_objects` keeps direct plus
+  Feature-25 refs for tracing and candidate selection, while
+  `compact_item_emission_ready_objects` and
+  `compact_item_emission_ready_candidate` require direct/materialized item
+  state. Deferred Feature-25-only refs remain visible as
+  `compact_item_emission_deferred_feature25_only_objects`, but they no longer
+  open a pending quickbar item-refresh window or produce a harness action hint.
+  Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-feature25-ready-split-20260707-105736`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, and 0 quarantine files; final summary
+  had `pending_item_refresh=false`,
+  `no_hint_reason="post_context_without_compact_item_proof"`, diagnostic
+  candidate `0x80015DAA` from `feature25_second_list`, 0 ready objects, and 6
+  deferred Feature-25-only objects. Active next path: run the next live HG
+  harness on this ready/deferred split and confirm the prior quickbar use-count
+  no-action path still holds before changing inventory/equipment UI handoff
+  rules.
 - 2026-07-07 deferred Feature-25 refs are reference-only for compact quickbar
   emission: live-data gate reused the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`

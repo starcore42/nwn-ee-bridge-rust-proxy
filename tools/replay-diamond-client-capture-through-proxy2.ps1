@@ -1421,6 +1421,10 @@ try {
     $quickbarHintInventoryFeature25MaterializedItemRefMentions = 0
     $quickbarHintInventoryFeature25DeferredItemRefMentions = 0
     $quickbarHintInventoryFeature25MaterializationOutcome = ''
+    $quickbarHintCompactItemEmissionReadyObjects = 0
+    $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects = 0
+    $quickbarHintStreamProbeCompactItemEmissionReadyObjects = 0
+    $quickbarHintStreamProbeCompactItemEmissionDeferredFeature25OnlyObjects = 0
     $quickbarHintInventoryFeature25FirstItemRefs = 0
     $quickbarHintInventoryFeature25FirstItemRefMentions = 0
     $quickbarHintInventoryFeature25FirstMaterializedItemRefMentions = 0
@@ -1608,6 +1612,10 @@ try {
         $quickbarHintInventoryFeature25ItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_item_ref_mentions'
         $quickbarHintInventoryFeature25MaterializedItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_materialized_item_ref_mentions'
         $quickbarHintInventoryFeature25DeferredItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_deferred_item_ref_mentions'
+        $quickbarHintCompactItemEmissionReadyObjects = & $getQuickbarHintInt64 'compact_item_emission_ready_objects'
+        $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects = & $getQuickbarHintInt64 'compact_item_emission_deferred_feature25_only_objects'
+        $quickbarHintStreamProbeCompactItemEmissionReadyObjects = & $getQuickbarHintInt64 'stream_probe_compact_item_emission_ready_objects'
+        $quickbarHintStreamProbeCompactItemEmissionDeferredFeature25OnlyObjects = & $getQuickbarHintInt64 'stream_probe_compact_item_emission_deferred_feature25_only_objects'
         $feature25OutcomeProp = $quickbarHintJson.PSObject.Properties['inventory_feature25_materialization_outcome']
         if ($null -ne $feature25OutcomeProp -and $null -ne $feature25OutcomeProp.Value) {
             $quickbarHintInventoryFeature25MaterializationOutcome = [string]$feature25OutcomeProp.Value
@@ -1859,6 +1867,10 @@ try {
         QuickbarItemRefreshHintInventoryFeature25MaterializedItemRefMentions = $quickbarHintInventoryFeature25MaterializedItemRefMentions
         QuickbarItemRefreshHintInventoryFeature25DeferredItemRefMentions = $quickbarHintInventoryFeature25DeferredItemRefMentions
         QuickbarItemRefreshHintInventoryFeature25MaterializationOutcome = $quickbarHintInventoryFeature25MaterializationOutcome
+        QuickbarItemRefreshHintCompactItemEmissionReadyObjects = $quickbarHintCompactItemEmissionReadyObjects
+        QuickbarItemRefreshHintCompactItemEmissionDeferredFeature25OnlyObjects = $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects
+        QuickbarItemRefreshHintStreamProbeCompactItemEmissionReadyObjects = $quickbarHintStreamProbeCompactItemEmissionReadyObjects
+        QuickbarItemRefreshHintStreamProbeCompactItemEmissionDeferredFeature25OnlyObjects = $quickbarHintStreamProbeCompactItemEmissionDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintInventoryFeature25FirstItemRefs = $quickbarHintInventoryFeature25FirstItemRefs
         QuickbarItemRefreshHintInventoryFeature25FirstItemRefMentions = $quickbarHintInventoryFeature25FirstItemRefMentions
         QuickbarItemRefreshHintInventoryFeature25FirstMaterializedItemRefMentions = $quickbarHintInventoryFeature25FirstMaterializedItemRefMentions
@@ -2225,9 +2237,11 @@ try {
         QuickbarRegistryDirectItemProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'direct_item_proof_objects'
         QuickbarRegistryFeature25ItemProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'feature25_item_proof_objects'
         QuickbarRegistryCompactItemEmissionProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_proof_objects'
+        QuickbarRegistryCompactItemEmissionReadyObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_ready_objects'
         QuickbarRegistryCompactItemEmissionDirectOnlyProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_direct_only_proof_objects'
         QuickbarRegistryCompactItemEmissionFeature25OnlyProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_feature25_only_proof_objects'
         QuickbarRegistryCompactItemEmissionSharedProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_shared_proof_objects'
+        QuickbarRegistryCompactItemEmissionDeferredFeature25OnlyObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_deferred_feature25_only_objects'
         QuickbarRegistryFeature25FirstItemRefs = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_first_item_refs'
         QuickbarRegistryFeature25SecondItemRefs = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_second_item_refs'
         QuickbarRegistryFeature25LegacyTailItemRefs = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_legacy_tail_item_refs'
@@ -2278,6 +2292,7 @@ try {
         QuickbarSemanticPostDirectItemProofObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'direct_item_proof_objects'
         QuickbarSemanticPostFeature25ItemProofObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'feature25_item_proof_objects'
         QuickbarSemanticPostCompactItemEmissionProofObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_proof_objects'
+        QuickbarSemanticPostCompactItemEmissionReadyObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_ready_objects'
         QuickbarSemanticPostCompactItemEmissionCandidateKnown = Get-SemanticPostQuickbarItemContextFlagCount -Text $proxyLogText -Field 'compact_item_emission_candidate_known' -Value 'true'
         QuickbarSemanticPostCompactItemEmissionCandidateObjectId = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_candidate_object_id'
         QuickbarSemanticPostCompactItemEmissionCandidateSourceDirectOnly = Get-SemanticPostQuickbarItemContextStringFieldCount -Text $proxyLogText -Field 'compact_item_emission_candidate_source' -Value 'direct_only'
@@ -2290,6 +2305,7 @@ try {
         QuickbarSemanticPostCompactItemEmissionDirectOnlyProofObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_direct_only_proof_objects'
         QuickbarSemanticPostCompactItemEmissionFeature25OnlyProofObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_feature25_only_proof_objects'
         QuickbarSemanticPostCompactItemEmissionSharedProofObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_shared_proof_objects'
+        QuickbarSemanticPostCompactItemEmissionDeferredFeature25OnlyObjects = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_deferred_feature25_only_objects'
         QuickbarSemanticPostFeature25FirstItemRefs = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_first_item_refs'
         QuickbarSemanticPostFeature25SecondItemRefs = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_second_item_refs'
         QuickbarSemanticPostFeature25LegacyTailItemRefs = Get-SemanticPostQuickbarItemContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_legacy_tail_item_refs'
@@ -2297,9 +2313,11 @@ try {
         QuickbarStreamProbeRegistryDirectItemProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'direct_item_proof_objects' -Committed $false
         QuickbarStreamProbeRegistryFeature25ItemProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'feature25_item_proof_objects' -Committed $false
         QuickbarStreamProbeRegistryCompactItemEmissionProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_proof_objects' -Committed $false
+        QuickbarStreamProbeRegistryCompactItemEmissionReadyObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_ready_objects' -Committed $false
         QuickbarStreamProbeRegistryCompactItemEmissionDirectOnlyProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_direct_only_proof_objects' -Committed $false
         QuickbarStreamProbeRegistryCompactItemEmissionFeature25OnlyProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_feature25_only_proof_objects' -Committed $false
         QuickbarStreamProbeRegistryCompactItemEmissionSharedProofObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_shared_proof_objects' -Committed $false
+        QuickbarStreamProbeRegistryCompactItemEmissionDeferredFeature25OnlyObjects = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'compact_item_emission_deferred_feature25_only_objects' -Committed $false
         QuickbarStreamProbeRegistryFeature25FirstItemRefs = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_first_item_refs' -Committed $false
         QuickbarStreamProbeRegistryFeature25SecondItemRefs = Get-QuickbarRegistryContextTraceFieldMax -Text $proxyLogText -Field 'inventory_feature25_second_item_refs' -Committed $false
         LiveObjectExactClaimCreatureMentions = Get-LiveObjectExactClaimTraceFieldSum -Text $proxyLogText -Field 'creature_mentions'

@@ -149,7 +149,7 @@ impl SemanticSessionState {
             .and_then(|detail| detail.matches_candidate_object)
             .unwrap_or(false);
         let (recommended_set_button_slot, _) = self.ui.quickbar_item_refresh_set_button_slot();
-        let pending_candidate = summary.item_context.compact_item_emission_candidate;
+        let pending_candidate = summary.item_context.compact_item_emission_ready_candidate;
         let first_client_action_matches_recommended_client_quickbar_set_button =
             match (first_client_action_detail, pending_candidate) {
                 (Some(detail), Some(candidate)) => detail
@@ -426,6 +426,8 @@ impl SemanticSessionState {
             feature25_item_proof_objects = summary.item_context.feature25_item_proof_objects,
             compact_item_emission_proof_objects =
                 summary.item_context.compact_item_emission_proof_objects,
+            compact_item_emission_ready_objects =
+                summary.item_context.compact_item_emission_ready_objects,
             compact_item_emission_candidate_known,
             compact_item_emission_candidate_object_id,
             compact_item_emission_candidate_proof,
@@ -463,6 +465,9 @@ impl SemanticSessionState {
             compact_item_emission_shared_proof_objects = summary
                 .item_context
                 .compact_item_emission_shared_proof_objects,
+            compact_item_emission_deferred_feature25_only_objects = summary
+                .item_context
+                .compact_item_emission_deferred_feature25_only_objects,
             inventory_feature25_first_item_refs =
                 summary.item_context.inventory_feature25_first_item_refs,
             inventory_feature25_second_item_refs =
@@ -601,9 +606,12 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) feature25_item_proof_objects: usize,
     pub(crate) compact_item_emission_proof_objects: usize,
     pub(crate) compact_item_emission_candidate: Option<InventoryItemContextCandidate>,
+    pub(crate) compact_item_emission_ready_objects: usize,
+    pub(crate) compact_item_emission_ready_candidate: Option<InventoryItemContextCandidate>,
     pub(crate) compact_item_emission_direct_only_proof_objects: usize,
     pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
     pub(crate) compact_item_emission_shared_proof_objects: usize,
+    pub(crate) compact_item_emission_deferred_feature25_only_objects: usize,
     pub(crate) inventory_feature25_first_item_refs: usize,
     pub(crate) inventory_feature25_second_item_refs: usize,
     pub(crate) inventory_feature25_legacy_tail_item_refs: usize,
@@ -628,7 +636,7 @@ impl InventoryItemContextSummary {
     }
 
     pub(crate) fn has_compact_quickbar_item_proof(&self) -> bool {
-        self.compact_item_emission_proof_objects != 0
+        self.compact_item_emission_ready_objects != 0
     }
 
     pub(crate) fn inventory_feature25_item_ref_mentions(&self) -> u64 {
@@ -2041,9 +2049,11 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"direct_item_proof_objects\": {},\n",
                 "  \"feature25_item_proof_objects\": {},\n",
                 "  \"compact_item_emission_proof_objects\": {},\n",
+                "  \"compact_item_emission_ready_objects\": {},\n",
                 "  \"compact_item_emission_direct_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_shared_proof_objects\": {},\n",
+                "  \"compact_item_emission_deferred_feature25_only_objects\": {},\n",
                 "  \"inventory_feature25_reference_records\": {},\n",
                 "  \"inventory_feature25_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_materialized_item_ref_mentions\": {},\n",
@@ -2345,9 +2355,12 @@ impl QuickbarItemRefreshHarnessHint {
             self.direct_item_proof_objects,
             self.feature25_item_proof_objects,
             self.compact_item_emission_proof_objects,
+            self.item_context.compact_item_emission_ready_objects,
             self.compact_item_emission_direct_only_proof_objects,
             self.compact_item_emission_feature25_only_proof_objects,
             self.compact_item_emission_shared_proof_objects,
+            self.item_context
+                .compact_item_emission_deferred_feature25_only_objects,
             self.item_context.inventory_feature25_reference_records,
             self.item_context.inventory_feature25_item_ref_mentions(),
             self.item_context
@@ -3482,6 +3495,34 @@ impl ObjectRegistry {
         })
     }
 
+    fn compact_item_emission_ready_candidate(
+        &self,
+        direct_item_proof_objects: &BTreeSet<u32>,
+        feature25_item_proof_objects: &BTreeSet<u32>,
+    ) -> Option<InventoryItemContextCandidate> {
+        if let Some(object_id) = direct_item_proof_objects
+            .difference(feature25_item_proof_objects)
+            .next()
+            .copied()
+        {
+            return Some(InventoryItemContextCandidate {
+                object_id,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            });
+        }
+
+        let object_id = direct_item_proof_objects
+            .intersection(feature25_item_proof_objects)
+            .next()
+            .copied()?;
+        Some(InventoryItemContextCandidate {
+            object_id,
+            proof: InventoryItemObjectProof::ActiveObject,
+            source: InventoryItemContextCandidateSource::Shared,
+        })
+    }
+
     pub(crate) fn has_known_inventory_item_object_id(&self, object_id: u32) -> bool {
         if self.materialized_item_object_ids.contains(&object_id) {
             return true;
@@ -3524,6 +3565,11 @@ impl ObjectRegistry {
             &direct_item_proof_objects,
             &feature25_item_proof_objects,
         );
+        let compact_item_emission_ready_objects = direct_item_proof_objects.len();
+        let compact_item_emission_ready_candidate = self.compact_item_emission_ready_candidate(
+            &direct_item_proof_objects,
+            &feature25_item_proof_objects,
+        );
         InventoryItemContextSummary {
             active_item_objects: active_item_objects.len(),
             materialized_item_objects: self.materialized_item_object_ids.len(),
@@ -3531,9 +3577,13 @@ impl ObjectRegistry {
             feature25_item_proof_objects: feature25_item_proof_objects.len(),
             compact_item_emission_proof_objects: compact_item_emission_proof_objects.len(),
             compact_item_emission_candidate,
+            compact_item_emission_ready_objects,
+            compact_item_emission_ready_candidate,
             compact_item_emission_direct_only_proof_objects,
             compact_item_emission_feature25_only_proof_objects,
             compact_item_emission_shared_proof_objects,
+            compact_item_emission_deferred_feature25_only_objects:
+                compact_item_emission_feature25_only_proof_objects,
             inventory_feature25_first_item_refs: self.inventory_feature25_first_item_refs.len(),
             inventory_feature25_second_item_refs: self.inventory_feature25_second_item_refs.len(),
             inventory_feature25_legacy_tail_item_refs: self
@@ -4991,7 +5041,7 @@ impl UiState {
             return None;
         }
         let item_context = self.last_inventory_item_context_after_committed_quickbar?;
-        let candidate = item_context.compact_item_emission_candidate?;
+        let candidate = item_context.compact_item_emission_ready_candidate?;
         let first_active_item = self
             .last_quickbar_stream_probe
             .and_then(|probe| probe.first_preserved_active_item_signature)?;
@@ -5048,7 +5098,7 @@ impl UiState {
         };
 
         if self.post_committed_quickbar_item_refresh_pending {
-            if context.compact_item_emission_candidate.is_none() {
+            if context.compact_item_emission_ready_candidate.is_none() {
                 return "pending_refresh_without_candidate";
             }
             return "pending_refresh_hint_unavailable";
@@ -5283,6 +5333,8 @@ impl UiState {
                 "  \"stream_probe_direct_item_proof_objects\": {},\n",
                 "  \"stream_probe_feature25_item_proof_objects\": {},\n",
                 "  \"stream_probe_compact_item_emission_proof_objects\": {},\n",
+                "  \"stream_probe_compact_item_emission_ready_objects\": {},\n",
+                "  \"stream_probe_compact_item_emission_deferred_feature25_only_objects\": {},\n",
                 "  \"post_committed_item_context_known\": {},\n",
                 "  \"post_committed_item_refresh_pending\": {},\n",
                 "  \"post_committed_item_refresh_resolved_by_server_use_count\": {},\n",
@@ -5338,9 +5390,11 @@ impl UiState {
                 "  \"direct_item_proof_objects\": {},\n",
                 "  \"feature25_item_proof_objects\": {},\n",
                 "  \"compact_item_emission_proof_objects\": {},\n",
+                "  \"compact_item_emission_ready_objects\": {},\n",
                 "  \"compact_item_emission_direct_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_feature25_only_proof_objects\": {},\n",
                 "  \"compact_item_emission_shared_proof_objects\": {},\n",
+                "  \"compact_item_emission_deferred_feature25_only_objects\": {},\n",
                 "  \"inventory_feature25_reference_records\": {},\n",
                 "  \"inventory_feature25_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_materialized_item_ref_mentions\": {},\n",
@@ -5439,6 +5493,8 @@ impl UiState {
             stream_probe_context.direct_item_proof_objects,
             stream_probe_context.feature25_item_proof_objects,
             stream_probe_context.compact_item_emission_proof_objects,
+            stream_probe_context.compact_item_emission_ready_objects,
+            stream_probe_context.compact_item_emission_deferred_feature25_only_objects,
             self.last_inventory_item_context_after_committed_quickbar
                 .is_some(),
             self.post_committed_quickbar_item_refresh_pending,
@@ -5503,9 +5559,11 @@ impl UiState {
             context.direct_item_proof_objects,
             context.feature25_item_proof_objects,
             context.compact_item_emission_proof_objects,
+            context.compact_item_emission_ready_objects,
             context.compact_item_emission_direct_only_proof_objects,
             context.compact_item_emission_feature25_only_proof_objects,
             context.compact_item_emission_shared_proof_objects,
+            context.compact_item_emission_deferred_feature25_only_objects,
             context.inventory_feature25_reference_records,
             context.inventory_feature25_item_ref_mentions(),
             context.inventory_feature25_materialized_item_ref_mentions(),
@@ -5615,7 +5673,7 @@ impl UiState {
         &self,
     ) -> Option<QuickbarItemRefreshHarnessHint> {
         let summary = self.unresolved_pending_item_refresh()?;
-        let candidate = summary.item_context.compact_item_emission_candidate?;
+        let candidate = summary.item_context.compact_item_emission_ready_candidate?;
         let (recommended_set_button_slot, recommended_set_button_slot_source) =
             self.quickbar_item_refresh_set_button_slot();
         let first_preserved_active_item_signature = self
@@ -7905,6 +7963,10 @@ mod tests {
             "Feature-25 refs already include the two direct-proof ids in this fixture"
         );
         assert_eq!(
+            summary.compact_item_emission_ready_objects, 2,
+            "only direct item proof can make compact quickbar item emission ready"
+        );
+        assert_eq!(
             summary.compact_item_emission_direct_only_proof_objects, 0,
             "both direct-proof ids are also present in Feature-25 refs"
         );
@@ -7924,6 +7986,19 @@ mod tests {
                 source: InventoryItemContextCandidateSource::Shared,
             }),
             "the deterministic harness candidate should point at the lowest shared direct/Feature-25 proof when no direct-only proof exists"
+        );
+        assert_eq!(
+            summary.compact_item_emission_ready_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: gui_materialized_item_id,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::Shared,
+            }),
+            "emission-ready candidate selection must ignore deferred-only Feature-25 refs"
+        );
+        assert_eq!(
+            summary.compact_item_emission_deferred_feature25_only_objects, 3,
+            "deferred-only Feature-25 refs remain diagnostic but are not emission-ready"
         );
         assert_eq!(summary.inventory_feature25_first_item_refs, 2);
         assert_eq!(summary.inventory_feature25_second_item_refs, 2);
@@ -8003,15 +8078,19 @@ mod tests {
                 legacy_tail_object_ids: vec![],
             },
         ]);
+        let direct_only_summary = direct_only.inventory_item_context_summary();
         assert_eq!(
-            direct_only
-                .inventory_item_context_summary()
-                .compact_item_emission_candidate,
+            direct_only_summary.compact_item_emission_candidate,
             Some(InventoryItemContextCandidate {
                 object_id: 0x8000_0100,
                 proof: InventoryItemObjectProof::ActiveObject,
                 source: InventoryItemContextCandidateSource::DirectOnly,
             })
+        );
+        assert_eq!(direct_only_summary.compact_item_emission_ready_objects, 1);
+        assert_eq!(
+            direct_only_summary.compact_item_emission_ready_candidate,
+            direct_only_summary.compact_item_emission_candidate
         );
 
         let mut shared = ObjectRegistry::default();
@@ -8023,15 +8102,19 @@ mod tests {
             second_object_ids: vec![],
             legacy_tail_object_ids: vec![],
         }]);
+        let shared_summary = shared.inventory_item_context_summary();
         assert_eq!(
-            shared
-                .inventory_item_context_summary()
-                .compact_item_emission_candidate,
+            shared_summary.compact_item_emission_candidate,
             Some(InventoryItemContextCandidate {
                 object_id: 0x8000_0100,
                 proof: InventoryItemObjectProof::ActiveObject,
                 source: InventoryItemContextCandidateSource::Shared,
             })
+        );
+        assert_eq!(shared_summary.compact_item_emission_ready_objects, 1);
+        assert_eq!(
+            shared_summary.compact_item_emission_ready_candidate,
+            shared_summary.compact_item_emission_candidate
         );
 
         let mut feature25_only = ObjectRegistry::default();
@@ -8044,15 +8127,26 @@ mod tests {
                 legacy_tail_object_ids: vec![],
             },
         ]);
+        let feature25_only_summary = feature25_only.inventory_item_context_summary();
         assert_eq!(
-            feature25_only
-                .inventory_item_context_summary()
-                .compact_item_emission_candidate,
+            feature25_only_summary.compact_item_emission_candidate,
             Some(InventoryItemContextCandidate {
                 object_id: 0x8000_0300,
                 proof: InventoryItemObjectProof::Feature25SecondList,
                 source: InventoryItemContextCandidateSource::Feature25Only,
             })
+        );
+        assert_eq!(
+            feature25_only_summary.compact_item_emission_ready_objects,
+            0
+        );
+        assert_eq!(
+            feature25_only_summary.compact_item_emission_ready_candidate, None,
+            "Feature-25-only refs stay available for diagnostics but cannot drive item emission"
+        );
+        assert_eq!(
+            feature25_only_summary.compact_item_emission_deferred_feature25_only_objects,
+            1
         );
     }
 
@@ -8188,15 +8282,21 @@ mod tests {
         );
 
         let item_context = InventoryItemContextSummary {
-            direct_item_proof_objects: 0,
+            direct_item_proof_objects: 1,
             feature25_item_proof_objects: 1,
             compact_item_emission_proof_objects: 1,
             compact_item_emission_candidate: Some(InventoryItemContextCandidate {
                 object_id: 0x8000_0100,
-                proof: InventoryItemObjectProof::Feature25SecondList,
-                source: InventoryItemContextCandidateSource::Feature25Only,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::Shared,
             }),
-            compact_item_emission_feature25_only_proof_objects: 1,
+            compact_item_emission_ready_objects: 1,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0100,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::Shared,
+            }),
+            compact_item_emission_shared_proof_objects: 1,
             inventory_feature25_reference_records: 2,
             inventory_feature25_first_item_refs: 1,
             inventory_feature25_first_item_ref_mentions: 3,
@@ -8266,7 +8366,7 @@ mod tests {
             Some(pre_action_use_count_row);
         ui.post_committed_quickbar_item_refresh_followup_events_before_first_client_action = 8;
         ui.post_committed_quickbar_item_refresh_proof_class =
-            Some(QuickbarItemRefreshProofClass::Feature25Only);
+            Some(QuickbarItemRefreshProofClass::Shared);
         ui.post_committed_quickbar_item_refresh_first_followup_event =
             Some(QuickbarItemRefreshEventKind::ClientInputOther);
         ui.post_committed_quickbar_item_refresh_first_client_action =
@@ -8369,13 +8469,10 @@ mod tests {
             .quickbar_item_refresh_harness_hint()
             .expect("pending candidate should expose a harness hint");
         assert_eq!(hint.candidate.object_id, 0x8000_0100);
-        assert_eq!(
-            hint.candidate.proof,
-            InventoryItemObjectProof::Feature25SecondList
-        );
+        assert_eq!(hint.candidate.proof, InventoryItemObjectProof::ActiveObject);
         assert_eq!(
             hint.proof_class,
-            Some(QuickbarItemRefreshProofClass::Feature25Only)
+            Some(QuickbarItemRefreshProofClass::Shared)
         );
         assert_eq!(hint.updates_since_committed_quickbar, 7);
         assert_eq!(hint.events_since_pending_refresh, 11);
@@ -8400,8 +8497,8 @@ mod tests {
         assert!(json.contains("\"post_committed_item_refresh_resolution\": \"pending\""));
         assert!(json.contains("\"candidate_object_id\": 2147483904"));
         assert!(json.contains("\"candidate_object_id_hex\": \"0x80000100\""));
-        assert!(json.contains("\"candidate_proof\": \"feature25_second_list\""));
-        assert!(json.contains("\"candidate_source\": \"feature25_only\""));
+        assert!(json.contains("\"candidate_proof\": \"active_object\""));
+        assert!(json.contains("\"candidate_source\": \"shared\""));
         assert!(json.contains("\"first_preserved_active_item_known\": true"));
         assert!(json.contains("\"first_preserved_active_item_matches_candidate\": true"));
         assert!(json.contains("\"first_preserved_active_item_slot_known\": true"));
@@ -8460,6 +8557,8 @@ mod tests {
         assert!(json.contains("\"inventory_feature25_item_ref_mentions\": 12"));
         assert!(json.contains("\"inventory_feature25_materialized_item_ref_mentions\": 6"));
         assert!(json.contains("\"inventory_feature25_deferred_item_ref_mentions\": 6"));
+        assert!(json.contains("\"compact_item_emission_ready_objects\": 1"));
+        assert!(json.contains("\"compact_item_emission_deferred_feature25_only_objects\": 0"));
         assert!(
             json.contains("\"inventory_feature25_materialization_outcome\": \"mixed_item_refs\"")
         );
@@ -8613,7 +8712,7 @@ mod tests {
         assert!(json.contains("\"recommended_client_use_object_object_id_hex\": \"0x80000100\""));
         assert!(json.contains("\"recommended_client_use_object_mark_inventory_gui_state\": false"));
         assert!(json.contains("\"recommended_client_use_object_schedule_script_event\": false"));
-        assert!(json.contains("\"pending_item_refresh_proof_class\": \"feature25_only\""));
+        assert!(json.contains("\"pending_item_refresh_proof_class\": \"shared\""));
         assert!(json.contains("\"quickbar_item_use_count_state_rows\": 2"));
         assert!(json.contains("\"quickbar_item_use_count_updates_observed\": 2"));
         assert!(json.contains("\"candidate_quickbar_item_use_count_state_known\": true"));
@@ -9122,6 +9221,12 @@ mod tests {
             direct_item_proof_objects: 2,
             compact_item_emission_proof_objects: 2,
             compact_item_emission_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0101,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            compact_item_emission_ready_objects: 2,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
                 object_id: 0x8000_0101,
                 proof: InventoryItemObjectProof::ActiveObject,
                 source: InventoryItemContextCandidateSource::DirectOnly,
