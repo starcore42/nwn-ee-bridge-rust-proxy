@@ -974,6 +974,8 @@ fn remember_quickbar_item_context_if_relevant(
             inventory_feature25_materialization_outcome = item_context
                 .inventory_feature25_materialization_outcome()
                 .as_str(),
+            inventory_feature25_handoff_outcome =
+                item_context.inventory_feature25_handoff_outcome().as_str(),
             cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
             "semantic state retained inventory item context for next GuiQuickbar"
         );
@@ -1396,6 +1398,8 @@ fn remember_quickbar_item_context_if_relevant(
             inventory_feature25_materialization_outcome = item_context
                 .inventory_feature25_materialization_outcome()
                 .as_str(),
+            inventory_feature25_handoff_outcome =
+                item_context.inventory_feature25_handoff_outcome().as_str(),
             cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
             "semantic state retained inventory item context after committed GuiQuickbar"
         );

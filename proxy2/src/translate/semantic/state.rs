@@ -682,6 +682,38 @@ impl InventoryItemContextSummary {
         }
         InventoryFeature25MaterializationOutcome::UnclassifiedItemRefs
     }
+
+    pub(crate) fn inventory_feature25_handoff_outcome(&self) -> InventoryFeature25HandoffOutcome {
+        let has_ready_item_state = self.compact_item_emission_ready_objects != 0;
+        match self.inventory_feature25_materialization_outcome() {
+            InventoryFeature25MaterializationOutcome::None => {
+                InventoryFeature25HandoffOutcome::None
+            }
+            InventoryFeature25MaterializationOutcome::ReferencesWithoutItemMentions => {
+                InventoryFeature25HandoffOutcome::ReferencesWithoutItemMentions
+            }
+            InventoryFeature25MaterializationOutcome::AllItemRefsDeferred
+                if has_ready_item_state =>
+            {
+                InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithReadyItemState
+            }
+            InventoryFeature25MaterializationOutcome::AllItemRefsDeferred => {
+                InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithoutReadyItemState
+            }
+            InventoryFeature25MaterializationOutcome::AllItemRefsMaterialized => {
+                InventoryFeature25HandoffOutcome::AllItemRefsMaterialized
+            }
+            InventoryFeature25MaterializationOutcome::MixedItemRefs if has_ready_item_state => {
+                InventoryFeature25HandoffOutcome::MixedItemRefsWithReadyItemState
+            }
+            InventoryFeature25MaterializationOutcome::MixedItemRefs => {
+                InventoryFeature25HandoffOutcome::MixedItemRefsWithoutReadyItemState
+            }
+            InventoryFeature25MaterializationOutcome::UnclassifiedItemRefs => {
+                InventoryFeature25HandoffOutcome::UnclassifiedItemRefs
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,6 +734,37 @@ impl InventoryFeature25MaterializationOutcome {
             Self::AllItemRefsDeferred => "all_item_refs_deferred",
             Self::AllItemRefsMaterialized => "all_item_refs_materialized",
             Self::MixedItemRefs => "mixed_item_refs",
+            Self::UnclassifiedItemRefs => "unclassified_item_refs",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InventoryFeature25HandoffOutcome {
+    None,
+    ReferencesWithoutItemMentions,
+    AllItemRefsDeferredWithReadyItemState,
+    AllItemRefsDeferredWithoutReadyItemState,
+    AllItemRefsMaterialized,
+    MixedItemRefsWithReadyItemState,
+    MixedItemRefsWithoutReadyItemState,
+    UnclassifiedItemRefs,
+}
+
+impl InventoryFeature25HandoffOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ReferencesWithoutItemMentions => "references_without_item_mentions",
+            Self::AllItemRefsDeferredWithReadyItemState => {
+                "all_item_refs_deferred_with_ready_item_state"
+            }
+            Self::AllItemRefsDeferredWithoutReadyItemState => {
+                "all_item_refs_deferred_without_ready_item_state"
+            }
+            Self::AllItemRefsMaterialized => "all_item_refs_materialized",
+            Self::MixedItemRefsWithReadyItemState => "mixed_item_refs_with_ready_item_state",
+            Self::MixedItemRefsWithoutReadyItemState => "mixed_item_refs_without_ready_item_state",
             Self::UnclassifiedItemRefs => "unclassified_item_refs",
         }
     }
@@ -2059,6 +2122,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"inventory_feature25_materialized_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_deferred_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_materialization_outcome\": \"{}\",\n",
+                "  \"inventory_feature25_handoff_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -2369,6 +2433,9 @@ impl QuickbarItemRefreshHarnessHint {
                 .inventory_feature25_deferred_item_ref_mentions(),
             self.item_context
                 .inventory_feature25_materialization_outcome()
+                .as_str(),
+            self.item_context
+                .inventory_feature25_handoff_outcome()
                 .as_str(),
             self.item_context.inventory_feature25_first_item_refs,
             self.item_context
@@ -5400,6 +5467,7 @@ impl UiState {
                 "  \"inventory_feature25_materialized_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_deferred_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_materialization_outcome\": \"{}\",\n",
+                "  \"inventory_feature25_handoff_outcome\": \"{}\",\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -5569,6 +5637,7 @@ impl UiState {
             context.inventory_feature25_materialized_item_ref_mentions(),
             context.inventory_feature25_deferred_item_ref_mentions(),
             context.inventory_feature25_materialization_outcome().as_str(),
+            context.inventory_feature25_handoff_outcome().as_str(),
             context.inventory_feature25_first_item_refs,
             context.inventory_feature25_first_item_ref_mentions,
             context.inventory_feature25_first_materialized_item_ref_mentions,
@@ -5799,7 +5868,7 @@ pub(crate) struct SyntheticState {
 
 #[cfg(test)]
 mod tests {
-    use super::InventoryFeature25MaterializationOutcome;
+    use super::{InventoryFeature25HandoffOutcome, InventoryFeature25MaterializationOutcome};
 
     use crate::translate::area::{
         AreaPlaceableContext, AreaPlaceableContextAppearanceConflict,
@@ -8039,6 +8108,11 @@ mod tests {
             summary.inventory_feature25_materialization_outcome(),
             InventoryFeature25MaterializationOutcome::MixedItemRefs
         );
+        assert_eq!(
+            summary.inventory_feature25_handoff_outcome(),
+            InventoryFeature25HandoffOutcome::MixedItemRefsWithReadyItemState,
+            "mixed Feature-25 refs plus direct item state can hand off to the quickbar/UI writer"
+        );
         let live_like_deferred = InventoryItemContextSummary {
             inventory_feature25_reference_records: 13,
             inventory_feature25_first_item_ref_mentions: 6,
@@ -8062,6 +8136,20 @@ mod tests {
         assert_eq!(
             live_like_deferred.inventory_feature25_materialization_outcome(),
             InventoryFeature25MaterializationOutcome::AllItemRefsDeferred
+        );
+        assert_eq!(
+            live_like_deferred.inventory_feature25_handoff_outcome(),
+            InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithoutReadyItemState,
+            "deferred-only Feature-25 refs are reference-only unless separate ready item state exists"
+        );
+        let live_like_deferred_with_ready_state = InventoryItemContextSummary {
+            compact_item_emission_ready_objects: 18,
+            ..live_like_deferred
+        };
+        assert_eq!(
+            live_like_deferred_with_ready_state.inventory_feature25_handoff_outcome(),
+            InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithReadyItemState,
+            "2026-07-07 live HG shape keeps Feature-25 refs deferred while direct state carries quickbar handoff"
         );
     }
 
@@ -8562,6 +8650,9 @@ mod tests {
         assert!(
             json.contains("\"inventory_feature25_materialization_outcome\": \"mixed_item_refs\"")
         );
+        assert!(json.contains(
+            "\"inventory_feature25_handoff_outcome\": \"mixed_item_refs_with_ready_item_state\""
+        ));
         assert!(json.contains("\"inventory_feature25_first_item_refs\": 1"));
         assert!(json.contains("\"inventory_feature25_first_item_ref_mentions\": 3"));
         assert!(json.contains("\"inventory_feature25_first_materialized_item_ref_mentions\": 1"));
@@ -9574,6 +9665,9 @@ mod tests {
             no_candidate
                 .contains("\"inventory_feature25_materialization_outcome\": \"mixed_item_refs\"")
         );
+        assert!(no_candidate.contains(
+            "\"inventory_feature25_handoff_outcome\": \"mixed_item_refs_without_ready_item_state\""
+        ));
         assert!(no_candidate.contains("\"inventory_feature25_first_item_refs\": 2"));
         assert!(no_candidate.contains("\"inventory_feature25_first_item_ref_mentions\": 6"));
         assert!(

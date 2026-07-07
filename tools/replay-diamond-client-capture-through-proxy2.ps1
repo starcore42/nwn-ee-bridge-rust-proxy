@@ -1421,6 +1421,7 @@ try {
     $quickbarHintInventoryFeature25MaterializedItemRefMentions = 0
     $quickbarHintInventoryFeature25DeferredItemRefMentions = 0
     $quickbarHintInventoryFeature25MaterializationOutcome = ''
+    $quickbarHintInventoryFeature25HandoffOutcome = ''
     $quickbarHintCompactItemEmissionReadyObjects = 0
     $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects = 0
     $quickbarHintStreamProbeCompactItemEmissionReadyObjects = 0
@@ -1619,6 +1620,10 @@ try {
         $feature25OutcomeProp = $quickbarHintJson.PSObject.Properties['inventory_feature25_materialization_outcome']
         if ($null -ne $feature25OutcomeProp -and $null -ne $feature25OutcomeProp.Value) {
             $quickbarHintInventoryFeature25MaterializationOutcome = [string]$feature25OutcomeProp.Value
+        }
+        $feature25HandoffOutcomeProp = $quickbarHintJson.PSObject.Properties['inventory_feature25_handoff_outcome']
+        if ($null -ne $feature25HandoffOutcomeProp -and $null -ne $feature25HandoffOutcomeProp.Value) {
+            $quickbarHintInventoryFeature25HandoffOutcome = [string]$feature25HandoffOutcomeProp.Value
         }
         $quickbarHintInventoryFeature25FirstItemRefs = & $getQuickbarHintInt64 'inventory_feature25_first_item_refs'
         $quickbarHintInventoryFeature25FirstItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_item_ref_mentions'
@@ -1867,6 +1872,7 @@ try {
         QuickbarItemRefreshHintInventoryFeature25MaterializedItemRefMentions = $quickbarHintInventoryFeature25MaterializedItemRefMentions
         QuickbarItemRefreshHintInventoryFeature25DeferredItemRefMentions = $quickbarHintInventoryFeature25DeferredItemRefMentions
         QuickbarItemRefreshHintInventoryFeature25MaterializationOutcome = $quickbarHintInventoryFeature25MaterializationOutcome
+        QuickbarItemRefreshHintInventoryFeature25HandoffOutcome = $quickbarHintInventoryFeature25HandoffOutcome
         QuickbarItemRefreshHintCompactItemEmissionReadyObjects = $quickbarHintCompactItemEmissionReadyObjects
         QuickbarItemRefreshHintCompactItemEmissionDeferredFeature25OnlyObjects = $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintStreamProbeCompactItemEmissionReadyObjects = $quickbarHintStreamProbeCompactItemEmissionReadyObjects

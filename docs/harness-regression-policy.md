@@ -33,25 +33,23 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of the 2026-07-07 10:33 +10 automation
-gate: the freshest gameplay-reaching proxy harness remains
-`C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`.
+Latest known live HG proxy status, as of 2026-07-07 12:58 +10: the freshest
+gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
 `GameObjUpdate_LiveObject` traffic, wrote `quickbar-item-refresh-hint.json` at
-`2026-07-07T07:17:18.6853537+10:00` (about 3h16m old at the 10:33 gate),
-left `proxy.stdout.log` active through the same window, and produced no
-quarantine directory. The run verifies the 2026-07-07 live-object boundary fix
-for an exact I/0x2000 Feature-25 row followed by legacy `A/5`, full `P/5`, and
-`U/5 0x3967`: the earlier fresh pre-fix harness
-`C:\nwnbridge\codex-live-feature25-outcome-current-20260707-063346\harness-proxy-20260707-063402`
-reached gameplay but quarantined that seq48 combined live-object packet. The
-final hint resolved by prior quickbar use-count state with
+`2026-07-07T12:58:45+10:00`, left `proxy.structured.log` active through
+`2026-07-07T12:58:49+10:00`, and produced no quarantine directory. The final
+hint resolved by prior quickbar use-count state with
 `no_hint_reason="post_context_resolved_by_prior_quickbar_use_count_state"`,
 `post_committed_item_refresh_resolution="resolved_by_prior_quickbar_use_count_state"`,
-7 Feature-25 reference records, 7 deferred item-ref mentions, 0 materialized
-item-ref mentions, and
-`inventory_feature25_materialization_outcome="all_item_refs_deferred"`.
+candidate `0x80015899` from active-object/direct-only proof, 18 direct item
+proof objects, 2 Feature-25 item proof objects, 18 compact-emission ready
+objects, 2 deferred Feature-25-only objects, 17 Feature-25 reference records,
+17 deferred item-ref mentions, 0 materialized item-ref mentions,
+`inventory_feature25_materialization_outcome="all_item_refs_deferred"`, and
+`inventory_feature25_handoff_outcome="all_item_refs_deferred_with_ready_item_state"`.
 
 As of 2026-07-07 11:02 +10, proxy2 separates deferred Feature-25 refs from
 emission-ready compact quickbar item proof. The semantic registry still reports
@@ -74,6 +72,22 @@ refreshes, 0 ready objects, and 6 deferred objects. The next live HG harness
 should confirm the ready/deferred split preserves the current
 prior-quickbar-use-count no-action path, then continue the inventory/equipment
 UI handoff audit.
+
+As of 2026-07-07 12:58 +10, proxy2 also reports
+`inventory_feature25_handoff_outcome` in semantic traces, pending/idle
+`quickbar-item-refresh-hint.json`, and the Diamond replay summary. This field
+combines the Feature-25 materialization outcome with whether separate direct or
+materialized item state is ready for compact quickbar/UI handoff. Bounded
+strict replay
+`C:\nwnbridge\codex-proxy2-replay-feature25-handoff-outcome-20260707-124920`
+over the 2026-07-03 Diamond autoplay packet set processed 164 packet files with
+strict translation, 304 allow decisions, 0 strict quarantines, and 0 quarantine
+files; its final hint reported
+`inventory_feature25_handoff_outcome="all_item_refs_deferred_without_ready_item_state"`.
+The fresh live HG run above reported
+`inventory_feature25_handoff_outcome="all_item_refs_deferred_with_ready_item_state"`,
+which preserves the prior-use-count no-action path while distinguishing ready
+direct item state from deferred Feature-25-only references.
 
 Previous live HG proxy status, as of 2026-07-07 04:42 +10: the
 gameplay-reaching proxy harness is

@@ -17,6 +17,35 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-07 Feature-25 handoff outcome classifier: live-data gate reused the
+  fresh gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`
+  (`quickbar-item-refresh-hint.json`
+  `2026-07-07T07:17:18.6853537+10:00`, about 5h17m old at gate). It reached
+  `Module_Loaded`, `Area_ClientArea`, and sustained `GameObjUpdate_LiveObject`
+  traffic with no quarantine directory. Proxy2 now reports
+  `inventory_feature25_handoff_outcome` alongside the materialization outcome
+  in semantic traces, pending/idle `quickbar-item-refresh-hint.json`, and replay
+  summaries. The classifier keeps the all-deferred Feature-25 reference-only
+  state separate from the live HG state where direct/materialized item proof is
+  already ready for quickbar/UI handoff. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-feature25-handoff-outcome-20260707-124920`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, and 0 quarantine files; its final hint
+  reported
+  `inventory_feature25_handoff_outcome="all_item_refs_deferred_without_ready_item_state"`
+  with 0 ready compact item objects and 6 deferred Feature-25-only objects.
+  Fresh live HG confirmation
+  `C:\nwnbridge\codex-live-feature25-handoff-outcome-20260707-20260707-125516\harness-proxy-20260707-125522`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject`, wrote `quickbar-item-refresh-hint.json` at
+  `2026-07-07T12:58:45+10:00`, produced no quarantine directory, and reported
+  `inventory_feature25_handoff_outcome="all_item_refs_deferred_with_ready_item_state"`
+  with 18 ready direct item-proof objects and 2 deferred Feature-25-only
+  objects while still resolving by prior quickbar use-count state. Active next
+  path: use this classifier to drive the next inventory/equipment UI audit and
+  implement the shared handoff rule that consumes ready item state without
+  materializing all-deferred Feature-25 refs.
 - 2026-07-07 deferred Feature-25 ready/emission split: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-feature25-u5-boundary-fix-20260707-071504\harness-proxy-20260707-071516`
