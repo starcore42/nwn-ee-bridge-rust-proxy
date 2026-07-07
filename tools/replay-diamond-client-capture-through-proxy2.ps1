@@ -1444,6 +1444,17 @@ try {
     $quickbarHintLastInventoryEquipmentHandoffCandidateObjectId = 0
     $quickbarHintLastInventoryEquipmentHandoffCandidateProof = ''
     $quickbarHintLastInventoryEquipmentHandoffCandidateSource = ''
+    $quickbarHintInventoryEquipmentBridgeHandoffAction = ''
+    $quickbarHintInventoryEquipmentBridgeHandoffReady = $false
+    $quickbarHintInventoryEquipmentBridgeHandoffConsumer = ''
+    $quickbarHintInventoryEquipmentBridgeHandoffEventIndex = 0
+    $quickbarHintInventoryEquipmentBridgeHandoffOutcome = ''
+    $quickbarHintInventoryEquipmentBridgeHandoffReadyObjects = 0
+    $quickbarHintInventoryEquipmentBridgeHandoffDeferredFeature25OnlyObjects = 0
+    $quickbarHintInventoryEquipmentBridgeHandoffCandidateKnown = $false
+    $quickbarHintInventoryEquipmentBridgeHandoffCandidateObjectId = 0
+    $quickbarHintInventoryEquipmentBridgeHandoffCandidateProof = ''
+    $quickbarHintInventoryEquipmentBridgeHandoffCandidateSource = ''
     $quickbarHintCompactItemEmissionReadyObjects = 0
     $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects = 0
     $quickbarHintStreamProbeCompactItemEmissionReadyObjects = 0
@@ -1692,6 +1703,38 @@ try {
         $lastInventoryEquipmentHandoffCandidateSourceProp = $quickbarHintJson.PSObject.Properties['last_inventory_equipment_handoff_candidate_source']
         if ($null -ne $lastInventoryEquipmentHandoffCandidateSourceProp -and $null -ne $lastInventoryEquipmentHandoffCandidateSourceProp.Value) {
             $quickbarHintLastInventoryEquipmentHandoffCandidateSource = [string]$lastInventoryEquipmentHandoffCandidateSourceProp.Value
+        }
+        $inventoryEquipmentBridgeHandoffActionProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_handoff_action']
+        if ($null -ne $inventoryEquipmentBridgeHandoffActionProp -and $null -ne $inventoryEquipmentBridgeHandoffActionProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeHandoffAction = [string]$inventoryEquipmentBridgeHandoffActionProp.Value
+        }
+        $inventoryEquipmentBridgeHandoffReadyProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_handoff_ready']
+        if ($null -ne $inventoryEquipmentBridgeHandoffReadyProp -and $null -ne $inventoryEquipmentBridgeHandoffReadyProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeHandoffReady = [bool]$inventoryEquipmentBridgeHandoffReadyProp.Value
+        }
+        $inventoryEquipmentBridgeHandoffConsumerProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_handoff_consumer']
+        if ($null -ne $inventoryEquipmentBridgeHandoffConsumerProp -and $null -ne $inventoryEquipmentBridgeHandoffConsumerProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeHandoffConsumer = [string]$inventoryEquipmentBridgeHandoffConsumerProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeHandoffEventIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_event_index'
+        $inventoryEquipmentBridgeHandoffOutcomeProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_handoff_outcome']
+        if ($null -ne $inventoryEquipmentBridgeHandoffOutcomeProp -and $null -ne $inventoryEquipmentBridgeHandoffOutcomeProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeHandoffOutcome = [string]$inventoryEquipmentBridgeHandoffOutcomeProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeHandoffReadyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_ready_objects'
+        $quickbarHintInventoryEquipmentBridgeHandoffDeferredFeature25OnlyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_deferred_feature25_only_objects'
+        $inventoryEquipmentBridgeHandoffCandidateKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_handoff_candidate_known']
+        if ($null -ne $inventoryEquipmentBridgeHandoffCandidateKnownProp -and $null -ne $inventoryEquipmentBridgeHandoffCandidateKnownProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeHandoffCandidateKnown = [bool]$inventoryEquipmentBridgeHandoffCandidateKnownProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeHandoffCandidateObjectId = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_candidate_object_id'
+        $inventoryEquipmentBridgeHandoffCandidateProofProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_handoff_candidate_proof']
+        if ($null -ne $inventoryEquipmentBridgeHandoffCandidateProofProp -and $null -ne $inventoryEquipmentBridgeHandoffCandidateProofProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeHandoffCandidateProof = [string]$inventoryEquipmentBridgeHandoffCandidateProofProp.Value
+        }
+        $inventoryEquipmentBridgeHandoffCandidateSourceProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_handoff_candidate_source']
+        if ($null -ne $inventoryEquipmentBridgeHandoffCandidateSourceProp -and $null -ne $inventoryEquipmentBridgeHandoffCandidateSourceProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeHandoffCandidateSource = [string]$inventoryEquipmentBridgeHandoffCandidateSourceProp.Value
         }
         $quickbarHintInventoryFeature25FirstItemRefs = & $getQuickbarHintInt64 'inventory_feature25_first_item_refs'
         $quickbarHintInventoryFeature25FirstItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_item_ref_mentions'
@@ -1963,6 +2006,17 @@ try {
         QuickbarItemRefreshHintLastInventoryEquipmentHandoffCandidateObjectId = $quickbarHintLastInventoryEquipmentHandoffCandidateObjectId
         QuickbarItemRefreshHintLastInventoryEquipmentHandoffCandidateProof = $quickbarHintLastInventoryEquipmentHandoffCandidateProof
         QuickbarItemRefreshHintLastInventoryEquipmentHandoffCandidateSource = $quickbarHintLastInventoryEquipmentHandoffCandidateSource
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffAction = $quickbarHintInventoryEquipmentBridgeHandoffAction
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffReady = $quickbarHintInventoryEquipmentBridgeHandoffReady
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffConsumer = $quickbarHintInventoryEquipmentBridgeHandoffConsumer
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffEventIndex = $quickbarHintInventoryEquipmentBridgeHandoffEventIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffOutcome = $quickbarHintInventoryEquipmentBridgeHandoffOutcome
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffReadyObjects = $quickbarHintInventoryEquipmentBridgeHandoffReadyObjects
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffDeferredFeature25OnlyObjects = $quickbarHintInventoryEquipmentBridgeHandoffDeferredFeature25OnlyObjects
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffCandidateKnown = $quickbarHintInventoryEquipmentBridgeHandoffCandidateKnown
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffCandidateObjectId = $quickbarHintInventoryEquipmentBridgeHandoffCandidateObjectId
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffCandidateProof = $quickbarHintInventoryEquipmentBridgeHandoffCandidateProof
+        QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffCandidateSource = $quickbarHintInventoryEquipmentBridgeHandoffCandidateSource
         QuickbarItemRefreshHintCompactItemEmissionReadyObjects = $quickbarHintCompactItemEmissionReadyObjects
         QuickbarItemRefreshHintCompactItemEmissionDeferredFeature25OnlyObjects = $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintStreamProbeCompactItemEmissionReadyObjects = $quickbarHintStreamProbeCompactItemEmissionReadyObjects

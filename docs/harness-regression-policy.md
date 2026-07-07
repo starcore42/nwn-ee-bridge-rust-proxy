@@ -68,6 +68,23 @@ state tests prove both the idle and pending hint JSON carry the aggregate
 handoff counters and the `ClientGuiInventory`/server `Inventory` splits, and
 PowerShell replay parsing now surfaces matching summary fields.
 
+As of 2026-07-07 22:56 +10, proxy2 also exports an explicit
+`inventory_equipment_bridge_handoff_*` plan in pending and idle
+`quickbar-item-refresh-hint.json` plus replay summaries. The plan is derived
+only from the last retained ready inventory/equipment handoff snapshot: it is
+`emit_ready_item_state` when direct/materialized compact item state has a
+bridge candidate, and `none` when the evidence is Feature-25-only/deferred.
+Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-plan-20260707-225132`
+over 164 Diamond autoplay packets reported 304 strict allow decisions, 0
+strict quarantines, 0 quarantine files, and 0 live-object terminal residuals;
+the baseline correctly kept
+`QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffAction=none` after one
+blocked server-inventory handoff with deferred Feature-25-only evidence. The
+next production target is the bounded writer/bridge consumer that uses
+`emit_ready_item_state` live snapshots for `ClientGuiInventory`/server
+`Inventory` while keeping later deferred Feature-25-only refs reference-only.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

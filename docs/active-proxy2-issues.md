@@ -64,10 +64,33 @@ not as standalone workaround targets.
   deferred Feature-25 item-ref mentions, and
   `inventory_equipment_handoff_outcome="ready_item_state_with_deferred_feature25_refs"`.
   Proxy2 now exports the per-consumer handoff counters in pending and idle
-  `quickbar-item-refresh-hint.json` plus the Diamond replay summary. Active
-  next path: implement bounded bridge/writer behavior from the retained ready
-  direct item state for `ClientGuiInventory`/server `Inventory` consumers while
-  keeping later deferred Feature-25-only refs reference-only.
+  `quickbar-item-refresh-hint.json` plus the Diamond replay summary. The
+  bridge-plan slice below is the follow-up that turns those counters into an
+  explicit writer-facing handoff decision.
+- 2026-07-07 inventory/equipment bridge handoff plan: live-data gate reused the
+  current gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`quickbar-item-refresh-hint.json` and `proxy.structured.log`
+  `2026-07-07T21:05:54+10:00`, about 1h31m old at gate). It reached
+  `Module_Loaded`, `Area_ClientArea`, proxy-generated `Area_AreaLoaded`, held
+  post-area packet release, and sustained `GameObjUpdate_LiveObject` traffic
+  with no quarantine directory. Proxy2 now derives an explicit
+  `inventory_equipment_bridge_handoff_*` plan from the last retained ready
+  inventory/equipment handoff snapshot and exports it in pending/idle
+  `quickbar-item-refresh-hint.json` plus replay summaries. The plan is
+  `emit_ready_item_state` only when ready direct/materialized compact item state
+  has a bridge candidate; deferred Feature-25-only refs remain blocked as
+  reference-only evidence and do not produce a bridge handoff. Bounded strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-plan-20260707-225132`
+  processed 164 Diamond autoplay packets with strict translation, 304 allow
+  decisions, 0 strict quarantines, 0 quarantine files, and 0 live-object
+  terminal residuals. The Diamond baseline correctly exported
+  `inventory_equipment_bridge_handoff_action="none"` after one blocked
+  server-inventory handoff with Feature-25-only evidence. Active next path:
+  implement the bounded writer/bridge consumer that uses
+  `emit_ready_item_state` live snapshots for `ClientGuiInventory`/server
+  `Inventory` without materializing deferred Feature-25 references.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
