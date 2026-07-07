@@ -8,16 +8,18 @@
 use crate::{
     packet::{Direction, m::HighLevel},
     translate::{
-        VerifiedFamily, VerifiedProof, area, client_gui_event, client_input, client_quickbar,
-        gameplay_stream, item_update_active_props, live_object_update, player_list, quickbar,
+        VerifiedFamily, VerifiedProof, area, client_gui_event, client_gui_inventory, client_input,
+        client_quickbar, gameplay_stream, inventory, item_update_active_props, live_object_update,
+        player_list, quickbar,
     },
 };
 
 use super::state::{
-    InventoryEquipmentHandoffConsumer, InventoryItemContextCandidate,
-    QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
-    QuickbarItemRefreshClientActionMatchClass, QuickbarItemRefreshClientActionTiming,
-    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    InventoryEquipmentHandoffConsumer, InventoryEquipmentServerInventoryClaim,
+    InventoryItemContextCandidate, QuickbarItemRefreshActionOutcome,
+    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
+    QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
+    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
     QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshUseCountRow,
 };
 use super::{
@@ -163,9 +165,16 @@ fn observe_family_payload(
                 ProtocolEvent::Other(observed)
             }
         }
-        VerifiedFamily::Inventory | VerifiedFamily::ClientGuiInventory => {
-            ProtocolEvent::Inventory(InventoryEvent { observed })
-        }
+        VerifiedFamily::Inventory => ProtocolEvent::Inventory(InventoryEvent {
+            observed,
+            inventory_claim: inventory::claim_payload_if_verified(payload),
+            client_gui_inventory_claim: None,
+        }),
+        VerifiedFamily::ClientGuiInventory => ProtocolEvent::Inventory(InventoryEvent {
+            observed,
+            inventory_claim: None,
+            client_gui_inventory_claim: client_gui_inventory::claim_payload_if_verified(payload),
+        }),
         VerifiedFamily::ClientGuiEvent => ProtocolEvent::ClientGuiEvent(ClientGuiEventEvent {
             observed,
             claim: client_gui_event::claim_payload_if_verified(payload),
@@ -795,12 +804,30 @@ fn apply_event(
         }
         ProtocolEvent::Inventory(event) => {
             state.ui.inventory_packets = state.ui.inventory_packets.saturating_add(1);
+            if event.observed.direction == Direction::ServerToClientSynthetic {
+                tracing::debug!(
+                    family = event.observed.family.as_str(),
+                    "semantic state observed proxy-owned inventory output without re-consuming inventory/equipment handoff"
+                );
+                return;
+            }
             let consumer =
                 InventoryEquipmentHandoffConsumer::from_verified_family(event.observed.family);
             let item_context = inventory_equipment_handoff_context(state);
-            let consumed = state
-                .ui
-                .observe_inventory_equipment_handoff(consumer, item_context);
+            let server_inventory_claim = event.inventory_claim.map(|claim| {
+                InventoryEquipmentServerInventoryClaim::new(
+                    claim.minor,
+                    claim.object_id,
+                    claim.result,
+                    claim.equip_slot,
+                )
+            });
+            let client_gui_inventory_claim_known = event.client_gui_inventory_claim.is_some();
+            let consumed = state.ui.observe_inventory_equipment_handoff(
+                consumer,
+                item_context,
+                server_inventory_claim,
+            );
             let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
             let last_bridge_emission = state.ui.last_inventory_equipment_bridge_handoff_emission;
             let last_bridge_state_update = state
@@ -829,6 +856,8 @@ fn apply_event(
                     item_context.inventory_equipment_handoff_ready(),
                 inventory_equipment_handoff_outcome =
                     item_context.inventory_equipment_handoff_outcome().as_str(),
+                server_inventory_claim_known = server_inventory_claim.is_some(),
+                client_gui_inventory_claim_known,
                 compact_item_emission_ready_objects =
                     item_context.compact_item_emission_ready_objects,
                 compact_item_emission_deferred_feature25_only_objects =
@@ -2343,6 +2372,8 @@ mod fixture_free_tests {
                     VerifiedFamily::ClientGuiInventory,
                     &[0x70, 0x0D, 0x01],
                 ),
+                inventory_claim: None,
+                client_gui_inventory_claim: None,
             }),
             None,
         );

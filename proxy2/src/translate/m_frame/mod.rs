@@ -28,6 +28,7 @@ mod client_filters;
 mod coalesced;
 mod deferred_module_resources;
 mod deflate;
+mod inventory_equipment;
 mod live_stream;
 mod live_update;
 mod local_ack;
@@ -512,6 +513,20 @@ fn observe_verified_server_m_packet(
         payload,
         Some(&state.area_context.latest_area_placeables),
     );
+    if proof.contains_family(VerifiedFamily::Inventory)
+        && let Err(err) = inventory_equipment::maybe_queue_inventory_equipment_bridge_output(
+            state,
+            view.sequence,
+            view.ack_sequence,
+        )
+    {
+        tracing::warn!(
+            error = %err,
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            "failed to queue inventory/equipment bridge output"
+        );
+    }
     update_quickbar_item_refresh_hint(state);
 }
 

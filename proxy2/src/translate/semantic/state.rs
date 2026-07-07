@@ -777,10 +777,30 @@ impl InventoryEquipmentHandoffConsumer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InventoryEquipmentServerInventoryClaim {
+    pub(crate) minor: u8,
+    pub(crate) object_id: u32,
+    pub(crate) result: bool,
+    pub(crate) equip_slot: u32,
+}
+
+impl InventoryEquipmentServerInventoryClaim {
+    pub(crate) fn new(minor: u8, object_id: u32, result: bool, equip_slot: u32) -> Self {
+        Self {
+            minor,
+            object_id,
+            result,
+            equip_slot,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InventoryEquipmentHandoffSnapshot {
     pub(crate) consumer: InventoryEquipmentHandoffConsumer,
     pub(crate) item_context: InventoryItemContextSummary,
     pub(crate) event_index: u64,
+    pub(crate) server_inventory_claim: Option<InventoryEquipmentServerInventoryClaim>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -809,6 +829,7 @@ pub(crate) struct InventoryEquipmentHandoffBridgePlan {
     pub(crate) ready_objects: usize,
     pub(crate) deferred_feature25_only_objects: usize,
     pub(crate) candidate: Option<InventoryItemContextCandidate>,
+    pub(crate) server_inventory_claim: Option<InventoryEquipmentServerInventoryClaim>,
 }
 
 impl Default for InventoryEquipmentHandoffBridgePlan {
@@ -821,6 +842,7 @@ impl Default for InventoryEquipmentHandoffBridgePlan {
             ready_objects: 0,
             deferred_feature25_only_objects: 0,
             candidate: None,
+            server_inventory_claim: None,
         }
     }
 }
@@ -843,6 +865,7 @@ impl InventoryEquipmentHandoffBridgePlan {
             deferred_feature25_only_objects: item_context
                 .compact_item_emission_deferred_feature25_only_objects,
             candidate,
+            server_inventory_claim: snapshot.server_inventory_claim,
         }
     }
 
@@ -866,6 +889,7 @@ pub(crate) struct InventoryEquipmentBridgeStateUpdate {
     pub(crate) candidate: InventoryItemContextCandidate,
     pub(crate) ready_objects: usize,
     pub(crate) deferred_feature25_only_objects: usize,
+    pub(crate) server_inventory_claim: Option<InventoryEquipmentServerInventoryClaim>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5152,6 +5176,7 @@ impl UiState {
         &mut self,
         consumer: InventoryEquipmentHandoffConsumer,
         item_context: InventoryItemContextSummary,
+        server_inventory_claim: Option<InventoryEquipmentServerInventoryClaim>,
     ) -> bool {
         self.inventory_equipment_handoff_events =
             self.inventory_equipment_handoff_events.saturating_add(1);
@@ -5214,6 +5239,7 @@ impl UiState {
             consumer,
             item_context,
             event_index: self.inventory_equipment_handoff_events,
+            server_inventory_claim,
         };
         self.last_inventory_equipment_handoff = Some(snapshot);
         if let Some(emission) = self.record_inventory_equipment_bridge_handoff_emission(snapshot) {
@@ -5274,6 +5300,7 @@ impl UiState {
             candidate,
             ready_objects: emission.plan.ready_objects,
             deferred_feature25_only_objects: emission.plan.deferred_feature25_only_objects,
+            server_inventory_claim: emission.plan.server_inventory_claim,
         };
         self.last_inventory_equipment_bridge_handoff_state_update = Some(update);
         Some(update)
@@ -6590,8 +6617,8 @@ pub(crate) struct SyntheticState {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryEquipmentHandoffOutcome, InventoryFeature25HandoffOutcome,
-        InventoryFeature25MaterializationOutcome,
+        InventoryEquipmentHandoffOutcome, InventoryEquipmentServerInventoryClaim,
+        InventoryFeature25HandoffOutcome, InventoryFeature25MaterializationOutcome,
     };
 
     use crate::translate::area::{
@@ -9031,11 +9058,13 @@ mod tests {
 
         assert!(ui.observe_inventory_equipment_handoff(
             InventoryEquipmentHandoffConsumer::ClientGuiInventory,
-            ready_with_deferred
+            ready_with_deferred,
+            None
         ));
         assert!(!ui.observe_inventory_equipment_handoff(
             InventoryEquipmentHandoffConsumer::ServerInventory,
-            blocked_feature25_only
+            blocked_feature25_only,
+            None
         ));
 
         assert_eq!(ui.inventory_equipment_handoff_events, 2);
@@ -9122,6 +9151,7 @@ mod tests {
         assert_eq!(state_update.candidate.object_id, 0x8001_5219);
         assert_eq!(state_update.ready_objects, 18);
         assert_eq!(state_update.deferred_feature25_only_objects, 2);
+        assert_eq!(state_update.server_inventory_claim, None);
         assert_eq!(
             ui.drain_inventory_equipment_bridge_handoff_emission(emission),
             None,
@@ -9527,11 +9557,18 @@ mod tests {
         ]);
         assert!(ui.observe_inventory_equipment_handoff(
             InventoryEquipmentHandoffConsumer::ClientGuiInventory,
-            item_context
+            item_context,
+            None
         ));
         assert!(ui.observe_inventory_equipment_handoff(
             InventoryEquipmentHandoffConsumer::ServerInventory,
-            item_context
+            item_context,
+            Some(InventoryEquipmentServerInventoryClaim::new(
+                0x01,
+                0x8000_0100,
+                true,
+                4,
+            ))
         ));
 
         assert_eq!(
@@ -9647,6 +9684,15 @@ mod tests {
         assert_eq!(last_state_update.candidate.object_id, 0x8000_0100);
         assert_eq!(last_state_update.ready_objects, 1);
         assert_eq!(last_state_update.deferred_feature25_only_objects, 0);
+        assert_eq!(
+            last_state_update.server_inventory_claim,
+            Some(InventoryEquipmentServerInventoryClaim::new(
+                0x01,
+                0x8000_0100,
+                true,
+                4,
+            ))
+        );
 
         let json = hint.to_json();
         assert!(json.contains("\"post_committed_item_refresh_resolution\": \"pending\""));

@@ -8,7 +8,9 @@ use crate::{
     packet::Direction,
     translate::{
         VerifiedFamily, client_gui_event::ClientGuiEventClaimSummary,
+        client_gui_inventory::ClientGuiInventoryClaimSummary,
         client_input::ClientInputClaimSummary, client_quickbar::ClientQuickbarClaimSummary,
+        inventory::InventoryClaimSummary,
         item_update_active_props::ActiveItemPropertiesClaimSummary,
         live_object_update::LiveObjectQuickbarItemUseCountUpdate, player_list::PlayerListObjectIds,
         quickbar::QuickbarValidatedSlotProfile,
@@ -209,6 +211,8 @@ pub(crate) struct ActiveItemPropertiesEvent {
 #[derive(Debug, Clone)]
 pub(crate) struct InventoryEvent {
     pub(crate) observed: ObservedHighLevel,
+    pub(crate) inventory_claim: Option<InventoryClaimSummary>,
+    pub(crate) client_gui_inventory_claim: Option<ClientGuiInventoryClaimSummary>,
 }
 
 #[derive(Debug, Clone)]

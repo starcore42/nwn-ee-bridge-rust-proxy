@@ -113,6 +113,23 @@ server-inventory handoff, 0 bridge emissions, and 0 bridge state updates. The
 next production target is the concrete EE inventory/equipment writer output
 from these drained ready item-state updates.
 
+As of 2026-07-08 05:04 +10, proxy2 also builds and queues exact EE-facing
+`Inventory` equip/cancel output from drained ready server-Inventory bridge
+state updates. The queue path requires a parsed server `Inventory` claim, a
+matching direct/materialized item-state candidate, and a payload that validates
+through the strict inventory parser before inserting one proxy-owned reliable
+server `M` frame after the triggering packet; `ClientGuiInventory` handoffs
+remain state-only until their writer shape is proven. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-writer-20260708-0506-altports240`
+over the same 164 Diamond autoplay packets used alternate local ports because
+Windows denied the default replay listen port. It reported 304 strict allow
+decisions, 0 strict quarantines, 0 quarantine files, 0 live-object terminal
+residuals, 1 blocked server-inventory handoff, 0 ready handoffs, 0 bridge
+emissions, and 0 bridge state updates. The next live HG run should confirm
+whether real ready server-Inventory traffic queues the exact `Inventory` output
+and whether any remaining visible equipment divergence belongs to a separate
+ClientGui inventory writer.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.
@@ -1260,7 +1277,7 @@ work.
 | HG endpoint is unreachable or the server is down | External live-server blocker | Record the exact network/server failure and retry later; do not claim fresh gameplay evidence. |
 | Strict replay fails before launch with `Access is denied` while replacing `target\debug\hgbridge_proxy2.exe` | A stale replay proxy is still holding the debug executable | List `hgbridge_proxy2.exe` processes, stop only the stale debug replay process, or pass `-ProxyExe` with an isolated build output. Leave unrelated live/public proxy processes alone. |
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
-| Strict replay proxy exits before packet replay with `Access is denied. (os error 10013)` while binding the default listen endpoint, such as `127.0.0.1:55121` | Local port reservation, policy, or a stale process owns the default proxy listen port | Retry with an explicit free port pair, for example `-ListenPort 56121 -ServerPort 56133`, and keep `-DrainReceiveTimeoutMilliseconds 5` for automation replays. |
+| Strict replay proxy exits before packet replay with `Access is denied. (os error 10013)` while binding the default listen endpoint, such as `127.0.0.1:55121` | Local port reservation, policy, or a stale process owns the default proxy listen port | Retry with an explicit free port pair, for example `-ListenPort 56121 -ServerPort 56133` or `-ListenPort 56221 -ServerPort 56233`, and keep `-DrainReceiveTimeoutMilliseconds 5` for automation replays. The 2026-07-08 inventory/equipment writer replay passed on alternate ports after the default port was denied. |
 | Live HG reaches gameplay but writes identical `unclaimed-unknown-high-level` quarantine files for payloads that logs call incomplete/non-header stream continuations | A coalesced zlib stream tail is being passed to high-level packet ownership instead of the stream-continuation path | Fixed 2026-07-06 by classifying single incomplete inflated stream units before high-level parse fallback. If this recurs, inspect `coalesced` stream-continuation handling and require a no-quarantine live rerun before new packet-family work. |
 | Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch, or `-SkipBuild` uses an older proxy than the one just built | The wrapper selected a stale proxy2 executable before a fresher compatible build | Use the resolver that checks `--help` for the hint flag, skips stale candidates, selects the newest compatible executable by `LastWriteTime`, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
 | GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Historical proxy/module-load handoff blocker: Rust was parsing the EE `Device_AdvertiseProperty` name length where the CNW declared read-buffer length lives | Use the shared `translate::client_device` classifier. Fresh 2026-07-04 14:27 rerun consumed 70 device-property frames and reached gameplay; if this recurs, verify those logs before unrelated action-family work. |

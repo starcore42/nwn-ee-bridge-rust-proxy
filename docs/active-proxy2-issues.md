@@ -133,6 +133,36 @@ not as standalone workaround targets.
   ready item-state updates into the concrete EE inventory/equipment writer
   output and confirm with a fresh live HG harness if the current capture is
   stale.
+- 2026-07-08 inventory/equipment bridge writer output: live-data gate reused the
+  current gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`quickbar-item-refresh-hint.json` and `proxy.structured.log`
+  `2026-07-07T21:05:54+10:00`, about 7h35m old at gate). It reached gameplay
+  through module load, area load, held-packet release, and sustained
+  live-object traffic with no quarantine directory, so no fresh live harness
+  run was required. Proxy2 now parses server `Inventory` equip/cancel result,
+  object id, and equip slot into semantic handoff state; builds exact
+  EE-shaped `Inventory` payloads through the typed inventory writer; and queues
+  one proxy-owned reliable server `M` frame after the triggering server
+  `Inventory` packet only when the drained bridge update is server-Inventory
+  owned, has a matching ready direct/materialized item-state candidate, and
+  validates back through the strict inventory parser. `ClientGuiInventory`
+  handoffs remain state-only until a decompile-backed GUI inventory writer is
+  proven. Focused tests cover exact EE payload construction, server-Inventory
+  queueing/sequence shift, and ClientGui state-only suppression. Bounded strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-writer-20260708-0506-altports240`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, 0 quarantine files, and 0
+  live-object terminal residuals; the Feature-25-only baseline stayed blocked
+  with 1 server-Inventory handoff, 0 ready handoffs, 0 bridge emissions, and 0
+  bridge state updates. The default replay port was denied by Windows
+  (`127.0.0.1:55121`, `os error 10013`), so the passing replay used
+  `-ListenPort 56221 -ServerPort 56233`. Active next path: run fresh live HG
+  confirmation when the 2026-07-07 21:05 capture becomes stale, then inspect
+  whether real ready server-Inventory traffic produces the queued exact
+  `Inventory` output and whether remaining visible equipment divergence needs
+  a separate ClientGui inventory writer.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

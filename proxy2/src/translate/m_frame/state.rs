@@ -79,6 +79,11 @@ pub(super) struct LoginWaypointState {
     pub(super) synthetic_empty_response_count: u32,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct InventoryEquipmentBridgeState {
+    pub(super) last_queued_state_update_index: Option<u64>,
+}
+
 #[derive(Debug)]
 pub(super) struct SyntheticAreaState {
     pub(super) pending_server_to_client_packets: Vec<synthetic_area::PendingServerPacket>,
@@ -122,6 +127,7 @@ pub struct SessionState {
     pub(super) sequence: SequenceState,
     pub(super) client_ack: ClientAckSessionState,
     pub(super) login_waypoint: LoginWaypointState,
+    pub(super) inventory_equipment: InventoryEquipmentBridgeState,
     pub(super) synthetic_area: SyntheticAreaState,
     pub(super) deferred_module_resources: DeferredModuleResourcesSessionState,
     pub(super) area_context: AreaContextState,
@@ -144,6 +150,7 @@ impl SessionState {
             sequence: SequenceState::default(),
             client_ack: ClientAckSessionState::default(),
             login_waypoint: LoginWaypointState::default(),
+            inventory_equipment: InventoryEquipmentBridgeState::default(),
             module_resources,
             synthetic_area: SyntheticAreaState {
                 synthesize_loadbar: synthesize_area_loadbar,
