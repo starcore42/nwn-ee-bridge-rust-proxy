@@ -858,6 +858,17 @@ pub(crate) struct InventoryEquipmentHandoffBridgeEmission {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InventoryEquipmentBridgeStateUpdate {
+    pub(crate) update_index: u64,
+    pub(crate) emission_index: u64,
+    pub(crate) consumer: InventoryEquipmentHandoffConsumer,
+    pub(crate) event_index: u64,
+    pub(crate) candidate: InventoryItemContextCandidate,
+    pub(crate) ready_objects: usize,
+    pub(crate) deferred_feature25_only_objects: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InventoryFeature25MaterializationOutcome {
     None,
     ReferencesWithoutItemMentions,
@@ -1628,6 +1639,9 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) inventory_equipment_bridge_handoff_emissions: u64,
     pub(crate) last_inventory_equipment_bridge_handoff_emission:
         Option<InventoryEquipmentHandoffBridgeEmission>,
+    pub(crate) inventory_equipment_bridge_handoff_state_updates: u64,
+    pub(crate) last_inventory_equipment_bridge_handoff_state_update:
+        Option<InventoryEquipmentBridgeStateUpdate>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2079,6 +2093,35 @@ impl QuickbarItemRefreshHarnessHint {
         let last_bridge_emission_candidate_source = last_bridge_emission_candidate
             .map(|candidate| candidate.source.as_str())
             .unwrap_or("none");
+        let last_bridge_state_update = self.last_inventory_equipment_bridge_handoff_state_update;
+        let last_bridge_state_update_known = last_bridge_state_update.is_some();
+        let last_bridge_state_update_index = last_bridge_state_update
+            .map(|update| update.update_index)
+            .unwrap_or(0);
+        let last_bridge_state_update_emission_index = last_bridge_state_update
+            .map(|update| update.emission_index)
+            .unwrap_or(0);
+        let last_bridge_state_update_consumer = last_bridge_state_update
+            .map(|update| update.consumer.as_str())
+            .unwrap_or("unknown");
+        let last_bridge_state_update_event_index = last_bridge_state_update
+            .map(|update| update.event_index)
+            .unwrap_or(0);
+        let last_bridge_state_update_candidate_object_id = last_bridge_state_update
+            .map(|update| update.candidate.object_id)
+            .unwrap_or(0);
+        let last_bridge_state_update_candidate_proof = last_bridge_state_update
+            .map(|update| update.candidate.proof.as_str())
+            .unwrap_or("none");
+        let last_bridge_state_update_candidate_source = last_bridge_state_update
+            .map(|update| update.candidate.source.as_str())
+            .unwrap_or("none");
+        let last_bridge_state_update_ready_objects = last_bridge_state_update
+            .map(|update| update.ready_objects)
+            .unwrap_or(0);
+        let last_bridge_state_update_deferred_feature25_only_objects = last_bridge_state_update
+            .map(|update| update.deferred_feature25_only_objects)
+            .unwrap_or(0);
         format!(
             concat!(
                 "{{\n",
@@ -2363,6 +2406,18 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"inventory_equipment_bridge_handoff_last_emitted_candidate_object_id\": {},\n",
                 "  \"inventory_equipment_bridge_handoff_last_emitted_candidate_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"inventory_equipment_bridge_handoff_last_emitted_candidate_source\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_state_updates\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_known\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_index\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_emission_index\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_consumer\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_event_index\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_object_id\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_proof\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_source\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_ready_objects\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_deferred_feature25_only_objects\": {},\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -2711,6 +2766,18 @@ impl QuickbarItemRefreshHarnessHint {
             last_bridge_emission_candidate_object_id,
             last_bridge_emission_candidate_object_id,
             last_bridge_emission_candidate_source,
+            self.inventory_equipment_bridge_handoff_state_updates,
+            last_bridge_state_update_known,
+            last_bridge_state_update_index,
+            last_bridge_state_update_emission_index,
+            last_bridge_state_update_consumer,
+            last_bridge_state_update_event_index,
+            last_bridge_state_update_candidate_object_id,
+            last_bridge_state_update_candidate_object_id,
+            last_bridge_state_update_candidate_proof,
+            last_bridge_state_update_candidate_source,
+            last_bridge_state_update_ready_objects,
+            last_bridge_state_update_deferred_feature25_only_objects,
             self.item_context.inventory_feature25_first_item_refs,
             self.item_context
                 .inventory_feature25_first_item_ref_mentions,
@@ -4991,6 +5058,9 @@ pub(crate) struct UiState {
     pub(crate) inventory_equipment_bridge_handoff_emissions: u64,
     pub(crate) last_inventory_equipment_bridge_handoff_emission:
         Option<InventoryEquipmentHandoffBridgeEmission>,
+    pub(crate) inventory_equipment_bridge_handoff_state_updates: u64,
+    pub(crate) last_inventory_equipment_bridge_handoff_state_update:
+        Option<InventoryEquipmentBridgeStateUpdate>,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
     pub(crate) quickbar_stream_probe_summaries: u64,
     pub(crate) last_quickbar_stream_probe: Option<QuickbarStreamProbeSummary>,
@@ -5146,7 +5216,9 @@ impl UiState {
             event_index: self.inventory_equipment_handoff_events,
         };
         self.last_inventory_equipment_handoff = Some(snapshot);
-        self.record_inventory_equipment_bridge_handoff_emission(snapshot);
+        if let Some(emission) = self.record_inventory_equipment_bridge_handoff_emission(snapshot) {
+            self.drain_inventory_equipment_bridge_handoff_emission(emission);
+        }
         true
     }
 
@@ -5174,6 +5246,37 @@ impl UiState {
         };
         self.last_inventory_equipment_bridge_handoff_emission = Some(emission);
         Some(emission)
+    }
+
+    pub(crate) fn drain_inventory_equipment_bridge_handoff_emission(
+        &mut self,
+        emission: InventoryEquipmentHandoffBridgeEmission,
+    ) -> Option<InventoryEquipmentBridgeStateUpdate> {
+        if !emission.plan.ready_to_emit() {
+            return None;
+        }
+        let candidate = emission.plan.candidate?;
+        if self
+            .last_inventory_equipment_bridge_handoff_state_update
+            .is_some_and(|update| update.emission_index == emission.emission_index)
+        {
+            return None;
+        }
+
+        self.inventory_equipment_bridge_handoff_state_updates = self
+            .inventory_equipment_bridge_handoff_state_updates
+            .saturating_add(1);
+        let update = InventoryEquipmentBridgeStateUpdate {
+            update_index: self.inventory_equipment_bridge_handoff_state_updates,
+            emission_index: emission.emission_index,
+            consumer: emission.plan.consumer,
+            event_index: emission.plan.event_index,
+            candidate,
+            ready_objects: emission.plan.ready_objects,
+            deferred_feature25_only_objects: emission.plan.deferred_feature25_only_objects,
+        };
+        self.last_inventory_equipment_bridge_handoff_state_update = Some(update);
+        Some(update)
     }
 
     pub(crate) fn observe_quickbar_item_use_count_updates(
@@ -5788,6 +5891,35 @@ impl UiState {
         let last_bridge_emission_candidate_source = last_bridge_emission_candidate
             .map(|candidate| candidate.source.as_str())
             .unwrap_or("none");
+        let last_bridge_state_update = self.last_inventory_equipment_bridge_handoff_state_update;
+        let last_bridge_state_update_known = last_bridge_state_update.is_some();
+        let last_bridge_state_update_index = last_bridge_state_update
+            .map(|update| update.update_index)
+            .unwrap_or(0);
+        let last_bridge_state_update_emission_index = last_bridge_state_update
+            .map(|update| update.emission_index)
+            .unwrap_or(0);
+        let last_bridge_state_update_consumer = last_bridge_state_update
+            .map(|update| update.consumer.as_str())
+            .unwrap_or("unknown");
+        let last_bridge_state_update_event_index = last_bridge_state_update
+            .map(|update| update.event_index)
+            .unwrap_or(0);
+        let last_bridge_state_update_candidate_object_id = last_bridge_state_update
+            .map(|update| update.candidate.object_id)
+            .unwrap_or(0);
+        let last_bridge_state_update_candidate_proof = last_bridge_state_update
+            .map(|update| update.candidate.proof.as_str())
+            .unwrap_or("none");
+        let last_bridge_state_update_candidate_source = last_bridge_state_update
+            .map(|update| update.candidate.source.as_str())
+            .unwrap_or("none");
+        let last_bridge_state_update_ready_objects = last_bridge_state_update
+            .map(|update| update.ready_objects)
+            .unwrap_or(0);
+        let last_bridge_state_update_deferred_feature25_only_objects = last_bridge_state_update
+            .map(|update| update.deferred_feature25_only_objects)
+            .unwrap_or(0);
         format!(
             concat!(
                 "{{\n",
@@ -5960,6 +6092,18 @@ impl UiState {
                 "  \"inventory_equipment_bridge_handoff_last_emitted_candidate_object_id\": {},\n",
                 "  \"inventory_equipment_bridge_handoff_last_emitted_candidate_object_id_hex\": \"0x{:08X}\",\n",
                 "  \"inventory_equipment_bridge_handoff_last_emitted_candidate_source\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_state_updates\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_known\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_index\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_emission_index\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_consumer\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_event_index\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_object_id\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_object_id_hex\": \"0x{:08X}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_proof\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_candidate_source\": \"{}\",\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_ready_objects\": {},\n",
+                "  \"inventory_equipment_bridge_handoff_last_state_update_deferred_feature25_only_objects\": {},\n",
                 "  \"inventory_feature25_first_item_refs\": {},\n",
                 "  \"inventory_feature25_first_item_ref_mentions\": {},\n",
                 "  \"inventory_feature25_first_materialized_item_ref_mentions\": {},\n",
@@ -6176,6 +6320,18 @@ impl UiState {
             last_bridge_emission_candidate_object_id,
             last_bridge_emission_candidate_object_id,
             last_bridge_emission_candidate_source,
+            self.inventory_equipment_bridge_handoff_state_updates,
+            last_bridge_state_update_known,
+            last_bridge_state_update_index,
+            last_bridge_state_update_emission_index,
+            last_bridge_state_update_consumer,
+            last_bridge_state_update_event_index,
+            last_bridge_state_update_candidate_object_id,
+            last_bridge_state_update_candidate_object_id,
+            last_bridge_state_update_candidate_proof,
+            last_bridge_state_update_candidate_source,
+            last_bridge_state_update_ready_objects,
+            last_bridge_state_update_deferred_feature25_only_objects,
             context.inventory_feature25_first_item_refs,
             context.inventory_feature25_first_item_ref_mentions,
             context.inventory_feature25_first_materialized_item_ref_mentions,
@@ -6364,6 +6520,10 @@ impl UiState {
                 .inventory_equipment_bridge_handoff_emissions,
             last_inventory_equipment_bridge_handoff_emission: self
                 .last_inventory_equipment_bridge_handoff_emission,
+            inventory_equipment_bridge_handoff_state_updates: self
+                .inventory_equipment_bridge_handoff_state_updates,
+            last_inventory_equipment_bridge_handoff_state_update: self
+                .last_inventory_equipment_bridge_handoff_state_update,
         })
     }
 
@@ -8948,6 +9108,26 @@ mod tests {
             .expect("ready handoff should emit one bridge-facing record");
         assert_eq!(emission.emission_index, 1);
         assert_eq!(emission.plan, bridge_plan);
+        assert_eq!(ui.inventory_equipment_bridge_handoff_state_updates, 1);
+        let state_update = ui
+            .last_inventory_equipment_bridge_handoff_state_update
+            .expect("ready handoff emission should drain into bridge state");
+        assert_eq!(state_update.update_index, 1);
+        assert_eq!(state_update.emission_index, emission.emission_index);
+        assert_eq!(
+            state_update.consumer,
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory
+        );
+        assert_eq!(state_update.event_index, 1);
+        assert_eq!(state_update.candidate.object_id, 0x8001_5219);
+        assert_eq!(state_update.ready_objects, 18);
+        assert_eq!(state_update.deferred_feature25_only_objects, 2);
+        assert_eq!(
+            ui.drain_inventory_equipment_bridge_handoff_emission(emission),
+            None,
+            "the bridge consumer must not apply the same emission twice"
+        );
+        assert_eq!(ui.inventory_equipment_bridge_handoff_state_updates, 1);
 
         let json = ui.quickbar_item_refresh_harness_idle_json();
         assert!(json.contains("\"inventory_equipment_handoff_events\": 2"));
@@ -9019,6 +9199,22 @@ mod tests {
         );
         assert!(json.contains(
             "\"inventory_equipment_bridge_handoff_last_emitted_candidate_object_id_hex\": \"0x80015219\""
+        ));
+        assert!(json.contains("\"inventory_equipment_bridge_handoff_state_updates\": 1"));
+        assert!(
+            json.contains("\"inventory_equipment_bridge_handoff_last_state_update_known\": true")
+        );
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_emission_index\": 1"
+        ));
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_consumer\": \"client_gui_inventory\""
+        ));
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_candidate_object_id_hex\": \"0x80015219\""
+        ));
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_deferred_feature25_only_objects\": 2"
         ));
     }
 
@@ -9437,6 +9633,20 @@ mod tests {
             last_emission.plan,
             hint.inventory_equipment_handoff_bridge_plan
         );
+        assert_eq!(hint.inventory_equipment_bridge_handoff_state_updates, 2);
+        let last_state_update = hint
+            .last_inventory_equipment_bridge_handoff_state_update
+            .expect("latest ready bridge handoff should drain into state");
+        assert_eq!(last_state_update.update_index, 2);
+        assert_eq!(last_state_update.emission_index, 2);
+        assert_eq!(
+            last_state_update.consumer,
+            InventoryEquipmentHandoffConsumer::ServerInventory
+        );
+        assert_eq!(last_state_update.event_index, 2);
+        assert_eq!(last_state_update.candidate.object_id, 0x8000_0100);
+        assert_eq!(last_state_update.ready_objects, 1);
+        assert_eq!(last_state_update.deferred_feature25_only_objects, 0);
 
         let json = hint.to_json();
         assert!(json.contains("\"post_committed_item_refresh_resolution\": \"pending\""));
@@ -9565,6 +9775,28 @@ mod tests {
         assert!(json.contains(
             "\"inventory_equipment_bridge_handoff_last_emitted_candidate_object_id_hex\": \"0x80000100\""
         ));
+        assert!(json.contains("\"inventory_equipment_bridge_handoff_state_updates\": 2"));
+        assert!(
+            json.contains("\"inventory_equipment_bridge_handoff_last_state_update_known\": true")
+        );
+        assert!(json.contains("\"inventory_equipment_bridge_handoff_last_state_update_index\": 2"));
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_emission_index\": 2"
+        ));
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_consumer\": \"server_inventory\""
+        ));
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_candidate_object_id_hex\": \"0x80000100\""
+        ));
+        assert!(json.contains(
+            "\"inventory_equipment_bridge_handoff_last_state_update_candidate_proof\": \"active_object\""
+        ));
+        assert!(
+            json.contains(
+                "\"inventory_equipment_bridge_handoff_last_state_update_ready_objects\": 1"
+            )
+        );
         assert!(json.contains("\"inventory_feature25_first_item_refs\": 1"));
         assert!(json.contains("\"inventory_feature25_first_item_ref_mentions\": 3"));
         assert!(json.contains("\"inventory_feature25_first_materialized_item_ref_mentions\": 1"));

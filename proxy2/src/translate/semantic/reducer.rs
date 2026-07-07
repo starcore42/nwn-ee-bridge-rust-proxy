@@ -803,6 +803,9 @@ fn apply_event(
                 .observe_inventory_equipment_handoff(consumer, item_context);
             let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
             let last_bridge_emission = state.ui.last_inventory_equipment_bridge_handoff_emission;
+            let last_bridge_state_update = state
+                .ui
+                .last_inventory_equipment_bridge_handoff_state_update;
             tracing::debug!(
                 consumer = consumer.as_str(),
                 consumed,
@@ -812,6 +815,16 @@ fn apply_event(
                 inventory_equipment_bridge_handoff_last_emitted_event_index = last_bridge_emission
                     .map(|emission| emission.plan.event_index)
                     .unwrap_or(0),
+                inventory_equipment_bridge_handoff_state_updates =
+                    state.ui.inventory_equipment_bridge_handoff_state_updates,
+                inventory_equipment_bridge_handoff_last_state_update_emission_index =
+                    last_bridge_state_update
+                        .map(|update| update.emission_index)
+                        .unwrap_or(0),
+                inventory_equipment_bridge_handoff_last_state_update_candidate_object_id =
+                    last_bridge_state_update
+                        .map(|update| update.candidate.object_id)
+                        .unwrap_or(0),
                 inventory_equipment_handoff_ready =
                     item_context.inventory_equipment_handoff_ready(),
                 inventory_equipment_handoff_outcome =

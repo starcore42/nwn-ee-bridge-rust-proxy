@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-07 21:04 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-07 21:05 +10: the freshest
 gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
@@ -41,7 +41,7 @@ gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
 `Area_AreaLoaded`, the post-area hold gate opening, held post-area packet
 release, and sustained `GameObjUpdate_LiveObject` traffic. It wrote
 `quickbar-item-refresh-hint.json` and `proxy.structured.log` through
-`2026-07-07T21:04:06+10:00` and produced no quarantine directory. The final
+`2026-07-07T21:05:54+10:00` and produced no quarantine directory. The final
 pending hint proved the current build's per-consumer inventory/equipment
 handoff buckets on live HG traffic: 19 handoff events, 19 ready events, 0
 blocked-without-ready events, 1 ready-with-deferred-Feature-25 event, 18
@@ -97,6 +97,21 @@ produced no quarantine directory, saw 1 blocked server-inventory handoff, and
 reported 0 bridge emissions because the baseline evidence was Feature-25-only.
 The next production target remains the writer/bridge consumer, now consuming
 these emitted ready item-state records rather than re-deriving handoff state.
+
+As of 2026-07-08 02:57 +10, proxy2 also drains bridge emissions into
+EE-facing `InventoryEquipmentBridgeStateUpdate` records. The drain is
+idempotent by emission index and only accepts `emit_ready_item_state` plans with
+a direct/materialized candidate; deferred Feature-25-only refs remain
+reference-only and cannot create state updates. Pending/idle
+`quickbar-item-refresh-hint.json`, reducer diagnostics, and replay summaries
+now expose the state-update count and last drained candidate. Bounded strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-drain-20260708-025233`
+over the same 164 Diamond autoplay packets reported 304 strict allow decisions,
+0 quarantine files, 0 live-object terminal residuals, 1 blocked
+server-inventory handoff, 0 bridge emissions, and 0 bridge state updates. The
+next production target is the concrete EE inventory/equipment writer output
+from these drained ready item-state updates.
 
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was

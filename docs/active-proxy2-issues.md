@@ -112,6 +112,27 @@ not as standalone workaround targets.
   the Feature-25-only baseline still does not synthesize item state. Active
   next path: implement the writer/bridge consumer that drains these ready
   emissions into the EE-facing inventory/equipment state update.
+- 2026-07-08 inventory/equipment bridge handoff drain: live-data gate reused the
+  current gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`quickbar-item-refresh-hint.json` and `proxy.structured.log`
+  `2026-07-07T21:05:54+10:00`, about 5h35m old at gate). It reached gameplay
+  through module load, area load, held-packet release, and sustained
+  live-object traffic with no quarantine directory, so no fresh live harness
+  run was required. Proxy2 now drains each one-shot
+  `InventoryEquipmentHandoffBridgeEmission` into an EE-facing
+  `InventoryEquipmentBridgeStateUpdate` exactly once, keyed by emission index,
+  and continues to reject Feature-25-only/deferred evidence before state update
+  creation. Pending/idle hints, reducer diagnostics, and replay summaries expose
+  state-update counts and the last drained candidate. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-equipment-bridge-drain-20260708-025233`
+  processed 164 Diamond autoplay packets with strict translation, 304 allow
+  decisions, 0 quarantine files, and 0 live-object terminal residuals; the
+  Feature-25-only baseline reported 1 blocked server-inventory handoff, 0 bridge
+  emissions, and 0 bridge state updates. Active next path: wire these drained
+  ready item-state updates into the concrete EE inventory/equipment writer
+  output and confirm with a fresh live HG harness if the current capture is
+  stale.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
