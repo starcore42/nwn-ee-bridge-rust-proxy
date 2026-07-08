@@ -681,6 +681,12 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let last_decision_candidate_source = last_decision_candidate
         .map(|candidate| candidate.source.as_str())
         .unwrap_or("none");
+    let last_decision_ready_objects = last_decision
+        .map(|decision| decision.ready_objects)
+        .unwrap_or(0);
+    let last_decision_deferred_feature25_only_objects = last_decision
+        .map(|decision| decision.deferred_feature25_only_objects)
+        .unwrap_or(0);
     let last_decision_claim = last_decision.and_then(|decision| decision.server_inventory_claim);
     let last_decision_claim_known = last_decision_claim.is_some();
     let last_decision_claim_minor = last_decision_claim.map(|claim| claim.minor).unwrap_or(0);
@@ -731,6 +737,8 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_decision_candidate_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_candidate_proof\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_candidate_source\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_ready_objects\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_deferred_feature25_only_objects\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_known\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_minor\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id\": {},\n",
@@ -775,6 +783,8 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_decision_candidate_object_id,
         last_decision_candidate_proof,
         last_decision_candidate_source,
+        last_decision_ready_objects,
+        last_decision_deferred_feature25_only_objects,
         last_decision_claim_known,
         last_decision_claim_minor,
         last_decision_claim_object_id,
@@ -1488,6 +1498,8 @@ mod tests {
                 proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
                 source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
             },
+            ready_objects: 18,
+            deferred_feature25_only_objects: 2,
             server_inventory_claim: Some(
                 crate::translate::semantic::InventoryEquipmentServerInventoryClaim::new(
                     1,
@@ -1520,6 +1532,12 @@ mod tests {
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_candidate_source\": \"direct_only\""
         ));
+        assert!(
+            body.contains("\"inventory_equipment_bridge_output_last_decision_ready_objects\": 18")
+        );
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_deferred_feature25_only_objects\": 2"
+        ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_known\": true"
         ));
@@ -1551,6 +1569,8 @@ mod tests {
                 proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
                 source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
             },
+            ready_objects: 18,
+            deferred_feature25_only_objects: 2,
             server_inventory_claim: None,
             client_gui_inventory_claim: Some(
                 crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
@@ -1576,6 +1596,12 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_kind\": \"select_panel\""
+        ));
+        assert!(
+            body.contains("\"inventory_equipment_bridge_output_last_decision_ready_objects\": 18")
+        );
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_deferred_feature25_only_objects\": 2"
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_panel\": 3"

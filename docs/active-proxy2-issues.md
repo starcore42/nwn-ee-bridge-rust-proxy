@@ -297,6 +297,28 @@ not as standalone workaround targets.
   Active next path: run fresh HG confirmation once the 2026-07-07 21:05 capture
   is stale and use the retained client-GUI claim details if live traffic reaches
   the ClientGui writer-gap status.
+- 2026-07-08 inventory/equipment bridge-output decision ready context:
+  live-data gate reused the same gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`quickbar-item-refresh-hint.json`, `proxy.structured.log`, and
+  `proxy.stdout.log` `2026-07-07T21:05:54+10:00`, about 23h42m old at gate).
+  It reached gameplay through module load, area load, held-packet release, and
+  sustained `GameObjUpdate_LiveObject` traffic with no quarantine directory, so
+  no fresh live harness was required at run start. Proxy2 now preserves the
+  ready direct/materialized object count and deferred Feature-25-only object
+  count on the typed bridge-output decision snapshot and exports them in
+  pending/idle `quickbar-item-refresh-hint.json` plus replay summaries. Bounded
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-bridge-decision-ready-context-built-20260708-210200`
+  processed 164 Diamond autoplay packet files with strict translation, 0
+  quarantine files, and 0 live-object terminal residuals. The Feature-25-only
+  baseline remained
+  `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"`
+  with no last bridge-output decision, so the new ready/deferred decision
+  counts correctly reported 0/0. Active next path: the live HG evidence is now
+  stale or nearly stale; run fresh HG confirmation and use bridge-output status
+  plus the last-decision ready/deferred counts to choose server-Inventory claim
+  repair versus a separately proven ClientGui inventory writer.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

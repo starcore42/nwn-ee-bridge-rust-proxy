@@ -224,6 +224,23 @@ The Feature-25-only baseline still reported
 no last decision or client-GUI claim, as expected. The next live HG run should
 use these claim fields if the status reaches `awaiting_client_gui_writer`.
 
+As of 2026-07-08 21:05 +10, proxy2 also exports the ready direct/materialized
+object count and deferred Feature-25-only object count stored on the typed last
+bridge-output decision snapshot. These fields appear in
+`quickbar-item-refresh-hint.json` and replay summaries as
+`inventory_equipment_bridge_output_last_decision_ready_objects` and
+`inventory_equipment_bridge_output_last_decision_deferred_feature25_only_objects`.
+Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-bridge-decision-ready-context-built-20260708-210200`
+over the same 164 Diamond autoplay packet files passed with strict translation,
+0 quarantine files, and 0 live-object terminal residuals. The Feature-25-only
+baseline had no drained ready bridge update, so it kept
+`inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` and
+reported decision ready/deferred counts of 0/0. The 2026-07-07 21:05 live HG
+capture was about 23h42m old at the start of this run; the next run should
+refresh live HG evidence before using these fields to choose server-Inventory
+claim repair versus a separately proven ClientGui inventory writer.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

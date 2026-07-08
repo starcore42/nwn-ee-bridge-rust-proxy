@@ -1480,6 +1480,8 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputStatus = ''
     $quickbarHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastDecisionReadyObjects = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastDecisionDeferredFeature25OnlyObjects = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimKnown = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimKind = ''
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimObjectId = 0
@@ -1855,6 +1857,8 @@ try {
         if ($null -ne $inventoryEquipmentBridgeOutputLastDecisionCandidateSourceProp -and $null -ne $inventoryEquipmentBridgeOutputLastDecisionCandidateSourceProp.Value) {
             $quickbarHintInventoryEquipmentBridgeOutputLastDecisionCandidateSource = [string]$inventoryEquipmentBridgeOutputLastDecisionCandidateSourceProp.Value
         }
+        $quickbarHintInventoryEquipmentBridgeOutputLastDecisionReadyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_decision_ready_objects'
+        $quickbarHintInventoryEquipmentBridgeOutputLastDecisionDeferredFeature25OnlyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_decision_deferred_feature25_only_objects'
         $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_decision_server_inventory_claim_known']
         if ($null -ne $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimKnownProp -and $null -ne $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimKnownProp.Value) {
             $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimKnown = [bool]$inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimKnownProp.Value
@@ -2217,6 +2221,8 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionCandidateObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionCandidateObjectId
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionCandidateProof = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionCandidateProof
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionCandidateSource = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionCandidateSource
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionReadyObjects = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionReadyObjects
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionDeferredFeature25OnlyObjects = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimKnown = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimKnown
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimMinor = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimMinor
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimObjectId

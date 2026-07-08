@@ -219,6 +219,8 @@ fn record_output_decision(
         event_index: update.event_index,
         consumer: update.consumer,
         candidate: update.candidate,
+        ready_objects: update.ready_objects,
+        deferred_feature25_only_objects: update.deferred_feature25_only_objects,
         server_inventory_claim: update.server_inventory_claim,
         client_gui_inventory_claim: update.client_gui_inventory_claim,
     });
