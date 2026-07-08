@@ -445,6 +445,33 @@ not as standalone workaround targets.
   proven current-player inventory payload and verify it on live HG; if server
   `Inventory` traffic returns first, continue the claim-neighborhood provenance
   path instead.
+- 2026-07-09 ClientGui inventory current-player status output: live-data gate
+  reused the current gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-claim-neighborhood-inventory-20260709-045231\harness-proxy-20260709-045344`
+  (`quickbar-item-refresh-hint.json`/`proxy.structured.log` through
+  `2026-07-09T04:57:12+10:00`, about 1h55m old at gate). It reached gameplay,
+  sustained `GameObjUpdate_LiveObject`, and produced no quarantine directory,
+  so the run used that fresh live ClientGui writer-gap evidence plus the
+  deterministic Diamond replay. Proxy2 now queues one proxy-owned
+  client-to-server reliable `ClientGuiInventory_Status` request for a proven
+  current-player inventory claim (`0x7F000000`) once client sequence state is
+  available, validates the exact EE payload
+  `700D010B0000000000007F90` through the typed ClientGui parser, records a
+  client sequence shift, and exports queued ClientGui status metadata in
+  `quickbar-item-refresh-hint.json` and replay summaries. Select-panel claims,
+  non-current-player status claims, and missing client sequence state remain
+  deferred. Focused tests cover exact status queueing, idempotence, select-panel
+  deferral, the ClientGui parser, and the queued-status hint fields. Bounded
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-gui-status-output-20260709-071534`
+  used alternate ports `-ListenPort 40021 -ServerPort 40033`, processed 164
+  Diamond autoplay packets with strict translation, 0 quarantine files, and 0
+  live-object terminal residuals. That replay source did not contain a ready
+  ClientGui inventory handoff, so the queued ClientGui status counters
+  correctly stayed at 0. Active next path: run a fresh live HG forced-inventory
+  probe before this capture ages past 24h and verify whether
+  `inventory_equipment_bridge_output_queued_client_gui_status_packets` becomes
+  nonzero and whether HG answers with the expected inventory/UI refresh stream.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

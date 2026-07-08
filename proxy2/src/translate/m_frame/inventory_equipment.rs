@@ -7,13 +7,20 @@
 
 use std::time::Instant;
 
-use crate::translate::{VerifiedFamily, inventory, semantic::InventoryEquipmentHandoffConsumer};
+use crate::translate::{
+    VerifiedFamily, client_gui_inventory, inventory,
+    semantic::{
+        InventoryEquipmentClientGuiInventoryClaimKind,
+        InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+    },
+};
 
 use super::{
     sequence::{SequenceShift, shift_sequence_for_peer, trim_sequence_shifts},
     state::{
         InventoryEquipmentBridgeOutputDecision, InventoryEquipmentBridgeOutputDecisionKind,
-        InventoryEquipmentBridgeQueuedOutput, SessionState,
+        InventoryEquipmentBridgeQueuedClientGuiStatusOutput, InventoryEquipmentBridgeQueuedOutput,
+        SessionState,
     },
     synthetic_area::{self, PendingServerPacket, PendingServerPacketPlacement},
 };
@@ -43,7 +50,8 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         return Ok(());
     }
 
-    if record_non_server_output_decision_if_needed(state, update) {
+    if update.consumer == ClientGuiInventory {
+        maybe_queue_client_gui_status_output(state, update, Some(trigger_sequence))?;
         return Ok(());
     }
 
@@ -201,15 +209,146 @@ pub(super) fn maybe_record_non_server_inventory_equipment_bridge_output_decision
         return;
     }
 
-    record_non_server_output_decision_if_needed(state, update);
+    if update.consumer == ClientGuiInventory
+        && let Err(err) = maybe_queue_client_gui_status_output(state, update, None)
+    {
+        tracing::warn!(
+            error = %err,
+            update_index = update.update_index,
+            "failed to queue inventory/equipment ClientGuiInventory bridge output"
+        );
+    }
 }
 
-fn record_non_server_output_decision_if_needed(
+fn maybe_queue_client_gui_status_output(
     state: &mut SessionState,
     update: crate::translate::semantic::InventoryEquipmentBridgeStateUpdate,
-) -> bool {
-    if update.consumer == InventoryEquipmentHandoffConsumer::ServerInventory {
-        return false;
+    server_sequence_to_ack: Option<u16>,
+) -> anyhow::Result<bool> {
+    if update.consumer != ClientGuiInventory {
+        return Ok(false);
+    }
+
+    let Some(claim) = update.client_gui_inventory_claim else {
+        record_deferred_client_gui_output_decision(
+            state,
+            update,
+            "inventory/equipment bridge output deferred: ClientGui handoff lacks exact GUI claim",
+        );
+        return Ok(true);
+    };
+
+    if claim.kind != InventoryEquipmentClientGuiInventoryClaimKind::Status {
+        record_deferred_client_gui_output_decision(
+            state,
+            update,
+            "inventory/equipment bridge output deferred: ClientGui handoff is not a status request",
+        );
+        return Ok(true);
+    }
+
+    let Some(object_id) = claim.object_id else {
+        record_deferred_client_gui_output_decision(
+            state,
+            update,
+            "inventory/equipment bridge output deferred: ClientGui status lacks object id",
+        );
+        return Ok(true);
+    };
+
+    if object_id != client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID {
+        record_deferred_client_gui_output_decision(
+            state,
+            update,
+            "inventory/equipment bridge output deferred: ClientGui status is not current-player inventory",
+        );
+        return Ok(true);
+    }
+
+    let Some(latest_client_sequence) = state.sequence.latest_client_sequence_from_client else {
+        record_deferred_client_gui_output_decision(
+            state,
+            update,
+            "inventory/equipment bridge output deferred: no client reliable sequence observed for proxy-owned ClientGui status",
+        );
+        return Ok(true);
+    };
+
+    let player_inventory_gui = claim.player_inventory_gui.unwrap_or(true);
+    let payload = client_gui_inventory::build_status_payload(object_id, player_inventory_gui);
+    client_gui_inventory::claim_payload_if_verified(&payload).ok_or_else(|| {
+        anyhow::anyhow!("built ClientGuiInventory_Status payload failed exact validator")
+    })?;
+
+    let trigger_client_sequence = latest_client_sequence.wrapping_add(1);
+    let synthetic_sequence = shift_sequence_for_peer(
+        &state.sequence.client_sequence_shifts,
+        trigger_client_sequence,
+    );
+    let ack_sequence = server_sequence_to_ack
+        .filter(|sequence| *sequence != 0)
+        .or(state.sequence.latest_client_ack_from_client)
+        .or(state.sequence.latest_server_sequence_to_client)
+        .unwrap_or(0);
+    let packet =
+        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
+
+    state.sequence.pending_client_to_server_packets.push(packet);
+    state.sequence.client_sequence_shifts.push(SequenceShift {
+        base: trigger_client_sequence,
+        delta: INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
+    });
+    trim_sequence_shifts(&mut state.sequence.client_sequence_shifts);
+
+    record_output_decision(
+        state,
+        update,
+        InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput,
+    );
+    state
+        .inventory_equipment
+        .last_queued_client_gui_status_update_index = Some(update.update_index);
+    state.inventory_equipment.queued_client_gui_status_outputs = state
+        .inventory_equipment
+        .queued_client_gui_status_outputs
+        .saturating_add(1);
+    state
+        .inventory_equipment
+        .last_queued_client_gui_status_output =
+        Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+            update_index: update.update_index,
+            emission_index: update.emission_index,
+            event_index: update.event_index,
+            object_id,
+            player_inventory_gui,
+            trigger_client_sequence,
+            synthetic_sequence,
+            ack_sequence,
+        });
+
+    tracing::info!(
+        update_index = update.update_index,
+        emission_index = update.emission_index,
+        event_index = update.event_index,
+        object_id = %format_args!("0x{:08X}", object_id),
+        player_inventory_gui,
+        trigger_client_sequence,
+        synthetic_sequence,
+        ack_sequence,
+        pending_client_packets = state.sequence.pending_client_to_server_packets.len(),
+        "inventory/equipment bridge queued proxy-owned ClientGuiInventory_Status request"
+    );
+
+    Ok(true)
+}
+
+fn record_deferred_client_gui_output_decision(
+    state: &mut SessionState,
+    update: crate::translate::semantic::InventoryEquipmentBridgeStateUpdate,
+    message: &'static str,
+) {
+    if update.consumer != ClientGuiInventory {
+        return;
     }
 
     record_output_decision(
@@ -227,9 +366,8 @@ fn record_non_server_output_decision_if_needed(
     tracing::debug!(
         update_index = update.update_index,
         consumer = update.consumer.as_str(),
-        "inventory/equipment bridge output deferred: handoff consumer has no server inventory writer"
+        message
     );
-    true
 }
 
 fn record_output_decision(
@@ -282,10 +420,15 @@ mod tests {
     use super::*;
     use crate::{
         packet::m::MFrameView,
-        translate::semantic::{
-            InventoryEquipmentBridgeStateUpdate, InventoryEquipmentServerInventoryClaim,
-            InventoryItemContextCandidate, InventoryItemContextCandidateSource,
-            InventoryItemObjectProof, InventoryItemObjectProvenNeighbor, InventoryItemObjectStatus,
+        translate::{
+            client_gui_inventory,
+            semantic::{
+                InventoryEquipmentBridgeStateUpdate, InventoryEquipmentClientGuiInventoryClaim,
+                InventoryEquipmentClientGuiInventoryClaimKind, InventoryEquipmentHandoffConsumer,
+                InventoryEquipmentServerInventoryClaim, InventoryItemContextCandidate,
+                InventoryItemContextCandidateSource, InventoryItemObjectProof,
+                InventoryItemObjectProvenNeighbor, InventoryItemObjectStatus,
+            },
         },
     };
 
@@ -378,27 +521,27 @@ mod tests {
     }
 
     #[test]
-    fn does_not_queue_output_for_client_gui_only_update() {
+    fn queues_client_gui_status_output_for_current_player_inventory_update() {
         let mut update = ready_server_inventory_update();
-        update.consumer = InventoryEquipmentHandoffConsumer::ClientGuiInventory;
+        update.consumer = ClientGuiInventory;
         update.server_inventory_claim = None;
-        update.client_gui_inventory_claim = Some(
-            crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
-                kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::Status,
-                object_id: Some(0x7F00_0000),
-                panel: None,
-                player_inventory_gui: None,
-                rewritten_self_object_id: true,
-            },
-        );
+        update.client_gui_inventory_claim = Some(InventoryEquipmentClientGuiInventoryClaim {
+            kind: InventoryEquipmentClientGuiInventoryClaimKind::Status,
+            object_id: Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID),
+            panel: None,
+            player_inventory_gui: Some(true),
+            rewritten_self_object_id: true,
+        });
         let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state.sequence.latest_client_ack_from_client = Some(77);
         state
             .semantic
             .ui
             .last_inventory_equipment_bridge_handoff_state_update = Some(update);
 
         maybe_queue_inventory_equipment_bridge_output(&mut state, 10, 77)
-            .expect("client GUI state-only update should not error");
+            .expect("client GUI status update should queue");
 
         assert!(
             state
@@ -406,59 +549,92 @@ mod tests {
                 .pending_server_to_client_packets
                 .is_empty()
         );
-        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
+        assert_eq!(state.sequence.client_sequence_shifts[0].base, 11);
+        assert_eq!(state.sequence.client_sequence_shifts[0].delta, 1);
         assert_eq!(
             state.inventory_equipment.last_decision_state_update_index,
             Some(1)
         );
-        assert!(
-            state
-                .inventory_equipment
-                .last_decision
-                .expect("decision should be recorded")
+        let decision = state
+            .inventory_equipment
+            .last_decision
+            .expect("decision should be recorded");
+        assert_eq!(
+            decision.kind,
+            InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput
+        );
+        assert_eq!(
+            decision
                 .client_gui_inventory_claim
                 .expect("client GUI decision should retain exact claim")
-                .rewritten_self_object_id
+                .object_id,
+            Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID)
         );
         assert_eq!(
             state
                 .inventory_equipment
-                .last_decision
-                .expect("decision should be recorded")
-                .kind,
-            InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui
-        );
-        assert_eq!(
-            state
-                .inventory_equipment
-                .last_deferred_client_gui_update_index,
+                .last_queued_client_gui_status_update_index,
             Some(1)
         );
-        assert_eq!(state.inventory_equipment.deferred_client_gui_updates, 1);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            1
+        );
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_queued_client_gui_status_output,
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 1,
+                emission_index: 1,
+                event_index: 1,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: 11,
+                synthetic_sequence: 11,
+                ack_sequence: 10,
+            })
+        );
+
+        let pending = state.sequence.pending_client_to_server_packets.remove(0);
+        let view = MFrameView::parse(&pending).expect("queued client packet should parse");
+        assert_eq!(view.sequence, 11);
+        assert_eq!(view.ack_sequence, 10);
+        let payload = super::super::parse_window::primary_payload(&pending, &view)
+            .expect("queued packet should expose primary payload");
+        let claim = client_gui_inventory::claim_payload_if_verified(payload)
+            .expect("queued ClientGuiInventory payload should be exact");
+        assert_eq!(
+            claim.object_id,
+            Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID)
+        );
 
         maybe_queue_inventory_equipment_bridge_output(&mut state, 11, 77)
             .expect("same client GUI update should remain handled");
 
-        assert!(state.sequence.server_sequence_shifts.is_empty());
-        assert_eq!(state.inventory_equipment.deferred_client_gui_updates, 1);
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 0);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            1
+        );
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
     }
 
     #[test]
     fn records_client_gui_writer_gap_without_server_inventory_trigger() {
         let mut update = ready_server_inventory_update();
-        update.consumer = InventoryEquipmentHandoffConsumer::ClientGuiInventory;
+        update.consumer = ClientGuiInventory;
         update.server_inventory_claim = None;
-        update.client_gui_inventory_claim = Some(
-            crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
-                kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::SelectPanel,
-                object_id: None,
-                panel: Some(3),
-                player_inventory_gui: Some(true),
-                rewritten_self_object_id: false,
-            },
-        );
+        update.client_gui_inventory_claim = Some(InventoryEquipmentClientGuiInventoryClaim {
+            kind: InventoryEquipmentClientGuiInventoryClaimKind::SelectPanel,
+            object_id: None,
+            panel: Some(3),
+            player_inventory_gui: Some(true),
+            rewritten_self_object_id: false,
+        });
         let mut state = SessionState::default();
         state
             .semantic

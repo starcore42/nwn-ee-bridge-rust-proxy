@@ -653,6 +653,18 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
 ) -> String {
     let last = bridge.last_queued_output.unwrap_or_default();
     let last_known = bridge.last_queued_output.is_some();
+    let last_client_gui_status = bridge
+        .last_queued_client_gui_status_output
+        .unwrap_or_default();
+    let last_client_gui_status_known = bridge.last_queued_client_gui_status_output.is_some();
+    let last_client_gui_status_payload_hex = if last_client_gui_status_known {
+        hex_encode_upper(&client_gui_inventory::build_status_payload(
+            last_client_gui_status.object_id,
+            last_client_gui_status.player_inventory_gui,
+        ))
+    } else {
+        String::new()
+    };
     let last_decision = bridge.last_decision;
     let last_decision_known = last_decision.is_some();
     let last_decision_kind = last_decision
@@ -748,7 +760,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         .unwrap_or(false);
     let last_decision_client_gui_claim_rewritten_self_object_id =
         last_decision_client_gui_claim.is_some_and(|claim| claim.rewritten_self_object_id);
-    let client_gui_writer_plan = client_gui_writer_plan_for_claim(last_decision_client_gui_claim);
+    let client_gui_writer_plan = client_gui_writer_plan_for_decision(last_decision);
     let output_status = bridge.output_status();
     let requires_client_gui_writer = bridge.requires_client_gui_writer();
     let fields = format!(
@@ -825,7 +837,19 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_queued_result\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_equip_slot\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_trigger_sequence\": {},\n",
-            "  \"inventory_equipment_bridge_output_last_queued_synthetic_sequence\": {}\n"
+            "  \"inventory_equipment_bridge_output_last_queued_synthetic_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_queued_client_gui_status_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_emission_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_event_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_player_inventory_gui\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_payload_hex\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_trigger_client_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_synthetic_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_ack_sequence\": {}\n"
         ),
         output_status.as_str(),
         requires_client_gui_writer,
@@ -900,7 +924,19 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last.result,
         last.equip_slot,
         last.trigger_sequence,
-        last.synthetic_sequence
+        last.synthetic_sequence,
+        bridge.queued_client_gui_status_outputs,
+        last_client_gui_status_known,
+        last_client_gui_status.update_index,
+        last_client_gui_status.emission_index,
+        last_client_gui_status.event_index,
+        last_client_gui_status.object_id,
+        last_client_gui_status.object_id,
+        last_client_gui_status.player_inventory_gui,
+        last_client_gui_status_payload_hex,
+        last_client_gui_status.trigger_client_sequence,
+        last_client_gui_status.synthetic_sequence,
+        last_client_gui_status.ack_sequence
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -941,12 +977,16 @@ impl Default for ClientGuiWriterPlan {
     }
 }
 
-fn client_gui_writer_plan_for_claim(
-    claim: Option<crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim>,
+fn client_gui_writer_plan_for_decision(
+    decision: Option<state::InventoryEquipmentBridgeOutputDecision>,
 ) -> ClientGuiWriterPlan {
+    let claim = decision.and_then(|decision| decision.client_gui_inventory_claim);
     let Some(claim) = claim else {
         return ClientGuiWriterPlan::default();
     };
+    let decision_kind = decision
+        .map(|decision| decision.kind)
+        .unwrap_or(state::InventoryEquipmentBridgeOutputDecisionKind::None);
 
     match claim.kind {
         crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::Status => {
@@ -960,20 +1000,30 @@ fn client_gui_writer_plan_for_claim(
             let player_inventory_gui = claim.player_inventory_gui.unwrap_or(true);
             let payload =
                 client_gui_inventory::build_status_payload(object_id, player_inventory_gui);
+            let status_object_is_current_player =
+                object_id == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID;
+            let emission_enabled = status_object_is_current_player
+                && decision_kind
+                    == state::InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput;
             ClientGuiWriterPlan {
-                action: if object_id == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID {
+                action: if status_object_is_current_player {
                     "status_current_player_inventory"
                 } else {
                     "status_other_object_inventory"
                 },
-                emission_enabled: false,
-                blocked_reason: "client_gui_inventory_bridge_timing_unproven",
+                emission_enabled,
+                blocked_reason: if emission_enabled {
+                    "none"
+                } else if status_object_is_current_player {
+                    "client_gui_inventory_status_not_queued"
+                } else {
+                    "client_gui_inventory_status_not_current_player"
+                },
                 payload_available: true,
                 payload_kind: "GuiInventory_Status",
                 payload_hex: hex_encode_upper(&payload),
                 status_object_id: object_id,
-                status_object_is_current_player: object_id
-                    == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                status_object_is_current_player,
                 player_inventory_gui,
                 ..ClientGuiWriterPlan::default()
             }
@@ -993,7 +1043,7 @@ fn client_gui_writer_plan_for_claim(
             ClientGuiWriterPlan {
                 action: "select_panel",
                 emission_enabled: false,
-                blocked_reason: "client_gui_inventory_bridge_timing_unproven",
+                blocked_reason: "client_gui_inventory_status_required_before_select_panel",
                 payload_available: true,
                 payload_kind: "GuiInventory_SelectPanel",
                 payload_hex: hex_encode_upper(&payload),
@@ -1876,7 +1926,7 @@ mod tests {
             "\"inventory_equipment_bridge_output_client_gui_writer_plan_emission_enabled\": false"
         ));
         assert!(body.contains(
-            "\"inventory_equipment_bridge_output_client_gui_writer_plan_blocked_reason\": \"client_gui_inventory_bridge_timing_unproven\""
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_blocked_reason\": \"client_gui_inventory_status_required_before_select_panel\""
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_client_gui_writer_plan_payload_kind\": \"GuiInventory_SelectPanel\""
@@ -1955,6 +2005,89 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_client_gui_writer_plan_player_inventory_gui\": true"
+        ));
+    }
+
+    #[test]
+    fn quickbar_hint_augmentation_serializes_queued_client_gui_status_output() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.queued_client_gui_status_outputs = 1;
+        bridge.last_decision_state_update_index = Some(12);
+        bridge.last_queued_client_gui_status_update_index = Some(12);
+        bridge.last_queued_client_gui_status_output =
+            Some(state::InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 12,
+                emission_index: 13,
+                event_index: 14,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: 80,
+                synthetic_sequence: 81,
+                ack_sequence: 70,
+            });
+        bridge.last_decision = Some(state::InventoryEquipmentBridgeOutputDecision {
+            kind: state::InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput,
+            update_index: 12,
+            emission_index: 13,
+            event_index: 14,
+            consumer:
+                crate::translate::semantic::InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            candidate: crate::translate::semantic::InventoryItemContextCandidate {
+                object_id: 0x8000_1234,
+                proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+                source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+            },
+            candidate_object_status: crate::translate::semantic::InventoryItemObjectStatus::Proven(
+                crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            ),
+            ready_objects: 51,
+            deferred_feature25_only_objects: 0,
+            server_inventory_claim: None,
+            server_inventory_claim_object_status:
+                crate::translate::semantic::InventoryItemObjectStatus::Unknown,
+            server_inventory_claim_proven_neighborhood:
+                crate::translate::semantic::InventoryItemObjectProvenNeighborhood::default(),
+            client_gui_inventory_claim: Some(
+                crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
+                    kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::Status,
+                    object_id: Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID),
+                    panel: None,
+                    player_inventory_gui: Some(true),
+                    rewritten_self_object_id: false,
+                },
+            ),
+        });
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_status\": \"queued_client_gui_status_output\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_emission_enabled\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_blocked_reason\": \"none\""
+        ));
+        assert!(
+            body.contains(
+                "\"inventory_equipment_bridge_output_queued_client_gui_status_packets\": 1"
+            )
+        );
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_queued_client_gui_status_object_id_hex\": \"0x7F000000\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_queued_client_gui_status_payload_hex\": \"700D010B0000000000007F90\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_queued_client_gui_status_synthetic_sequence\": 81"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_queued_client_gui_status_ack_sequence\": 70"
         ));
     }
 

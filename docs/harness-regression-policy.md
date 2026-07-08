@@ -50,20 +50,26 @@ with `inventory_equipment_bridge_output_last_decision_reason="deferred_client_gu
 server `Inventory` handoffs, candidate `0x80015211`, and a status/self
 client-GUI claim object `0x7F000000`. No synthetic inventory output was queued.
 
-As of 2026-07-09 05:12 +10, proxy2 has exact decompile-backed
+As of 2026-07-09 07:17 +10, proxy2 has exact decompile-backed
 `ClientGuiInventory` EE payload builders for status and select-panel claims and
-exports a non-emitting ClientGui writer plan in quickbar hints plus replay
-summaries. The current-player inventory status plan builds exact payload
-`700D010B0000000000007F90`; select-panel 3 builds `700D02080000000390`.
-Emission remains disabled with `client_gui_inventory_bridge_timing_unproven`
-until proxy-owned insertion timing is bounded. Bounded strict replay
-`C:\nwnbridge\codex-proxy2-replay-client-gui-writer-plan-20260709-050757` over
-the 164-packet Diamond autoplay baseline reported 304 strict allow decisions, 0
-strict quarantines, no quarantine directory, and 0 live-object terminal
-residuals. The next production target is to implement bounded proxy-owned
-ClientGui status emission timing for the proven current-player inventory
-payload and verify it on live HG; if server `Inventory` traffic returns first,
-continue the claim-neighborhood provenance path instead.
+queues a bounded proxy-owned current-player `ClientGuiInventory_Status` request
+when live state proves a status/self inventory claim for `0x7F000000`. The
+queued payload is the exact EE shape `700D010B0000000000007F90`, validated by
+the typed ClientGui parser before insertion; select-panel claims,
+non-current-player status claims, and missing client sequence state still
+defer. Hints and replay summaries now expose
+`inventory_equipment_bridge_output_queued_client_gui_status_packets` plus the
+last queued payload/object/sequence metadata. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-client-gui-status-output-20260709-071534`
+over the 164-packet Diamond autoplay baseline used alternate ports
+`-ListenPort 40021 -ServerPort 40033`, ran with strict translation, had 0
+quarantine files and 0 live-object terminal residuals, and correctly left the
+queued ClientGui status counter at 0 because that replay source has no ready
+ClientGui inventory handoff. The next live HG forced-inventory probe should
+verify whether the 04:57 ClientGui writer-gap path now increments the queued
+status counter and whether HG responds with the expected inventory/UI refresh
+stream; if server `Inventory` traffic returns first, continue the
+claim-neighborhood provenance path instead.
 
 Previous live HG proxy status, as of 2026-07-08 23:17 +10: the
 gameplay-reaching proxy harness was
@@ -1477,7 +1483,7 @@ work.
 | HG endpoint is unreachable or the server is down | External live-server blocker | Record the exact network/server failure and retry later; do not claim fresh gameplay evidence. |
 | Strict replay fails before launch with `Access is denied` while replacing `target\debug\hgbridge_proxy2.exe` | A stale replay proxy is still holding the debug executable | List `hgbridge_proxy2.exe` processes, stop only the stale debug replay process, or pass `-ProxyExe` with an isolated build output. Leave unrelated live/public proxy processes alone. |
 | Strict replay reaches only part of a long capture before the automation timeout, often during `drain dummy server` | Empty UDP receive waits are too expensive for 3k+ packet captures | Use `-DrainReceiveTimeoutMilliseconds 5` or another bounded value for automation replays; keep the default higher value for manual diagnosis when delayed UDP output is under investigation. |
-| Strict replay proxy exits before packet replay with `Access is denied. (os error 10013)` while binding the default listen endpoint, such as `127.0.0.1:55121` | Local port reservation, policy, or a stale process owns the default proxy listen port | Retry with an explicit free port pair, for example `-ListenPort 56121 -ServerPort 56133` or `-ListenPort 56221 -ServerPort 56233`, and keep `-DrainReceiveTimeoutMilliseconds 5` for automation replays. The 2026-07-08 inventory/equipment writer replay passed on alternate ports after the default port was denied. |
+| Strict replay proxy exits before packet replay with `Access is denied. (os error 10013)` while binding the default listen endpoint, such as `127.0.0.1:55121` | Local port reservation, policy, or a stale process owns the default proxy listen port | Retry with an explicit free port pair, for example `-ListenPort 40021 -ServerPort 40033`, `-ListenPort 56121 -ServerPort 56133`, or `-ListenPort 56221 -ServerPort 56233`, and keep `-DrainReceiveTimeoutMilliseconds 5` for automation replays. The 2026-07-08 inventory/equipment writer replay and 2026-07-09 ClientGui status-output replay passed on alternate ports after the default port was denied. |
 | Live HG reaches gameplay but writes identical `unclaimed-unknown-high-level` quarantine files for payloads that logs call incomplete/non-header stream continuations | A coalesced zlib stream tail is being passed to high-level packet ownership instead of the stream-continuation path | Fixed 2026-07-06 by classifying single incomplete inflated stream units before high-level parse fallback. If this recurs, inspect `coalesced` stream-continuation handling and require a no-quarantine live rerun before new packet-family work. |
 | Live wrapper proxy exits with `unexpected argument --quickbar-item-refresh-hint` before EE launch, or `-SkipBuild` uses an older proxy than the one just built | The wrapper selected a stale proxy2 executable before a fresher compatible build | Use the resolver that checks `--help` for the hint flag, skips stale candidates, selects the newest compatible executable by `LastWriteTime`, rejects stale explicit paths, and honors `-SkipBuild` when no compatible binary exists. |
 | GUI-event notify probe reaches BNK/BNCS/character list/login/`Module_Info` and `LoadModuleResources`, but not `Module_Loaded`, `Area_ClientArea`, live-object traffic, or GUI-event dispatch | Historical proxy/module-load handoff blocker: Rust was parsing the EE `Device_AdvertiseProperty` name length where the CNW declared read-buffer length lives | Use the shared `translate::client_device` classifier. Fresh 2026-07-04 14:27 rerun consumed 70 device-property frames and reached gameplay; if this recurs, verify those logs before unrelated action-family work. |

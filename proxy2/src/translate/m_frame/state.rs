@@ -93,10 +93,23 @@ pub(super) struct InventoryEquipmentBridgeQueuedOutput {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+    pub(super) update_index: u64,
+    pub(super) emission_index: u64,
+    pub(super) event_index: u64,
+    pub(super) object_id: u32,
+    pub(super) player_inventory_gui: bool,
+    pub(super) trigger_client_sequence: u16,
+    pub(super) synthetic_sequence: u16,
+    pub(super) ack_sequence: u16,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum InventoryEquipmentBridgeOutputDecisionKind {
     #[default]
     None,
     QueuedInventoryOutput,
+    QueuedClientGuiStatusOutput,
     DeferredClientGui,
     DeferredMissingClaim,
     BlockedCandidateMismatch,
@@ -107,6 +120,7 @@ impl InventoryEquipmentBridgeOutputDecisionKind {
         match self {
             Self::None => "none",
             Self::QueuedInventoryOutput => "queued_inventory_output",
+            Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::DeferredClientGui => "deferred_client_gui",
             Self::DeferredMissingClaim => "deferred_missing_claim",
             Self::BlockedCandidateMismatch => "blocked_candidate_mismatch",
@@ -119,6 +133,7 @@ pub(super) enum InventoryEquipmentBridgeOutputStatus {
     #[default]
     AwaitingBridgeStateUpdate,
     QueuedInventoryOutput,
+    QueuedClientGuiStatusOutput,
     BlockedCandidateMismatch,
     DeferredMissingClaim,
     AwaitingClientGuiWriter,
@@ -130,6 +145,7 @@ impl InventoryEquipmentBridgeOutputStatus {
         match self {
             Self::AwaitingBridgeStateUpdate => "awaiting_bridge_state_update",
             Self::QueuedInventoryOutput => "queued_inventory_output",
+            Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::BlockedCandidateMismatch => "blocked_candidate_mismatch",
             Self::DeferredMissingClaim => "deferred_missing_claim",
             Self::AwaitingClientGuiWriter => "awaiting_client_gui_writer",
@@ -161,7 +177,9 @@ pub(super) struct InventoryEquipmentBridgeOutputDecision {
 pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_decision_state_update_index: Option<u64>,
     pub(super) last_queued_state_update_index: Option<u64>,
+    pub(super) last_queued_client_gui_status_update_index: Option<u64>,
     pub(super) queued_outputs: u64,
+    pub(super) queued_client_gui_status_outputs: u64,
     pub(super) deferred_client_gui_updates: u64,
     pub(super) deferred_missing_claim_updates: u64,
     pub(super) blocked_candidate_mismatch_updates: u64,
@@ -170,12 +188,16 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_blocked_candidate_mismatch_update_index: Option<u64>,
     pub(super) last_decision: Option<InventoryEquipmentBridgeOutputDecision>,
     pub(super) last_queued_output: Option<InventoryEquipmentBridgeQueuedOutput>,
+    pub(super) last_queued_client_gui_status_output:
+        Option<InventoryEquipmentBridgeQueuedClientGuiStatusOutput>,
 }
 
 impl InventoryEquipmentBridgeState {
     pub(super) fn output_status(&self) -> InventoryEquipmentBridgeOutputStatus {
         if self.queued_outputs > 0 {
             InventoryEquipmentBridgeOutputStatus::QueuedInventoryOutput
+        } else if self.queued_client_gui_status_outputs > 0 {
+            InventoryEquipmentBridgeOutputStatus::QueuedClientGuiStatusOutput
         } else if self.blocked_candidate_mismatch_updates > 0 {
             InventoryEquipmentBridgeOutputStatus::BlockedCandidateMismatch
         } else if self.deferred_missing_claim_updates > 0 {
