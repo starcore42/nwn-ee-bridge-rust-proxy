@@ -49,7 +49,7 @@ The claim id appeared only in the `Inventory_Equip` decision log, while the
 candidate id was the quickbar-materialized item, so no synthetic `Inventory`
 output was queued.
 
-As of 2026-07-09 02:00 +10, proxy2 keeps the server `Inventory` writer
+As of 2026-07-09 01:12 +10, proxy2 keeps the server `Inventory` writer
 conservative for this mismatch: a parsed claim object may differ from the ready
 candidate only when that claim object is independently proven as inventory item
 state. The bridge-output decision now records candidate and server-claim object
