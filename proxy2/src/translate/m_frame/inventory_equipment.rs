@@ -67,7 +67,16 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         return Ok(());
     };
 
-    if claim.object_id != update.candidate.object_id {
+    let claim_object_status = state
+        .semantic
+        .objects
+        .inventory_item_object_status(claim.object_id);
+    if claim.object_id != update.candidate.object_id
+        && !matches!(
+            claim_object_status,
+            crate::translate::semantic::InventoryItemObjectStatus::Proven(_)
+        )
+    {
         record_output_decision(
             state,
             update,
@@ -83,10 +92,20 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         tracing::warn!(
             update_index = update.update_index,
             claim_object_id = %format_args!("0x{:08X}", claim.object_id),
+            claim_object_status = claim_object_status.as_str(),
+            claim_object_proof = claim_object_status.proof().map(|proof| proof.as_str()).unwrap_or("none"),
             candidate_object_id = %format_args!("0x{:08X}", update.candidate.object_id),
             "inventory/equipment bridge output blocked: server Inventory object differs from ready item-state candidate"
         );
         return Ok(());
+    }
+    if claim.object_id != update.candidate.object_id {
+        tracing::info!(
+            update_index = update.update_index,
+            claim_object_id = %format_args!("0x{:08X}", claim.object_id),
+            candidate_object_id = %format_args!("0x{:08X}", update.candidate.object_id),
+            "inventory/equipment bridge using server Inventory claim object with independent known item-state proof"
+        );
     }
 
     let payload = inventory::build_ee_inventory_payload(
@@ -211,6 +230,19 @@ fn record_output_decision(
     update: crate::translate::semantic::InventoryEquipmentBridgeStateUpdate,
     kind: InventoryEquipmentBridgeOutputDecisionKind,
 ) {
+    let candidate_object_status = state
+        .semantic
+        .objects
+        .inventory_item_object_status(update.candidate.object_id);
+    let server_inventory_claim_object_status = update
+        .server_inventory_claim
+        .map(|claim| {
+            state
+                .semantic
+                .objects
+                .inventory_item_object_status(claim.object_id)
+        })
+        .unwrap_or(crate::translate::semantic::InventoryItemObjectStatus::Unknown);
     state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
     state.inventory_equipment.last_decision = Some(InventoryEquipmentBridgeOutputDecision {
         kind,
@@ -219,9 +251,11 @@ fn record_output_decision(
         event_index: update.event_index,
         consumer: update.consumer,
         candidate: update.candidate,
+        candidate_object_status,
         ready_objects: update.ready_objects,
         deferred_feature25_only_objects: update.deferred_feature25_only_objects,
         server_inventory_claim: update.server_inventory_claim,
+        server_inventory_claim_object_status,
         client_gui_inventory_claim: update.client_gui_inventory_claim,
     });
 }
@@ -234,7 +268,7 @@ mod tests {
         translate::semantic::{
             InventoryEquipmentBridgeStateUpdate, InventoryEquipmentServerInventoryClaim,
             InventoryItemContextCandidate, InventoryItemContextCandidateSource,
-            InventoryItemObjectProof,
+            InventoryItemObjectProof, InventoryItemObjectStatus,
         },
     };
 
@@ -557,5 +591,72 @@ mod tests {
             1
         );
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
+    }
+
+    #[test]
+    fn queues_inventory_output_when_mismatch_claim_object_has_known_item_state() {
+        let mut update = ready_server_inventory_update();
+        update.server_inventory_claim = Some(InventoryEquipmentServerInventoryClaim::new(
+            0x01,
+            0x8000_5678,
+            false,
+            0x0002_0000,
+        ));
+        let mut state = SessionState::default();
+        state
+            .semantic
+            .objects
+            .observe_materialized_item_object_ids(&[0x8000_5678]);
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 10, 77)
+            .expect("known claim item should queue exact Inventory output");
+
+        let decision = state
+            .inventory_equipment
+            .last_decision
+            .expect("decision should be recorded");
+        assert_eq!(
+            decision.kind,
+            InventoryEquipmentBridgeOutputDecisionKind::QueuedInventoryOutput
+        );
+        assert_eq!(decision.candidate.object_id, 0x8000_1234);
+        assert_eq!(
+            decision
+                .server_inventory_claim
+                .expect("queued decision should retain claim")
+                .object_id,
+            0x8000_5678
+        );
+        assert_eq!(
+            decision.server_inventory_claim_object_status,
+            InventoryItemObjectStatus::Proven(InventoryItemObjectProof::ActiveObject)
+        );
+        assert_eq!(
+            state.inventory_equipment.blocked_candidate_mismatch_updates,
+            0
+        );
+        assert_eq!(state.inventory_equipment.queued_outputs, 1);
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_queued_output
+                .expect("known claim item should be queued")
+                .object_id,
+            0x8000_5678
+        );
+
+        let pending = &state.synthetic_area.pending_server_to_client_packets[0];
+        let view = MFrameView::parse(&pending.packet).expect("queued packet should parse");
+        let payload = super::super::parse_window::primary_payload(&pending.packet, &view)
+            .expect("queued packet should expose primary payload");
+        let claim = inventory::claim_payload_if_verified(payload)
+            .expect("queued Inventory payload should be exact EE shape");
+        assert_eq!(claim.object_id, 0x8000_5678);
+        assert!(!claim.result);
+        assert_eq!(claim.equip_slot, 0x0002_0000);
     }
 }

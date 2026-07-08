@@ -146,9 +146,11 @@ pub(super) struct InventoryEquipmentBridgeOutputDecision {
     pub(super) event_index: u64,
     pub(super) consumer: semantic::InventoryEquipmentHandoffConsumer,
     pub(super) candidate: semantic::InventoryItemContextCandidate,
+    pub(super) candidate_object_status: semantic::InventoryItemObjectStatus,
     pub(super) ready_objects: usize,
     pub(super) deferred_feature25_only_objects: usize,
     pub(super) server_inventory_claim: Option<semantic::InventoryEquipmentServerInventoryClaim>,
+    pub(super) server_inventory_claim_object_status: semantic::InventoryItemObjectStatus,
     pub(super) client_gui_inventory_claim:
         Option<semantic::InventoryEquipmentClientGuiInventoryClaim>,
 }

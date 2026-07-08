@@ -361,6 +361,34 @@ not as standalone workaround targets.
   claims can name a different object than the ready direct/materialized item
   candidate, then fix the shared claim/candidate association before any
   ClientGui writer work.
+- 2026-07-09 server-Inventory claim-status gate and diagnostics: live-data gate
+  reused the current gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-pending-server-inventory-replay-rerun-20260708-231340\harness-proxy-20260708-231358`
+  (`proxy.structured.log` last write `2026-07-08T23:17:37+10:00`, about 1h32m
+  old at gate). It reached `Module_Loaded`, `Area_ClientArea`,
+  proxy-generated `Area_AreaLoaded`, held-packet release, and sustained
+  `GameObjUpdate_LiveObject` with no quarantine directory, so the run used that
+  fresh live evidence plus deterministic Diamond replay. Proxy2 now allows a
+  parsed server `Inventory` claim object to differ from the retained ready
+  candidate only when the claim object is independently
+  `InventoryItemObjectStatus::Proven`; the exact EE `Inventory` writer still
+  emits the server claim object, result, and equip slot and still blocks
+  unproven mismatches. The typed bridge-output decision now snapshots both the
+  candidate and server-claim inventory object statuses/proofs, and
+  `quickbar-item-refresh-hint.json` plus the replay summary expose those fields
+  for the next live run. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-claim-status-inventory-output-20260709-0200`
+  processed the 164-packet Diamond autoplay baseline with 304 strict allow
+  decisions, 0 strict quarantines, no quarantine directory, and 0 live-object
+  terminal residuals. Fresh live confirmation with the conservative claim gate
+  `C:\nwnbridge\codex-live-known-claim-inventory-output-20260709-0110\harness-proxy-20260709-010013`
+  reached gameplay with no quarantine, but still blocked output:
+  parsed server claim `0x80016E36` differed from candidate `0x80016D85`; the
+  claim id appeared only in the `Inventory_Equip` decision log, while the
+  candidate id was the quickbar-materialized item. Active next path: rerun live
+  with the new claim-status fields, then trace the server `Inventory` claim
+  object provenance/owner semantics before relaxing the writer or starting a
+  ClientGui writer.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

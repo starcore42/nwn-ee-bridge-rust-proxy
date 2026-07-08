@@ -679,6 +679,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let last_decision_candidate_source = last_decision_candidate
         .map(|candidate| candidate.source.as_str())
         .unwrap_or("none");
+    let last_decision_candidate_object_status = last_decision
+        .map(|decision| decision.candidate_object_status.as_str())
+        .unwrap_or("unknown");
+    let last_decision_candidate_object_status_proof = last_decision
+        .and_then(|decision| decision.candidate_object_status.proof())
+        .map(|proof| proof.as_str())
+        .unwrap_or("none");
     let last_decision_ready_objects = last_decision
         .map(|decision| decision.ready_objects)
         .unwrap_or(0);
@@ -697,6 +704,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let last_decision_claim_equip_slot = last_decision_claim
         .map(|claim| claim.equip_slot)
         .unwrap_or(0);
+    let last_decision_claim_object_status = last_decision
+        .map(|decision| decision.server_inventory_claim_object_status.as_str())
+        .unwrap_or("unknown");
+    let last_decision_claim_object_status_proof = last_decision
+        .and_then(|decision| decision.server_inventory_claim_object_status.proof())
+        .map(|proof| proof.as_str())
+        .unwrap_or("none");
     let last_decision_client_gui_claim =
         last_decision.and_then(|decision| decision.client_gui_inventory_claim);
     let last_decision_client_gui_claim_known = last_decision_client_gui_claim.is_some();
@@ -735,12 +749,16 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_decision_candidate_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_candidate_proof\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_candidate_source\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_candidate_object_status\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_candidate_object_status_proof\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_ready_objects\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_deferred_feature25_only_objects\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_known\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_minor\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_status\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_status_proof\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_known\": {},\n",
@@ -781,12 +799,16 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_decision_candidate_object_id,
         last_decision_candidate_proof,
         last_decision_candidate_source,
+        last_decision_candidate_object_status,
+        last_decision_candidate_object_status_proof,
         last_decision_ready_objects,
         last_decision_deferred_feature25_only_objects,
         last_decision_claim_known,
         last_decision_claim_minor,
         last_decision_claim_object_id,
         last_decision_claim_object_id,
+        last_decision_claim_object_status,
+        last_decision_claim_object_status_proof,
         last_decision_claim_result,
         last_decision_claim_equip_slot,
         last_decision_client_gui_claim_known,
@@ -1496,6 +1518,9 @@ mod tests {
                 proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
                 source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
             },
+            candidate_object_status: crate::translate::semantic::InventoryItemObjectStatus::Proven(
+                crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            ),
             ready_objects: 18,
             deferred_feature25_only_objects: 2,
             server_inventory_claim: Some(
@@ -1506,6 +1531,8 @@ mod tests {
                     4,
                 ),
             ),
+            server_inventory_claim_object_status:
+                crate::translate::semantic::InventoryItemObjectStatus::Unknown,
             client_gui_inventory_claim: None,
         });
 
@@ -1530,6 +1557,12 @@ mod tests {
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_candidate_source\": \"direct_only\""
         ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_candidate_object_status\": \"proven\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_candidate_object_status_proof\": \"active_object\""
+        ));
         assert!(
             body.contains("\"inventory_equipment_bridge_output_last_decision_ready_objects\": 18")
         );
@@ -1541,6 +1574,12 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id_hex\": \"0x80005678\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_status\": \"unknown\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_status_proof\": \"none\""
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": true"
@@ -1567,9 +1606,14 @@ mod tests {
                 proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
                 source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
             },
+            candidate_object_status: crate::translate::semantic::InventoryItemObjectStatus::Proven(
+                crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            ),
             ready_objects: 18,
             deferred_feature25_only_objects: 2,
             server_inventory_claim: None,
+            server_inventory_claim_object_status:
+                crate::translate::semantic::InventoryItemObjectStatus::Unknown,
             client_gui_inventory_claim: Some(
                 crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
                     kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::SelectPanel,

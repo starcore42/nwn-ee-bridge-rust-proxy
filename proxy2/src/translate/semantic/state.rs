@@ -546,6 +546,25 @@ pub(crate) enum InventoryItemObjectStatus {
     Unknown,
 }
 
+impl InventoryItemObjectStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Proven(_) => "proven",
+            Self::DeferredFeature25(_) => "deferred_feature25",
+            Self::ClearedByItemDelete => "cleared_by_item_delete",
+            Self::ClearedByAreaReset => "cleared_by_area_reset",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn proof(self) -> Option<InventoryItemObjectProof> {
+        match self {
+            Self::Proven(proof) | Self::DeferredFeature25(proof) => Some(proof),
+            Self::ClearedByItemDelete | Self::ClearedByAreaReset | Self::Unknown => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InventoryItemContextCandidateSource {
     DirectOnly,
