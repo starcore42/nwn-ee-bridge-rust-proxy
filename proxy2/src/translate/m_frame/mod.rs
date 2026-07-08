@@ -648,6 +648,46 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
 ) -> String {
     let last = bridge.last_queued_output.unwrap_or_default();
     let last_known = bridge.last_queued_output.is_some();
+    let last_decision = bridge.last_decision;
+    let last_decision_known = last_decision.is_some();
+    let last_decision_kind = last_decision
+        .map(|decision| decision.kind)
+        .unwrap_or_default();
+    let last_decision_update_index = last_decision
+        .map(|decision| decision.update_index)
+        .or(bridge.last_decision_state_update_index)
+        .unwrap_or(0);
+    let last_decision_consumer = last_decision
+        .map(|decision| decision.consumer.as_str())
+        .unwrap_or("unknown");
+    let last_decision_emission_index = last_decision
+        .map(|decision| decision.emission_index)
+        .unwrap_or(0);
+    let last_decision_event_index = last_decision
+        .map(|decision| decision.event_index)
+        .unwrap_or(0);
+    let last_decision_candidate = last_decision.map(|decision| decision.candidate);
+    let last_decision_candidate_object_id = last_decision_candidate
+        .map(|candidate| candidate.object_id)
+        .unwrap_or(0);
+    let last_decision_candidate_proof = last_decision_candidate
+        .map(|candidate| candidate.proof.as_str())
+        .unwrap_or("none");
+    let last_decision_candidate_source = last_decision_candidate
+        .map(|candidate| candidate.source.as_str())
+        .unwrap_or("none");
+    let last_decision_claim = last_decision.and_then(|decision| decision.server_inventory_claim);
+    let last_decision_claim_known = last_decision_claim.is_some();
+    let last_decision_claim_minor = last_decision_claim.map(|claim| claim.minor).unwrap_or(0);
+    let last_decision_claim_object_id = last_decision_claim
+        .map(|claim| claim.object_id)
+        .unwrap_or(0);
+    let last_decision_claim_result = last_decision_claim
+        .map(|claim| claim.result)
+        .unwrap_or(false);
+    let last_decision_claim_equip_slot = last_decision_claim
+        .map(|claim| claim.equip_slot)
+        .unwrap_or(0);
     let fields = format!(
         concat!(
             ",\n",
@@ -656,6 +696,21 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_deferred_missing_claim_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_blocked_candidate_mismatch_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_reason\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_consumer\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_emission_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_event_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_candidate_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_candidate_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_candidate_proof\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_candidate_source\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_minor\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": {},\n",
             "  \"inventory_equipment_bridge_output_last_deferred_client_gui_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_deferred_missing_claim_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_blocked_candidate_mismatch_update_index\": {},\n",
@@ -675,7 +730,22 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         bridge.deferred_client_gui_updates,
         bridge.deferred_missing_claim_updates,
         bridge.blocked_candidate_mismatch_updates,
-        bridge.last_decision_state_update_index.unwrap_or(0),
+        last_decision_update_index,
+        last_decision_known,
+        last_decision_kind.as_str(),
+        last_decision_consumer,
+        last_decision_emission_index,
+        last_decision_event_index,
+        last_decision_candidate_object_id,
+        last_decision_candidate_object_id,
+        last_decision_candidate_proof,
+        last_decision_candidate_source,
+        last_decision_claim_known,
+        last_decision_claim_minor,
+        last_decision_claim_object_id,
+        last_decision_claim_object_id,
+        last_decision_claim_result,
+        last_decision_claim_equip_slot,
         bridge.last_deferred_client_gui_update_index.unwrap_or(0),
         bridge.last_deferred_missing_claim_update_index.unwrap_or(0),
         bridge
@@ -1326,6 +1396,10 @@ mod tests {
         assert!(
             body.contains("\"inventory_equipment_bridge_output_last_decision_update_index\": 8")
         );
+        assert!(body.contains("\"inventory_equipment_bridge_output_last_decision_known\": false"));
+        assert!(
+            body.contains("\"inventory_equipment_bridge_output_last_decision_reason\": \"none\"")
+        );
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_deferred_client_gui_update_index\": 9"
         ));
@@ -1344,6 +1418,67 @@ mod tests {
         assert!(
             body.contains("\"inventory_equipment_bridge_output_last_queued_equip_slot\": 131072")
         );
+    }
+
+    #[test]
+    fn quickbar_hint_augmentation_serializes_inventory_bridge_output_last_decision() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.last_decision_state_update_index = Some(5);
+        bridge.last_decision = Some(state::InventoryEquipmentBridgeOutputDecision {
+            kind: state::InventoryEquipmentBridgeOutputDecisionKind::BlockedCandidateMismatch,
+            update_index: 5,
+            emission_index: 6,
+            event_index: 7,
+            consumer:
+                crate::translate::semantic::InventoryEquipmentHandoffConsumer::ServerInventory,
+            candidate: crate::translate::semantic::InventoryItemContextCandidate {
+                object_id: 0x8000_1234,
+                proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+                source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+            },
+            server_inventory_claim: Some(
+                crate::translate::semantic::InventoryEquipmentServerInventoryClaim::new(
+                    1,
+                    0x8000_5678,
+                    true,
+                    4,
+                ),
+            ),
+        });
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.contains("\"inventory_equipment_bridge_output_last_decision_known\": true"));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_reason\": \"blocked_candidate_mismatch\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_consumer\": \"server_inventory\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_candidate_object_id_hex\": \"0x80001234\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_candidate_proof\": \"active_object\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_candidate_source\": \"direct_only\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_known\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id_hex\": \"0x80005678\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": 4"
+        ));
     }
 
     #[test]

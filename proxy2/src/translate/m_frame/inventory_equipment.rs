@@ -11,7 +11,10 @@ use crate::translate::{VerifiedFamily, inventory, semantic::InventoryEquipmentHa
 
 use super::{
     sequence::{SequenceShift, shift_sequence_for_peer, trim_sequence_shifts},
-    state::{InventoryEquipmentBridgeQueuedOutput, SessionState},
+    state::{
+        InventoryEquipmentBridgeOutputDecision, InventoryEquipmentBridgeOutputDecisionKind,
+        InventoryEquipmentBridgeQueuedOutput, SessionState,
+    },
     synthetic_area::{self, PendingServerPacket, PendingServerPacketPlacement},
 };
 
@@ -41,7 +44,11 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     }
 
     if update.consumer != InventoryEquipmentHandoffConsumer::ServerInventory {
-        state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+        record_output_decision(
+            state,
+            update,
+            InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui,
+        );
         state
             .inventory_equipment
             .last_deferred_client_gui_update_index = Some(update.update_index);
@@ -58,7 +65,11 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     }
 
     let Some(claim) = update.server_inventory_claim else {
-        state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+        record_output_decision(
+            state,
+            update,
+            InventoryEquipmentBridgeOutputDecisionKind::DeferredMissingClaim,
+        );
         state
             .inventory_equipment
             .last_deferred_missing_claim_update_index = Some(update.update_index);
@@ -74,7 +85,11 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     };
 
     if claim.object_id != update.candidate.object_id {
-        state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+        record_output_decision(
+            state,
+            update,
+            InventoryEquipmentBridgeOutputDecisionKind::BlockedCandidateMismatch,
+        );
         state
             .inventory_equipment
             .last_blocked_candidate_mismatch_update_index = Some(update.update_index);
@@ -122,7 +137,11 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
             reason: INVENTORY_EQUIPMENT_BRIDGE_REASON,
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
         });
-    state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+    record_output_decision(
+        state,
+        update,
+        InventoryEquipmentBridgeOutputDecisionKind::QueuedInventoryOutput,
+    );
     state.inventory_equipment.last_queued_state_update_index = Some(update.update_index);
     state.inventory_equipment.queued_outputs =
         state.inventory_equipment.queued_outputs.saturating_add(1);
@@ -152,6 +171,23 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         "inventory/equipment bridge queued exact EE Inventory output"
     );
     Ok(())
+}
+
+fn record_output_decision(
+    state: &mut SessionState,
+    update: crate::translate::semantic::InventoryEquipmentBridgeStateUpdate,
+    kind: InventoryEquipmentBridgeOutputDecisionKind,
+) {
+    state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
+    state.inventory_equipment.last_decision = Some(InventoryEquipmentBridgeOutputDecision {
+        kind,
+        update_index: update.update_index,
+        emission_index: update.emission_index,
+        event_index: update.event_index,
+        consumer: update.consumer,
+        candidate: update.candidate,
+        server_inventory_claim: update.server_inventory_claim,
+    });
 }
 
 #[cfg(test)]
@@ -203,6 +239,14 @@ mod tests {
         assert_eq!(
             state.inventory_equipment.last_decision_state_update_index,
             Some(1)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_decision
+                .expect("decision should be recorded")
+                .kind,
+            InventoryEquipmentBridgeOutputDecisionKind::QueuedInventoryOutput
         );
         assert_eq!(
             state.inventory_equipment.last_queued_state_update_index,
@@ -273,6 +317,14 @@ mod tests {
         assert_eq!(
             state
                 .inventory_equipment
+                .last_decision
+                .expect("decision should be recorded")
+                .kind,
+            InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
                 .last_deferred_client_gui_update_index,
             Some(1)
         );
@@ -315,6 +367,14 @@ mod tests {
         assert_eq!(
             state
                 .inventory_equipment
+                .last_decision
+                .expect("decision should be recorded")
+                .kind,
+            InventoryEquipmentBridgeOutputDecisionKind::DeferredMissingClaim
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
                 .last_deferred_missing_claim_update_index,
             Some(1)
         );
@@ -351,6 +411,22 @@ mod tests {
         assert_eq!(
             state.inventory_equipment.last_decision_state_update_index,
             Some(1)
+        );
+        let decision = state
+            .inventory_equipment
+            .last_decision
+            .expect("decision should be recorded");
+        assert_eq!(
+            decision.kind,
+            InventoryEquipmentBridgeOutputDecisionKind::BlockedCandidateMismatch
+        );
+        assert_eq!(decision.candidate.object_id, 0x8000_1234);
+        assert_eq!(
+            decision
+                .server_inventory_claim
+                .expect("mismatch decision should retain claim")
+                .object_id,
+            0x8000_5678
         );
         assert_eq!(
             state

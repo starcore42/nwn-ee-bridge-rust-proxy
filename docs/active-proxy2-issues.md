@@ -206,6 +206,28 @@ not as standalone workaround targets.
   the idempotent decision indexes plus queued/deferral/mismatch buckets to
   choose between server-Inventory claim repair and a separately proven
   ClientGui inventory writer.
+- 2026-07-08 inventory/equipment bridge output decision detail: live-data gate
+  reused the same gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`proxy.stdout.log` `2026-07-07T21:05:54+10:00`, about 13h37m old at gate).
+  It reached gameplay and had no quarantine directory, so no fresh live harness
+  was required. Proxy2 now records the last bridge-output decision as a typed
+  production state snapshot, including reason, consumer, emission/event
+  indexes, ready candidate object/proof/source, and parsed server-Inventory
+  claim details. `quickbar-item-refresh-hint.json` and the replay summary now
+  expose those fields beside the existing queue/deferral/mismatch counters.
+  Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-decision-detail-20260708-105538`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, 0 quarantine files, and 0 live-object
+  terminal residuals. The Feature-25-only baseline had 0 queued bridge output
+  and no drained ready update, so
+  `inventory_equipment_bridge_output_last_decision_known=false` and
+  `inventory_equipment_bridge_output_last_decision_reason="none"` are the
+  expected baseline. Active next path: run fresh live HG confirmation when the
+  2026-07-07 21:05 capture is stale, then use last-decision reason plus
+  candidate-vs-claim object ids to choose server-Inventory claim repair or a
+  separately proven ClientGui inventory writer.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

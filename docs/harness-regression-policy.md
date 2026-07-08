@@ -158,6 +158,22 @@ should inspect the queued/deferral/mismatch buckets together with the last
 decision indexes before deciding on server-Inventory claim repair versus a
 separately proven ClientGui inventory writer.
 
+As of 2026-07-08 11:00 +10, proxy2 also exports a typed last bridge-output
+decision snapshot in `quickbar-item-refresh-hint.json` and replay summaries.
+The fields include decision-known, reason, consumer, emission/event indexes,
+ready candidate object/proof/source, and parsed server-Inventory claim object,
+minor, result, and equip slot. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-decision-detail-20260708-105538`
+over the same 164 Diamond autoplay packets reported 304 strict allow decisions,
+0 strict quarantines, 0 quarantine files, and 0 live-object terminal residuals.
+The Feature-25-only baseline had no drained ready update, so the new fields
+correctly reported
+`inventory_equipment_bridge_output_last_decision_known=false` and
+`inventory_equipment_bridge_output_last_decision_reason="none"`. The next live
+HG run should inspect the last-decision reason and candidate-vs-claim ids
+beside the existing queue/deferral/mismatch counters before choosing
+server-Inventory claim repair or a separately proven ClientGui inventory writer.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

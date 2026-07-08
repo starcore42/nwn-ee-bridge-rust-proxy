@@ -92,6 +92,39 @@ pub(super) struct InventoryEquipmentBridgeQueuedOutput {
     pub(super) synthetic_sequence: u16,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentBridgeOutputDecisionKind {
+    #[default]
+    None,
+    QueuedInventoryOutput,
+    DeferredClientGui,
+    DeferredMissingClaim,
+    BlockedCandidateMismatch,
+}
+
+impl InventoryEquipmentBridgeOutputDecisionKind {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::QueuedInventoryOutput => "queued_inventory_output",
+            Self::DeferredClientGui => "deferred_client_gui",
+            Self::DeferredMissingClaim => "deferred_missing_claim",
+            Self::BlockedCandidateMismatch => "blocked_candidate_mismatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct InventoryEquipmentBridgeOutputDecision {
+    pub(super) kind: InventoryEquipmentBridgeOutputDecisionKind,
+    pub(super) update_index: u64,
+    pub(super) emission_index: u64,
+    pub(super) event_index: u64,
+    pub(super) consumer: semantic::InventoryEquipmentHandoffConsumer,
+    pub(super) candidate: semantic::InventoryItemContextCandidate,
+    pub(super) server_inventory_claim: Option<semantic::InventoryEquipmentServerInventoryClaim>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_decision_state_update_index: Option<u64>,
@@ -103,6 +136,7 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_deferred_client_gui_update_index: Option<u64>,
     pub(super) last_deferred_missing_claim_update_index: Option<u64>,
     pub(super) last_blocked_candidate_mismatch_update_index: Option<u64>,
+    pub(super) last_decision: Option<InventoryEquipmentBridgeOutputDecision>,
     pub(super) last_queued_output: Option<InventoryEquipmentBridgeQueuedOutput>,
 }
 
