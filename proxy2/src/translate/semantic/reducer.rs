@@ -1052,6 +1052,8 @@ fn remember_quickbar_item_context_if_relevant(
         return;
     }
 
+    consume_pending_server_inventory_handoff_if_ready(state, item_context, source);
+
     if state.ui.last_inventory_item_context_before_quickbar != Some(item_context) {
         state.ui.last_inventory_item_context_before_quickbar = Some(item_context);
         tracing::debug!(
@@ -1516,6 +1518,40 @@ fn remember_quickbar_item_context_if_relevant(
                 item_context.inventory_equipment_handoff_outcome().as_str(),
             cleared_inventory_item_object_ids = item_context.cleared_inventory_item_object_ids,
             "semantic state retained inventory item context after committed GuiQuickbar"
+        );
+    }
+}
+
+fn consume_pending_server_inventory_handoff_if_ready(
+    state: &mut SemanticSessionState,
+    item_context: InventoryItemContextSummary,
+    source: &'static str,
+) {
+    if state
+        .ui
+        .consume_pending_server_inventory_handoff_if_ready(item_context)
+    {
+        let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
+        let last_bridge_state_update = state
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update;
+        tracing::info!(
+            source,
+            inventory_equipment_bridge_handoff_ready = bridge_plan.ready_to_emit(),
+            inventory_equipment_bridge_handoff_event_index = bridge_plan.event_index,
+            inventory_equipment_bridge_handoff_state_updates =
+                state.ui.inventory_equipment_bridge_handoff_state_updates,
+            inventory_equipment_bridge_handoff_last_state_update_index = last_bridge_state_update
+                .map(|update| update.update_index)
+                .unwrap_or(0),
+            inventory_equipment_bridge_handoff_last_state_update_candidate_object_id =
+                last_bridge_state_update
+                    .map(|update| update.candidate.object_id)
+                    .unwrap_or(0),
+            compact_item_emission_ready_objects = item_context.compact_item_emission_ready_objects,
+            compact_item_emission_deferred_feature25_only_objects =
+                item_context.compact_item_emission_deferred_feature25_only_objects,
+            "semantic state consumed pending server Inventory handoff after item context became ready"
         );
     }
 }

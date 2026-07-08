@@ -513,13 +513,11 @@ fn observe_verified_server_m_packet(
         payload,
         Some(&state.area_context.latest_area_placeables),
     );
-    if proof.contains_family(VerifiedFamily::Inventory)
-        && let Err(err) = inventory_equipment::maybe_queue_inventory_equipment_bridge_output(
-            state,
-            view.sequence,
-            view.ack_sequence,
-        )
-    {
+    if let Err(err) = inventory_equipment::maybe_queue_inventory_equipment_bridge_output(
+        state,
+        view.sequence,
+        view.ack_sequence,
+    ) {
         tracing::warn!(
             error = %err,
             sequence = view.sequence,

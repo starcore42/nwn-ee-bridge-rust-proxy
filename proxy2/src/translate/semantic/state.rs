@@ -5129,6 +5129,7 @@ pub(crate) struct UiState {
     pub(crate) inventory_equipment_handoff_client_gui_inventory_ready_events: u64,
     pub(crate) inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events:
         u64,
+    pending_server_inventory_handoff_claim: Option<InventoryEquipmentServerInventoryClaim>,
     pub(crate) last_inventory_equipment_handoff: Option<InventoryEquipmentHandoffSnapshot>,
     pub(crate) inventory_equipment_bridge_handoff_emissions: u64,
     pub(crate) last_inventory_equipment_bridge_handoff_emission:
@@ -5247,6 +5248,9 @@ impl UiState {
         }
 
         if !item_context.inventory_equipment_handoff_ready() {
+            if consumer == InventoryEquipmentHandoffConsumer::ServerInventory {
+                self.pending_server_inventory_handoff_claim = server_inventory_claim;
+            }
             self.inventory_equipment_handoff_blocked_without_ready_state_events = self
                 .inventory_equipment_handoff_blocked_without_ready_state_events
                 .saturating_add(1);
@@ -5264,6 +5268,10 @@ impl UiState {
                 InventoryEquipmentHandoffConsumer::Unknown => {}
             }
             return false;
+        }
+
+        if consumer == InventoryEquipmentHandoffConsumer::ServerInventory {
+            self.pending_server_inventory_handoff_claim = None;
         }
 
         self.inventory_equipment_handoff_ready_events = self
@@ -5299,6 +5307,25 @@ impl UiState {
             self.drain_inventory_equipment_bridge_handoff_emission(emission);
         }
         true
+    }
+
+    pub(crate) fn consume_pending_server_inventory_handoff_if_ready(
+        &mut self,
+        item_context: InventoryItemContextSummary,
+    ) -> bool {
+        if !item_context.inventory_equipment_handoff_ready() {
+            return false;
+        }
+        let Some(claim) = self.pending_server_inventory_handoff_claim else {
+            return false;
+        };
+        self.pending_server_inventory_handoff_claim = None;
+        self.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ServerInventory,
+            item_context,
+            Some(claim),
+            None,
+        )
     }
 
     pub(crate) fn record_inventory_equipment_bridge_handoff_emission(
@@ -9319,6 +9346,116 @@ mod tests {
         assert!(json.contains(
             "\"inventory_equipment_bridge_handoff_last_state_update_deferred_feature25_only_objects\": 2"
         ));
+    }
+
+    #[test]
+    fn pending_server_inventory_handoff_consumes_later_ready_state() {
+        let ready_with_deferred = InventoryItemContextSummary {
+            direct_item_proof_objects: 18,
+            compact_item_emission_proof_objects: 20,
+            compact_item_emission_ready_objects: 18,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8001_5219,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            compact_item_emission_deferred_feature25_only_objects: 2,
+            inventory_feature25_reference_records: 7,
+            inventory_feature25_first_item_ref_mentions: 4,
+            inventory_feature25_first_deferred_item_ref_mentions: 4,
+            inventory_feature25_second_item_ref_mentions: 3,
+            inventory_feature25_second_deferred_item_ref_mentions: 3,
+            ..Default::default()
+        };
+        let blocked_before_item_state = InventoryItemContextSummary {
+            feature25_item_proof_objects: 2,
+            compact_item_emission_proof_objects: 2,
+            compact_item_emission_deferred_feature25_only_objects: 2,
+            inventory_feature25_reference_records: 2,
+            inventory_feature25_first_item_ref_mentions: 2,
+            inventory_feature25_first_deferred_item_ref_mentions: 2,
+            ..Default::default()
+        };
+        let claim = InventoryEquipmentServerInventoryClaim::new(1, 0x8001_5219, true, 4);
+        let mut ui = UiState::default();
+
+        assert!(!ui.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ServerInventory,
+            blocked_before_item_state,
+            Some(claim),
+            None,
+        ));
+        assert_eq!(ui.inventory_equipment_handoff_events, 1);
+        assert_eq!(ui.inventory_equipment_handoff_ready_events, 0);
+        assert_eq!(
+            ui.inventory_equipment_handoff_blocked_without_ready_state_events,
+            1
+        );
+        assert_eq!(ui.inventory_equipment_handoff_server_inventory_events, 1);
+        assert_eq!(
+            ui.inventory_equipment_handoff_server_inventory_ready_events,
+            0
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events,
+            1
+        );
+        assert_eq!(ui.last_inventory_equipment_handoff, None);
+        assert_eq!(ui.inventory_equipment_bridge_handoff_emissions, 0);
+        assert_eq!(ui.inventory_equipment_bridge_handoff_state_updates, 0);
+
+        assert!(
+            ui.consume_pending_server_inventory_handoff_if_ready(ready_with_deferred),
+            "later item-state proof should consume the retained server Inventory claim"
+        );
+        assert_eq!(ui.inventory_equipment_handoff_events, 2);
+        assert_eq!(ui.inventory_equipment_handoff_ready_events, 1);
+        assert_eq!(
+            ui.inventory_equipment_handoff_blocked_without_ready_state_events,
+            1
+        );
+        assert_eq!(ui.inventory_equipment_handoff_server_inventory_events, 2);
+        assert_eq!(
+            ui.inventory_equipment_handoff_server_inventory_ready_events,
+            1
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_server_inventory_blocked_without_ready_state_events,
+            1
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_ready_with_deferred_feature25_events,
+            1
+        );
+
+        let snapshot = ui
+            .last_inventory_equipment_handoff
+            .expect("pending server Inventory should become the latest ready handoff");
+        assert_eq!(
+            snapshot.consumer,
+            InventoryEquipmentHandoffConsumer::ServerInventory
+        );
+        assert_eq!(snapshot.event_index, 2);
+        assert_eq!(snapshot.item_context, ready_with_deferred);
+        assert_eq!(snapshot.server_inventory_claim, Some(claim));
+
+        let state_update = ui
+            .last_inventory_equipment_bridge_handoff_state_update
+            .expect("ready pending server Inventory should drain into bridge state");
+        assert_eq!(
+            state_update.consumer,
+            InventoryEquipmentHandoffConsumer::ServerInventory
+        );
+        assert_eq!(state_update.event_index, 2);
+        assert_eq!(state_update.candidate.object_id, 0x8001_5219);
+        assert_eq!(state_update.ready_objects, 18);
+        assert_eq!(state_update.deferred_feature25_only_objects, 2);
+        assert_eq!(state_update.server_inventory_claim, Some(claim));
+        assert!(!ui.consume_pending_server_inventory_handoff_if_ready(ready_with_deferred));
+        assert_eq!(
+            ui.inventory_equipment_bridge_handoff_state_updates, 1,
+            "pending server Inventory claim must be consumed only once"
+        );
     }
 
     fn stream_probe_rewrite_summary_with_profile(

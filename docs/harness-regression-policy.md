@@ -33,7 +33,63 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-07 21:05 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-08 23:17 +10: the freshest
+gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-pending-server-inventory-replay-rerun-20260708-231340\harness-proxy-20260708-231358`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, observed
+`BNK3` after deferred `BNK2`, reached gameplay through `Module_Loaded`,
+`Area_ClientArea`, proxy-generated `Area_AreaLoaded`, the post-area hold gate
+opening, held post-area packet release, and sustained `GameObjUpdate_LiveObject`
+traffic. It wrote `quickbar-item-refresh-hint.json` through
+`2026-07-08T23:17:18+10:00` and `proxy.structured.log` through
+`2026-07-08T23:17:24+10:00`, and produced no quarantine directory. The final
+hint reported candidate `0x80015302` from active-object/direct proof, 18
+direct item proof objects, 2 Feature-25 item proof objects, 18 ready compact
+item objects, `inventory_equipment_handoff_ready=true`, one server
+`Inventory` event, one ready server `Inventory` event, one bridge state update,
+and `inventory_equipment_bridge_output_status="blocked_candidate_mismatch"`.
+The ready candidate `0x80015302` did not match the parsed server-Inventory
+claim object `0x800153B2`, so no synthetic `Inventory` output was queued.
+
+This run followed the fresh live-data gate capture
+`C:\nwnbridge\codex-live-current-confirm-20260708-224952\harness-proxy-20260708-225100`,
+which also reached gameplay with no quarantine directory. That earlier settled
+hint at `2026-07-08T22:54:40+10:00` showed one server `Inventory` handoff
+before ready direct/materialized item state had been retained: later item
+context had candidate `0x80015247`, 18 ready direct objects, and 2 deferred
+Feature-25-only objects, but bridge output remained
+`awaiting_bridge_state_update`. The current production slice retains such a
+blocked server-Inventory claim and consumes it once when later item context
+becomes ready. A first post-fix probe
+`C:\nwnbridge\codex-live-pending-server-inventory-replay-20260708-230630\harness-proxy-20260708-230637`
+failed before gameplay with server `BNCR` detail 6
+(`observed-hg-rapid-reconnect-or-name-reservation`); after stopping the stale
+client/proxy and waiting for the HG reservation cooldown, the 23:13 rerun above
+reached gameplay.
+
+As of 2026-07-08 23:20 +10, proxy2 also retains pending server-Inventory
+handoff claims that were blocked only because direct/materialized item state
+was not ready yet, replays the claim exactly once when a later live-object item
+context becomes ready, and runs the bridge-output decider after every verified
+server `M` packet so live-object-created bridge state can flush without
+waiting for another `Inventory` packet. This does not change the
+decompile-backed `Inventory` reader/writer shape; it only removes the timing
+dependency between verified server `Inventory` and later verified item-state
+evidence.
+Focused state coverage proves the retained claim is consumed once and drains
+into a server-Inventory bridge state update. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-pending-server-inventory-replay-20260708-2321`
+over the 164-packet Diamond autoplay baseline reported 304 strict translation
+decisions, 0 strict quarantines, no quarantine directory, and 0 live-object
+terminal residuals; the Feature-25-only baseline still had one blocked
+server-Inventory handoff, zero ready handoffs, zero bridge state updates, and
+`inventory_equipment_bridge_output_status="awaiting_bridge_state_update"`.
+The next production target is the candidate/claim association: prove why live
+server `Inventory` can carry object `0x800153B2` while the retained ready item
+candidate is `0x80015302`, then fix the shared state association before adding
+any ClientGui inventory writer.
+
+Previous live HG proxy status, as of 2026-07-07 21:05 +10: the
 gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
@@ -1381,6 +1437,7 @@ work.
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
 | Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-07 16:37 failure was followed by a 16:47 retry that observed BNK3 after 106ms and reached gameplay. |
+| `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |
 | Capture reaches `BNVR A` and one `P/01/03` response, but never sends client `P/11/01` | Driver fell back to native DirectConnect after missing or discarding the server-list path | Keep using the server-list DirectConnect path; if Diamond's app-state server-list slot is empty, retry with the remembered `SERVERLIST_PANEL` from the constructor hook before native fallback. |
 | `PRE_PLAYMOD` selection fires with `entries=0 count=0` | Auto-character path is too early or lacks refresh/retry | Add wait/refresh/retry instrumentation and rerun until the character list is populated or a new blocker is proven. |
 | Player-password prompt or native connect overlay appears | Harness regressed to the wrong login path or password handling | Keep the old driver connect path; do not pass native `+password`; seed the player password internally with default `A`. |

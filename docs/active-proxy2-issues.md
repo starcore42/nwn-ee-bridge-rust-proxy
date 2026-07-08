@@ -319,6 +319,48 @@ not as standalone workaround targets.
   stale or nearly stale; run fresh HG confirmation and use bridge-output status
   plus the last-decision ready/deferred counts to choose server-Inventory claim
   repair versus a separately proven ClientGui inventory writer.
+- 2026-07-08 pending server-Inventory handoff replay and fresh HG confirmation:
+  live-data gate found the 2026-07-07 21:05 gameplay-reaching HG proxy capture
+  stale at about 25h42m old, so fresh live evidence was required. Fresh
+  current-build harness
+  `C:\nwnbridge\codex-live-current-confirm-20260708-224952\harness-proxy-20260708-225100`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
+  `Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject` traffic with no
+  quarantine directory. Its settled hint at `2026-07-08T22:54:40+10:00`
+  showed a real timing gap: one server `Inventory` handoff happened before
+  ready direct/materialized item state was retained
+  (`inventory_equipment_handoff_server_inventory_events=1`,
+  ready events `0`), while later post-context state had candidate
+  `0x80015247` with 18 ready direct objects and 2 deferred Feature-25-only
+  objects, leaving bridge output at
+  `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"`.
+  Proxy2 now retains a blocked server-Inventory claim in shared UI state,
+  consumes it once when later item context becomes handoff-ready, and attempts
+  the idempotent inventory/equipment bridge-output queue after every verified
+  server `M` packet so live-object-created bridge state can flush without
+  waiting for another `Inventory` packet. Focused state coverage proves the
+  retained claim is consumed exactly once and drains into a server-Inventory
+  bridge state update. The first post-fix live probe
+  `C:\nwnbridge\codex-live-pending-server-inventory-replay-20260708-230630\harness-proxy-20260708-230637`
+  failed before gameplay with server `BNCR` detail 6
+  (`observed-hg-rapid-reconnect-or-name-reservation`), was documented as a
+  transient harness/server issue, and was retried after a cooldown. Rerun
+  `C:\nwnbridge\codex-live-pending-server-inventory-replay-rerun-20260708-231340\harness-proxy-20260708-231358`
+  reached gameplay, wrote no quarantine directory, and settled at
+  `2026-07-08T23:17:18+10:00` with server `Inventory` ready events `1/1`, one
+  bridge state update, and
+  `inventory_equipment_bridge_output_status="blocked_candidate_mismatch"`:
+  ready candidate `0x80015302` did not match parsed server-Inventory claim
+  `0x800153B2`, so no synthetic `Inventory` output was queued. Bounded strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-pending-server-inventory-replay-20260708-2321`
+  processed the 164-packet Diamond autoplay baseline with 304 strict decisions,
+  0 strict quarantines, no quarantine directory, and 0 live-object terminal
+  residuals; the Feature-25-only baseline remained correctly blocked without a
+  bridge state update. Active next path: prove why live server `Inventory`
+  claims can name a different object than the ready direct/materialized item
+  candidate, then fix the shared claim/candidate association before any
+  ClientGui writer work.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
