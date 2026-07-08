@@ -39,7 +39,7 @@ const SELECT_PANEL_DECLARED_BYTES: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_
 const SELECT_PANEL_FRAGMENT_BYTES: usize = 1;
 const SELECT_PANEL_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const EE_SELF_OBJECT_ID: u32 = 0xFFFF_FFFD;
-const DIAMOND_CURRENT_PLAYER_OBJECT_ID: u32 = 0x7F00_0000;
+pub const DIAMOND_CURRENT_PLAYER_OBJECT_ID: u32 = 0x7F00_0000;
 const FRAGMENT_CURSOR_MASK: u8 = 0xE0;
 const SINGLE_BOOL_FINAL_CURSOR: u8 = 0x80;
 const SINGLE_BOOL_DATA_BIT: u8 = 0x10;
@@ -84,6 +84,24 @@ pub fn claim_or_rewrite_payload_if_verified(
         SELECT_PANEL_MINOR => claim_select_panel_payload_if_verified(payload),
         _ => None,
     }
+}
+
+pub fn build_status_payload(object_id: u32, player_inventory_gui: bool) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(STATUS_DECLARED_BYTES + STATUS_FRAGMENT_BYTES);
+    payload.extend_from_slice(&[0x70, GUI_INVENTORY_MAJOR, STATUS_MINOR]);
+    payload.extend_from_slice(&(STATUS_DECLARED_BYTES as u32).to_le_bytes());
+    payload.extend_from_slice(&object_id.to_le_bytes());
+    payload.push(encode_single_bool_fragment(player_inventory_gui));
+    payload
+}
+
+pub fn build_select_panel_payload(panel: u8, player_inventory_gui: bool) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(SELECT_PANEL_DECLARED_BYTES + SELECT_PANEL_FRAGMENT_BYTES);
+    payload.extend_from_slice(&[0x70, GUI_INVENTORY_MAJOR, SELECT_PANEL_MINOR]);
+    payload.extend_from_slice(&(SELECT_PANEL_DECLARED_BYTES as u32).to_le_bytes());
+    payload.push(panel);
+    payload.push(encode_single_bool_fragment(player_inventory_gui));
+    payload
 }
 
 fn claim_status_payload_if_verified(payload: &[u8]) -> Option<ClientGuiInventoryClaimSummary> {
@@ -177,6 +195,10 @@ fn decode_single_bool_fragment(byte: u8) -> Option<bool> {
     Some(byte & SINGLE_BOOL_DATA_BIT != 0)
 }
 
+fn encode_single_bool_fragment(value: bool) -> u8 {
+    SINGLE_BOOL_FINAL_CURSOR | if value { SINGLE_BOOL_DATA_BIT } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +237,31 @@ mod tests {
     }
 
     #[test]
+    fn builds_exact_status_payload_for_current_player_inventory() {
+        let payload = build_status_payload(DIAMOND_CURRENT_PLAYER_OBJECT_ID, true);
+
+        assert_eq!(
+            payload,
+            vec![
+                0x70, 0x0D, 0x01, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x90
+            ]
+        );
+        let summary = claim_payload_if_verified(&payload).expect("built payload should claim");
+        assert_eq!(summary.kind, ClientGuiInventoryKind::Status);
+        assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
+        assert!(!summary.rewritten_self_object_id);
+    }
+
+    #[test]
+    fn builds_exact_status_payload_for_closed_inventory_bool() {
+        let payload = build_status_payload(DIAMOND_CURRENT_PLAYER_OBJECT_ID, false);
+
+        assert_eq!(payload[11], 0x80);
+        let summary = claim_payload_if_verified(&payload).expect("built payload should claim");
+        assert_eq!(summary.kind, ClientGuiInventoryKind::Status);
+    }
+
+    #[test]
     fn claims_inventory_status_with_residual_fragment_bits_below_final_cursor() {
         let mut payload = [
             0x70, 0x0D, 0x01, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x98,
@@ -248,6 +295,20 @@ mod tests {
             .expect("observed GuiInventory_SelectPanel shape should be claimed");
 
         assert_eq!(summary.packet_name, "GuiInventory_SelectPanel");
+        assert_eq!(summary.kind, ClientGuiInventoryKind::SelectPanel);
+        assert_eq!(summary.panel, Some(3));
+        assert_eq!(summary.player_inventory_gui, Some(true));
+    }
+
+    #[test]
+    fn builds_exact_select_panel_payload() {
+        let payload = build_select_panel_payload(3, true);
+
+        assert_eq!(
+            payload,
+            vec![0x70, 0x0D, 0x02, 0x08, 0x00, 0x00, 0x00, 0x03, 0x90]
+        );
+        let summary = claim_payload_if_verified(&payload).expect("built payload should claim");
         assert_eq!(summary.kind, ClientGuiInventoryKind::SelectPanel);
         assert_eq!(summary.panel, Some(3));
         assert_eq!(summary.player_inventory_gui, Some(true));

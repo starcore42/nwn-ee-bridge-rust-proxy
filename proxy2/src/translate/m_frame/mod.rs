@@ -20,7 +20,9 @@ use std::{
 use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
     packet::m::{HighLevel, MFrameView},
-    translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area},
+    translate::{
+        ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area, client_gui_inventory,
+    },
 };
 
 mod client_ack;
@@ -746,6 +748,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         .unwrap_or(false);
     let last_decision_client_gui_claim_rewritten_self_object_id =
         last_decision_client_gui_claim.is_some_and(|claim| claim.rewritten_self_object_id);
+    let client_gui_writer_plan = client_gui_writer_plan_for_claim(last_decision_client_gui_claim);
     let output_status = bridge.output_status();
     let requires_client_gui_writer = bridge.requires_client_gui_writer();
     let fields = format!(
@@ -798,6 +801,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_panel\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_player_inventory_gui\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_rewritten_self_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_action\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_emission_enabled\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_blocked_reason\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_payload_available\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_payload_kind\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_payload_hex\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_status_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_status_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_status_object_is_current_player\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_select_panel\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_writer_plan_player_inventory_gui\": {},\n",
             "  \"inventory_equipment_bridge_output_last_deferred_client_gui_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_deferred_missing_claim_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_blocked_candidate_mismatch_update_index\": {},\n",
@@ -860,6 +874,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_decision_client_gui_claim_panel,
         last_decision_client_gui_claim_player_inventory_gui,
         last_decision_client_gui_claim_rewritten_self_object_id,
+        client_gui_writer_plan.action,
+        client_gui_writer_plan.emission_enabled,
+        client_gui_writer_plan.blocked_reason,
+        client_gui_writer_plan.payload_available,
+        client_gui_writer_plan.payload_kind,
+        client_gui_writer_plan.payload_hex,
+        client_gui_writer_plan.status_object_id,
+        client_gui_writer_plan.status_object_id,
+        client_gui_writer_plan.status_object_is_current_player,
+        client_gui_writer_plan.select_panel,
+        client_gui_writer_plan.player_inventory_gui,
         bridge.last_deferred_client_gui_update_index.unwrap_or(0),
         bridge.last_deferred_missing_claim_update_index.unwrap_or(0),
         bridge
@@ -884,6 +909,110 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     } else {
         body
     }
+}
+
+struct ClientGuiWriterPlan {
+    action: &'static str,
+    emission_enabled: bool,
+    blocked_reason: &'static str,
+    payload_available: bool,
+    payload_kind: &'static str,
+    payload_hex: String,
+    status_object_id: u32,
+    status_object_is_current_player: bool,
+    select_panel: u8,
+    player_inventory_gui: bool,
+}
+
+impl Default for ClientGuiWriterPlan {
+    fn default() -> Self {
+        Self {
+            action: "none",
+            emission_enabled: false,
+            blocked_reason: "none",
+            payload_available: false,
+            payload_kind: "none",
+            payload_hex: String::new(),
+            status_object_id: 0,
+            status_object_is_current_player: false,
+            select_panel: 0,
+            player_inventory_gui: false,
+        }
+    }
+}
+
+fn client_gui_writer_plan_for_claim(
+    claim: Option<crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim>,
+) -> ClientGuiWriterPlan {
+    let Some(claim) = claim else {
+        return ClientGuiWriterPlan::default();
+    };
+
+    match claim.kind {
+        crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::Status => {
+            let Some(object_id) = claim.object_id else {
+                return ClientGuiWriterPlan {
+                    action: "status_missing_object",
+                    blocked_reason: "client_gui_inventory_status_object_missing",
+                    ..ClientGuiWriterPlan::default()
+                };
+            };
+            let player_inventory_gui = claim.player_inventory_gui.unwrap_or(true);
+            let payload =
+                client_gui_inventory::build_status_payload(object_id, player_inventory_gui);
+            ClientGuiWriterPlan {
+                action: if object_id == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID {
+                    "status_current_player_inventory"
+                } else {
+                    "status_other_object_inventory"
+                },
+                emission_enabled: false,
+                blocked_reason: "client_gui_inventory_bridge_timing_unproven",
+                payload_available: true,
+                payload_kind: "GuiInventory_Status",
+                payload_hex: hex_encode_upper(&payload),
+                status_object_id: object_id,
+                status_object_is_current_player: object_id
+                    == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui,
+                ..ClientGuiWriterPlan::default()
+            }
+        }
+        crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::SelectPanel => {
+            let (Some(panel), Some(player_inventory_gui)) =
+                (claim.panel, claim.player_inventory_gui)
+            else {
+                return ClientGuiWriterPlan {
+                    action: "select_panel_missing_fields",
+                    blocked_reason: "client_gui_inventory_select_panel_fields_missing",
+                    ..ClientGuiWriterPlan::default()
+                };
+            };
+            let payload =
+                client_gui_inventory::build_select_panel_payload(panel, player_inventory_gui);
+            ClientGuiWriterPlan {
+                action: "select_panel",
+                emission_enabled: false,
+                blocked_reason: "client_gui_inventory_bridge_timing_unproven",
+                payload_available: true,
+                payload_kind: "GuiInventory_SelectPanel",
+                payload_hex: hex_encode_upper(&payload),
+                select_panel: panel,
+                player_inventory_gui,
+                ..ClientGuiWriterPlan::default()
+            }
+        }
+    }
+}
+
+fn hex_encode_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    out
 }
 
 fn observe_quickbar_stream_probe_from_rewrite(
@@ -1739,6 +1868,93 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_rewritten_self_object_id\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_action\": \"select_panel\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_emission_enabled\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_blocked_reason\": \"client_gui_inventory_bridge_timing_unproven\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_payload_kind\": \"GuiInventory_SelectPanel\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_payload_hex\": \"700D02080000000390\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_select_panel\": 3"
+        ));
+    }
+
+    #[test]
+    fn quickbar_hint_augmentation_serializes_client_gui_status_writer_plan() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.deferred_client_gui_updates = 1;
+        bridge.last_decision_state_update_index = Some(12);
+        bridge.last_decision = Some(state::InventoryEquipmentBridgeOutputDecision {
+            kind: state::InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui,
+            update_index: 12,
+            emission_index: 13,
+            event_index: 14,
+            consumer:
+                crate::translate::semantic::InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            candidate: crate::translate::semantic::InventoryItemContextCandidate {
+                object_id: 0x8000_1234,
+                proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+                source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+            },
+            candidate_object_status: crate::translate::semantic::InventoryItemObjectStatus::Proven(
+                crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            ),
+            ready_objects: 51,
+            deferred_feature25_only_objects: 0,
+            server_inventory_claim: None,
+            server_inventory_claim_object_status:
+                crate::translate::semantic::InventoryItemObjectStatus::Unknown,
+            server_inventory_claim_proven_neighborhood:
+                crate::translate::semantic::InventoryItemObjectProvenNeighborhood::default(),
+            client_gui_inventory_claim: Some(
+                crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
+                    kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::Status,
+                    object_id: Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID),
+                    panel: None,
+                    player_inventory_gui: Some(true),
+                    rewritten_self_object_id: false,
+                },
+            ),
+        });
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_status\": \"awaiting_client_gui_writer\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_action\": \"status_current_player_inventory\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_emission_enabled\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_payload_kind\": \"GuiInventory_Status\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_payload_hex\": \"700D010B0000000000007F90\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_status_object_id_hex\": \"0x7F000000\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_status_object_is_current_player\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_writer_plan_player_inventory_gui\": true"
         ));
     }
 

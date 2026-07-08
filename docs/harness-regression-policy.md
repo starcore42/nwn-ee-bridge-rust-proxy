@@ -33,40 +33,37 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 03:05 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 04:57 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-claim-status-inventory-20260709-025758\harness-proxy-20260709-025805`.
+`C:\nwnbridge\codex-live-claim-neighborhood-inventory-20260709-045231\harness-proxy-20260709-045344`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, observed
 `BNK3` after deferred `BNK2`, reached gameplay through `Module_Loaded`,
 `Area_ClientArea`, proxy-generated `Area_AreaLoaded`, the post-area hold gate
 opening, held post-area packet release, and sustained `GameObjUpdate_LiveObject`
-traffic. It wrote `quickbar-item-refresh-hint.json` through
-`2026-07-09T03:05:57+10:00` and `proxy.structured.log` through
-`2026-07-09T03:05:58+10:00`, and produced no quarantine-like files. The forced
-inventory action reached one ready server `Inventory` handoff and one bridge
-state update, but still reported
-`inventory_equipment_bridge_output_status="blocked_candidate_mismatch"`:
-ready candidate `0x80016EFA` was proven from active/direct item state, while
-parsed server claim `0x80016FAA` remained unknown. No synthetic `Inventory`
-output was queued.
+traffic. It wrote `quickbar-item-refresh-hint.json` through about
+`2026-07-09T04:57:12+10:00` and produced no quarantine directory. The forced
+inventory action did not expose a server `Inventory` handoff this time; it
+settled at `inventory_equipment_bridge_output_status="awaiting_client_gui_writer"`
+with `inventory_equipment_bridge_output_last_decision_reason="deferred_client_gui"`,
+`inventory_equipment_bridge_output_requires_client_gui_writer=true`, 5
+`ClientGuiInventory` handoff events, 1 ready `ClientGuiInventory` handoff, 0
+server `Inventory` handoffs, candidate `0x80015211`, and a status/self
+client-GUI claim object `0x7F000000`. No synthetic inventory output was queued.
 
-As of 2026-07-09 03:18 +10, proxy2 keeps the server `Inventory` writer
-conservative for this mismatch: a parsed claim object may differ from the ready
-candidate only when that claim object is independently proven as inventory item
-state. The bridge-output decision now also records the nearest lower, higher,
-and closest proven direct/materialized item object around the parsed server
-claim. `quickbar-item-refresh-hint.json`, the replay summary, and the block
-warning expose those proven-neighborhood fields so the next forced-inventory
-live run can tell whether the server claim is near a known item id or belongs
-to a different object provenance path. Bounded strict replay
-`C:\nwnbridge\codex-proxy2-replay-claim-status-inventory-output-20260709-0200`
-over the 164-packet Diamond autoplay baseline reported 304 strict allow
-decisions, 0 strict quarantines, no quarantine directory, and 0 live-object
-terminal residuals for the earlier claim-status slice. The next production
-target is to rerun a short forced-inventory live HG probe on this build and use
-the new proven-neighborhood fields to trace server `Inventory` claim
-provenance/owner semantics before relaxing the writer or implementing a
-ClientGui inventory writer.
+As of 2026-07-09 05:12 +10, proxy2 has exact decompile-backed
+`ClientGuiInventory` EE payload builders for status and select-panel claims and
+exports a non-emitting ClientGui writer plan in quickbar hints plus replay
+summaries. The current-player inventory status plan builds exact payload
+`700D010B0000000000007F90`; select-panel 3 builds `700D02080000000390`.
+Emission remains disabled with `client_gui_inventory_bridge_timing_unproven`
+until proxy-owned insertion timing is bounded. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-client-gui-writer-plan-20260709-050757` over
+the 164-packet Diamond autoplay baseline reported 304 strict allow decisions, 0
+strict quarantines, no quarantine directory, and 0 live-object terminal
+residuals. The next production target is to implement bounded proxy-owned
+ClientGui status emission timing for the proven current-player inventory
+payload and verify it on live HG; if server `Inventory` traffic returns first,
+continue the claim-neighborhood provenance path instead.
 
 Previous live HG proxy status, as of 2026-07-08 23:17 +10: the
 gameplay-reaching proxy harness was

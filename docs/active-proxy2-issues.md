@@ -410,11 +410,41 @@ not as standalone workaround targets.
   `quickbar-item-refresh-hint.json` and replay summaries, and logs the closest
   proven neighbor when blocking the mismatch. The writer gate remains
   conservative and still emits no synthetic `Inventory` packet for unproven
-  claim/candidate mismatches. Active next path: rerun a short forced-inventory
-  live HG probe on this build, use the new proven-neighborhood fields to decide
-  whether the server claim is an off-by-one/nearby item id or a separate object
-  namespace, then fix the shared server-Inventory claim provenance before any
-  writer relaxation or ClientGui writer work.
+  claim/candidate mismatches. That forced-inventory rerun is recorded in the
+  ClientGui writer-plan slice below; server-Inventory claim provenance remains
+  the fallback path if live traffic returns to server `Inventory` first.
+- 2026-07-09 ClientGui inventory writer-plan scaffold: live-data gate first
+  found the gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-claim-status-inventory-20260709-025758\harness-proxy-20260709-025805`
+  current (`quickbar-item-refresh-hint.json`/`proxy.structured.log` through
+  `2026-07-09T03:05:58+10:00`, about 1h45m old at gate). A fresh
+  forced-inventory probe
+  `C:\nwnbridge\codex-live-claim-neighborhood-inventory-20260709-045231\harness-proxy-20260709-045344`
+  reached gameplay, wrote `quickbar-item-refresh-hint.json` through about
+  `2026-07-09T04:57:12+10:00`, and produced no quarantine directory. This run
+  did not expose a server `Inventory` handoff; instead it settled at
+  `inventory_equipment_bridge_output_status="awaiting_client_gui_writer"` with
+  `inventory_equipment_bridge_output_last_decision_reason="deferred_client_gui"`,
+  `inventory_equipment_bridge_output_requires_client_gui_writer=true`, 5
+  `ClientGuiInventory` handoff events, 1 ready `ClientGuiInventory` handoff, 0
+  server `Inventory` handoffs, candidate `0x80015211`, and a status/self
+  client-GUI claim object `0x7F000000`. Proxy2 now has decompile-backed
+  `ClientGuiInventory` EE payload builders for status and select-panel claims
+  and exports a non-emitting writer plan in quickbar hints and replay summaries.
+  The current-player inventory status plan builds exact payload
+  `700D010B0000000000007F90`; select-panel 3 builds
+  `700D02080000000390`. Emission intentionally remains disabled with
+  `client_gui_inventory_bridge_timing_unproven` until the proxy-owned insertion
+  timing is bounded. Strict Diamond replay
+  `C:\nwnbridge\codex-proxy2-replay-client-gui-writer-plan-20260709-050757`
+  processed the 164-packet autoplay baseline with 304 strict allow decisions, 0
+  strict quarantines, no quarantine directory, and 0 live-object terminal
+  residuals; the baseline correctly reported no writer plan because it only has
+  a blocked Feature-25-only server-Inventory handoff. Active next path:
+  implement a bounded proxy-owned ClientGui status emission timing for the
+  proven current-player inventory payload and verify it on live HG; if server
+  `Inventory` traffic returns first, continue the claim-neighborhood provenance
+  path instead.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`
