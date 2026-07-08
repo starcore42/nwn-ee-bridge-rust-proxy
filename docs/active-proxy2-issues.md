@@ -272,6 +272,31 @@ not as standalone workaround targets.
   because it has no ready ClientGui handoff. Active next path remains fresh HG
   confirmation once the 2026-07-07 21:05 capture is stale, then follow the
   bridge-output status classifier.
+- 2026-07-08 ClientGui inventory bridge-output claim detail: live-data gate
+  reused the same gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`quickbar-item-refresh-hint.json` and `proxy.structured.log`
+  `2026-07-07T21:05:54+10:00`, about 21h43m old at gate). It reached
+  gameplay and had no quarantine directory, so no fresh live harness was
+  required. Proxy2 now retains the exact verified `ClientGuiInventory` claim
+  summary through semantic inventory/equipment handoff snapshots, bridge plans,
+  drained bridge state updates, bridge-output decisions, pending/idle
+  `quickbar-item-refresh-hint.json`, and replay summaries. This does not add a
+  new packet writer or relax validation; it preserves the already verified
+  client-GUI claim shape so the next live run can distinguish status/self-object
+  traffic from select-panel GUI traffic when
+  `inventory_equipment_bridge_output_status="awaiting_client_gui_writer"`.
+  Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-gui-claim-detail-20260708-1900`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, 0 quarantine files, and 0 live-object
+  terminal residuals. The Feature-25-only baseline still reported
+  `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"`,
+  `inventory_equipment_bridge_output_last_decision_known=false`, and
+  `inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_known=false`.
+  Active next path: run fresh HG confirmation once the 2026-07-07 21:05 capture
+  is stale and use the retained client-GUI claim details if live traffic reaches
+  the ClientGui writer-gap status.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

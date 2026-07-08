@@ -147,6 +147,8 @@ pub(super) struct InventoryEquipmentBridgeOutputDecision {
     pub(super) consumer: semantic::InventoryEquipmentHandoffConsumer,
     pub(super) candidate: semantic::InventoryItemContextCandidate,
     pub(super) server_inventory_claim: Option<semantic::InventoryEquipmentServerInventoryClaim>,
+    pub(super) client_gui_inventory_claim:
+        Option<semantic::InventoryEquipmentClientGuiInventoryClaim>,
 }
 
 #[derive(Debug, Default)]

@@ -15,11 +15,11 @@ use crate::{
 };
 
 use super::state::{
-    InventoryEquipmentHandoffConsumer, InventoryEquipmentServerInventoryClaim,
-    InventoryItemContextCandidate, QuickbarItemRefreshActionOutcome,
-    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
-    QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
-    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    InventoryEquipmentClientGuiInventoryClaim, InventoryEquipmentHandoffConsumer,
+    InventoryEquipmentServerInventoryClaim, InventoryItemContextCandidate,
+    QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
+    QuickbarItemRefreshClientActionMatchClass, QuickbarItemRefreshClientActionTiming,
+    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
     QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshUseCountRow,
 };
 use super::{
@@ -822,11 +822,15 @@ fn apply_event(
                     claim.equip_slot,
                 )
             });
-            let client_gui_inventory_claim_known = event.client_gui_inventory_claim.is_some();
+            let client_gui_inventory_claim = event
+                .client_gui_inventory_claim
+                .map(InventoryEquipmentClientGuiInventoryClaim::from);
+            let client_gui_inventory_claim_known = client_gui_inventory_claim.is_some();
             let consumed = state.ui.observe_inventory_equipment_handoff(
                 consumer,
                 item_context,
                 server_inventory_claim,
+                client_gui_inventory_claim,
             );
             let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
             let last_bridge_emission = state.ui.last_inventory_equipment_bridge_handoff_emission;

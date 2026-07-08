@@ -22,7 +22,8 @@ pub(crate) use reducer::{observe_verified_payload, observe_verified_payload_with
 pub(crate) use state::{
     AreaState, AreaStaticPlaceableConflictRecordObservation,
     AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
-    AuthState, InventoryEquipmentBridgeStateUpdate, InventoryEquipmentHandoffConsumer,
+    AuthState, InventoryEquipmentBridgeStateUpdate, InventoryEquipmentClientGuiInventoryClaim,
+    InventoryEquipmentClientGuiInventoryClaimKind, InventoryEquipmentHandoffConsumer,
     InventoryEquipmentServerInventoryClaim, InventoryItemContextCandidate,
     InventoryItemContextCandidateSource, InventoryItemContextSummary, InventoryItemObjectProof,
     InventoryItemObjectStatus, KnownObjectState, ModuleState, ObjectRegistry,

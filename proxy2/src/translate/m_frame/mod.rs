@@ -693,6 +693,23 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let last_decision_claim_equip_slot = last_decision_claim
         .map(|claim| claim.equip_slot)
         .unwrap_or(0);
+    let last_decision_client_gui_claim =
+        last_decision.and_then(|decision| decision.client_gui_inventory_claim);
+    let last_decision_client_gui_claim_known = last_decision_client_gui_claim.is_some();
+    let last_decision_client_gui_claim_kind = last_decision_client_gui_claim
+        .map(|claim| claim.kind.as_str())
+        .unwrap_or("none");
+    let last_decision_client_gui_claim_object_id = last_decision_client_gui_claim
+        .and_then(|claim| claim.object_id)
+        .unwrap_or(0);
+    let last_decision_client_gui_claim_panel = last_decision_client_gui_claim
+        .and_then(|claim| claim.panel)
+        .unwrap_or(0);
+    let last_decision_client_gui_claim_player_inventory_gui = last_decision_client_gui_claim
+        .and_then(|claim| claim.player_inventory_gui)
+        .unwrap_or(false);
+    let last_decision_client_gui_claim_rewritten_self_object_id =
+        last_decision_client_gui_claim.is_some_and(|claim| claim.rewritten_self_object_id);
     let output_status = bridge.output_status();
     let requires_client_gui_writer = bridge.requires_client_gui_writer();
     let fields = format!(
@@ -720,6 +737,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_kind\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_panel\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_player_inventory_gui\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_rewritten_self_object_id\": {},\n",
             "  \"inventory_equipment_bridge_output_last_deferred_client_gui_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_deferred_missing_claim_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_blocked_candidate_mismatch_update_index\": {},\n",
@@ -757,6 +781,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_decision_claim_object_id,
         last_decision_claim_result,
         last_decision_claim_equip_slot,
+        last_decision_client_gui_claim_known,
+        last_decision_client_gui_claim_kind,
+        last_decision_client_gui_claim_object_id,
+        last_decision_client_gui_claim_object_id,
+        last_decision_client_gui_claim_panel,
+        last_decision_client_gui_claim_player_inventory_gui,
+        last_decision_client_gui_claim_rewritten_self_object_id,
         bridge.last_deferred_client_gui_update_index.unwrap_or(0),
         bridge.last_deferred_missing_claim_update_index.unwrap_or(0),
         bridge
@@ -1465,6 +1496,7 @@ mod tests {
                     4,
                 ),
             ),
+            client_gui_inventory_claim: None,
         });
 
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
@@ -1499,6 +1531,60 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": 4"
+        ));
+    }
+
+    #[test]
+    fn quickbar_hint_augmentation_serializes_inventory_bridge_output_client_gui_claim() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.deferred_client_gui_updates = 1;
+        bridge.last_decision_state_update_index = Some(12);
+        bridge.last_decision = Some(state::InventoryEquipmentBridgeOutputDecision {
+            kind: state::InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui,
+            update_index: 12,
+            emission_index: 13,
+            event_index: 14,
+            consumer:
+                crate::translate::semantic::InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            candidate: crate::translate::semantic::InventoryItemContextCandidate {
+                object_id: 0x8000_1234,
+                proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+                source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+            },
+            server_inventory_claim: None,
+            client_gui_inventory_claim: Some(
+                crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
+                    kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::SelectPanel,
+                    object_id: None,
+                    panel: Some(3),
+                    player_inventory_gui: Some(true),
+                    rewritten_self_object_id: false,
+                },
+            ),
+        });
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_status\": \"awaiting_client_gui_writer\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_known\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_kind\": \"select_panel\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_panel\": 3"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_player_inventory_gui\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_rewritten_self_object_id\": false"
         ));
     }
 

@@ -207,6 +207,23 @@ the Feature-25-only baseline. The next live HG run should read
 now means a real ClientGui ready handoff was classified immediately, not just
 after a later server-Inventory trigger.
 
+As of 2026-07-08 19:00 +10, proxy2 also carries the exact verified
+`ClientGuiInventory` claim summary through the inventory/equipment bridge
+decision path and exposes it in `quickbar-item-refresh-hint.json` and replay
+summaries. The fields record whether a client-GUI claim was present, the claim
+kind (`status` or `select_panel`), object id, selected panel,
+player-inventory-gui flag, and self-object rewrite flag. This is state
+propagation only: the server `Inventory` writer gate remains unchanged, and no
+ClientGui writer is emitted until its packet shape is separately proven.
+Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-client-gui-claim-detail-20260708-1900` over
+the same 164 Diamond autoplay packet files passed with 304 strict allows, 0
+strict quarantines, 0 quarantine files, and 0 live-object terminal residuals.
+The Feature-25-only baseline still reported
+`inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` and
+no last decision or client-GUI claim, as expected. The next live HG run should
+use these claim fields if the status reaches `awaiting_client_gui_writer`.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

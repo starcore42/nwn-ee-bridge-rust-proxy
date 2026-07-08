@@ -220,6 +220,7 @@ fn record_output_decision(
         consumer: update.consumer,
         candidate: update.candidate,
         server_inventory_claim: update.server_inventory_claim,
+        client_gui_inventory_claim: update.client_gui_inventory_claim,
     });
 }
 
@@ -254,6 +255,7 @@ mod tests {
                 true,
                 4,
             )),
+            client_gui_inventory_claim: None,
         }
     }
 
@@ -327,6 +329,15 @@ mod tests {
         let mut update = ready_server_inventory_update();
         update.consumer = InventoryEquipmentHandoffConsumer::ClientGuiInventory;
         update.server_inventory_claim = None;
+        update.client_gui_inventory_claim = Some(
+            crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
+                kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::Status,
+                object_id: Some(0x7F00_0000),
+                panel: None,
+                player_inventory_gui: None,
+                rewritten_self_object_id: true,
+            },
+        );
         let mut state = SessionState::default();
         state
             .semantic
@@ -346,6 +357,15 @@ mod tests {
         assert_eq!(
             state.inventory_equipment.last_decision_state_update_index,
             Some(1)
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .last_decision
+                .expect("decision should be recorded")
+                .client_gui_inventory_claim
+                .expect("client GUI decision should retain exact claim")
+                .rewritten_self_object_id
         );
         assert_eq!(
             state
@@ -377,6 +397,15 @@ mod tests {
         let mut update = ready_server_inventory_update();
         update.consumer = InventoryEquipmentHandoffConsumer::ClientGuiInventory;
         update.server_inventory_claim = None;
+        update.client_gui_inventory_claim = Some(
+            crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
+                kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::SelectPanel,
+                object_id: None,
+                panel: Some(3),
+                player_inventory_gui: Some(true),
+                rewritten_self_object_id: false,
+            },
+        );
         let mut state = SessionState::default();
         state
             .semantic
@@ -408,6 +437,13 @@ mod tests {
         assert_eq!(
             decision.consumer,
             InventoryEquipmentHandoffConsumer::ClientGuiInventory
+        );
+        assert_eq!(
+            decision
+                .client_gui_inventory_claim
+                .expect("client GUI writer-gap decision should retain exact claim")
+                .panel,
+            Some(3)
         );
         assert_eq!(
             state
