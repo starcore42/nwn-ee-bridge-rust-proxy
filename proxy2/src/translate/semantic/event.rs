@@ -104,6 +104,8 @@ pub(crate) enum AreaEvent {
 pub(crate) struct LiveObjectEvent {
     pub(crate) observed: ObservedHighLevel,
     pub(crate) mentions: Vec<LiveObjectMention>,
+    pub(crate) live_gui_records: u32,
+    pub(crate) live_gui_fragment_bits: u32,
     pub(crate) materialized_item_object_ids: Vec<u32>,
     pub(crate) inventory_feature25_references: Vec<LiveObjectInventoryFeature25Reference>,
     pub(crate) quickbar_item_use_count_records: u32,

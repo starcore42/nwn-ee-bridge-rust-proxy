@@ -681,6 +681,15 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LiveObjectInventoryMaterializationSummary {
+    pub(crate) live_gui_records: u32,
+    pub(crate) live_gui_fragment_bits: u32,
+    pub(crate) materialized_item_object_ids: usize,
+    pub(crate) compact_item_emission_ready_objects: usize,
+    pub(crate) compact_item_emission_ready_candidate: Option<InventoryItemContextCandidate>,
+}
+
 impl InventoryItemContextSummary {
     pub(crate) fn has_quickbar_item_context_evidence(&self) -> bool {
         self.direct_item_proof_objects != 0
@@ -5218,6 +5227,8 @@ pub(crate) struct UiState {
     pub(crate) inventory_equipment_bridge_handoff_state_updates: u64,
     pub(crate) last_inventory_equipment_bridge_handoff_state_update:
         Option<InventoryEquipmentBridgeStateUpdate>,
+    pub(crate) last_live_object_inventory_materialization:
+        Option<LiveObjectInventoryMaterializationSummary>,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,
     pub(crate) quickbar_stream_probe_summaries: u64,
     pub(crate) last_quickbar_stream_probe: Option<QuickbarStreamProbeSummary>,

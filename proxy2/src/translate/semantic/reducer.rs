@@ -17,9 +17,10 @@ use crate::{
 use super::state::{
     InventoryEquipmentClientGuiInventoryClaim, InventoryEquipmentHandoffConsumer,
     InventoryEquipmentServerInventoryClaim, InventoryItemContextCandidate,
-    QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
-    QuickbarItemRefreshClientActionMatchClass, QuickbarItemRefreshClientActionTiming,
-    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    LiveObjectInventoryMaterializationSummary, QuickbarItemRefreshActionOutcome,
+    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
+    QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
+    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
     QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshUseCountRow,
 };
 use super::{
@@ -124,6 +125,8 @@ fn observe_family_payload(
             ProtocolEvent::LiveObject(LiveObjectEvent {
                 observed,
                 mentions: live_object.mentions,
+                live_gui_records: live_object.live_gui_records,
+                live_gui_fragment_bits: live_object.live_gui_fragment_bits,
                 materialized_item_object_ids: live_object.materialized_item_object_ids,
                 inventory_feature25_references: live_object.inventory_feature25_references,
                 quickbar_item_use_count_records: live_object.quickbar_item_use_count_records,
@@ -254,6 +257,17 @@ fn apply_event(
             state
                 .ui
                 .observe_quickbar_item_use_count_updates(&event.quickbar_item_use_count_updates);
+            let item_context = state.objects.inventory_item_context_summary();
+            state.ui.last_live_object_inventory_materialization =
+                Some(LiveObjectInventoryMaterializationSummary {
+                    live_gui_records: event.live_gui_records,
+                    live_gui_fragment_bits: event.live_gui_fragment_bits,
+                    materialized_item_object_ids: event.materialized_item_object_ids.len(),
+                    compact_item_emission_ready_objects: item_context
+                        .compact_item_emission_ready_objects,
+                    compact_item_emission_ready_candidate: item_context
+                        .compact_item_emission_ready_candidate,
+                });
             remember_quickbar_item_context_if_relevant(state, "live-object");
         }
         ProtocolEvent::PlayerList(event) => {
@@ -2109,6 +2123,8 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 
 struct LiveObjectObservationFacts {
     mentions: Vec<LiveObjectMention>,
+    live_gui_records: u32,
+    live_gui_fragment_bits: u32,
     materialized_item_object_ids: Vec<u32>,
     inventory_feature25_references: Vec<LiveObjectInventoryFeature25Reference>,
     quickbar_item_use_count_records: u32,
@@ -2120,6 +2136,8 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
     let Some(claim) = live_object_update::claim_payload_if_verified(payload) else {
         return LiveObjectObservationFacts {
             mentions: Vec::new(),
+            live_gui_records: 0,
+            live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
             inventory_feature25_references: Vec::new(),
             quickbar_item_use_count_records: 0,
@@ -2127,6 +2145,10 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
             quickbar_item_use_count_updates: Vec::new(),
         };
     };
+    let live_gui_records = claim
+        .live_gui_read_buffer_records
+        .saturating_add(claim.live_gui_item_create_records);
+    let live_gui_fragment_bits = claim.live_gui_fragment_bits;
     let materialized_item_object_ids = claim.materialized_item_object_ids;
     let quickbar_item_use_count_records = claim.quickbar_item_use_count_records;
     let quickbar_item_use_count_rows = claim.quickbar_item_use_count_rows;
@@ -2204,6 +2226,8 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
         .collect();
     LiveObjectObservationFacts {
         mentions,
+        live_gui_records,
+        live_gui_fragment_bits,
         materialized_item_object_ids,
         inventory_feature25_references,
         quickbar_item_use_count_records,
@@ -4501,6 +4525,8 @@ mod fixture_free_tests {
                 &[],
             ),
             mentions: Vec::new(),
+            live_gui_records: 0,
+            live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
             inventory_feature25_references: Vec::new(),
             quickbar_item_use_count_records: 1,
@@ -4527,6 +4553,8 @@ mod fixture_free_tests {
                 placeable_appearance: None,
                 placeable_state: None,
             }],
+            live_gui_records: 0,
+            live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
             inventory_feature25_references: Vec::new(),
             quickbar_item_use_count_records: 0,

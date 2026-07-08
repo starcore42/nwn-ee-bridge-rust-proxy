@@ -27,7 +27,7 @@ pub(crate) use state::{
     InventoryEquipmentServerInventoryClaim, InventoryItemContextCandidate,
     InventoryItemContextCandidateSource, InventoryItemContextSummary, InventoryItemObjectProof,
     InventoryItemObjectProvenNeighbor, InventoryItemObjectProvenNeighborhood,
-    InventoryItemObjectStatus, KnownObjectState, ModuleState, ObjectRegistry,
-    QuickbarItemContextSource, QuickbarItemRefreshOutcome, ResourceState, SemanticSessionState,
-    SyntheticState, UiState,
+    InventoryItemObjectStatus, KnownObjectState, LiveObjectInventoryMaterializationSummary,
+    ModuleState, ObjectRegistry, QuickbarItemContextSource, QuickbarItemRefreshOutcome,
+    ResourceState, SemanticSessionState, SyntheticState, UiState,
 };

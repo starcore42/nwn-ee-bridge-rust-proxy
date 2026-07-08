@@ -105,6 +105,19 @@ pub(super) struct InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
+    pub(super) queued_update_index: u64,
+    pub(super) server_sequence: u16,
+    pub(super) ack_sequence: u16,
+    pub(super) live_gui_records: u32,
+    pub(super) live_gui_fragment_bits: u32,
+    pub(super) materialized_item_object_ids: usize,
+    pub(super) compact_item_emission_ready_objects: usize,
+    pub(super) compact_item_emission_ready_candidate:
+        Option<semantic::InventoryItemContextCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum InventoryEquipmentBridgeOutputDecisionKind {
     #[default]
     None,
@@ -180,6 +193,9 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_queued_client_gui_status_update_index: Option<u64>,
     pub(super) queued_outputs: u64,
     pub(super) queued_client_gui_status_outputs: u64,
+    pub(super) client_gui_status_response_live_object_packets: u64,
+    pub(super) client_gui_status_response_live_gui_record_packets: u64,
+    pub(super) client_gui_status_response_materialized_item_packets: u64,
     pub(super) deferred_client_gui_updates: u64,
     pub(super) deferred_missing_claim_updates: u64,
     pub(super) blocked_candidate_mismatch_updates: u64,
@@ -190,6 +206,8 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_queued_output: Option<InventoryEquipmentBridgeQueuedOutput>,
     pub(super) last_queued_client_gui_status_output:
         Option<InventoryEquipmentBridgeQueuedClientGuiStatusOutput>,
+    pub(super) last_client_gui_status_response:
+        Option<InventoryEquipmentBridgeClientGuiStatusResponse>,
 }
 
 impl InventoryEquipmentBridgeState {

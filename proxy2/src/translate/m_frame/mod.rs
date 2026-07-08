@@ -515,6 +515,12 @@ fn observe_verified_server_m_packet(
         payload,
         Some(&state.area_context.latest_area_placeables),
     );
+    inventory_equipment::maybe_record_client_gui_status_live_object_response(
+        state,
+        proof,
+        view.sequence,
+        view.ack_sequence,
+    );
     if let Err(err) = inventory_equipment::maybe_queue_inventory_equipment_bridge_output(
         state,
         view.sequence,
@@ -666,6 +672,24 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         String::new()
     };
     let last_decision = bridge.last_decision;
+    let last_client_gui_status_response =
+        bridge.last_client_gui_status_response.unwrap_or_default();
+    let last_client_gui_status_response_known = bridge.last_client_gui_status_response.is_some();
+    let last_client_gui_status_response_candidate =
+        last_client_gui_status_response.compact_item_emission_ready_candidate;
+    let last_client_gui_status_response_candidate_known =
+        last_client_gui_status_response_candidate.is_some();
+    let last_client_gui_status_response_candidate_object_id =
+        last_client_gui_status_response_candidate
+            .map(|candidate| candidate.object_id)
+            .unwrap_or(0);
+    let last_client_gui_status_response_candidate_proof = last_client_gui_status_response_candidate
+        .map(|candidate| candidate.proof.as_str())
+        .unwrap_or("none");
+    let last_client_gui_status_response_candidate_source =
+        last_client_gui_status_response_candidate
+            .map(|candidate| candidate.source.as_str())
+            .unwrap_or("none");
     let last_decision_known = last_decision.is_some();
     let last_decision_kind = last_decision
         .map(|decision| decision.kind)
@@ -849,7 +873,23 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_payload_hex\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_trigger_client_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_synthetic_sequence\": {},\n",
-            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_ack_sequence\": {}\n"
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_live_object_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_live_gui_record_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_materialized_item_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_queued_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_ids\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_ready_objects\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_proof\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_source\": \"{}\"\n"
         ),
         output_status.as_str(),
         requires_client_gui_writer,
@@ -936,7 +976,23 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_client_gui_status_payload_hex,
         last_client_gui_status.trigger_client_sequence,
         last_client_gui_status.synthetic_sequence,
-        last_client_gui_status.ack_sequence
+        last_client_gui_status.ack_sequence,
+        bridge.client_gui_status_response_live_object_packets,
+        bridge.client_gui_status_response_live_gui_record_packets,
+        bridge.client_gui_status_response_materialized_item_packets,
+        last_client_gui_status_response_known,
+        last_client_gui_status_response.queued_update_index,
+        last_client_gui_status_response.server_sequence,
+        last_client_gui_status_response.ack_sequence,
+        last_client_gui_status_response.live_gui_records,
+        last_client_gui_status_response.live_gui_fragment_bits,
+        last_client_gui_status_response.materialized_item_object_ids,
+        last_client_gui_status_response.compact_item_emission_ready_objects,
+        last_client_gui_status_response_candidate_known,
+        last_client_gui_status_response_candidate_object_id,
+        last_client_gui_status_response_candidate_object_id,
+        last_client_gui_status_response_candidate_proof,
+        last_client_gui_status_response_candidate_source
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -2025,6 +2081,27 @@ mod tests {
                 synthetic_sequence: 81,
                 ack_sequence: 70,
             });
+        bridge.client_gui_status_response_live_object_packets = 1;
+        bridge.client_gui_status_response_live_gui_record_packets = 1;
+        bridge.client_gui_status_response_materialized_item_packets = 1;
+        bridge.last_client_gui_status_response =
+            Some(state::InventoryEquipmentBridgeClientGuiStatusResponse {
+                queued_update_index: 12,
+                server_sequence: 48,
+                ack_sequence: 82,
+                live_gui_records: 51,
+                live_gui_fragment_bits: 348,
+                materialized_item_object_ids: 51,
+                compact_item_emission_ready_objects: 51,
+                compact_item_emission_ready_candidate: Some(
+                    crate::translate::semantic::InventoryItemContextCandidate {
+                        object_id: 0x8000_1234,
+                        proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+                        source:
+                            crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+                    },
+                ),
+            });
         bridge.last_decision = Some(state::InventoryEquipmentBridgeOutputDecision {
             kind: state::InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput,
             update_index: 12,
@@ -2088,6 +2165,24 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_queued_client_gui_status_ack_sequence\": 70"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_live_object_packets\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_live_gui_record_packets\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_materialized_item_packets\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": 51"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": 348"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id_hex\": \"0x80001234\""
         ));
     }
 

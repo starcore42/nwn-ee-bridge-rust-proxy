@@ -33,43 +33,55 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 04:57 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 09:21 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-claim-neighborhood-inventory-20260709-045231\harness-proxy-20260709-045344`.
+`C:\nwnbridge\codex-live-client-gui-status-response-20260709-091913\harness-proxy-20260709-091918`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, observed
 `BNK3` after deferred `BNK2`, reached gameplay through `Module_Loaded`,
 `Area_ClientArea`, proxy-generated `Area_AreaLoaded`, the post-area hold gate
 opening, held post-area packet release, and sustained `GameObjUpdate_LiveObject`
-traffic. It wrote `quickbar-item-refresh-hint.json` through about
-`2026-07-09T04:57:12+10:00` and produced no quarantine directory. The forced
-inventory action did not expose a server `Inventory` handoff this time; it
-settled at `inventory_equipment_bridge_output_status="awaiting_client_gui_writer"`
-with `inventory_equipment_bridge_output_last_decision_reason="deferred_client_gui"`,
-`inventory_equipment_bridge_output_requires_client_gui_writer=true`, 5
-`ClientGuiInventory` handoff events, 1 ready `ClientGuiInventory` handoff, 0
-server `Inventory` handoffs, candidate `0x80015211`, and a status/self
-client-GUI claim object `0x7F000000`. No synthetic inventory output was queued.
+traffic. It wrote `quickbar-item-refresh-hint.json` and `proxy.structured.log`
+through `2026-07-09T09:21:38+10:00` and produced no quarantine directory. This
+run is current gameplay freshness evidence for the automation, but it did not
+exercise inventory opening: the EE client exited after gameplay with 0
+`ClientGuiInventory` events, so
+`inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` and
+the queued-status/response counters stayed at 0.
 
-As of 2026-07-09 07:17 +10, proxy2 has exact decompile-backed
+The newest successful forced-inventory live evidence for the ClientGui status
+writer remains
+`C:\nwnbridge\codex-live-client-gui-status-output-20260709-085527\harness-proxy-20260709-085537`
+(`proxy.structured.log` through `2026-07-09T08:58:14+10:00`, no quarantine
+directory). It reached gameplay, observed real `ClientGuiInventory_Status`
+traffic, queued one proxy-owned current-player
+`ClientGuiInventory_Status` request with payload `700D010B0000000000007F90`
+for object `0x7F000000`, and HG answered with
+`GameObjUpdate_LiveObjectCombinedRecords` containing 51 live-GUI records,
+348 live-GUI fragment bits, and 51 materialized item object ids.
+
+As of 2026-07-09 09:22 +10, proxy2 has exact decompile-backed
 `ClientGuiInventory` EE payload builders for status and select-panel claims and
 queues a bounded proxy-owned current-player `ClientGuiInventory_Status` request
 when live state proves a status/self inventory claim for `0x7F000000`. The
 queued payload is the exact EE shape `700D010B0000000000007F90`, validated by
 the typed ClientGui parser before insertion; select-panel claims,
 non-current-player status claims, and missing client sequence state still
-defer. Hints and replay summaries now expose
-`inventory_equipment_bridge_output_queued_client_gui_status_packets` plus the
-last queued payload/object/sequence metadata. Bounded strict replay
-`C:\nwnbridge\codex-proxy2-replay-client-gui-status-output-20260709-071534`
+defer. Hints and replay summaries now expose the queued status metadata plus
+typed live-object response counters for HG traffic observed after a queued
+ClientGui status request:
+`inventory_equipment_bridge_output_client_gui_status_response_live_object_packets`,
+`..._live_gui_record_packets`, `..._materialized_item_packets`, and the
+last-response sequence/live-GUI/materialized-item/candidate fields. Bounded
+strict replay
+`C:\nwnbridge\codex-proxy2-replay-client-gui-status-response-20260709-091641`
 over the 164-packet Diamond autoplay baseline used alternate ports
-`-ListenPort 40021 -ServerPort 40033`, ran with strict translation, had 0
-quarantine files and 0 live-object terminal residuals, and correctly left the
-queued ClientGui status counter at 0 because that replay source has no ready
-ClientGui inventory handoff. The next live HG forced-inventory probe should
-verify whether the 04:57 ClientGui writer-gap path now increments the queued
-status counter and whether HG responds with the expected inventory/UI refresh
-stream; if server `Inventory` traffic returns first, continue the
-claim-neighborhood provenance path instead.
+`-ListenPort 56321 -ServerPort 56333`, ran with strict translation, and
+correctly left the queued/response counters at 0 because that replay source has
+no ready ClientGui inventory handoff. The next live HG forced-inventory probe
+should use manual or delayed inventory opening to verify the current-code JSON
+response fields on the same live 51-record HG response shape; if server
+`Inventory` traffic returns first, continue the claim-neighborhood provenance
+path instead.
 
 Previous live HG proxy status, as of 2026-07-08 23:17 +10: the
 gameplay-reaching proxy harness was
@@ -1474,6 +1486,7 @@ work.
 | --- | --- | --- |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
+| Live HG reaches gameplay, then the final hint stays `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` with 0 `ClientGuiInventory` events despite `-AutoOpenInventory` | The driver/client exited or missed the inventory-open timing before the GUI action was emitted | Count the artifact as gameplay freshness evidence only, not forced-inventory evidence. Rerun with manual inventory opening or an explicit post-area `-AutoOpenInventoryDelayMilliseconds` value, and require `ClientGuiInventory` log rows before using the run to validate ClientGui writer/response counters. The 2026-07-09 09:19 current-code run hit this timing miss after reaching gameplay. |
 | Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-07 16:37 failure was followed by a 16:47 retry that observed BNK3 after 106ms and reached gameplay. |
 | `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |
 | Capture reaches `BNVR A` and one `P/01/03` response, but never sends client `P/11/01` | Driver fell back to native DirectConnect after missing or discarding the server-list path | Keep using the server-list DirectConnect path; if Diamond's app-state server-list slot is empty, retry with the remembered `SERVERLIST_PANEL` from the constructor hook before native fallback. |

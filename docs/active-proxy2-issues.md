@@ -472,6 +472,38 @@ not as standalone workaround targets.
   probe before this capture ages past 24h and verify whether
   `inventory_equipment_bridge_output_queued_client_gui_status_packets` becomes
   nonzero and whether HG answers with the expected inventory/UI refresh stream.
+- 2026-07-09 ClientGui status live-object response tracking: live-data gate
+  first confirmed a fresh gameplay-reaching HG forced-inventory capture at
+  `C:\nwnbridge\codex-live-client-gui-status-output-20260709-085527\harness-proxy-20260709-085537`
+  (`proxy.structured.log` through `2026-07-09T08:58:14+10:00`, no
+  quarantine directory). That run reached gameplay and showed the concrete
+  sequence this slice models: real `ClientGuiInventory_Status` traffic,
+  proxy-owned queued current-player status output
+  (`700D010B0000000000007F90`, object `0x7F000000`, synthetic sequence 82),
+  then HG answering with `GameObjUpdate_LiveObjectCombinedRecords` carrying
+  51 live-GUI records, 348 live-GUI fragment bits, and 51 materialized item
+  object ids. Proxy2 now carries those decompile-backed live-GUI counters from
+  the verified live-object claim into semantic state, snapshots the latest
+  live-object inventory materialization summary, records live-object packets
+  observed after a queued ClientGui status request, and exports the response
+  counters/last-response fields in `quickbar-item-refresh-hint.json` and the
+  Diamond replay summary. A current-code rerun
+  `C:\nwnbridge\codex-live-client-gui-status-response-20260709-091913\harness-proxy-20260709-091918`
+  reached gameplay through `Area_ClientArea`, proxy-generated
+  `Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject` through
+  `2026-07-09T09:21:38+10:00` with no quarantine directory, but the EE client
+  exited before the auto-inventory step produced any `ClientGuiInventory`
+  event, so its response counters correctly stayed at 0. Focused tests cover
+  live-object response recording after queued ClientGui status and hint
+  serialization of the response fields. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-gui-status-response-20260709-091641`
+  ran the Diamond autoplay baseline with strict translation and alternate
+  ports `-ListenPort 56321 -ServerPort 56333`; that baseline still has no
+  ready ClientGui handoff, so the queued/response counters remain inactive
+  there. Active next path: rerun live HG forced-inventory with manual or
+  delayed inventory opening to exercise the current-code JSON response fields,
+  then use the recorded live-GUI/materialized-item response as the seed for the
+  next inventory UI refresh/visible-equipment bridge decision.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

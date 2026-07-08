@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use crate::translate::{
-    VerifiedFamily, client_gui_inventory, inventory,
+    VerifiedFamily, VerifiedProof, client_gui_inventory, inventory,
     semantic::{
         InventoryEquipmentClientGuiInventoryClaimKind,
         InventoryEquipmentHandoffConsumer::ClientGuiInventory,
@@ -18,7 +18,8 @@ use crate::translate::{
 use super::{
     sequence::{SequenceShift, shift_sequence_for_peer, trim_sequence_shifts},
     state::{
-        InventoryEquipmentBridgeOutputDecision, InventoryEquipmentBridgeOutputDecisionKind,
+        InventoryEquipmentBridgeClientGuiStatusResponse, InventoryEquipmentBridgeOutputDecision,
+        InventoryEquipmentBridgeOutputDecisionKind,
         InventoryEquipmentBridgeQueuedClientGuiStatusOutput, InventoryEquipmentBridgeQueuedOutput,
         SessionState,
     },
@@ -218,6 +219,73 @@ pub(super) fn maybe_record_non_server_inventory_equipment_bridge_output_decision
             "failed to queue inventory/equipment ClientGuiInventory bridge output"
         );
     }
+}
+
+pub(super) fn maybe_record_client_gui_status_live_object_response(
+    state: &mut SessionState,
+    proof: &VerifiedProof,
+    server_sequence: u16,
+    ack_sequence: u16,
+) {
+    if state.inventory_equipment.queued_client_gui_status_outputs == 0
+        || !proof.contains_family(VerifiedFamily::GameObjUpdateLiveObject)
+    {
+        return;
+    }
+    let Some(summary) = state.semantic.ui.last_live_object_inventory_materialization else {
+        return;
+    };
+    let queued_update_index = state
+        .inventory_equipment
+        .last_queued_client_gui_status_update_index
+        .unwrap_or(0);
+    state
+        .inventory_equipment
+        .client_gui_status_response_live_object_packets = state
+        .inventory_equipment
+        .client_gui_status_response_live_object_packets
+        .saturating_add(1);
+    if summary.live_gui_records != 0 {
+        state
+            .inventory_equipment
+            .client_gui_status_response_live_gui_record_packets = state
+            .inventory_equipment
+            .client_gui_status_response_live_gui_record_packets
+            .saturating_add(1);
+    }
+    if summary.materialized_item_object_ids != 0 {
+        state
+            .inventory_equipment
+            .client_gui_status_response_materialized_item_packets = state
+            .inventory_equipment
+            .client_gui_status_response_materialized_item_packets
+            .saturating_add(1);
+    }
+    state.inventory_equipment.last_client_gui_status_response =
+        Some(InventoryEquipmentBridgeClientGuiStatusResponse {
+            queued_update_index,
+            server_sequence,
+            ack_sequence,
+            live_gui_records: summary.live_gui_records,
+            live_gui_fragment_bits: summary.live_gui_fragment_bits,
+            materialized_item_object_ids: summary.materialized_item_object_ids,
+            compact_item_emission_ready_objects: summary.compact_item_emission_ready_objects,
+            compact_item_emission_ready_candidate: summary.compact_item_emission_ready_candidate,
+        });
+    tracing::info!(
+        queued_update_index,
+        server_sequence,
+        ack_sequence,
+        live_gui_records = summary.live_gui_records,
+        live_gui_fragment_bits = summary.live_gui_fragment_bits,
+        materialized_item_object_ids = summary.materialized_item_object_ids,
+        compact_item_emission_ready_objects = summary.compact_item_emission_ready_objects,
+        compact_item_emission_ready_candidate_object_id = summary
+            .compact_item_emission_ready_candidate
+            .map(|candidate| format!("0x{:08X}", candidate.object_id))
+            .unwrap_or_else(|| "none".to_string()),
+        "inventory/equipment bridge observed server live-object response after proxy-owned ClientGuiInventory_Status"
+    );
 }
 
 fn maybe_queue_client_gui_status_output(
@@ -621,6 +689,73 @@ mod tests {
             1
         );
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
+    }
+
+    #[test]
+    fn records_live_object_response_after_client_gui_status_output() {
+        let mut state = SessionState::default();
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(7);
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 51,
+                live_gui_fragment_bits: 348,
+                materialized_item_object_ids: 51,
+                compact_item_emission_ready_objects: 51,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_56BC,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+            },
+        );
+
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            48,
+            82,
+        );
+
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_live_object_packets,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_live_gui_record_packets,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_materialized_item_packets,
+            1
+        );
+        let response = state
+            .inventory_equipment
+            .last_client_gui_status_response
+            .expect("response should be retained");
+        assert_eq!(response.queued_update_index, 7);
+        assert_eq!(response.server_sequence, 48);
+        assert_eq!(response.ack_sequence, 82);
+        assert_eq!(response.live_gui_records, 51);
+        assert_eq!(response.live_gui_fragment_bits, 348);
+        assert_eq!(response.materialized_item_object_ids, 51);
+        assert_eq!(response.compact_item_emission_ready_objects, 51);
+        assert_eq!(
+            response.compact_item_emission_ready_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8001_56BC,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            })
+        );
     }
 
     #[test]
