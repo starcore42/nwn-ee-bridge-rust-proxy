@@ -8,6 +8,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    ops::Bound,
     time::Instant,
 };
 
@@ -587,6 +588,39 @@ pub(crate) struct InventoryItemContextCandidate {
     pub(crate) object_id: u32,
     pub(crate) proof: InventoryItemObjectProof,
     pub(crate) source: InventoryItemContextCandidateSource,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InventoryItemObjectProvenNeighbor {
+    pub(crate) object_id: u32,
+    pub(crate) distance: u32,
+}
+
+impl InventoryItemObjectProvenNeighbor {
+    fn new(claim_object_id: u32, item_object_id: u32) -> Self {
+        Self {
+            object_id: item_object_id,
+            distance: item_object_id.abs_diff(claim_object_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InventoryItemObjectProvenNeighborhood {
+    pub(crate) lower: Option<InventoryItemObjectProvenNeighbor>,
+    pub(crate) higher: Option<InventoryItemObjectProvenNeighbor>,
+}
+
+impl InventoryItemObjectProvenNeighborhood {
+    pub(crate) fn closest(self) -> Option<InventoryItemObjectProvenNeighbor> {
+        match (self.lower, self.higher) {
+            (Some(lower), Some(higher)) if higher.distance < lower.distance => Some(higher),
+            (Some(lower), Some(_)) => Some(lower),
+            (Some(lower), None) => Some(lower),
+            (None, Some(higher)) => Some(higher),
+            (None, None) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3955,6 +3989,34 @@ impl ObjectRegistry {
         }
     }
 
+    pub(crate) fn inventory_item_object_proven_neighborhood(
+        &self,
+        object_id: u32,
+    ) -> InventoryItemObjectProvenNeighborhood {
+        let mut proven_ids = self.materialized_item_object_ids.clone();
+        proven_ids.extend(
+            self.known
+                .values()
+                .filter(|object| object.active && object.object_type == ITEM_OBJECT_TYPE)
+                .map(|object| object.object_id),
+        );
+        let lower = proven_ids
+            .range((Bound::Unbounded, Bound::Excluded(object_id)))
+            .next_back()
+            .copied()
+            .map(|item_object_id| {
+                InventoryItemObjectProvenNeighbor::new(object_id, item_object_id)
+            });
+        let higher = proven_ids
+            .range((Bound::Excluded(object_id), Bound::Unbounded))
+            .next()
+            .copied()
+            .map(|item_object_id| {
+                InventoryItemObjectProvenNeighbor::new(object_id, item_object_id)
+            });
+        InventoryItemObjectProvenNeighborhood { lower, higher }
+    }
+
     fn compact_item_emission_candidate(
         &self,
         direct_item_proof_objects: &BTreeSet<u32>,
@@ -6743,14 +6805,15 @@ mod tests {
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
         ITEM_OBJECT_TYPE, InventoryEquipmentHandoffBridgeAction, InventoryEquipmentHandoffConsumer,
         InventoryItemContextCandidate, InventoryItemContextCandidateSource,
-        InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectStatus,
-        LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
-        QuickbarActiveItemSignature, QuickbarItemRefreshActionOutcome,
-        QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
-        QuickbarItemRefreshEventKind, QuickbarItemRefreshHarnessHint,
-        QuickbarItemRefreshProofClass, QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary,
-        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
+        InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectProvenNeighbor,
+        InventoryItemObjectStatus, LiveObjectBounds, LiveObjectMention, LiveObjectOrientation,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition,
+        ObjectRegistry, PlayerListObjectIds, QuickbarActiveItemSignature,
+        QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
+        QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
+        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass,
+        QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary, QuickbarStreamProbeSummary,
+        QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -8632,6 +8695,73 @@ mod tests {
             registry.inventory_item_object_proof(gui_materialized_item_id),
             Some(InventoryItemObjectProof::ActiveObject),
             "GUI item-create materialization remains valid quickbar item proof"
+        );
+    }
+
+    #[test]
+    fn inventory_item_proven_neighborhood_uses_only_ready_item_state() {
+        let mut registry = ObjectRegistry::default();
+        let lower_item_id = 0x8000_1000;
+        let claim_id = 0x8000_1100;
+        let higher_item_id = 0x8000_1120;
+        let deferred_feature25_id = 0x8000_1110;
+        let creature_id = 0x8000_10F0;
+
+        registry.observe_materialized_item_object_ids(&[lower_item_id]);
+        registry.observe_mentions(&[
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: ITEM_OBJECT_TYPE,
+                object_id: higher_item_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            },
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x05,
+                object_id: creature_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            },
+        ]);
+        registry.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
+            owner_id: creature_id,
+            mask: 0x2000,
+            first_object_ids: vec![deferred_feature25_id],
+            second_object_ids: Vec::new(),
+            legacy_tail_object_ids: Vec::new(),
+        }]);
+
+        let neighborhood = registry.inventory_item_object_proven_neighborhood(claim_id);
+
+        assert_eq!(
+            neighborhood.lower,
+            Some(InventoryItemObjectProvenNeighbor {
+                object_id: lower_item_id,
+                distance: 0x100,
+            })
+        );
+        assert_eq!(
+            neighborhood.higher,
+            Some(InventoryItemObjectProvenNeighbor {
+                object_id: higher_item_id,
+                distance: 0x20,
+            })
+        );
+        assert_eq!(
+            neighborhood.closest(),
+            Some(InventoryItemObjectProvenNeighbor {
+                object_id: higher_item_id,
+                distance: 0x20,
+            })
         );
     }
 

@@ -33,34 +33,38 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 01:02 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 03:05 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-known-claim-inventory-output-20260709-0110\harness-proxy-20260709-010013`.
+`C:\nwnbridge\codex-live-claim-status-inventory-20260709-025758\harness-proxy-20260709-025805`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, observed
 `BNK3` after deferred `BNK2`, reached gameplay through `Module_Loaded`,
 `Area_ClientArea`, proxy-generated `Area_AreaLoaded`, the post-area hold gate
 opening, held post-area packet release, and sustained `GameObjUpdate_LiveObject`
-traffic. It wrote live proxy logs through about `2026-07-09T01:02:57+10:00`
-and produced no quarantine directory. The bridge reached one ready server
-`Inventory` handoff and one bridge state update, but still reported
+traffic. It wrote `quickbar-item-refresh-hint.json` through
+`2026-07-09T03:05:57+10:00` and `proxy.structured.log` through
+`2026-07-09T03:05:58+10:00`, and produced no quarantine-like files. The forced
+inventory action reached one ready server `Inventory` handoff and one bridge
+state update, but still reported
 `inventory_equipment_bridge_output_status="blocked_candidate_mismatch"`:
-parsed server claim `0x80016E36` differed from ready candidate `0x80016D85`.
-The claim id appeared only in the `Inventory_Equip` decision log, while the
-candidate id was the quickbar-materialized item, so no synthetic `Inventory`
+ready candidate `0x80016EFA` was proven from active/direct item state, while
+parsed server claim `0x80016FAA` remained unknown. No synthetic `Inventory`
 output was queued.
 
-As of 2026-07-09 01:12 +10, proxy2 keeps the server `Inventory` writer
+As of 2026-07-09 03:18 +10, proxy2 keeps the server `Inventory` writer
 conservative for this mismatch: a parsed claim object may differ from the ready
 candidate only when that claim object is independently proven as inventory item
-state. The bridge-output decision now records candidate and server-claim object
-statuses/proofs in `quickbar-item-refresh-hint.json` and the replay summary so
-the next live run can report whether the server claim is proven, deferred,
-cleared, or unknown. Bounded strict replay
+state. The bridge-output decision now also records the nearest lower, higher,
+and closest proven direct/materialized item object around the parsed server
+claim. `quickbar-item-refresh-hint.json`, the replay summary, and the block
+warning expose those proven-neighborhood fields so the next forced-inventory
+live run can tell whether the server claim is near a known item id or belongs
+to a different object provenance path. Bounded strict replay
 `C:\nwnbridge\codex-proxy2-replay-claim-status-inventory-output-20260709-0200`
 over the 164-packet Diamond autoplay baseline reported 304 strict allow
 decisions, 0 strict quarantines, no quarantine directory, and 0 live-object
-terminal residuals. The next production target is to rerun live with these
-claim-status fields and trace the server `Inventory` claim object
+terminal residuals for the earlier claim-status slice. The next production
+target is to rerun a short forced-inventory live HG probe on this build and use
+the new proven-neighborhood fields to trace server `Inventory` claim
 provenance/owner semantics before relaxing the writer or implementing a
 ClientGui inventory writer.
 

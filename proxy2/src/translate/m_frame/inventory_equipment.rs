@@ -89,12 +89,19 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
             .inventory_equipment
             .blocked_candidate_mismatch_updates
             .saturating_add(1);
+        let claim_proven_neighborhood = state
+            .semantic
+            .objects
+            .inventory_item_object_proven_neighborhood(claim.object_id);
+        let closest_proven_neighbor = claim_proven_neighborhood.closest();
         tracing::warn!(
             update_index = update.update_index,
             claim_object_id = %format_args!("0x{:08X}", claim.object_id),
             claim_object_status = claim_object_status.as_str(),
             claim_object_proof = claim_object_status.proof().map(|proof| proof.as_str()).unwrap_or("none"),
             candidate_object_id = %format_args!("0x{:08X}", update.candidate.object_id),
+            closest_proven_item_object_id = closest_proven_neighbor.map(|neighbor| format!("0x{:08X}", neighbor.object_id)).unwrap_or_else(|| "none".to_string()),
+            closest_proven_item_distance = closest_proven_neighbor.map(|neighbor| neighbor.distance).unwrap_or(0),
             "inventory/equipment bridge output blocked: server Inventory object differs from ready item-state candidate"
         );
         return Ok(());
@@ -243,6 +250,15 @@ fn record_output_decision(
                 .inventory_item_object_status(claim.object_id)
         })
         .unwrap_or(crate::translate::semantic::InventoryItemObjectStatus::Unknown);
+    let server_inventory_claim_proven_neighborhood = update
+        .server_inventory_claim
+        .map(|claim| {
+            state
+                .semantic
+                .objects
+                .inventory_item_object_proven_neighborhood(claim.object_id)
+        })
+        .unwrap_or_default();
     state.inventory_equipment.last_decision_state_update_index = Some(update.update_index);
     state.inventory_equipment.last_decision = Some(InventoryEquipmentBridgeOutputDecision {
         kind,
@@ -256,6 +272,7 @@ fn record_output_decision(
         deferred_feature25_only_objects: update.deferred_feature25_only_objects,
         server_inventory_claim: update.server_inventory_claim,
         server_inventory_claim_object_status,
+        server_inventory_claim_proven_neighborhood,
         client_gui_inventory_claim: update.client_gui_inventory_claim,
     });
 }
@@ -268,7 +285,7 @@ mod tests {
         translate::semantic::{
             InventoryEquipmentBridgeStateUpdate, InventoryEquipmentServerInventoryClaim,
             InventoryItemContextCandidate, InventoryItemContextCandidateSource,
-            InventoryItemObjectProof, InventoryItemObjectStatus,
+            InventoryItemObjectProof, InventoryItemObjectProvenNeighbor, InventoryItemObjectStatus,
         },
     };
 
@@ -546,6 +563,10 @@ mod tests {
         let mut state = SessionState::default();
         state
             .semantic
+            .objects
+            .observe_materialized_item_object_ids(&[0x8000_5600, 0x8000_5800]);
+        state
+            .semantic
             .ui
             .last_inventory_equipment_bridge_handoff_state_update = Some(update);
 
@@ -579,6 +600,20 @@ mod tests {
                 .expect("mismatch decision should retain claim")
                 .object_id,
             0x8000_5678
+        );
+        assert_eq!(
+            decision.server_inventory_claim_proven_neighborhood.lower,
+            Some(InventoryItemObjectProvenNeighbor {
+                object_id: 0x8000_5600,
+                distance: 0x78,
+            })
+        );
+        assert_eq!(
+            decision.server_inventory_claim_proven_neighborhood.higher,
+            Some(InventoryItemObjectProvenNeighbor {
+                object_id: 0x8000_5800,
+                distance: 0x188,
+            })
         );
         assert_eq!(
             state

@@ -711,6 +711,24 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         .and_then(|decision| decision.server_inventory_claim_object_status.proof())
         .map(|proof| proof.as_str())
         .unwrap_or("none");
+    let last_decision_claim_proven_neighborhood = last_decision
+        .map(|decision| decision.server_inventory_claim_proven_neighborhood)
+        .unwrap_or_default();
+    let last_decision_claim_lower_proven_neighbor = last_decision_claim_proven_neighborhood
+        .lower
+        .unwrap_or_default();
+    let last_decision_claim_lower_proven_neighbor_known =
+        last_decision_claim_proven_neighborhood.lower.is_some();
+    let last_decision_claim_higher_proven_neighbor = last_decision_claim_proven_neighborhood
+        .higher
+        .unwrap_or_default();
+    let last_decision_claim_higher_proven_neighbor_known =
+        last_decision_claim_proven_neighborhood.higher.is_some();
+    let last_decision_claim_closest_proven_neighbor = last_decision_claim_proven_neighborhood
+        .closest()
+        .unwrap_or_default();
+    let last_decision_claim_closest_proven_neighbor_known =
+        last_decision_claim_proven_neighborhood.closest().is_some();
     let last_decision_client_gui_claim =
         last_decision.and_then(|decision| decision.client_gui_inventory_claim);
     let last_decision_client_gui_claim_known = last_decision_client_gui_claim.is_some();
@@ -759,6 +777,18 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_status\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_status_proof\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_closest_proven_item_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_closest_proven_item_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_closest_proven_item_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_closest_proven_item_distance\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_lower_proven_item_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_lower_proven_item_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_lower_proven_item_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_lower_proven_item_distance\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_distance\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_known\": {},\n",
@@ -809,6 +839,18 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_decision_claim_object_id,
         last_decision_claim_object_status,
         last_decision_claim_object_status_proof,
+        last_decision_claim_closest_proven_neighbor_known,
+        last_decision_claim_closest_proven_neighbor.object_id,
+        last_decision_claim_closest_proven_neighbor.object_id,
+        last_decision_claim_closest_proven_neighbor.distance,
+        last_decision_claim_lower_proven_neighbor_known,
+        last_decision_claim_lower_proven_neighbor.object_id,
+        last_decision_claim_lower_proven_neighbor.object_id,
+        last_decision_claim_lower_proven_neighbor.distance,
+        last_decision_claim_higher_proven_neighbor_known,
+        last_decision_claim_higher_proven_neighbor.object_id,
+        last_decision_claim_higher_proven_neighbor.object_id,
+        last_decision_claim_higher_proven_neighbor.distance,
         last_decision_claim_result,
         last_decision_claim_equip_slot,
         last_decision_client_gui_claim_known,
@@ -1533,6 +1575,21 @@ mod tests {
             ),
             server_inventory_claim_object_status:
                 crate::translate::semantic::InventoryItemObjectStatus::Unknown,
+            server_inventory_claim_proven_neighborhood:
+                crate::translate::semantic::InventoryItemObjectProvenNeighborhood {
+                    lower: Some(
+                        crate::translate::semantic::InventoryItemObjectProvenNeighbor {
+                            object_id: 0x8000_1234,
+                            distance: 0x4444,
+                        },
+                    ),
+                    higher: Some(
+                        crate::translate::semantic::InventoryItemObjectProvenNeighbor {
+                            object_id: 0x8000_6789,
+                            distance: 0x1111,
+                        },
+                    ),
+                },
             client_gui_inventory_claim: None,
         });
 
@@ -1582,6 +1639,33 @@ mod tests {
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_object_status_proof\": \"none\""
         ));
         assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_closest_proven_item_known\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_closest_proven_item_object_id_hex\": \"0x80006789\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_closest_proven_item_distance\": 4369"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_lower_proven_item_known\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_lower_proven_item_object_id_hex\": \"0x80001234\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_lower_proven_item_distance\": 17476"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_known\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_object_id_hex\": \"0x80006789\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_distance\": 4369"
+        ));
+        assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": true"
         ));
         assert!(body.contains(
@@ -1614,6 +1698,8 @@ mod tests {
             server_inventory_claim: None,
             server_inventory_claim_object_status:
                 crate::translate::semantic::InventoryItemObjectStatus::Unknown,
+            server_inventory_claim_proven_neighborhood:
+                crate::translate::semantic::InventoryItemObjectProvenNeighborhood::default(),
             client_gui_inventory_claim: Some(
                 crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
                     kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::SelectPanel,

@@ -389,6 +389,32 @@ not as standalone workaround targets.
   with the new claim-status fields, then trace the server `Inventory` claim
   object provenance/owner semantics before relaxing the writer or starting a
   ClientGui writer.
+- 2026-07-09 server-Inventory claim-neighborhood diagnostics: live-data gate
+  first found the gameplay-reaching capture
+  `C:\nwnbridge\codex-live-known-claim-inventory-output-20260709-0110\harness-proxy-20260709-010013`
+  current (`quickbar-item-refresh-hint.json` last write
+  `2026-07-09T01:05:19+10:00`, about 1h47m old at gate). A fresh
+  current-code no-inventory probe
+  `C:\nwnbridge\codex-live-claim-status-current-20260709-025219\harness-proxy-20260709-025325`
+  reached gameplay with no quarantine but did not drive the inventory handoff.
+  The forced-inventory probe
+  `C:\nwnbridge\codex-live-claim-status-inventory-20260709-025758\harness-proxy-20260709-025805`
+  reached gameplay, wrote `proxy.structured.log` through
+  `2026-07-09T03:05:58+10:00`, produced no quarantine-like files, and settled
+  at `inventory_equipment_bridge_output_status="blocked_candidate_mismatch"`:
+  ready candidate `0x80016EFA` was proven from active/direct item state, while
+  parsed server `Inventory` claim `0x80016FAA` remained
+  `InventoryItemObjectStatus::Unknown`. Proxy2 now snapshots the nearest lower,
+  higher, and closest proven direct/materialized item object around the parsed
+  server claim on the typed bridge-output decision, exports those fields in
+  `quickbar-item-refresh-hint.json` and replay summaries, and logs the closest
+  proven neighbor when blocking the mismatch. The writer gate remains
+  conservative and still emits no synthetic `Inventory` packet for unproven
+  claim/candidate mismatches. Active next path: rerun a short forced-inventory
+  live HG probe on this build, use the new proven-neighborhood fields to decide
+  whether the server claim is an off-by-one/nearby item id or a separate object
+  namespace, then fix the shared server-Inventory claim provenance before any
+  writer relaxation or ClientGui writer work.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

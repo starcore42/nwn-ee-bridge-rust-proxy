@@ -151,6 +151,8 @@ pub(super) struct InventoryEquipmentBridgeOutputDecision {
     pub(super) deferred_feature25_only_objects: usize,
     pub(super) server_inventory_claim: Option<semantic::InventoryEquipmentServerInventoryClaim>,
     pub(super) server_inventory_claim_object_status: semantic::InventoryItemObjectStatus,
+    pub(super) server_inventory_claim_proven_neighborhood:
+        semantic::InventoryItemObjectProvenNeighborhood,
     pub(super) client_gui_inventory_claim:
         Option<semantic::InventoryEquipmentClientGuiInventoryClaim>,
 }
