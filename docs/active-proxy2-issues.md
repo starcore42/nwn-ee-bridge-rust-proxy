@@ -228,6 +228,30 @@ not as standalone workaround targets.
   2026-07-07 21:05 capture is stale, then use last-decision reason plus
   candidate-vs-claim object ids to choose server-Inventory claim repair or a
   separately proven ClientGui inventory writer.
+- 2026-07-08 inventory/equipment bridge output status: live-data gate reused
+  the same gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`quickbar-item-refresh-hint.json` and `proxy.structured.log`
+  `2026-07-07T21:05:54+10:00`, about 15h39m old at gate). It reached gameplay
+  through module load, area load, held-packet release, and sustained
+  `GameObjUpdate_LiveObject` traffic with no quarantine directory, so no fresh
+  live harness was required. Proxy2 now derives
+  `inventory_equipment_bridge_output_status` from production bridge-output
+  counters with queued output taking precedence over server-Inventory candidate
+  mismatch, missing claim, and client-GUI writer deferral, plus
+  `inventory_equipment_bridge_output_requires_client_gui_writer` for the pure
+  client-GUI gap. Bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-status-20260708-1249`
+  processed the 164-packet Diamond autoplay baseline with strict translation
+  and no quarantine files, and reported
+  `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"`
+  with 1 blocked handoff and 0 ready handoffs, matching the Feature-25-only
+  baseline. Active next path: when live capture freshness expires, run current
+  HG confirmation and use this status first; `queued_inventory_output` means
+  inspect visible state after the synthetic Inventory packet,
+  `blocked_candidate_mismatch` or `deferred_missing_claim` means repair the
+  server-Inventory claim path, and `awaiting_client_gui_writer` means implement
+  the separately proven ClientGui inventory writer.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

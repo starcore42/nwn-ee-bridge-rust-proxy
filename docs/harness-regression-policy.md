@@ -174,6 +174,21 @@ HG run should inspect the last-decision reason and candidate-vs-claim ids
 beside the existing queue/deferral/mismatch counters before choosing
 server-Inventory claim repair or a separately proven ClientGui inventory writer.
 
+As of 2026-07-08 13:01 +10, proxy2 also exports a derived
+`inventory_equipment_bridge_output_status` plus
+`inventory_equipment_bridge_output_requires_client_gui_writer` in
+`quickbar-item-refresh-hint.json` and replay summaries. The status gives the
+next live run a single first-pass classifier: queued Inventory output wins over
+server-Inventory candidate mismatch, missing claim, and client-GUI writer
+deferral. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-inventory-bridge-output-status-20260708-1249`
+over the same 164 Diamond autoplay packets passed with no quarantine files and
+reported `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"`
+because the baseline has 1 blocked Feature-25-only server-Inventory handoff and
+0 ready handoffs. The next live HG run should inspect this status before
+choosing server-Inventory claim repair versus a separately proven ClientGui
+inventory writer.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.

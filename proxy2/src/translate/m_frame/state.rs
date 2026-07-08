@@ -114,6 +114,30 @@ impl InventoryEquipmentBridgeOutputDecisionKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentBridgeOutputStatus {
+    #[default]
+    AwaitingBridgeStateUpdate,
+    QueuedInventoryOutput,
+    BlockedCandidateMismatch,
+    DeferredMissingClaim,
+    AwaitingClientGuiWriter,
+    DecisionRecordedWithoutDetail,
+}
+
+impl InventoryEquipmentBridgeOutputStatus {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingBridgeStateUpdate => "awaiting_bridge_state_update",
+            Self::QueuedInventoryOutput => "queued_inventory_output",
+            Self::BlockedCandidateMismatch => "blocked_candidate_mismatch",
+            Self::DeferredMissingClaim => "deferred_missing_claim",
+            Self::AwaitingClientGuiWriter => "awaiting_client_gui_writer",
+            Self::DecisionRecordedWithoutDetail => "decision_recorded_without_detail",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct InventoryEquipmentBridgeOutputDecision {
     pub(super) kind: InventoryEquipmentBridgeOutputDecisionKind,
@@ -138,6 +162,28 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_blocked_candidate_mismatch_update_index: Option<u64>,
     pub(super) last_decision: Option<InventoryEquipmentBridgeOutputDecision>,
     pub(super) last_queued_output: Option<InventoryEquipmentBridgeQueuedOutput>,
+}
+
+impl InventoryEquipmentBridgeState {
+    pub(super) fn output_status(&self) -> InventoryEquipmentBridgeOutputStatus {
+        if self.queued_outputs > 0 {
+            InventoryEquipmentBridgeOutputStatus::QueuedInventoryOutput
+        } else if self.blocked_candidate_mismatch_updates > 0 {
+            InventoryEquipmentBridgeOutputStatus::BlockedCandidateMismatch
+        } else if self.deferred_missing_claim_updates > 0 {
+            InventoryEquipmentBridgeOutputStatus::DeferredMissingClaim
+        } else if self.deferred_client_gui_updates > 0 {
+            InventoryEquipmentBridgeOutputStatus::AwaitingClientGuiWriter
+        } else if self.last_decision_state_update_index.is_some() {
+            InventoryEquipmentBridgeOutputStatus::DecisionRecordedWithoutDetail
+        } else {
+            InventoryEquipmentBridgeOutputStatus::AwaitingBridgeStateUpdate
+        }
+    }
+
+    pub(super) fn requires_client_gui_writer(&self) -> bool {
+        self.output_status() == InventoryEquipmentBridgeOutputStatus::AwaitingClientGuiWriter
+    }
 }
 
 #[derive(Debug)]

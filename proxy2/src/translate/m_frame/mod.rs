@@ -688,9 +688,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let last_decision_claim_equip_slot = last_decision_claim
         .map(|claim| claim.equip_slot)
         .unwrap_or(0);
+    let output_status = bridge.output_status();
+    let requires_client_gui_writer = bridge.requires_client_gui_writer();
     let fields = format!(
         concat!(
             ",\n",
+            "  \"inventory_equipment_bridge_output_status\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_requires_client_gui_writer\": {},\n",
             "  \"inventory_equipment_bridge_output_queued_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_client_gui_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_missing_claim_updates\": {},\n",
@@ -726,6 +730,8 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_queued_trigger_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_synthetic_sequence\": {}\n"
         ),
+        output_status.as_str(),
+        requires_client_gui_writer,
         bridge.queued_outputs,
         bridge.deferred_client_gui_updates,
         bridge.deferred_missing_claim_updates,
@@ -1389,6 +1395,16 @@ mod tests {
         );
 
         assert!(body.ends_with("\n}\n"));
+        assert!(
+            body.contains(
+                "\"inventory_equipment_bridge_output_status\": \"queued_inventory_output\""
+            )
+        );
+        assert!(
+            body.contains(
+                "\"inventory_equipment_bridge_output_requires_client_gui_writer\": false"
+            )
+        );
         assert!(body.contains("\"inventory_equipment_bridge_output_queued_packets\": 1"));
         assert!(
             body.contains("\"inventory_equipment_bridge_output_deferred_client_gui_updates\": 2")
@@ -1479,6 +1495,50 @@ mod tests {
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": 4"
         ));
+    }
+
+    #[test]
+    fn inventory_bridge_output_status_marks_client_gui_writer_gap() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.deferred_client_gui_updates = 1;
+        bridge.last_deferred_client_gui_update_index = Some(3);
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_status\": \"awaiting_client_gui_writer\""
+        ));
+        assert!(
+            body.contains("\"inventory_equipment_bridge_output_requires_client_gui_writer\": true")
+        );
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_deferred_client_gui_update_index\": 3"
+        ));
+    }
+
+    #[test]
+    fn inventory_bridge_output_status_prefers_server_inventory_blockers() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.deferred_client_gui_updates = 3;
+        bridge.deferred_missing_claim_updates = 2;
+        bridge.blocked_candidate_mismatch_updates = 1;
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_status\": \"blocked_candidate_mismatch\""
+        ));
+        assert!(
+            body.contains(
+                "\"inventory_equipment_bridge_output_requires_client_gui_writer\": false"
+            )
+        );
     }
 
     #[test]

@@ -1477,6 +1477,8 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = 0
     $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = 0
     $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = 0
+    $quickbarHintInventoryEquipmentBridgeOutputStatus = ''
+    $quickbarHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastDeferredClientGuiUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastDeferredMissingClaimUpdateIndex = 0
@@ -1815,6 +1817,14 @@ try {
         $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_client_gui_updates'
         $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_missing_claim_updates'
         $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_blocked_candidate_mismatch_updates'
+        $inventoryEquipmentBridgeOutputStatusProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_status']
+        if ($null -ne $inventoryEquipmentBridgeOutputStatusProp -and $null -ne $inventoryEquipmentBridgeOutputStatusProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputStatus = [string]$inventoryEquipmentBridgeOutputStatusProp.Value
+        }
+        $inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_requires_client_gui_writer']
+        if ($null -ne $inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp -and $null -ne $inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter = [bool]$inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp.Value
+        }
         $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_decision_update_index'
         $inventoryEquipmentBridgeOutputLastDecisionKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_decision_known']
         if ($null -ne $inventoryEquipmentBridgeOutputLastDecisionKnownProp -and $null -ne $inventoryEquipmentBridgeOutputLastDecisionKnownProp.Value) {
@@ -2172,6 +2182,8 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputStatus = $quickbarHintInventoryEquipmentBridgeOutputStatus
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter = $quickbarHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionKnown = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionKnown
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionReason = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionReason
