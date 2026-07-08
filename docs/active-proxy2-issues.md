@@ -252,6 +252,26 @@ not as standalone workaround targets.
   `blocked_candidate_mismatch` or `deferred_missing_claim` means repair the
   server-Inventory claim path, and `awaiting_client_gui_writer` means implement
   the separately proven ClientGui inventory writer.
+- 2026-07-08 ClientGui inventory bridge-output decision timing: live-data gate
+  reused the same gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-handoff-consumer-buckets-current-20260707-210130\harness-proxy-20260707-210133`
+  (`proxy.structured.log` `2026-07-07T21:05:54+10:00`, about 17h40m old at
+  gate). It reached gameplay and had no quarantine directory, so no fresh live
+  harness was required. Proxy2 now records the non-server
+  inventory/equipment bridge-output decision immediately after a verified
+  `ClientGuiInventory` semantic observation, instead of waiting for a later
+  server `Inventory` packet to call the output decider. The exact server
+  `Inventory` writer gate is unchanged: only server-Inventory updates with a
+  matching parsed claim can queue a synthetic EE `Inventory` frame. Bounded
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-gui-bridge-decision-20260708-1458`
+  processed 164 Diamond autoplay packet files with strict translation, 304
+  allow decisions, 0 strict quarantines, 0 quarantine files, and 0 live-object
+  terminal residuals; the Feature-25-only baseline still reported
+  `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"`
+  because it has no ready ClientGui handoff. Active next path remains fresh HG
+  confirmation once the 2026-07-07 21:05 capture is stale, then follow the
+  bridge-output status classifier.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

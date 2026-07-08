@@ -43,24 +43,7 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         return Ok(());
     }
 
-    if update.consumer != InventoryEquipmentHandoffConsumer::ServerInventory {
-        record_output_decision(
-            state,
-            update,
-            InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui,
-        );
-        state
-            .inventory_equipment
-            .last_deferred_client_gui_update_index = Some(update.update_index);
-        state.inventory_equipment.deferred_client_gui_updates = state
-            .inventory_equipment
-            .deferred_client_gui_updates
-            .saturating_add(1);
-        tracing::debug!(
-            update_index = update.update_index,
-            consumer = update.consumer.as_str(),
-            "inventory/equipment bridge output deferred: handoff consumer has no server inventory writer"
-        );
+    if record_non_server_output_decision_if_needed(state, update) {
         return Ok(());
     }
 
@@ -171,6 +154,56 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         "inventory/equipment bridge queued exact EE Inventory output"
     );
     Ok(())
+}
+
+pub(super) fn maybe_record_non_server_inventory_equipment_bridge_output_decision(
+    state: &mut SessionState,
+) {
+    let Some(update) = state
+        .semantic
+        .ui
+        .last_inventory_equipment_bridge_handoff_state_update
+    else {
+        return;
+    };
+
+    if state
+        .inventory_equipment
+        .last_decision_state_update_index
+        .is_some_and(|handled| handled == update.update_index)
+    {
+        return;
+    }
+
+    record_non_server_output_decision_if_needed(state, update);
+}
+
+fn record_non_server_output_decision_if_needed(
+    state: &mut SessionState,
+    update: crate::translate::semantic::InventoryEquipmentBridgeStateUpdate,
+) -> bool {
+    if update.consumer == InventoryEquipmentHandoffConsumer::ServerInventory {
+        return false;
+    }
+
+    record_output_decision(
+        state,
+        update,
+        InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui,
+    );
+    state
+        .inventory_equipment
+        .last_deferred_client_gui_update_index = Some(update.update_index);
+    state.inventory_equipment.deferred_client_gui_updates = state
+        .inventory_equipment
+        .deferred_client_gui_updates
+        .saturating_add(1);
+    tracing::debug!(
+        update_index = update.update_index,
+        consumer = update.consumer.as_str(),
+        "inventory/equipment bridge output deferred: handoff consumer has no server inventory writer"
+    );
+    true
 }
 
 fn record_output_decision(
@@ -335,6 +368,53 @@ mod tests {
             .expect("same client GUI update should remain handled");
 
         assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(state.inventory_equipment.deferred_client_gui_updates, 1);
+        assert_eq!(state.inventory_equipment.queued_outputs, 0);
+    }
+
+    #[test]
+    fn records_client_gui_writer_gap_without_server_inventory_trigger() {
+        let mut update = ready_server_inventory_update();
+        update.consumer = InventoryEquipmentHandoffConsumer::ClientGuiInventory;
+        update.server_inventory_claim = None;
+        let mut state = SessionState::default();
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+
+        maybe_record_non_server_inventory_equipment_bridge_output_decision(&mut state);
+        maybe_record_non_server_inventory_equipment_bridge_output_decision(&mut state);
+
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(
+            state.inventory_equipment.last_decision_state_update_index,
+            Some(1)
+        );
+        let decision = state
+            .inventory_equipment
+            .last_decision
+            .expect("client GUI writer-gap decision should be recorded");
+        assert_eq!(
+            decision.kind,
+            InventoryEquipmentBridgeOutputDecisionKind::DeferredClientGui
+        );
+        assert_eq!(
+            decision.consumer,
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_deferred_client_gui_update_index,
+            Some(1)
+        );
         assert_eq!(state.inventory_equipment.deferred_client_gui_updates, 1);
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
     }

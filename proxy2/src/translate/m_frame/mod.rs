@@ -556,6 +556,11 @@ fn observe_verified_client_payload(
         &proof,
         payload,
     );
+    if family == VerifiedFamily::ClientGuiInventory {
+        inventory_equipment::maybe_record_non_server_inventory_equipment_bridge_output_decision(
+            state,
+        );
+    }
     update_quickbar_item_refresh_hint(state);
 }
 

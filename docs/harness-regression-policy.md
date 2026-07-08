@@ -189,6 +189,24 @@ because the baseline has 1 blocked Feature-25-only server-Inventory handoff and
 choosing server-Inventory claim repair versus a separately proven ClientGui
 inventory writer.
 
+As of 2026-07-08 14:58 +10, proxy2 records non-server
+inventory/equipment bridge-output decisions as soon as verified
+`ClientGuiInventory` traffic creates a ready bridge state update. This removes
+the old timing dependency where the quickbar hint could keep reporting
+`awaiting_bridge_state_update` until a later server `Inventory` packet happened
+to run the output decider. The server writer gate is unchanged: only a
+server-Inventory update with a parsed matching claim can queue an exact EE
+`Inventory` frame; ClientGuiInventory remains a writer gap until its packet
+shape is separately proven. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-client-gui-bridge-decision-20260708-1458`
+over 164 Diamond autoplay packet files passed with 304 strict allows, 0 strict
+quarantines, 0 quarantine files, and
+`inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` on
+the Feature-25-only baseline. The next live HG run should read
+`inventory_equipment_bridge_output_status` first: `awaiting_client_gui_writer`
+now means a real ClientGui ready handoff was classified immediately, not just
+after a later server-Inventory trigger.
+
 Previous live HG proxy status, as of 2026-07-07 16:49 +10: the
 gameplay-reaching proxy harness was
 `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`.
