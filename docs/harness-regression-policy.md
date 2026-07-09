@@ -33,29 +33,44 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-10 03:17 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-10 07:12 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-inventory-clientgui-fallback-current-20260710-031303\harness-proxy-20260710-031307`.
+`C:\nwnbridge\codex-live-clientgui-refresh-confirmed-current-20260710-0710\harness-proxy-20260710-070818`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
 `Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject` traffic. It wrote
 `quickbar-item-refresh-hint.json` and `proxy.structured.log` through
-`2026-07-10T03:17:07+10:00`, and produced no quarantine directory. This run
-exercised the unproven server Inventory claim fallback: the final hint reported
+`2026-07-10T07:12:44+10:00`, and produced no quarantine directory. This run
+exercised the unproven server Inventory claim fallback and the materialized
+ClientGui status-response association on the current build: the final hint
+reported
+`inventory_equipment_bridge_output_status="client_gui_status_refresh_confirmed"`,
+`inventory_equipment_bridge_output_client_gui_status_refresh_confirmed=true`,
+1 queued proxy-owned `ClientGuiInventory_Status` request, exact status payload
+`700D010B0000000000007F90`, response outcome `materialized_items`, best
+response association `matches_queued_status_candidate`,
+`...matches_queued_status_candidate=true`, and
+`...materialized_item_object_ids_contain_queued_candidate=true` across 52 best
+materialized item ids. Treat this capture as proof that HG answers the
+proxy-owned current-player inventory status refresh with the materialized set
+needed by the bridge. The next production target is the generalized inventory
+UI refresh or visible-equipment output rule, with a follow-up live probe that
+checks whether the EE client state actually updates after this confirmed
+refresh.
+
+Previous live HG proxy server-Inventory fallback evidence, as of
+2026-07-10 03:17 +10:
+`C:\nwnbridge\codex-live-inventory-clientgui-fallback-current-20260710-031303\harness-proxy-20260710-031307`.
+It reached gameplay, wrote artifacts through `2026-07-10T03:17:07+10:00`,
+produced no quarantine directory, and proved that the fallback reaches the
+materialized ClientGui path. The final hint in that earlier build reported
 `inventory_equipment_bridge_output_status="queued_client_gui_status_output"`,
-1 queued proxy-owned `ClientGuiInventory_Status` request, 0 blocked candidate
-mismatch updates, server Inventory claim `0x8001543E`, ready candidate
-`0x8001538E`, synthetic ClientGui claim `0x7F000000`, and exact status payload
-`700D010B0000000000007F90`. HG answered with 85 post-status live-object
-responses, including 1 live-GUI/materialized-item response. The best response
-association in this capture was `differs_from_queued_status_candidate` because
-the retained compact current candidate was `0x80015386` while the queued
-candidate was `0x8001538E`. As of the current run, proxy2 carries the exact
-materialized response item-id set and treats containment of the queued
-candidate as a match. Treat this capture as proof that the fallback reaches the
-materialized ClientGui path; the next live proof should confirm the new
-containment fields on a fresh forced-inventory run before choosing the final
-inventory UI refresh or visible-equipment output rule.
+1 queued proxy-owned `ClientGuiInventory_Status` request, server Inventory
+claim `0x8001543E`, ready candidate `0x8001538E`, synthetic ClientGui claim
+`0x7F000000`, and 85 post-status live-object responses including 1
+live-GUI/materialized-item response. The retained compact current candidate
+still differed from the queued candidate in that older run; the 07:12 +10 run
+above confirms the generalized materialized-set containment association.
 
 Previous live HG proxy ClientGui status-response evidence, as of
 2026-07-09 23:01 +10:

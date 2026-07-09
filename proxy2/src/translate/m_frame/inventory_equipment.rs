@@ -931,6 +931,11 @@ mod tests {
                 .as_str(),
             "matches_queued_status_candidate"
         );
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_refresh_confirmed()
+        );
         assert_eq!(
             state
                 .inventory_equipment
@@ -1009,6 +1014,11 @@ mod tests {
                 .best_client_gui_status_response_association()
                 .as_str(),
             "matches_queued_status_candidate"
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_refresh_confirmed()
         );
         assert_eq!(
             state

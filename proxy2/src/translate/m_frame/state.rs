@@ -241,6 +241,7 @@ pub(super) enum InventoryEquipmentBridgeOutputStatus {
     AwaitingBridgeStateUpdate,
     QueuedInventoryOutput,
     QueuedClientGuiStatusOutput,
+    ClientGuiStatusRefreshConfirmed,
     BlockedCandidateMismatch,
     DeferredMissingClaim,
     AwaitingClientGuiWriter,
@@ -253,6 +254,7 @@ impl InventoryEquipmentBridgeOutputStatus {
             Self::AwaitingBridgeStateUpdate => "awaiting_bridge_state_update",
             Self::QueuedInventoryOutput => "queued_inventory_output",
             Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
+            Self::ClientGuiStatusRefreshConfirmed => "client_gui_status_refresh_confirmed",
             Self::BlockedCandidateMismatch => "blocked_candidate_mismatch",
             Self::DeferredMissingClaim => "deferred_missing_claim",
             Self::AwaitingClientGuiWriter => "awaiting_client_gui_writer",
@@ -310,6 +312,8 @@ impl InventoryEquipmentBridgeState {
     pub(super) fn output_status(&self) -> InventoryEquipmentBridgeOutputStatus {
         if self.queued_outputs > 0 {
             InventoryEquipmentBridgeOutputStatus::QueuedInventoryOutput
+        } else if self.client_gui_status_refresh_confirmed() {
+            InventoryEquipmentBridgeOutputStatus::ClientGuiStatusRefreshConfirmed
         } else if self.queued_client_gui_status_outputs > 0 {
             InventoryEquipmentBridgeOutputStatus::QueuedClientGuiStatusOutput
         } else if self.blocked_candidate_mismatch_updates > 0 {
@@ -327,6 +331,13 @@ impl InventoryEquipmentBridgeState {
 
     pub(super) fn requires_client_gui_writer(&self) -> bool {
         self.output_status() == InventoryEquipmentBridgeOutputStatus::AwaitingClientGuiWriter
+    }
+
+    pub(super) fn client_gui_status_refresh_confirmed(&self) -> bool {
+        self.best_client_gui_status_response
+            .is_some_and(|response| response.materialized_item_object_ids != 0)
+            && self.best_client_gui_status_response_association()
+                == InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate
     }
 
     pub(super) fn client_gui_status_response_outcome(

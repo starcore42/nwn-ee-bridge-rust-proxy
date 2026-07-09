@@ -722,6 +722,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let client_gui_status_response_outcome = bridge.client_gui_status_response_outcome();
     let best_client_gui_status_response_association =
         bridge.best_client_gui_status_response_association();
+    let client_gui_status_refresh_confirmed = bridge.client_gui_status_refresh_confirmed();
     let best_client_gui_status_response_matches_queued_status_candidate =
         best_client_gui_status_response_association
             == state::InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate;
@@ -829,6 +830,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             ",\n",
             "  \"inventory_equipment_bridge_output_status\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_requires_client_gui_writer\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_refresh_confirmed\": {},\n",
             "  \"inventory_equipment_bridge_output_queued_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_client_gui_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_missing_claim_updates\": {},\n",
@@ -972,6 +974,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         ),
         output_status.as_str(),
         requires_client_gui_writer,
+        client_gui_status_refresh_confirmed,
         bridge.queued_outputs,
         bridge.deferred_client_gui_updates,
         bridge.deferred_missing_claim_updates,
@@ -2366,7 +2369,10 @@ mod tests {
         );
 
         assert!(body.contains(
-            "\"inventory_equipment_bridge_output_status\": \"queued_client_gui_status_output\""
+            "\"inventory_equipment_bridge_output_status\": \"client_gui_status_refresh_confirmed\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_refresh_confirmed\": true"
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_client_gui_writer_plan_emission_enabled\": true"
