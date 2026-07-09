@@ -261,17 +261,24 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .client_gui_status_response_materialized_item_packets
             .saturating_add(1);
     }
-    state.inventory_equipment.last_client_gui_status_response =
-        Some(InventoryEquipmentBridgeClientGuiStatusResponse {
-            queued_update_index,
-            server_sequence,
-            ack_sequence,
-            live_gui_records: summary.live_gui_records,
-            live_gui_fragment_bits: summary.live_gui_fragment_bits,
-            materialized_item_object_ids: summary.materialized_item_object_ids,
-            compact_item_emission_ready_objects: summary.compact_item_emission_ready_objects,
-            compact_item_emission_ready_candidate: summary.compact_item_emission_ready_candidate,
-        });
+    let response = InventoryEquipmentBridgeClientGuiStatusResponse {
+        queued_update_index,
+        server_sequence,
+        ack_sequence,
+        live_gui_records: summary.live_gui_records,
+        live_gui_fragment_bits: summary.live_gui_fragment_bits,
+        materialized_item_object_ids: summary.materialized_item_object_ids,
+        compact_item_emission_ready_objects: summary.compact_item_emission_ready_objects,
+        compact_item_emission_ready_candidate: summary.compact_item_emission_ready_candidate,
+    };
+    state.inventory_equipment.last_client_gui_status_response = Some(response);
+    let update_best = match state.inventory_equipment.best_client_gui_status_response {
+        Some(best) => response.is_stronger_than(best),
+        None => true,
+    };
+    if update_best {
+        state.inventory_equipment.best_client_gui_status_response = Some(response);
+    }
     tracing::info!(
         queued_update_index,
         server_sequence,
@@ -755,6 +762,99 @@ mod tests {
                 proof: InventoryItemObjectProof::ActiveObject,
                 source: InventoryItemContextCandidateSource::DirectOnly,
             })
+        );
+        assert_eq!(
+            state.inventory_equipment.best_client_gui_status_response,
+            Some(response)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_outcome()
+                .as_str(),
+            "materialized_items"
+        );
+    }
+
+    #[test]
+    fn client_gui_status_best_response_survives_generic_followup() {
+        let mut state = SessionState::default();
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(20);
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 9,
+                live_gui_fragment_bits: 72,
+                materialized_item_object_ids: 9,
+                compact_item_emission_ready_objects: 66,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_5211,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+            },
+        );
+
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            90,
+            81,
+        );
+
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 0,
+                live_gui_fragment_bits: 0,
+                materialized_item_object_ids: 0,
+                compact_item_emission_ready_objects: 66,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_5211,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+            },
+        );
+
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            105,
+            81,
+        );
+
+        let last = state
+            .inventory_equipment
+            .last_client_gui_status_response
+            .expect("latest response should be retained");
+        assert_eq!(last.server_sequence, 105);
+        assert_eq!(last.live_gui_records, 0);
+        assert_eq!(last.materialized_item_object_ids, 0);
+
+        let best = state
+            .inventory_equipment
+            .best_client_gui_status_response
+            .expect("best response should be retained");
+        assert_eq!(best.server_sequence, 90);
+        assert_eq!(best.live_gui_records, 9);
+        assert_eq!(best.live_gui_fragment_bits, 72);
+        assert_eq!(best.materialized_item_object_ids, 9);
+        assert_eq!(
+            best.compact_item_emission_ready_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8001_5211,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            })
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_outcome()
+                .as_str(),
+            "materialized_items"
         );
     }
 

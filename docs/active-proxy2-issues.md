@@ -17,6 +17,28 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-09 ClientGui status response best-evidence tracking: live-data gate
+  reused the gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`
+  (`proxy.structured.log` through `2026-07-09T13:01:31+10:00`, about 5h55m
+  old at the 18:56 +10 gate; gameplay reached; no quarantine directory). A
+  fresh delayed forced-inventory confirmation run
+  `C:\nwnbridge\codex-live-c008-delayed-inventory-confirm-20260709-185755\harness-proxy-20260709-185759`
+  reached gameplay, produced 20 ready `ClientGuiInventory` handoffs, queued 20
+  proxy-owned `ClientGuiInventory_Status` packets, observed 52 live-object
+  responses after those requests, including 9 live-GUI/materialized-item
+  response packets, and produced no quarantine files. This confirms the prior
+  seq51 `U/5` mask `0x0000_C008` live-object quarantine did not recur on the
+  delayed inventory path. Proxy2 now preserves the strongest observed
+  proxy-owned ClientGui status response separately from the latest live-object
+  follow-up and exports
+  `inventory_equipment_bridge_output_client_gui_status_response_outcome` plus
+  `inventory_equipment_bridge_output_best_client_gui_status_response_*` fields
+  in hints/replay summaries, so later generic movement/status packets cannot
+  erase materialized live-GUI response evidence. Active next path: use the best
+  materialized ClientGui status response to associate returned live-GUI item
+  state with the bridge candidate and decide the next inventory UI refresh or
+  visible-equipment output rule.
 - 2026-07-09 C008 live-object status/self repair: live-data gate reused the
   gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`
@@ -35,9 +57,11 @@ not as standalone workaround targets.
   passed; bounded strict replay
   `C:\nwnbridge\codex-proxy2-replay-c008-status-self-20260709-171155` over the
   2026-07-03 Diamond autoplay packet stream ran with strict translation, 0
-  quarantine files, and 0 live-object terminal residuals. Active next path:
-  rerun the delayed forced-inventory live HG probe to confirm seq51 is gone,
-  then resume ClientGui inventory response/candidate association work.
+  quarantine files, and 0 live-object terminal residuals. The 18:57 +10
+  delayed forced-inventory confirmation above reached the same inventory path
+  with no quarantine files, so the seq51 C008 blocker is confirmed fixed as of
+  2026-07-09. Active next path moved to ClientGui inventory
+  response/candidate association work.
 - 2026-07-09 live-object strict-family diagnostic follow-up: live-data gate
   first found the gameplay-reaching forced-inventory capture
   `C:\nwnbridge\codex-live-client-gui-status-delayed-inventory-20260709-105516\harness-proxy-20260709-105528`

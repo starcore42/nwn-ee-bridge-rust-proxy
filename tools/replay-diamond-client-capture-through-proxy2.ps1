@@ -1550,6 +1550,19 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateObjectId = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateProof = ''
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateSource = ''
+    $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusResponseOutcome = ''
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnown = $false
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseMaterializedItemObjectIds = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseReadyObjects = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnown = $false
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateObjectId = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProof = ''
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSource = ''
     $quickbarHintCompactItemEmissionReadyObjects = 0
     $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects = 0
     $quickbarHintStreamProbeCompactItemEmissionReadyObjects = 0
@@ -2071,6 +2084,34 @@ try {
         if ($null -ne $inventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateSourceProp -and $null -ne $inventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateSourceProp.Value) {
             $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateSource = [string]$inventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateSourceProp.Value
         }
+        $inventoryEquipmentBridgeOutputClientGuiStatusResponseOutcomeProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_client_gui_status_response_outcome']
+        if ($null -ne $inventoryEquipmentBridgeOutputClientGuiStatusResponseOutcomeProp -and $null -ne $inventoryEquipmentBridgeOutputClientGuiStatusResponseOutcomeProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusResponseOutcome = [string]$inventoryEquipmentBridgeOutputClientGuiStatusResponseOutcomeProp.Value
+        }
+        $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_best_client_gui_status_response_known']
+        if ($null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnownProp -and $null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnownProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnown = [bool]$inventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnownProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_queued_update_index'
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_server_sequence'
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_ack_sequence'
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records'
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_fragment_bits'
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseMaterializedItemObjectIds = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_ids'
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseReadyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_ready_objects'
+        $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_best_client_gui_status_response_candidate_known']
+        if ($null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnownProp -and $null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnownProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnown = [bool]$inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnownProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateObjectId = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_candidate_object_id'
+        $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProofProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_best_client_gui_status_response_candidate_proof']
+        if ($null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProofProp -and $null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProofProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProof = [string]$inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProofProp.Value
+        }
+        $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSourceProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_best_client_gui_status_response_candidate_source']
+        if ($null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSourceProp -and $null -ne $inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSourceProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSource = [string]$inventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSourceProp.Value
+        }
         $quickbarHintInventoryFeature25FirstItemRefs = & $getQuickbarHintInt64 'inventory_feature25_first_item_refs'
         $quickbarHintInventoryFeature25FirstItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_item_ref_mentions'
         $quickbarHintInventoryFeature25FirstMaterializedItemRefMentions = & $getQuickbarHintInt64 'inventory_feature25_first_materialized_item_ref_mentions'
@@ -2460,6 +2501,19 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateObjectId
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateProof = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateProof
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateSource = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseCandidateSource
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusResponseOutcome = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusResponseOutcome
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnown = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnown
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseMaterializedItemObjectIds = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseMaterializedItemObjectIds
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseReadyObjects = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseReadyObjects
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnown = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateKnown
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateObjectId = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateObjectId
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProof = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateProof
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSource = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseCandidateSource
         QuickbarItemRefreshHintCompactItemEmissionReadyObjects = $quickbarHintCompactItemEmissionReadyObjects
         QuickbarItemRefreshHintCompactItemEmissionDeferredFeature25OnlyObjects = $quickbarHintCompactItemEmissionDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintStreamProbeCompactItemEmissionReadyObjects = $quickbarHintStreamProbeCompactItemEmissionReadyObjects

@@ -690,6 +690,25 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_client_gui_status_response_candidate
             .map(|candidate| candidate.source.as_str())
             .unwrap_or("none");
+    let best_client_gui_status_response =
+        bridge.best_client_gui_status_response.unwrap_or_default();
+    let best_client_gui_status_response_known = bridge.best_client_gui_status_response.is_some();
+    let best_client_gui_status_response_candidate =
+        best_client_gui_status_response.compact_item_emission_ready_candidate;
+    let best_client_gui_status_response_candidate_known =
+        best_client_gui_status_response_candidate.is_some();
+    let best_client_gui_status_response_candidate_object_id =
+        best_client_gui_status_response_candidate
+            .map(|candidate| candidate.object_id)
+            .unwrap_or(0);
+    let best_client_gui_status_response_candidate_proof = best_client_gui_status_response_candidate
+        .map(|candidate| candidate.proof.as_str())
+        .unwrap_or("none");
+    let best_client_gui_status_response_candidate_source =
+        best_client_gui_status_response_candidate
+            .map(|candidate| candidate.source.as_str())
+            .unwrap_or("none");
+    let client_gui_status_response_outcome = bridge.client_gui_status_response_outcome();
     let last_decision_known = last_decision.is_some();
     let last_decision_kind = last_decision
         .map(|decision| decision.kind)
@@ -889,7 +908,21 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_proof\": \"{}\",\n",
-            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_source\": \"{}\"\n"
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_source\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_outcome\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_queued_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_fragment_bits\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_ids\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_ready_objects\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_proof\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_source\": \"{}\"\n"
         ),
         output_status.as_str(),
         requires_client_gui_writer,
@@ -992,7 +1025,21 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_client_gui_status_response_candidate_object_id,
         last_client_gui_status_response_candidate_object_id,
         last_client_gui_status_response_candidate_proof,
-        last_client_gui_status_response_candidate_source
+        last_client_gui_status_response_candidate_source,
+        client_gui_status_response_outcome.as_str(),
+        best_client_gui_status_response_known,
+        best_client_gui_status_response.queued_update_index,
+        best_client_gui_status_response.server_sequence,
+        best_client_gui_status_response.ack_sequence,
+        best_client_gui_status_response.live_gui_records,
+        best_client_gui_status_response.live_gui_fragment_bits,
+        best_client_gui_status_response.materialized_item_object_ids,
+        best_client_gui_status_response.compact_item_emission_ready_objects,
+        best_client_gui_status_response_candidate_known,
+        best_client_gui_status_response_candidate_object_id,
+        best_client_gui_status_response_candidate_object_id,
+        best_client_gui_status_response_candidate_proof,
+        best_client_gui_status_response_candidate_source
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -2102,6 +2149,7 @@ mod tests {
                     },
                 ),
             });
+        bridge.best_client_gui_status_response = bridge.last_client_gui_status_response;
         bridge.last_decision = Some(state::InventoryEquipmentBridgeOutputDecision {
             kind: state::InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput,
             update_index: 12,
@@ -2183,6 +2231,18 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id_hex\": \"0x80001234\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_outcome\": \"materialized_items\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_known\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": 51"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_object_id_hex\": \"0x80001234\""
         ));
     }
 

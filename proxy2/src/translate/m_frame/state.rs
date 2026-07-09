@@ -117,6 +117,58 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
         Option<semantic::InventoryItemContextCandidate>,
 }
 
+impl InventoryEquipmentBridgeClientGuiStatusResponse {
+    fn strength(self) -> u8 {
+        if self.materialized_item_object_ids != 0 {
+            3
+        } else if self.live_gui_records != 0 {
+            2
+        } else {
+            1
+        }
+    }
+
+    pub(super) fn is_stronger_than(self, other: Self) -> bool {
+        let self_strength = self.strength();
+        let other_strength = other.strength();
+        self_strength > other_strength
+            || (self_strength == other_strength
+                && (
+                    self.materialized_item_object_ids,
+                    self.live_gui_records,
+                    self.live_gui_fragment_bits,
+                    self.server_sequence,
+                ) > (
+                    other.materialized_item_object_ids,
+                    other.live_gui_records,
+                    other.live_gui_fragment_bits,
+                    other.server_sequence,
+                ))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
+    #[default]
+    None,
+    AwaitingResponse,
+    LiveObjectOnly,
+    LiveGuiRecords,
+    MaterializedItems,
+}
+
+impl InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::AwaitingResponse => "awaiting_response",
+            Self::LiveObjectOnly => "live_object_only",
+            Self::LiveGuiRecords => "live_gui_records",
+            Self::MaterializedItems => "materialized_items",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum InventoryEquipmentBridgeOutputDecisionKind {
     #[default]
@@ -208,6 +260,8 @@ pub(super) struct InventoryEquipmentBridgeState {
         Option<InventoryEquipmentBridgeQueuedClientGuiStatusOutput>,
     pub(super) last_client_gui_status_response:
         Option<InventoryEquipmentBridgeClientGuiStatusResponse>,
+    pub(super) best_client_gui_status_response:
+        Option<InventoryEquipmentBridgeClientGuiStatusResponse>,
 }
 
 impl InventoryEquipmentBridgeState {
@@ -231,6 +285,22 @@ impl InventoryEquipmentBridgeState {
 
     pub(super) fn requires_client_gui_writer(&self) -> bool {
         self.output_status() == InventoryEquipmentBridgeOutputStatus::AwaitingClientGuiWriter
+    }
+
+    pub(super) fn client_gui_status_response_outcome(
+        &self,
+    ) -> InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
+        if self.client_gui_status_response_materialized_item_packets > 0 {
+            InventoryEquipmentBridgeClientGuiStatusResponseOutcome::MaterializedItems
+        } else if self.client_gui_status_response_live_gui_record_packets > 0 {
+            InventoryEquipmentBridgeClientGuiStatusResponseOutcome::LiveGuiRecords
+        } else if self.client_gui_status_response_live_object_packets > 0 {
+            InventoryEquipmentBridgeClientGuiStatusResponseOutcome::LiveObjectOnly
+        } else if self.queued_client_gui_status_outputs > 0 {
+            InventoryEquipmentBridgeClientGuiStatusResponseOutcome::AwaitingResponse
+        } else {
+            InventoryEquipmentBridgeClientGuiStatusResponseOutcome::None
+        }
     }
 }
 

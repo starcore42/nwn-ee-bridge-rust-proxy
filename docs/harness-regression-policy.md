@@ -33,23 +33,38 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 17:14 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 19:01 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`.
+`C:\nwnbridge\codex-live-c008-delayed-inventory-confirm-20260709-185755\harness-proxy-20260709-185759`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
 `Area_AreaLoaded`, the post-area hold gate opening, held post-area packet
 release, and sustained `GameObjUpdate_LiveObject`/quickbar traffic. It wrote
-`quickbar-item-refresh-hint.json` through `2026-07-09T13:01:24+10:00` and
-`proxy.structured.log` through `2026-07-09T13:01:31+10:00`, and produced no
-quarantine directory. This run counts as current gameplay freshness evidence,
-but it did not exercise the delayed inventory target: `AutoOpenInventory` did
-not produce `ClientGuiInventory` events before the client/proxy stopped
-advancing, so its final hint remained
+`quickbar-item-refresh-hint.json` through `2026-07-09T19:01:19+10:00` and
+`proxy.structured.log` through `2026-07-09T19:01:19+10:00`, and produced no
+quarantine files. This run also exercised the delayed inventory target:
+`AutoOpenInventory` produced 20 ready `ClientGuiInventory` handoffs, proxy2
+queued 20 exact current-player `ClientGuiInventory_Status` requests with
+payload `700D010B0000000000007F90`, and HG answered with 52 live-object
+packets after the queued requests, including 9 live-GUI/materialized-item
+response packets. Its final hint reported candidate `0x80015211`,
+`inventory_equipment_bridge_output_status="queued_client_gui_status_output"`,
+`inventory_equipment_bridge_output_client_gui_status_response_live_object_packets=52`,
+`inventory_equipment_bridge_output_client_gui_status_response_live_gui_record_packets=9`,
+and `inventory_equipment_bridge_output_client_gui_status_response_materialized_item_packets=9`.
+The previous delayed-inventory seq51 C008 strict-family quarantine did not
+recur, so the active live-object blocker is confirmed fixed; use this capture
+as current gameplay freshness and ClientGui status-response evidence.
+
+Previous clean current-code gameplay freshness evidence:
+`C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`.
+It reached gameplay with no quarantine directory and wrote
+`proxy.structured.log` through `2026-07-09T13:01:31+10:00`, but
+`AutoOpenInventory` did not produce `ClientGuiInventory` events before the
+client/proxy stopped advancing, so its final hint remained
 `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` with
 0 queued ClientGui status packets and 0 ClientGui status response counters.
-Use it only as freshness/clean-live-object evidence, not as ClientGui writer
-validation.
+Use it only as clean-live-object evidence, not as ClientGui writer validation.
 
 Previous forced-inventory live evidence for the active live-object blocker:
 `C:\nwnbridge\codex-live-client-gui-status-delayed-inventory-20260709-105516\harness-proxy-20260709-105528`.
@@ -138,10 +153,12 @@ boundary helper, and the exact validator consumes the ten suffix fragment BOOLs.
 Focused C008/status-effect tests passed, and strict replay
 `C:\nwnbridge\codex-proxy2-replay-c008-status-self-20260709-171155` over the
 2026-07-03 Diamond autoplay packets ran with strict translation, 0 quarantine
-files, and 0 live-object terminal residuals. The next live HG step is to rerun
-the delayed forced-inventory probe and verify that server seq51 no longer
-quarantines before treating ClientGui inventory response/candidate association
-as the primary blocker.
+files, and 0 live-object terminal residuals. The delayed forced-inventory live
+confirmation at
+`C:\nwnbridge\codex-live-c008-delayed-inventory-confirm-20260709-185755\harness-proxy-20260709-185759`
+then reached the inventory path with no quarantine files, so server seq51 is no
+longer the active blocker. ClientGui inventory response/candidate association
+is now the primary blocker.
 
 Previous live HG proxy status, as of 2026-07-08 23:17 +10: the
 gameplay-reaching proxy harness was
