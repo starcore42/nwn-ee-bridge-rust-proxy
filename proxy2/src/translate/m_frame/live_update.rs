@@ -12,10 +12,15 @@ pub type RewriteSummary = live_object_update::LiveObjectUpdateRewriteSummary;
 pub type RewriteAttempt = live_object_update::LiveObjectUpdateRewriteAttempt;
 pub type RewriteFailure = live_object_update::LiveObjectUpdateRewriteFailure;
 pub type ClaimSummary = live_object_update::LiveObjectUpdateClaimSummary;
+pub type ClaimDiagnostics = live_object_update::LiveObjectPayloadClaimDiagnostics;
 pub type AddNameBitRewriteSummary = live_object_update::LiveObjectAddNameBitRewriteSummary;
 pub type ExternalObjectIdCanonicalizeSummary =
     live_object_update::LiveObjectExternalObjectIdCanonicalizeSummary;
 pub type LifecycleRewriteSummary = live_object_update::LiveObjectLifecycleRewriteSummary;
+
+pub fn claim_payload_diagnostics(payload: &[u8]) -> ClaimDiagnostics {
+    live_object_update::claim_payload_diagnostics(payload)
+}
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct ExactLiveObjectRewriteSummary {

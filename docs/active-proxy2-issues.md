@@ -504,6 +504,40 @@ not as standalone workaround targets.
   delayed inventory opening to exercise the current-code JSON response fields,
   then use the recorded live-GUI/materialized-item response as the seed for the
   next inventory UI refresh/visible-equipment bridge decision.
+- 2026-07-09 delayed forced-inventory live-object quarantine diagnostics:
+  live-data gate first found the gameplay-reaching
+  `C:\nwnbridge\codex-live-client-gui-status-response-20260709-091913\harness-proxy-20260709-091918`
+  capture current (`quickbar-item-refresh-hint.json` and logs through
+  `2026-07-09T09:21:38+10:00`, about 1h33m old at gate, no quarantine
+  directory). The strongest reference setup was a fresh live HG delayed
+  inventory-open probe because the current active path needed real
+  `ClientGuiInventory`/server `Inventory` timing. The probe
+  `C:\nwnbridge\codex-live-client-gui-status-delayed-inventory-20260709-105516\harness-proxy-20260709-105528`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
+  `Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject`, but it produced
+  two identical `live-object-unclaimed-strict-family` quarantine artifacts for
+  server seq51 at `2026-07-09T10:58:21+10:00`:
+  `quarantine\live-object-unclaimed-strict-family-GameObjUpdate_LiveObject-seq51-frames1-1783558701965.bin`
+  and the timestamp-only duplicate. The final hint reported two
+  `ClientGuiInventory` handoffs blocked before ready item context, then one
+  ready server `Inventory` handoff with
+  `inventory_equipment_bridge_output_status="blocked_candidate_mismatch"`.
+  The ready candidate was `0x80015854` with active-object/direct proof; the
+  parsed server `Inventory` claim was unknown object `0x80015977`, closest
+  proven item `0x800158CD` at distance 170. The quarantined `P/05/01` payload
+  is 322 bytes with declared window `0x013D`; do not relax live-object strict
+  validation until its exact EE/Diamond record and fragment cursor are proven.
+  Proxy2 now logs structured final live-object quarantine diagnostics from the
+  focused claim parser: declared/read/fragment lengths, decoded fragment bit
+  count, claim reject stage/cursor, declared-repair candidate counts, and the
+  first capacity-plausible repair candidate. Verification: `cargo fmt --all`,
+  `cargo test -q -p hgbridge-proxy2
+  live_object_claim_diagnostics_reports_declared_window_reject -- --nocapture`,
+  and `cargo check -q -p hgbridge-proxy2`. Active next path: run the HG delayed
+  inventory probe on the diagnostic build or replay the seq51 payload through a
+  focused harness, then implement the exact live-object translator/declared
+  repair rule indicated by the claim reject fields before resuming ClientGui
+  inventory writer work.
 - 2026-07-07 inventory/equipment handoff consumer state: live-data gate reused
   the fresh gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-bnk3-stall-diagnostic-20260707-164655\harness-proxy-20260707-164703`

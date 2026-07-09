@@ -201,6 +201,24 @@ fn sanitize_live_object_dump_reason(reason: &str) -> String {
 mod diagnostic_tests {
     use super::*;
 
+    #[test]
+    fn live_object_claim_diagnostics_reports_declared_window_reject() {
+        let payload = [b'P', 0x05, 0x01, 0x20, 0x00, 0x00, 0x00];
+
+        let diagnostics = claim_payload_diagnostics(&payload);
+
+        assert_eq!(diagnostics.payload_length, payload.len());
+        assert_eq!(diagnostics.declared, Some(0x20));
+        assert_eq!(diagnostics.live_bytes_length, None);
+        assert_eq!(diagnostics.fragment_bytes, None);
+        assert_eq!(diagnostics.fragment_bits, None);
+        assert_eq!(diagnostics.repair_candidate_count, 0);
+        assert_eq!(
+            diagnostics.reject.map(|reject| reject.stage),
+            Some(LiveObjectPayloadClaimRejectStage::DeclaredLength)
+        );
+    }
+
     fn assert_synthesized_custom_carrier_origins(
         summary: &LiveObjectUpdateRewriteSummary,
         after_add: u32,
@@ -20245,7 +20263,7 @@ pub enum LiveObjectPayloadClaimRejectStage {
 }
 
 impl LiveObjectPayloadClaimRejectStage {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Header => "header",
             Self::DeclaredLength => "declared-length",
@@ -20292,6 +20310,68 @@ impl LiveObjectPayloadClaimReject {
             record_end: Some(record_end),
             bit_cursor: Some(bit_cursor),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectPayloadClaimDiagnostics {
+    pub payload_length: usize,
+    pub declared: Option<usize>,
+    pub live_bytes_length: Option<usize>,
+    pub fragment_bytes: Option<usize>,
+    pub fragment_bits: Option<usize>,
+    pub repair_candidate_count: usize,
+    pub first_repair_new_declared: Option<u32>,
+    pub first_repair_read_bytes_length: Option<usize>,
+    pub first_repair_fragment_bytes_length: Option<usize>,
+    pub first_capacity_plausible_repair_new_declared: Option<u32>,
+    pub first_capacity_plausible_repair_read_bytes_length: Option<usize>,
+    pub first_capacity_plausible_repair_fragment_bytes_length: Option<usize>,
+    pub reject: Option<LiveObjectPayloadClaimReject>,
+}
+
+pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagnostics {
+    let declared =
+        read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES).and_then(|value| usize::try_from(value).ok());
+    let declared_window = declared.filter(|declared| {
+        *declared >= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+            && *declared <= payload.len()
+            && *declared <= MAX_REASONABLE_LIVE_PAYLOAD_BYTES
+    });
+    let live_bytes_length = declared_window
+        .map(|declared| declared.saturating_sub(HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES));
+    let fragment_bytes = declared_window.map(|declared| payload.len().saturating_sub(declared));
+    let fragment_bits = declared_window.and_then(|declared| {
+        bits::decode_msb_valid_bits(&payload[declared..], CNW_FRAGMENT_HEADER_BITS)
+            .map(|bits| bits.len())
+    });
+    let repair_candidates =
+        crate::translate::live_object::declared_length_repair_candidates(payload);
+    let first_repair = repair_candidates.first();
+    let first_capacity_plausible_repair = repair_candidates.iter().find(|candidate| {
+        crate::translate::live_object::declared_length_repair_fragment_capacity_plausible(
+            payload, candidate,
+        )
+    });
+
+    LiveObjectPayloadClaimDiagnostics {
+        payload_length: payload.len(),
+        declared,
+        live_bytes_length,
+        fragment_bytes,
+        fragment_bits,
+        repair_candidate_count: repair_candidates.len(),
+        first_repair_new_declared: first_repair.map(|candidate| candidate.new_declared),
+        first_repair_read_bytes_length: first_repair.map(|candidate| candidate.read_bytes_length),
+        first_repair_fragment_bytes_length: first_repair
+            .map(|candidate| candidate.fragment_bytes_length),
+        first_capacity_plausible_repair_new_declared: first_capacity_plausible_repair
+            .map(|candidate| candidate.new_declared),
+        first_capacity_plausible_repair_read_bytes_length: first_capacity_plausible_repair
+            .map(|candidate| candidate.read_bytes_length),
+        first_capacity_plausible_repair_fragment_bytes_length: first_capacity_plausible_repair
+            .map(|candidate| candidate.fragment_bytes_length),
+        reject: claim_payload_if_verified_with_reject(payload).err(),
     }
 }
 

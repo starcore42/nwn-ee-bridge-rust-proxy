@@ -33,17 +33,32 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 09:21 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 10:58 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-client-gui-status-response-20260709-091913\harness-proxy-20260709-091918`.
+`C:\nwnbridge\codex-live-client-gui-status-delayed-inventory-20260709-105516\harness-proxy-20260709-105528`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, observed
 `BNK3` after deferred `BNK2`, reached gameplay through `Module_Loaded`,
 `Area_ClientArea`, proxy-generated `Area_AreaLoaded`, the post-area hold gate
 opening, held post-area packet release, and sustained `GameObjUpdate_LiveObject`
 traffic. It wrote `quickbar-item-refresh-hint.json` and `proxy.structured.log`
-through `2026-07-09T09:21:38+10:00` and produced no quarantine directory. This
-run is current gameplay freshness evidence for the automation, but it did not
-exercise inventory opening: the EE client exited after gameplay with 0
+through `2026-07-09T10:58:21+10:00`, but produced a
+`live-object-unclaimed-strict-family` quarantine for server seq51
+(`quarantine\live-object-unclaimed-strict-family-GameObjUpdate_LiveObject-seq51-frames1-1783558701965.bin`,
+322 bytes, `P/05/01` declared `0x013D`). This run counts as current gameplay
+freshness evidence because gameplay was reached, but it is not a clean bridge
+run. Its final hint had two `ClientGuiInventory` handoffs blocked before ready
+item context and one ready server `Inventory` handoff blocked by candidate/claim
+mismatch: candidate `0x80015854`, claim `0x80015977`, closest proven item
+`0x800158CD` at distance 170. The active proxy2 issue is to diagnose and fix
+that live-object strict-family miss before treating the ClientGui inventory
+writer path as the top blocker.
+
+Previous clean current-code gameplay freshness evidence:
+`C:\nwnbridge\codex-live-client-gui-status-response-20260709-091913\harness-proxy-20260709-091918`
+reached the same gameplay milestones, wrote
+`quickbar-item-refresh-hint.json` and `proxy.structured.log` through
+`2026-07-09T09:21:38+10:00`, and produced no quarantine directory. That run did
+not exercise inventory opening: the EE client exited after gameplay with 0
 `ClientGuiInventory` events, so
 `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` and
 the queued-status/response counters stayed at 0.
@@ -78,10 +93,12 @@ over the 164-packet Diamond autoplay baseline used alternate ports
 `-ListenPort 56321 -ServerPort 56333`, ran with strict translation, and
 correctly left the queued/response counters at 0 because that replay source has
 no ready ClientGui inventory handoff. The next live HG forced-inventory probe
-should use manual or delayed inventory opening to verify the current-code JSON
-response fields on the same live 51-record HG response shape; if server
-`Inventory` traffic returns first, continue the claim-neighborhood provenance
-path instead.
+should use the diagnostic build so any repeat `P/05/01` quarantine logs
+declared/read/fragment lengths, decoded fragment bit count, claim reject
+stage/cursor, and declared-repair candidate counts. Fix that live-object
+translator/declared-window blocker before resuming ClientGui response
+validation. If the live-object path stays clean and server `Inventory` traffic
+returns first, continue the claim-neighborhood provenance path instead.
 
 Previous live HG proxy status, as of 2026-07-08 23:17 +10: the
 gameplay-reaching proxy harness was
