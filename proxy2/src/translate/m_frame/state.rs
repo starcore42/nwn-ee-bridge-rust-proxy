@@ -97,6 +97,9 @@ pub(super) struct InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
     pub(super) update_index: u64,
     pub(super) emission_index: u64,
     pub(super) event_index: u64,
+    pub(super) candidate: Option<semantic::InventoryItemContextCandidate>,
+    pub(super) ready_objects: usize,
+    pub(super) deferred_feature25_only_objects: usize,
     pub(super) object_id: u32,
     pub(super) player_inventory_gui: bool,
     pub(super) trigger_client_sequence: u16,
@@ -165,6 +168,32 @@ impl InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
             Self::LiveObjectOnly => "live_object_only",
             Self::LiveGuiRecords => "live_gui_records",
             Self::MaterializedItems => "materialized_items",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentBridgeClientGuiStatusResponseAssociation {
+    #[default]
+    None,
+    AwaitingResponse,
+    ResponseWithoutCandidate,
+    QueuedStatusWithoutCandidate,
+    QueuedUpdateMismatch,
+    MatchesQueuedStatusCandidate,
+    DiffersFromQueuedStatusCandidate,
+}
+
+impl InventoryEquipmentBridgeClientGuiStatusResponseAssociation {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::AwaitingResponse => "awaiting_response",
+            Self::ResponseWithoutCandidate => "response_without_candidate",
+            Self::QueuedStatusWithoutCandidate => "queued_status_without_candidate",
+            Self::QueuedUpdateMismatch => "queued_update_mismatch",
+            Self::MatchesQueuedStatusCandidate => "matches_queued_status_candidate",
+            Self::DiffersFromQueuedStatusCandidate => "differs_from_queued_status_candidate",
         }
     }
 }
@@ -301,6 +330,50 @@ impl InventoryEquipmentBridgeState {
         } else {
             InventoryEquipmentBridgeClientGuiStatusResponseOutcome::None
         }
+    }
+
+    pub(super) fn best_client_gui_status_response_association(
+        &self,
+    ) -> InventoryEquipmentBridgeClientGuiStatusResponseAssociation {
+        if self.queued_client_gui_status_outputs == 0 {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::None;
+        }
+        let Some(response) = self.best_client_gui_status_response else {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::AwaitingResponse;
+        };
+        let Some(response_candidate) = response.compact_item_emission_ready_candidate else {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::ResponseWithoutCandidate;
+        };
+        let Some(queued_status) = self.last_queued_client_gui_status_output else {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::QueuedStatusWithoutCandidate;
+        };
+        if response.queued_update_index != queued_status.update_index {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::QueuedUpdateMismatch;
+        }
+        let Some(queued_candidate) = queued_status.candidate else {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::QueuedStatusWithoutCandidate;
+        };
+        if response_candidate.object_id == queued_candidate.object_id {
+            InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate
+        } else {
+            InventoryEquipmentBridgeClientGuiStatusResponseAssociation::DiffersFromQueuedStatusCandidate
+        }
+    }
+
+    pub(super) fn best_client_gui_status_response_candidate_delta_from_queued_status(&self) -> i64 {
+        let (Some(response), Some(queued_status)) = (
+            self.best_client_gui_status_response,
+            self.last_queued_client_gui_status_output,
+        ) else {
+            return 0;
+        };
+        let (Some(response_candidate), Some(queued_candidate)) = (
+            response.compact_item_emission_ready_candidate,
+            queued_status.candidate,
+        ) else {
+            return 0;
+        };
+        i64::from(response_candidate.object_id) - i64::from(queued_candidate.object_id)
     }
 }
 

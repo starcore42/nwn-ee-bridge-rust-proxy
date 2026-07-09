@@ -394,6 +394,9 @@ fn maybe_queue_client_gui_status_output(
             update_index: update.update_index,
             emission_index: update.emission_index,
             event_index: update.event_index,
+            candidate: Some(update.candidate),
+            ready_objects: update.ready_objects,
+            deferred_feature25_only_objects: update.deferred_feature25_only_objects,
             object_id,
             player_inventory_gui,
             trigger_client_sequence,
@@ -666,6 +669,13 @@ mod tests {
                 update_index: 1,
                 emission_index: 1,
                 event_index: 1,
+                candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8000_1234,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ready_objects: 1,
+                deferred_feature25_only_objects: 0,
                 object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
                 player_inventory_gui: true,
                 trigger_client_sequence: 11,
@@ -705,6 +715,26 @@ mod tests {
         state
             .inventory_equipment
             .last_queued_client_gui_status_update_index = Some(7);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 7,
+                emission_index: 7,
+                event_index: 7,
+                candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_56BC,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ready_objects: 51,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: 80,
+                synthetic_sequence: 80,
+                ack_sequence: 82,
+            });
         state.semantic.ui.last_live_object_inventory_materialization = Some(
             crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
                 live_gui_records: 51,
@@ -773,6 +803,19 @@ mod tests {
                 .client_gui_status_response_outcome()
                 .as_str(),
             "materialized_items"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response_association()
+                .as_str(),
+            "matches_queued_status_candidate"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response_candidate_delta_from_queued_status(),
+            0
         );
     }
 

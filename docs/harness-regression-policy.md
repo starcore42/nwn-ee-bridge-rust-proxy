@@ -56,6 +56,23 @@ The previous delayed-inventory seq51 C008 strict-family quarantine did not
 recur, so the active live-object blocker is confirmed fixed; use this capture
 as current gameplay freshness and ClientGui status-response evidence.
 
+As of 2026-07-09 21:10 +10, proxy2 also preserves the ready item-state
+candidate attached to each queued proxy-owned `ClientGuiInventory_Status`
+request and reports whether the best retained ClientGui status live-object
+response matches that queued request. Hints and replay summaries now include
+`inventory_equipment_bridge_output_last_queued_client_gui_status_candidate_*`,
+`inventory_equipment_bridge_output_best_client_gui_status_response_association`,
+`..._matches_queued_status_candidate`, and
+`..._candidate_delta_from_queued_status_candidate`. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-client-gui-response-association-20260709-2104`
+over the 164-packet Diamond autoplay baseline reported 304 strict allows,
+0 strict quarantines, no quarantine directory, 0 live-object terminal
+residuals, and inactive ClientGui association defaults because the baseline
+does not exercise proxy-owned ClientGui status. The next delayed
+forced-inventory live HG probe should use the current build and verify that the
+best materialized response reports `matches_queued_status_candidate` before
+choosing a concrete inventory UI refresh or visible-equipment output rule.
+
 Previous clean current-code gameplay freshness evidence:
 `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`.
 It reached gameplay with no quarantine directory and wrote
