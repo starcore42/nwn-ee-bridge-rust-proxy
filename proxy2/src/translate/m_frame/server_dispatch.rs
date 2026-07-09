@@ -4063,6 +4063,8 @@ fn translate_live_object_records_if_verified(
                 acc.5.saturating_add(summary.5),
             )
         });
+        let claim_diagnostics = live_update::claim_payload_diagnostics(&candidate);
+        let claim_reject = claim_diagnostics.reject;
         tracing::debug!(
             source,
             add_changed = add_before_update_summary.is_some()
@@ -4086,6 +4088,55 @@ fn translate_live_object_records_if_verified(
             update_records_rewritten,
             update_bytes_inserted,
             update_bytes_removed,
+            candidate_payload_length = candidate.len(),
+            declared_known = claim_diagnostics.declared.is_some(),
+            declared = claim_diagnostics.declared.unwrap_or_default(),
+            live_bytes_length_known = claim_diagnostics.live_bytes_length.is_some(),
+            live_bytes_length = claim_diagnostics.live_bytes_length.unwrap_or_default(),
+            fragment_bytes_known = claim_diagnostics.fragment_bytes.is_some(),
+            fragment_bytes = claim_diagnostics.fragment_bytes.unwrap_or_default(),
+            fragment_bits_known = claim_diagnostics.fragment_bits.is_some(),
+            fragment_bits = claim_diagnostics.fragment_bits.unwrap_or_default(),
+            claim_reject_stage = claim_reject
+                .map(|reject| reject.stage.as_str())
+                .unwrap_or("none"),
+            claim_reject_offset_known = claim_reject.and_then(|reject| reject.offset).is_some(),
+            claim_reject_offset = claim_reject
+                .and_then(|reject| reject.offset)
+                .unwrap_or_default(),
+            claim_reject_record_end_known =
+                claim_reject.and_then(|reject| reject.record_end).is_some(),
+            claim_reject_record_end = claim_reject
+                .and_then(|reject| reject.record_end)
+                .unwrap_or_default(),
+            claim_reject_bit_cursor_known =
+                claim_reject.and_then(|reject| reject.bit_cursor).is_some(),
+            claim_reject_bit_cursor = claim_reject
+                .and_then(|reject| reject.bit_cursor)
+                .unwrap_or_default(),
+            declared_repair_candidates = claim_diagnostics.repair_candidate_count,
+            first_declared_repair_known = claim_diagnostics.first_repair_new_declared.is_some(),
+            first_declared_repair_new_declared = claim_diagnostics
+                .first_repair_new_declared
+                .unwrap_or_default(),
+            first_declared_repair_read_bytes = claim_diagnostics
+                .first_repair_read_bytes_length
+                .unwrap_or_default(),
+            first_declared_repair_fragment_bytes = claim_diagnostics
+                .first_repair_fragment_bytes_length
+                .unwrap_or_default(),
+            first_capacity_plausible_declared_repair_known = claim_diagnostics
+                .first_capacity_plausible_repair_new_declared
+                .is_some(),
+            first_capacity_plausible_declared_repair_new_declared = claim_diagnostics
+                .first_capacity_plausible_repair_new_declared
+                .unwrap_or_default(),
+            first_capacity_plausible_declared_repair_read_bytes = claim_diagnostics
+                .first_capacity_plausible_repair_read_bytes_length
+                .unwrap_or_default(),
+            first_capacity_plausible_declared_repair_fragment_bytes = claim_diagnostics
+                .first_capacity_plausible_repair_fragment_bytes_length
+                .unwrap_or_default(),
             "live-object semantic candidate did not claim: exact record-boundary validator rejected this intermediate rewrite"
         );
         if let Some(failure) = rejection_failure {

@@ -33,8 +33,25 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 10:58 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 13:01 +10: the freshest
 gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
+`Area_AreaLoaded`, the post-area hold gate opening, held post-area packet
+release, and sustained `GameObjUpdate_LiveObject`/quickbar traffic. It wrote
+`quickbar-item-refresh-hint.json` through `2026-07-09T13:01:24+10:00` and
+`proxy.structured.log` through `2026-07-09T13:01:31+10:00`, and produced no
+quarantine directory. This run counts as current gameplay freshness evidence,
+but it did not exercise the delayed inventory target: `AutoOpenInventory` did
+not produce `ClientGuiInventory` events before the client/proxy stopped
+advancing, so its final hint remained
+`inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` with
+0 queued ClientGui status packets and 0 ClientGui status response counters.
+Use it only as freshness/clean-live-object evidence, not as ClientGui writer
+validation.
+
+Previous forced-inventory live evidence for the active live-object blocker:
 `C:\nwnbridge\codex-live-client-gui-status-delayed-inventory-20260709-105516\harness-proxy-20260709-105528`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, observed
 `BNK3` after deferred `BNK2`, reached gameplay through `Module_Loaded`,
@@ -95,10 +112,14 @@ correctly left the queued/response counters at 0 because that replay source has
 no ready ClientGui inventory handoff. The next live HG forced-inventory probe
 should use the diagnostic build so any repeat `P/05/01` quarantine logs
 declared/read/fragment lengths, decoded fragment bit count, claim reject
-stage/cursor, and declared-repair candidate counts. Fix that live-object
-translator/declared-window blocker before resuming ClientGui response
-validation. If the live-object path stays clean and server `Inventory` traffic
-returns first, continue the claim-neighborhood provenance path instead.
+stage/cursor, and declared-repair candidate counts. As of 2026-07-09 13:10 +10,
+proxy2 also logs the same exact-claim diagnostics on the intermediate
+`live-object-semantic-candidate-rejected-exact-validator` rewrite path, which is
+the path that dumped the 516-byte candidate from the 10:58 seq51 quarantine.
+Fix that live-object translator/declared-window blocker before resuming
+ClientGui response validation. If the live-object path stays clean and server
+`Inventory` traffic returns first, continue the claim-neighborhood provenance
+path instead.
 
 Previous live HG proxy status, as of 2026-07-08 23:17 +10: the
 gameplay-reaching proxy harness was

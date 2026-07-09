@@ -17,6 +17,25 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-09 live-object strict-family diagnostic follow-up: live-data gate
+  first found the gameplay-reaching forced-inventory capture
+  `C:\nwnbridge\codex-live-client-gui-status-delayed-inventory-20260709-105516\harness-proxy-20260709-105528`
+  current (`proxy.structured.log` through `2026-07-09T10:58:21+10:00`, about
+  2h old at gate). It reached gameplay but quarantined server seq51
+  `P/05/01` (`live-object-unclaimed-strict-family`, declared `0x013D`) after a
+  516-byte `live-object-semantic-candidate-rejected-exact-validator` dump. A
+  fresh current-code diagnostic run
+  `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`,
+  proxy-generated `Area_AreaLoaded`, held-packet release, and sustained
+  live-object/quickbar traffic with no quarantine directory, but
+  `AutoOpenInventory` did not produce `ClientGuiInventory` events before the
+  client/proxy stopped advancing; use it as freshness evidence only. Proxy2 now
+  logs declared/read/fragment lengths, exact-claim reject stage/cursor, and
+  declared-repair candidates for intermediate semantic rewrite candidates that
+  fail the exact validator. Active next path: reproduce the delayed-inventory
+  seq51 shape or replay its dumped 516-byte candidate and fix the live-object
+  translator/declared-window rule before continuing ClientGui writer behavior.
 - 2026-07-07 BNK2 stall diagnostic and inventory/equipment handoff live
   confirmation: live-data gate first found the gameplay-reaching HG proxy
   capture
