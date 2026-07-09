@@ -98,6 +98,27 @@ fn ee_creature_effect_only_update_live(rows: &[(u8, u16)]) -> Vec<u8> {
     live
 }
 
+fn creature_status_self_c008_live_bytes(rows: &[(u8, u16)], ee_identity_maps: bool) -> Vec<u8> {
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&0xFFFF_FFDEu32.to_le_bytes());
+    live.extend_from_slice(&0x0000_C008u32.to_le_bytes());
+    live.extend_from_slice(&(rows.len() as u16).to_le_bytes());
+    for (opcode, row) in rows {
+        live.push(*opcode);
+        live.extend_from_slice(&row.to_le_bytes());
+        if ee_identity_maps {
+            live.extend_from_slice(
+                &super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+            );
+        }
+    }
+    live
+}
+
+fn creature_status_self_suffix_bits() -> Vec<bool> {
+    vec![false; 10]
+}
+
 fn ee_creature_visual_transform_update_live_bytes(object_id: u32, selector: u8) -> Vec<u8> {
     let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
     live.extend_from_slice(&object_id.to_le_bytes());
@@ -7270,6 +7291,89 @@ fn creature_effect_only_status_update_boundary_owns_embedded_add_rows() {
         .expect("effect-only status update followed by W should exact-claim");
     assert_eq!(claim.update_records, 1);
     assert_eq!(claim.world_status_records, 1);
+}
+
+#[test]
+fn creature_c008_status_self_boundary_owns_embedded_effect_add_rows() {
+    // HG delayed-inventory seq51 reduced to a general reader rule: `U/5
+    // mask=0xC008` is the status/self suffix family without the 0x0400 scalar
+    // WORDs. The embedded A/D status rows are not live-object boundaries; after
+    // EE identity-map normalization, the ten suffix BOOLs are owned by the
+    // creature record before the next `A/5` row starts.
+    let mut live = creature_status_self_c008_live_bytes(
+        &[
+            (b'A', 0x00B6),
+            (b'A', 0x0099),
+            (b'A', 0x00A8),
+            (b'A', 0x07FD),
+        ],
+        true,
+    );
+    let status_end = live.len();
+    live.extend_from_slice(&ee_creature_add_live_bytes(0x8001_5956));
+
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        status_end,
+        "the transport scanner must not split C008 at embedded status-effect A rows"
+    );
+
+    let claim = super::claim_payload_if_verified(&live_object_payload_with_bits(
+        &live,
+        creature_status_self_suffix_bits(),
+    ))
+    .expect("EE-shaped C008 status/self update followed by A/5 should exact-claim");
+    assert_eq!(claim.creature_update_records, 1);
+    assert_eq!(claim.add_records, 1);
+}
+
+#[test]
+fn creature_c008_compact_status_rows_rewrite_before_following_add() {
+    // Legacy compact C008 rows carry only A/D + WORD entries. The translator
+    // must insert EE ObjectVisualTransformData identity maps inside the status
+    // list, then preserve the exact boundary before the following creature add.
+    let rows = [
+        (b'A', 0x00B6),
+        (b'A', 0x0099),
+        (b'A', 0x00A8),
+        (b'A', 0x07FD),
+    ];
+    let mut live = creature_status_self_c008_live_bytes(&rows, false);
+    let compact_status_end = live.len();
+    live.extend_from_slice(&ee_creature_add_live_bytes(0x8001_5956));
+
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        compact_status_end,
+        "legacy compact C008 rows must still own embedded A/D bytes before the next add"
+    );
+
+    let mut payload = live_object_payload_with_bits(&live, creature_status_self_suffix_bits());
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "compact C008 status rows lack EE identity maps before rewrite"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("compact C008 status rows should rewrite through the typed creature path");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(
+        rewrite.bytes_inserted,
+        (rows.len() * super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)
+            as u32
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten C008 status/self update followed by A/5 should exact-claim");
+    assert_eq!(claim.creature_update_records, 1);
+    assert_eq!(claim.add_records, 1);
 }
 
 #[test]

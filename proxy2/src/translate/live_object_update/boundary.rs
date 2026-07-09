@@ -294,6 +294,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                     | 0x0000_4408
                     | 0x0000_8000
                     | 0x0000_8008
+                    | 0x0000_C008
                     | 0x0000_C408
                     | 0x0000_C40F
             ) {
@@ -309,15 +310,16 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                 // `fragment_spans` proof accept or reject the exact split
                 // instead of letting generic inline-string suppression hide the
                 // following real record.
-                // `0x0000_C408` is the HG self/visibility status family. The
-                // stock Diamond/EE core is the visual-effect delta count, four
-                // SHORT stats, five+two visibility BOOLs, and three
-                // self-visibility BOOLs. Some HG captures carry a malformed
-                // zero visual-effect count followed by the known three encoded
-                // entries; the translator repairs only that count before EE
-                // validation. Its next true submessage can be an `I` sentinel
-                // record immediately after this compact numeric record, so
-                // inline-string suppression would hide the real boundary.
+                // `0x0000_C008`/`0x0000_C408` are HG self/visibility status
+                // families. The stock Diamond/EE core is the visual-effect
+                // delta count, optional four SHORT stats for 0x0400, five+two
+                // visibility BOOLs, and three self-visibility BOOLs. Some HG
+                // captures carry a malformed zero visual-effect count followed
+                // by known encoded entries; the translator repairs only that
+                // count before EE validation. The next true submessage can be
+                // an `A/5` creature add or `I` sentinel immediately after this
+                // compact numeric record, so inline-string suppression would
+                // hide the real boundary.
                 // `0x0000_0040` is the compact creature state branch already
                 // modelled by `creature.rs`: WORD, BYTE mode, WORD, BYTE, then
                 // one fragment BOOL and an optional OBJECTID only when mode 2
@@ -995,6 +997,7 @@ pub(super) fn try_get_ee_creature_update_record_end_for_transport(
     try_get_ee_creature_update_0008_record_end_for_transport(bytes, offset, scan_end)
         .or_else(|| creature::try_get_ee_creature_update_4008_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_8008_record_end(bytes, offset, scan_end))
+        .or_else(|| creature::try_get_ee_creature_update_c008_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end))
@@ -1772,6 +1775,23 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         return LEGACY_UPDATE_HEADER_BYTES + 2 + usize::from(count) * 3;
     }
 
+    if raw_mask == 0x0000_C008 {
+        // HG delayed-inventory traffic proves the same compact status/self
+        // suffix as C408, with the four WORD 0x0400 scalar/status branch
+        // absent:
+        //
+        //   U/5 header + mask
+        //   0x0008 status-effect delta: WORD count, count * 3 legacy bytes
+        //   0x4000 self/status suffix: fragment BOOLs only
+        //   0x8000 visibility suffix: fragment BOOLs only
+        //
+        // The status rows start with `A`/`D` bytes that are not live-object
+        // submessage boundaries. Use a count-derived compact floor for legacy
+        // input; already-EE-shaped packets are split by
+        // `try_get_ee_creature_update_c008_record_end` before this scanner.
+        return minimum_legacy_creature_status_record_length_at(bytes, offset, 0, 0);
+    }
+
     if raw_mask == 0x0000_C408 {
         // Diamond/EE `WriteGameObjUpdate_UpdateObject` writes this compact
         // creature self/status family as a WORD looping-visual-effect delta
@@ -1816,6 +1836,15 @@ fn minimum_legacy_creature_status_scalar_record_length_at(
     offset: usize,
     zero_count_effect_rows: usize,
 ) -> usize {
+    minimum_legacy_creature_status_record_length_at(bytes, offset, zero_count_effect_rows, 8)
+}
+
+fn minimum_legacy_creature_status_record_length_at(
+    bytes: &[u8],
+    offset: usize,
+    zero_count_effect_rows: usize,
+    scalar_suffix_bytes: usize,
+) -> usize {
     let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
         return LEGACY_UPDATE_HEADER_BYTES;
     };
@@ -1827,7 +1856,7 @@ fn minimum_legacy_creature_status_scalar_record_length_at(
     } else {
         usize::from(count)
     };
-    LEGACY_UPDATE_HEADER_BYTES + 2 + effect_rows * 3 + 8
+    LEGACY_UPDATE_HEADER_BYTES + 2 + effect_rows * 3 + scalar_suffix_bytes
 }
 
 pub(super) fn looks_like_legacy_live_object_sub_message_boundary(

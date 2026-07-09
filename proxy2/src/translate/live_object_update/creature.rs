@@ -9,6 +9,7 @@ use super::{bits, class_rows, read_f32_le, read_u16_le, read_u32_le, visual_effe
 const LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK: u32 = 0x0000_2000;
 const LEGACY_CREATURE_UPDATE_0067_MASK: u32 = 0x0000_0067;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
+const LEGACY_CREATURE_UPDATE_C008_MASK: u32 = 0x0000_C008;
 const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
 const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
 const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
@@ -229,8 +230,8 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
         );
     }
 
-    if raw_mask == 0x0000_C408 {
-        return advance_verified_creature_update_c408(
+    if raw_mask == LEGACY_CREATURE_UPDATE_C008_MASK || raw_mask == 0x0000_C408 {
+        return advance_verified_creature_update_status_self_suffix(
             bytes,
             offset,
             record_end,
@@ -839,6 +840,44 @@ pub(super) fn try_get_ee_creature_update_8008_record_end(
         || bytes.get(offset).copied()? != b'U'
         || bytes.get(offset + 1).copied()? != 0x05
         || read_u32_le(bytes, offset + 6)? != 0x0000_8008
+    {
+        return None;
+    }
+
+    let count = read_u16_le(bytes, offset + 10)?;
+    if count == 0 || count > 256 {
+        return None;
+    }
+
+    let cursor = try_get_ee_creature_status_effect_entries_end(
+        bytes,
+        offset.checked_add(12)?,
+        count,
+        scan_end,
+    )?;
+    (cursor <= scan_end).then_some(cursor)
+}
+
+pub(super) fn try_get_ee_creature_update_c008_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    // HG delayed-inventory live traffic proves the same status-effect/self
+    // suffix family as C408 without mask bit 0x0400:
+    //
+    //   0x0008: WORD visual-effect delta count, then count entries with
+    //           current-build ObjectVisualTransformData identity maps.
+    //   0x4000: seven self/status fragment BOOLs.
+    //   0x8000: three visibility fragment BOOLs.
+    //
+    // The byte span ends immediately after the EE-shaped status-effect list;
+    // the ten suffix BOOLs are proven by the exact cursor validator.
+    if offset + 12 > scan_end
+        || scan_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != 0x05
+        || read_u32_le(bytes, offset + 6)? != LEGACY_CREATURE_UPDATE_C008_MASK
     {
         return None;
     }
@@ -3238,29 +3277,40 @@ fn find_legacy_3967_action2_optional_float_bit_for_repair(
     accepted
 }
 
-fn advance_verified_creature_update_c408(
+fn advance_verified_creature_update_status_self_suffix(
     bytes: &[u8],
     offset: usize,
     record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    // Decompile-backed stock EE creature state family after legacy/HG count
+    // Decompile-backed stock EE creature state family after legacy/HG
     // normalization:
     //
-    //   U 05 <object-id> mask=0x0000_C408
+    //   U 05 <object-id> mask=0x0000_C008 / 0x0000_C408
     //   0x0008: WORD looping-effect delta count, then count entries with
     //           current-build ObjectVisualTransformData identity maps
-    //   0x0400: four WORD scalar values
+    //   0x0400: four WORD scalar values when present (C408 only)
     //   0x4000: seven fragment BOOLs
     //   0x8000: three fragment BOOLs
     //
     // This validator intentionally accepts only the EE-shaped record. Captured
-    // HG legacy records with a zero looping-effect count followed by the known
-    // three encoded entries must first go through
-    // `repair_legacy_c408_visual_effect_count_for_ee`; otherwise the packet
-    // remains unclaimed instead of leaking a malformed read layout to the EE
-    // client.
+    // HG legacy records with compact A/D+WORD looping-effect entries must first
+    // go through the typed count/identity-map repair paths; otherwise the
+    // packet remains unclaimed instead of leaking a malformed read layout to
+    // the EE client.
+    let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
+        return false;
+    };
+    if !matches!(raw_mask, LEGACY_CREATURE_UPDATE_C008_MASK | 0x0000_C408) {
+        return false;
+    }
+    let scalar_suffix_bytes = if (raw_mask & 0x0000_0400) != 0 {
+        8usize
+    } else {
+        0usize
+    };
+
     let Some(mut cursor) = offset.checked_add(10) else {
         return false;
     };
@@ -3273,7 +3323,7 @@ fn advance_verified_creature_update_c408(
     let Some(after_count) = cursor.checked_add(2) else {
         return false;
     };
-    let Some(status_end) = record_end.checked_sub(8) else {
+    let Some(status_end) = record_end.checked_sub(scalar_suffix_bytes) else {
         return false;
     };
     let Some(status_cursor) =
@@ -3284,7 +3334,7 @@ fn advance_verified_creature_update_c408(
     if status_cursor != status_end {
         return false;
     }
-    let Some(after_scalars) = status_cursor.checked_add(8) else {
+    let Some(after_scalars) = status_cursor.checked_add(scalar_suffix_bytes) else {
         return false;
     };
     cursor = after_scalars;

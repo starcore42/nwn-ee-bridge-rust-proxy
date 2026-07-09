@@ -17,6 +17,27 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-09 C008 live-object status/self repair: live-data gate reused the
+  gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`
+  (`proxy.stdout.log` through `2026-07-09T13:01:31+10:00`, about 3h56m old at
+  the 16:57 +10 gate; gameplay reached; no quarantine directory). The delayed
+  forced-inventory seq51 516-byte candidate reduced to a first reject row
+  `U/5` object `0xFFFFFFDE`, mask `0x0000_C008`, split at 12 bytes with
+  `bit_cursor=3`: the boundary scanner was treating embedded status-effect
+  `A` rows as top-level live-object boundaries. Proxy2 now models C008 as the
+  C408 status/self suffix family without the 0x0400 four-WORD scalar branch:
+  count-derived legacy scan floor, EE-shaped byte boundary after status-effect
+  identity maps, exact ten fragment-BOOL suffix validation, and generic
+  compact-row identity-map insertion before claim. Focused tests
+  `cargo test -q -p hgbridge-proxy2 creature_c008 -- --nocapture` and
+  `cargo test -q -p hgbridge-proxy2 creature_status_effect -- --nocapture`
+  passed; bounded strict replay
+  `C:\nwnbridge\codex-proxy2-replay-c008-status-self-20260709-171155` over the
+  2026-07-03 Diamond autoplay packet stream ran with strict translation, 0
+  quarantine files, and 0 live-object terminal residuals. Active next path:
+  rerun the delayed forced-inventory live HG probe to confirm seq51 is gone,
+  then resume ClientGui inventory response/candidate association work.
 - 2026-07-09 live-object strict-family diagnostic follow-up: live-data gate
   first found the gameplay-reaching forced-inventory capture
   `C:\nwnbridge\codex-live-client-gui-status-delayed-inventory-20260709-105516\harness-proxy-20260709-105528`
@@ -50,10 +71,8 @@ not as standalone workaround targets.
   `C:\nwnbridge\codex-proxy2-replay-reject-record-preview-20260709-1505`
   processed the 164-packet Diamond autoplay baseline with 304 strict allows, 0
   strict quarantines, 0 quarantine files, and 0 live-object terminal residuals.
-  Active next path: rerun the delayed forced-inventory live HG probe or replay
-  the seq51 candidate on this build, read `claim_reject_record_*`, then
-  implement the specific live-object row/cursor repair rather than another
-  broad declared-window heuristic.
+  The next run used those reject fields to implement the C008 status/self
+  cursor repair above; keep this entry as the diagnostic evidence trail.
 - 2026-07-07 BNK2 stall diagnostic and inventory/equipment handoff live
   confirmation: live-data gate first found the gameplay-reaching HG proxy
   capture

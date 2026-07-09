@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 13:01 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 17:14 +10: the freshest
 gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
@@ -122,13 +122,26 @@ opcode/ascii, object type, object id, and the first WORD/DWORD after the object
 id. Bounded strict replay
 `C:\nwnbridge\codex-proxy2-replay-reject-record-preview-20260709-1505` over
 the 164-packet Diamond autoplay baseline reported 304 strict allows, 0 strict
-quarantines, 0 quarantine files, and 0 live-object terminal residuals. Fix that
-live-object translator/declared-window blocker before resuming ClientGui
-response validation: rerun the delayed forced-inventory probe or replay the
-seq51 candidate on this build, read `claim_reject_record_*`, and implement the
-specific row/cursor repair. If the live-object path stays clean and server
-`Inventory` traffic returns first, continue the claim-neighborhood provenance
-path instead.
+quarantines, 0 quarantine files, and 0 live-object terminal residuals. The
+next run used those `claim_reject_record_*` fields to identify and implement
+the C008 status/self cursor repair below. If the live-object path stays clean
+and server `Inventory` traffic returns first, continue the claim-neighborhood
+provenance path instead.
+
+As of 2026-07-09 17:14 +10, the seq51 reject-row evidence reduced to `U/5`
+mask `0x0000_C008` on object `0xFFFFFFDE`, with the scanner split at the
+12-byte header/count cursor before embedded status-effect `A` rows. Proxy2 now
+models C008 as the C408 status/self suffix family without the 0x0400 four-WORD
+scalar branch: compact legacy rows get a count-derived scan floor and typed
+EE identity-map insertion, already-EE-shaped rows claim through the byte
+boundary helper, and the exact validator consumes the ten suffix fragment BOOLs.
+Focused C008/status-effect tests passed, and strict replay
+`C:\nwnbridge\codex-proxy2-replay-c008-status-self-20260709-171155` over the
+2026-07-03 Diamond autoplay packets ran with strict translation, 0 quarantine
+files, and 0 live-object terminal residuals. The next live HG step is to rerun
+the delayed forced-inventory probe and verify that server seq51 no longer
+quarantines before treating ClientGui inventory response/candidate association
+as the primary blocker.
 
 Previous live HG proxy status, as of 2026-07-08 23:17 +10: the
 gameplay-reaching proxy harness was
