@@ -17,6 +17,34 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-10 ClientGui status deflated-response attribution hook: live-data
+  gate reused the gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-client-gui-status-association-current-20260709-225811\harness-proxy-20260709-225914`
+  (`proxy.structured.log` through `2026-07-09T23:01:47+10:00`, about 1h56m
+  old at gate; gameplay reached; no quarantine directory). That capture proved
+  the active attribution gap: proxy2 queued 17 proxy-owned
+  `ClientGuiInventory_Status` requests for candidate `0x80015379`; the exact
+  live-object validator saw one deflated response payload with
+  `live_gui_records=1` and `materialized_item_object_ids=21`, but the bridge
+  response counters only retained later generic live-object-only follow-ups.
+  Proxy2 now records proxy-owned ClientGui status live-object responses
+  immediately after deflated M reassembly semantic observation, before the
+  payload is recompressed and emitted, using the reassembly first sequence and
+  last ACK sequence as the response key. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-deflated-clientgui-hook-20260710-010459`
+  over the 164-packet Diamond autoplay baseline ran with 304 strict allows,
+  0 strict quarantines, no quarantine directory, and 0 live-object terminal
+  residuals. Post-change live HG probe
+  `C:\nwnbridge\codex-live-deflated-clientgui-hook-20260710-010951\harness-proxy-20260710-010955`
+  reached gameplay, sustained live-object traffic, produced no quarantine
+  directory, and wrote artifacts through `2026-07-10T01:11:58+10:00`, but did
+  not exercise the status-response hook because this run stopped at
+  `inventory_equipment_bridge_output_status="blocked_candidate_mismatch"` and
+  queued 0 proxy-owned `ClientGuiInventory_Status` requests. Active next path:
+  make the inventory/equipment output rule handle or reclassify that generalized
+  server-inventory candidate/claim mismatch so the next live probe can force the
+  materialized ClientGui response path reliably before choosing the final
+  inventory UI refresh or visible-equipment output rule.
 - 2026-07-09 ClientGui status response live retest: fresh delayed
   forced-inventory HG proxy capture
   `C:\nwnbridge\codex-live-client-gui-status-association-current-20260709-225811\harness-proxy-20260709-225914`

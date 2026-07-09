@@ -3594,6 +3594,17 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         &bytes,
         Some(&state.area_context.latest_area_placeables),
     );
+    let response_ack_sequence = reassembly
+        .frames
+        .last()
+        .map(|frame| frame.ack_sequence)
+        .unwrap_or(0);
+    inventory_equipment::maybe_record_client_gui_status_live_object_response(
+        state,
+        &verified_proof,
+        reassembly.first_sequence,
+        response_ack_sequence,
+    );
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
         if let (Some(first_frame), Some(last_frame)) =
             (reassembly.frames.first(), reassembly.frames.last())
