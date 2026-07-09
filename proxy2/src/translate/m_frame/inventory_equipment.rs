@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::translate::{
     VerifiedFamily, VerifiedProof, client_gui_inventory, inventory,
     semantic::{
-        InventoryEquipmentClientGuiInventoryClaimKind,
+        InventoryEquipmentClientGuiInventoryClaim, InventoryEquipmentClientGuiInventoryClaimKind,
         InventoryEquipmentHandoffConsumer::ClientGuiInventory,
     },
 };
@@ -86,6 +86,21 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
             crate::translate::semantic::InventoryItemObjectStatus::Proven(_)
         )
     {
+        if maybe_queue_current_player_client_gui_status_for_unknown_server_claim(
+            state,
+            update,
+            trigger_sequence,
+        )? {
+            tracing::info!(
+                update_index = update.update_index,
+                claim_object_id = %format_args!("0x{:08X}", claim.object_id),
+                claim_object_status = claim_object_status.as_str(),
+                candidate_object_id = %format_args!("0x{:08X}", update.candidate.object_id),
+                "inventory/equipment bridge queued ClientGui status instead of emitting unknown server Inventory claim"
+            );
+            return Ok(());
+        }
+
         record_output_decision(
             state,
             update,
@@ -349,7 +364,55 @@ fn maybe_queue_client_gui_status_output(
         return Ok(true);
     };
 
+    queue_client_gui_status_output_with_claim(
+        state,
+        update,
+        claim,
+        latest_client_sequence,
+        server_sequence_to_ack,
+    )
+}
+
+fn maybe_queue_current_player_client_gui_status_for_unknown_server_claim(
+    state: &mut SessionState,
+    update: crate::translate::semantic::InventoryEquipmentBridgeStateUpdate,
+    server_sequence_to_ack: u16,
+) -> anyhow::Result<bool> {
+    let Some(latest_client_sequence) = state.sequence.latest_client_sequence_from_client else {
+        return Ok(false);
+    };
+    let claim = InventoryEquipmentClientGuiInventoryClaim {
+        kind: InventoryEquipmentClientGuiInventoryClaimKind::Status,
+        object_id: Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID),
+        panel: None,
+        player_inventory_gui: Some(true),
+        rewritten_self_object_id: false,
+    };
+    queue_client_gui_status_output_with_claim(
+        state,
+        update,
+        claim,
+        latest_client_sequence,
+        Some(server_sequence_to_ack),
+    )
+}
+
+fn queue_client_gui_status_output_with_claim(
+    state: &mut SessionState,
+    update: crate::translate::semantic::InventoryEquipmentBridgeStateUpdate,
+    claim: InventoryEquipmentClientGuiInventoryClaim,
+    latest_client_sequence: u16,
+    server_sequence_to_ack: Option<u16>,
+) -> anyhow::Result<bool> {
     let player_inventory_gui = claim.player_inventory_gui.unwrap_or(true);
+    let object_id = claim
+        .object_id
+        .ok_or_else(|| anyhow::anyhow!("ClientGuiInventory_Status output claim lacks object id"))?;
+    if object_id != client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID {
+        return Err(anyhow::anyhow!(
+            "ClientGuiInventory_Status output claim is not current-player inventory"
+        ));
+    }
     let payload = client_gui_inventory::build_status_payload(object_id, player_inventory_gui);
     client_gui_inventory::claim_payload_if_verified(&payload).ok_or_else(|| {
         anyhow::anyhow!("built ClientGuiInventory_Status payload failed exact validator")
@@ -375,9 +438,13 @@ fn maybe_queue_client_gui_status_output(
     });
     trim_sequence_shifts(&mut state.sequence.client_sequence_shifts);
 
+    let decision_update = crate::translate::semantic::InventoryEquipmentBridgeStateUpdate {
+        client_gui_inventory_claim: Some(claim),
+        ..update
+    };
     record_output_decision(
         state,
-        update,
+        decision_update,
         InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput,
     );
     state
@@ -1080,6 +1147,120 @@ mod tests {
             1
         );
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
+    }
+
+    #[test]
+    fn queues_client_gui_status_for_unknown_server_inventory_claim_mismatch() {
+        let mut update = ready_server_inventory_update();
+        update.server_inventory_claim = Some(InventoryEquipmentServerInventoryClaim::new(
+            0x01,
+            0x8000_5678,
+            false,
+            0x0002_0000,
+        ));
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(30);
+        state
+            .semantic
+            .objects
+            .observe_materialized_item_object_ids(&[0x8000_5600]);
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 90, 77)
+            .expect("unknown server claim should queue a ClientGui status request");
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 91, 77)
+            .expect("same mismatch update should remain handled");
+
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
+        assert_eq!(state.sequence.client_sequence_shifts[0].base, 31);
+        assert_eq!(state.sequence.client_sequence_shifts[0].delta, 1);
+        assert_eq!(
+            state.inventory_equipment.last_decision_state_update_index,
+            Some(1)
+        );
+        let decision = state
+            .inventory_equipment
+            .last_decision
+            .expect("decision should be recorded");
+        assert_eq!(
+            decision.kind,
+            InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput
+        );
+        assert_eq!(
+            decision.consumer,
+            InventoryEquipmentHandoffConsumer::ServerInventory
+        );
+        assert_eq!(decision.candidate.object_id, 0x8000_1234);
+        assert_eq!(
+            decision
+                .server_inventory_claim
+                .expect("decision should retain unknown server claim")
+                .object_id,
+            0x8000_5678
+        );
+        assert_eq!(
+            decision.server_inventory_claim_object_status,
+            InventoryItemObjectStatus::Unknown
+        );
+        let client_gui_claim = decision
+            .client_gui_inventory_claim
+            .expect("fallback decision should retain synthetic ClientGui status claim");
+        assert_eq!(
+            client_gui_claim.kind,
+            InventoryEquipmentClientGuiInventoryClaimKind::Status
+        );
+        assert_eq!(
+            client_gui_claim.object_id,
+            Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_blocked_candidate_mismatch_update_index,
+            None
+        );
+        assert_eq!(
+            state.inventory_equipment.blocked_candidate_mismatch_updates,
+            0
+        );
+        assert_eq!(state.inventory_equipment.queued_outputs, 0);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_queued_client_gui_status_output
+                .expect("ClientGui status output should be queued")
+                .candidate
+                .expect("queued status should preserve ready candidate")
+                .object_id,
+            0x8000_1234
+        );
+
+        let pending = &state.sequence.pending_client_to_server_packets[0];
+        let view = MFrameView::parse(pending).expect("queued client packet should parse");
+        assert_eq!(view.sequence, 31);
+        assert_eq!(view.ack_sequence, 90);
+        let payload = super::super::parse_window::primary_payload(pending, &view)
+            .expect("queued packet should expose primary payload");
+        let claim = client_gui_inventory::claim_payload_if_verified(payload)
+            .expect("queued ClientGuiInventory payload should be exact");
+        assert_eq!(
+            claim.object_id,
+            Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID)
+        );
     }
 
     #[test]

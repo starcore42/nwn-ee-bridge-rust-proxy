@@ -33,23 +33,25 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-10 01:11 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-10 03:17 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-deflated-clientgui-hook-20260710-010951\harness-proxy-20260710-010955`.
-It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe` through the
-Release launcher, reached gameplay through `Module_Loaded`,
-`Area_ClientArea`, proxy-generated `Area_AreaLoaded`, and sustained
-`GameObjUpdate_LiveObject` traffic. It wrote `quickbar-item-refresh-hint.json`
-and `proxy.structured.log` through `2026-07-10T01:11:58+10:00`, and produced no
-quarantine directory. This run confirms the current deflated-ClientGui hook did
-not regress live gameplay, but it did not exercise proxy-owned
-`ClientGuiInventory_Status`: the final hint reported
-`inventory_equipment_bridge_output_status="blocked_candidate_mismatch"`,
-0 queued ClientGui status packets, 0 status-response packets, and a server
-Inventory claim `0x80015384` that did not match the ready candidate
-`0x800152D4` or a proven item. Treat this as clean freshness evidence and as
-the next generalized inventory/equipment output target, not as final proof of
-the materialized ClientGui status-response path.
+`C:\nwnbridge\codex-live-inventory-clientgui-fallback-current-20260710-031303\harness-proxy-20260710-031307`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
+`Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject` traffic. It wrote
+`quickbar-item-refresh-hint.json` and `proxy.structured.log` through
+`2026-07-10T03:17:07+10:00`, and produced no quarantine directory. This run
+exercised the unproven server Inventory claim fallback: the final hint reported
+`inventory_equipment_bridge_output_status="queued_client_gui_status_output"`,
+1 queued proxy-owned `ClientGuiInventory_Status` request, 0 blocked candidate
+mismatch updates, server Inventory claim `0x8001543E`, ready candidate
+`0x8001538E`, synthetic ClientGui claim `0x7F000000`, and exact status payload
+`700D010B0000000000007F90`. HG answered with 85 post-status live-object
+responses, including 1 live-GUI/materialized-item response. The best response
+association is still `differs_from_queued_status_candidate`, so treat this as
+proof that the fallback reaches the materialized ClientGui path and as the next
+input for response/candidate association and the final inventory UI refresh or
+visible-equipment output rule.
 
 Previous live HG proxy ClientGui status-response evidence, as of
 2026-07-09 23:01 +10:
