@@ -681,11 +681,11 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LiveObjectInventoryMaterializationSummary {
     pub(crate) live_gui_records: u32,
     pub(crate) live_gui_fragment_bits: u32,
-    pub(crate) materialized_item_object_ids: usize,
+    pub(crate) materialized_item_object_ids: Vec<u32>,
     pub(crate) compact_item_emission_ready_objects: usize,
     pub(crate) compact_item_emission_ready_candidate: Option<InventoryItemContextCandidate>,
 }

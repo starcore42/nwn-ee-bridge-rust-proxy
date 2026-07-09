@@ -928,6 +928,15 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_ids\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_first\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_first_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_last\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_last_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_min\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_min_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_max\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_max_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_ids_contain_queued_candidate\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_ready_objects\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_known\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id\": {},\n",
@@ -942,6 +951,15 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_fragment_bits\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_ids\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_first\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_first_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_last\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_last_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_min\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_min_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_max\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_max_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_ids_contain_queued_candidate\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_ready_objects\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_known\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_object_id\": {},\n",
@@ -1055,6 +1073,15 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_client_gui_status_response.live_gui_records,
         last_client_gui_status_response.live_gui_fragment_bits,
         last_client_gui_status_response.materialized_item_object_ids,
+        last_client_gui_status_response.materialized_item_object_id_first,
+        last_client_gui_status_response.materialized_item_object_id_first,
+        last_client_gui_status_response.materialized_item_object_id_last,
+        last_client_gui_status_response.materialized_item_object_id_last,
+        last_client_gui_status_response.materialized_item_object_id_min,
+        last_client_gui_status_response.materialized_item_object_id_min,
+        last_client_gui_status_response.materialized_item_object_id_max,
+        last_client_gui_status_response.materialized_item_object_id_max,
+        last_client_gui_status_response.materialized_item_object_ids_contain_queued_candidate,
         last_client_gui_status_response.compact_item_emission_ready_objects,
         last_client_gui_status_response_candidate_known,
         last_client_gui_status_response_candidate_object_id,
@@ -1069,6 +1096,15 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         best_client_gui_status_response.live_gui_records,
         best_client_gui_status_response.live_gui_fragment_bits,
         best_client_gui_status_response.materialized_item_object_ids,
+        best_client_gui_status_response.materialized_item_object_id_first,
+        best_client_gui_status_response.materialized_item_object_id_first,
+        best_client_gui_status_response.materialized_item_object_id_last,
+        best_client_gui_status_response.materialized_item_object_id_last,
+        best_client_gui_status_response.materialized_item_object_id_min,
+        best_client_gui_status_response.materialized_item_object_id_min,
+        best_client_gui_status_response.materialized_item_object_id_max,
+        best_client_gui_status_response.materialized_item_object_id_max,
+        best_client_gui_status_response.materialized_item_object_ids_contain_queued_candidate,
         best_client_gui_status_response.compact_item_emission_ready_objects,
         best_client_gui_status_response_candidate_known,
         best_client_gui_status_response_candidate_object_id,
@@ -2163,6 +2199,11 @@ mod tests {
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: 0,
+            materialized_item_object_id_first: 0,
+            materialized_item_object_id_last: 0,
+            materialized_item_object_id_min: 0,
+            materialized_item_object_id_max: 0,
+            materialized_item_object_ids_contain_queued_candidate: false,
             compact_item_emission_ready_objects: 51,
             compact_item_emission_ready_candidate: Some(candidate),
         };
@@ -2173,11 +2214,21 @@ mod tests {
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: 0,
+            materialized_item_object_id_first: 0,
+            materialized_item_object_id_last: 0,
+            materialized_item_object_id_min: 0,
+            materialized_item_object_id_max: 0,
+            materialized_item_object_ids_contain_queued_candidate: false,
             compact_item_emission_ready_objects: 65,
             compact_item_emission_ready_candidate: Some(candidate),
         };
         let earlier_materialized = state::InventoryEquipmentBridgeClientGuiStatusResponse {
             materialized_item_object_ids: 1,
+            materialized_item_object_id_first: 0x8001_5379,
+            materialized_item_object_id_last: 0x8001_5379,
+            materialized_item_object_id_min: 0x8001_5379,
+            materialized_item_object_id_max: 0x8001_5379,
+            materialized_item_object_ids_contain_queued_candidate: true,
             ..earlier_live_object_only
         };
 
@@ -2260,6 +2311,11 @@ mod tests {
                 live_gui_records: 51,
                 live_gui_fragment_bits: 348,
                 materialized_item_object_ids: 51,
+                materialized_item_object_id_first: 0x8000_1200,
+                materialized_item_object_id_last: 0x8000_1234,
+                materialized_item_object_id_min: 0x8000_1200,
+                materialized_item_object_id_max: 0x8000_1234,
+                materialized_item_object_ids_contain_queued_candidate: true,
                 compact_item_emission_ready_objects: 51,
                 compact_item_emission_ready_candidate: Some(
                     crate::translate::semantic::InventoryItemContextCandidate {
@@ -2366,6 +2422,15 @@ mod tests {
             "\"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": 348"
         ));
         assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_first_hex\": \"0x80001200\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_id_last_hex\": \"0x80001234\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_ids_contain_queued_candidate\": true"
+        ));
+        assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_client_gui_status_response_candidate_object_id_hex\": \"0x80001234\""
         ));
         assert!(body.contains(
@@ -2376,6 +2441,15 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": 51"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_first_hex\": \"0x80001200\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_last_hex\": \"0x80001234\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_ids_contain_queued_candidate\": true"
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_object_id_hex\": \"0x80001234\""

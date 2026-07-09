@@ -115,6 +115,11 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
     pub(super) live_gui_records: u32,
     pub(super) live_gui_fragment_bits: u32,
     pub(super) materialized_item_object_ids: usize,
+    pub(super) materialized_item_object_id_first: u32,
+    pub(super) materialized_item_object_id_last: u32,
+    pub(super) materialized_item_object_id_min: u32,
+    pub(super) materialized_item_object_id_max: u32,
+    pub(super) materialized_item_object_ids_contain_queued_candidate: bool,
     pub(super) compact_item_emission_ready_objects: usize,
     pub(super) compact_item_emission_ready_candidate:
         Option<semantic::InventoryItemContextCandidate>,
@@ -138,6 +143,7 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
             || (self_strength == other_strength
                 && (
                     self.materialized_item_object_ids,
+                    self.materialized_item_object_ids_contain_queued_candidate,
                     self.live_gui_records,
                     self.live_gui_fragment_bits,
                     self.queued_update_index,
@@ -146,6 +152,7 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
                     self.compact_item_emission_ready_objects,
                 ) > (
                     other.materialized_item_object_ids,
+                    other.materialized_item_object_ids_contain_queued_candidate,
                     other.live_gui_records,
                     other.live_gui_fragment_bits,
                     other.queued_update_index,
@@ -347,9 +354,6 @@ impl InventoryEquipmentBridgeState {
         let Some(response) = self.best_client_gui_status_response else {
             return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::AwaitingResponse;
         };
-        let Some(response_candidate) = response.compact_item_emission_ready_candidate else {
-            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::ResponseWithoutCandidate;
-        };
         let Some(queued_status) = self.last_queued_client_gui_status_output else {
             return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::QueuedStatusWithoutCandidate;
         };
@@ -358,6 +362,12 @@ impl InventoryEquipmentBridgeState {
         }
         let Some(queued_candidate) = queued_status.candidate else {
             return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::QueuedStatusWithoutCandidate;
+        };
+        if response.materialized_item_object_ids_contain_queued_candidate {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate;
+        }
+        let Some(response_candidate) = response.compact_item_emission_ready_candidate else {
+            return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::ResponseWithoutCandidate;
         };
         if response_candidate.object_id == queued_candidate.object_id {
             InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate

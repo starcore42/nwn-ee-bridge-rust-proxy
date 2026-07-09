@@ -262,7 +262,7 @@ fn apply_event(
                 Some(LiveObjectInventoryMaterializationSummary {
                     live_gui_records: event.live_gui_records,
                     live_gui_fragment_bits: event.live_gui_fragment_bits,
-                    materialized_item_object_ids: event.materialized_item_object_ids.len(),
+                    materialized_item_object_ids: event.materialized_item_object_ids.clone(),
                     compact_item_emission_ready_objects: item_context
                         .compact_item_emission_ready_objects,
                     compact_item_emission_ready_candidate: item_context

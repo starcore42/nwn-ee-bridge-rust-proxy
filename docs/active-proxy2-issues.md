@@ -17,6 +17,30 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-10 ClientGui status response materialized-set association:
+  live-data gate reused the gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-inventory-clientgui-fallback-current-20260710-031303\harness-proxy-20260710-031307`
+  (`proxy.stdout.log` through `2026-07-10T03:17:07+10:00`, about 1h42m
+  old at gate; gameplay reached; no quarantine directory). That capture queued
+  one proxy-owned `ClientGuiInventory_Status` request for ready candidate
+  `0x8001538E`; the best materialized response reported compact current
+  candidate `0x80015386` and candidate delta `-8`, but also materialized 52
+  item object ids. Proxy2 now carries the exact materialized item-id set
+  through the live-object reducer, records first/last/min/max ids and whether
+  the set contains the queued ClientGui status candidate, and classifies a
+  response as `matches_queued_status_candidate` when the materialized set
+  contains that queued candidate even if the compact current candidate differs.
+  Focused tests
+  `cargo test -q -p hgbridge-proxy2 client_gui_status_response -- --nocapture`
+  and `cargo test -q -p hgbridge-proxy2 inventory_equipment -- --nocapture`
+  passed; strict replay
+  `C:\nwnbridge\codex-proxy2-replay-clientgui-materialized-association-20260710-051009`
+  over the 164-packet Diamond autoplay baseline ran with strict translation,
+  0 quarantine files, and 0 live-object terminal residuals. Active next path:
+  run a fresh delayed forced-inventory live HG probe on this build and confirm
+  `...materialized_item_object_ids_contain_queued_candidate=true` plus
+  `matches_queued_status_candidate`; then implement the generalized inventory
+  UI refresh or visible-equipment output rule.
 - 2026-07-10 unknown server Inventory claim fallback: live-data gate reused the
   gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-deflated-clientgui-hook-20260710-010951\harness-proxy-20260710-010955`
@@ -41,11 +65,10 @@ not as standalone workaround targets.
   produced no quarantine directory; queued 1 proxy-owned
   `ClientGuiInventory_Status` for unknown server Inventory claim `0x8001543E`
   versus ready candidate `0x8001538E`; and observed 85 post-status live-object
-  responses including 1 live-GUI/materialized-item response. Active next path:
-  the best response currently reports
-  `differs_from_queued_status_candidate`, so trace the returned materialized
-  response candidate/claim relationship and then implement the generalized
-  inventory UI refresh or visible-equipment output rule.
+  responses including 1 live-GUI/materialized-item response. This is the live
+  proof that the fallback reaches the materialized ClientGui path; the returned
+  response/candidate mismatch is now handled by the materialized-set
+  association slice above.
 - 2026-07-10 ClientGui status deflated-response attribution hook: live-data
   gate reused the gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-client-gui-status-association-current-20260709-225811\harness-proxy-20260709-225914`
@@ -109,10 +132,10 @@ not as standalone workaround targets.
   `C:\nwnbridge\codex-proxy2-replay-client-gui-response-association-20260709-2104`
   over the 164-packet Diamond autoplay baseline ran with 304 strict allows,
   0 strict quarantines, no quarantine directory, and inactive ClientGui
-  association defaults. Active next path: run a fresh delayed forced-inventory
-  HG probe on this build and confirm the best materialized ClientGui response
-  reports `matches_queued_status_candidate`; then use that association to pick
-  the next inventory UI refresh or visible-equipment output rule.
+  association defaults. Superseded by the 2026-07-10 materialized-set
+  association slice above; the remaining active proof is a fresh live HG run on
+  that build and then the concrete inventory UI refresh or visible-equipment
+  output rule.
 - 2026-07-09 ClientGui status response best-evidence tracking: live-data gate
   reused the gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`

@@ -247,13 +247,51 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     {
         return;
     }
-    let Some(summary) = state.semantic.ui.last_live_object_inventory_materialization else {
+    let Some(summary) = state
+        .semantic
+        .ui
+        .last_live_object_inventory_materialization
+        .as_ref()
+    else {
         return;
     };
     let queued_update_index = state
         .inventory_equipment
         .last_queued_client_gui_status_update_index
         .unwrap_or(0);
+    let queued_candidate = state
+        .inventory_equipment
+        .last_queued_client_gui_status_output
+        .and_then(|queued| queued.candidate);
+    let materialized_item_object_ids = summary.materialized_item_object_ids.len();
+    let materialized_item_object_id_first = summary
+        .materialized_item_object_ids
+        .first()
+        .copied()
+        .unwrap_or(0);
+    let materialized_item_object_id_last = summary
+        .materialized_item_object_ids
+        .last()
+        .copied()
+        .unwrap_or(0);
+    let materialized_item_object_id_min = summary
+        .materialized_item_object_ids
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(0);
+    let materialized_item_object_id_max = summary
+        .materialized_item_object_ids
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let materialized_item_object_ids_contain_queued_candidate =
+        queued_candidate.is_some_and(|candidate| {
+            summary
+                .materialized_item_object_ids
+                .contains(&candidate.object_id)
+        });
     state
         .inventory_equipment
         .client_gui_status_response_live_object_packets = state
@@ -268,7 +306,7 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .client_gui_status_response_live_gui_record_packets
             .saturating_add(1);
     }
-    if summary.materialized_item_object_ids != 0 {
+    if materialized_item_object_ids != 0 {
         state
             .inventory_equipment
             .client_gui_status_response_materialized_item_packets = state
@@ -282,7 +320,12 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
         ack_sequence,
         live_gui_records: summary.live_gui_records,
         live_gui_fragment_bits: summary.live_gui_fragment_bits,
-        materialized_item_object_ids: summary.materialized_item_object_ids,
+        materialized_item_object_ids,
+        materialized_item_object_id_first,
+        materialized_item_object_id_last,
+        materialized_item_object_id_min,
+        materialized_item_object_id_max,
+        materialized_item_object_ids_contain_queued_candidate,
         compact_item_emission_ready_objects: summary.compact_item_emission_ready_objects,
         compact_item_emission_ready_candidate: summary.compact_item_emission_ready_candidate,
     };
@@ -300,7 +343,12 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
         ack_sequence,
         live_gui_records = summary.live_gui_records,
         live_gui_fragment_bits = summary.live_gui_fragment_bits,
-        materialized_item_object_ids = summary.materialized_item_object_ids,
+        materialized_item_object_ids,
+        materialized_item_object_id_first = %format_args!("0x{:08X}", materialized_item_object_id_first),
+        materialized_item_object_id_last = %format_args!("0x{:08X}", materialized_item_object_id_last),
+        materialized_item_object_id_min = %format_args!("0x{:08X}", materialized_item_object_id_min),
+        materialized_item_object_id_max = %format_args!("0x{:08X}", materialized_item_object_id_max),
+        materialized_item_object_ids_contain_queued_candidate,
         compact_item_emission_ready_objects = summary.compact_item_emission_ready_objects,
         compact_item_emission_ready_candidate_object_id = summary
             .compact_item_emission_ready_candidate
@@ -806,7 +854,7 @@ mod tests {
             crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
                 live_gui_records: 51,
                 live_gui_fragment_bits: 348,
-                materialized_item_object_ids: 51,
+                materialized_item_object_ids: vec![0x8001_56BC, 0x8001_56BD],
                 compact_item_emission_ready_objects: 51,
                 compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
                     object_id: 0x8001_56BC,
@@ -850,7 +898,12 @@ mod tests {
         assert_eq!(response.ack_sequence, 82);
         assert_eq!(response.live_gui_records, 51);
         assert_eq!(response.live_gui_fragment_bits, 348);
-        assert_eq!(response.materialized_item_object_ids, 51);
+        assert_eq!(response.materialized_item_object_ids, 2);
+        assert_eq!(response.materialized_item_object_id_first, 0x8001_56BC);
+        assert_eq!(response.materialized_item_object_id_last, 0x8001_56BD);
+        assert_eq!(response.materialized_item_object_id_min, 0x8001_56BC);
+        assert_eq!(response.materialized_item_object_id_max, 0x8001_56BD);
+        assert!(response.materialized_item_object_ids_contain_queued_candidate);
         assert_eq!(response.compact_item_emission_ready_objects, 51);
         assert_eq!(
             response.compact_item_emission_ready_candidate,
@@ -887,6 +940,85 @@ mod tests {
     }
 
     #[test]
+    fn client_gui_status_response_matches_when_materialized_set_contains_queued_candidate() {
+        let mut state = SessionState::default();
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(1);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 1,
+                emission_index: 1,
+                event_index: 3,
+                candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_538E,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ready_objects: 18,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: 79,
+                synthetic_sequence: 81,
+                ack_sequence: 44,
+            });
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 52,
+                live_gui_fragment_bits: 355,
+                materialized_item_object_ids: vec![0x8001_5386, 0x8001_538E],
+                compact_item_emission_ready_objects: 66,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_5386,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+            },
+        );
+
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            60,
+            78,
+        );
+
+        let response = state
+            .inventory_equipment
+            .best_client_gui_status_response
+            .expect("materialized response should be retained");
+        assert_eq!(response.materialized_item_object_ids, 2);
+        assert_eq!(response.materialized_item_object_id_first, 0x8001_5386);
+        assert_eq!(response.materialized_item_object_id_last, 0x8001_538E);
+        assert!(response.materialized_item_object_ids_contain_queued_candidate);
+        assert_eq!(
+            response.compact_item_emission_ready_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8001_5386,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            })
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response_association()
+                .as_str(),
+            "matches_queued_status_candidate"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response_candidate_delta_from_queued_status(),
+            -8
+        );
+    }
+
+    #[test]
     fn client_gui_status_best_response_survives_generic_followup() {
         let mut state = SessionState::default();
         state.inventory_equipment.queued_client_gui_status_outputs = 1;
@@ -897,7 +1029,7 @@ mod tests {
             crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
                 live_gui_records: 9,
                 live_gui_fragment_bits: 72,
-                materialized_item_object_ids: 9,
+                materialized_item_object_ids: vec![0x8001_5211, 0x8001_5212],
                 compact_item_emission_ready_objects: 66,
                 compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
                     object_id: 0x8001_5211,
@@ -918,7 +1050,7 @@ mod tests {
             crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
                 live_gui_records: 0,
                 live_gui_fragment_bits: 0,
-                materialized_item_object_ids: 0,
+                materialized_item_object_ids: Vec::new(),
                 compact_item_emission_ready_objects: 66,
                 compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
                     object_id: 0x8001_5211,
@@ -942,6 +1074,11 @@ mod tests {
         assert_eq!(last.server_sequence, 105);
         assert_eq!(last.live_gui_records, 0);
         assert_eq!(last.materialized_item_object_ids, 0);
+        assert_eq!(last.materialized_item_object_id_first, 0);
+        assert_eq!(last.materialized_item_object_id_last, 0);
+        assert_eq!(last.materialized_item_object_id_min, 0);
+        assert_eq!(last.materialized_item_object_id_max, 0);
+        assert!(!last.materialized_item_object_ids_contain_queued_candidate);
 
         let best = state
             .inventory_equipment
@@ -950,7 +1087,11 @@ mod tests {
         assert_eq!(best.server_sequence, 90);
         assert_eq!(best.live_gui_records, 9);
         assert_eq!(best.live_gui_fragment_bits, 72);
-        assert_eq!(best.materialized_item_object_ids, 9);
+        assert_eq!(best.materialized_item_object_ids, 2);
+        assert_eq!(best.materialized_item_object_id_first, 0x8001_5211);
+        assert_eq!(best.materialized_item_object_id_last, 0x8001_5212);
+        assert_eq!(best.materialized_item_object_id_min, 0x8001_5211);
+        assert_eq!(best.materialized_item_object_id_max, 0x8001_5212);
         assert_eq!(
             best.compact_item_emission_ready_candidate,
             Some(InventoryItemContextCandidate {

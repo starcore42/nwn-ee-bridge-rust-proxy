@@ -48,10 +48,14 @@ mismatch updates, server Inventory claim `0x8001543E`, ready candidate
 `0x8001538E`, synthetic ClientGui claim `0x7F000000`, and exact status payload
 `700D010B0000000000007F90`. HG answered with 85 post-status live-object
 responses, including 1 live-GUI/materialized-item response. The best response
-association is still `differs_from_queued_status_candidate`, so treat this as
-proof that the fallback reaches the materialized ClientGui path and as the next
-input for response/candidate association and the final inventory UI refresh or
-visible-equipment output rule.
+association in this capture was `differs_from_queued_status_candidate` because
+the retained compact current candidate was `0x80015386` while the queued
+candidate was `0x8001538E`. As of the current run, proxy2 carries the exact
+materialized response item-id set and treats containment of the queued
+candidate as a match. Treat this capture as proof that the fallback reaches the
+materialized ClientGui path; the next live proof should confirm the new
+containment fields on a fresh forced-inventory run before choosing the final
+inventory UI refresh or visible-equipment output rule.
 
 Previous live HG proxy ClientGui status-response evidence, as of
 2026-07-09 23:01 +10:
@@ -120,6 +124,21 @@ does not exercise proxy-owned ClientGui status. The next delayed
 forced-inventory live HG probe should use the current build and verify that the
 best materialized response reports `matches_queued_status_candidate` before
 choosing a concrete inventory UI refresh or visible-equipment output rule.
+
+As of 2026-07-10 05:13 +10, proxy2 also records the exact materialized item-id
+set for retained ClientGui status responses. The bridge response state now
+exports first/last/min/max materialized item ids and whether the materialized
+set contains the queued ClientGui status candidate; response association uses
+that containment before falling back to compact-current-candidate equality.
+Focused ClientGui response and inventory/equipment tests passed, and strict
+replay
+`C:\nwnbridge\codex-proxy2-replay-clientgui-materialized-association-20260710-051009`
+over the 164-packet Diamond autoplay baseline ran with strict translation,
+0 quarantine files, and 0 live-object terminal residuals. The replay baseline
+does not exercise proxy-owned ClientGui status, so the required next live proof
+is a delayed forced-inventory HG capture whose final hint reports
+`...materialized_item_object_ids_contain_queued_candidate=true` and
+`matches_queued_status_candidate`.
 
 Previous clean current-code gameplay freshness evidence:
 `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`.
