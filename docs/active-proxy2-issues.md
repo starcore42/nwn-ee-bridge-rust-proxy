@@ -17,6 +17,26 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-09 ClientGui status response live retest: fresh delayed
+  forced-inventory HG proxy capture
+  `C:\nwnbridge\codex-live-client-gui-status-association-current-20260709-225811\harness-proxy-20260709-225914`
+  reached gameplay through `Module_Loaded`, `Area_ClientArea`,
+  proxy-generated `Area_AreaLoaded`, and sustained live-object traffic, wrote
+  artifacts through `2026-07-09T23:01:47+10:00`, and produced no quarantine
+  directory. It queued 17 proxy-owned `ClientGuiInventory_Status` requests for
+  candidate `0x80015379` and observed 18 post-status live-object responses, all
+  `live_object_only` with 0 counted live-GUI/materialized-item response
+  packets. The exact-validator log did see a separate
+  `live_gui_records=1` / `materialized_item_object_ids=21` live-object packet
+  between the first and later status bursts, but the bridge did not classify it
+  as a proxy-owned status response. Proxy2 now tie-breaks equal-strength
+  retained ClientGui status responses by latest queued update/ACK/ready count,
+  so repeated live-object-only status responses keep the final hint associated
+  with the latest matching candidate instead of an obsolete
+  `queued_update_mismatch`. Active next path: wire/split-response attribution
+  for the live-GUI/materialized live-object packet, then decide whether the
+  ClientGui inventory UI needs a separate EE-facing visible-equipment/status
+  output rule.
 - 2026-07-09 ClientGui status response association: live-data gate reused the
   gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-c008-delayed-inventory-confirm-20260709-185755\harness-proxy-20260709-185759`

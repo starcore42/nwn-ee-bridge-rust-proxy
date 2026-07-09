@@ -2150,6 +2150,81 @@ mod tests {
     }
 
     #[test]
+    fn client_gui_status_response_tie_breaks_to_latest_equal_strength() {
+        let candidate = crate::translate::semantic::InventoryItemContextCandidate {
+            object_id: 0x8001_5379,
+            proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+        };
+        let earlier_live_object_only = state::InventoryEquipmentBridgeClientGuiStatusResponse {
+            queued_update_index: 1,
+            server_sequence: 58,
+            ack_sequence: 80,
+            live_gui_records: 0,
+            live_gui_fragment_bits: 0,
+            materialized_item_object_ids: 0,
+            compact_item_emission_ready_objects: 51,
+            compact_item_emission_ready_candidate: Some(candidate),
+        };
+        let later_live_object_only = state::InventoryEquipmentBridgeClientGuiStatusResponse {
+            queued_update_index: 17,
+            server_sequence: 58,
+            ack_sequence: 81,
+            live_gui_records: 0,
+            live_gui_fragment_bits: 0,
+            materialized_item_object_ids: 0,
+            compact_item_emission_ready_objects: 65,
+            compact_item_emission_ready_candidate: Some(candidate),
+        };
+        let earlier_materialized = state::InventoryEquipmentBridgeClientGuiStatusResponse {
+            materialized_item_object_ids: 1,
+            ..earlier_live_object_only
+        };
+
+        assert!(later_live_object_only.is_stronger_than(earlier_live_object_only));
+        assert!(!earlier_live_object_only.is_stronger_than(later_live_object_only));
+        assert!(earlier_materialized.is_stronger_than(later_live_object_only));
+        assert!(!later_live_object_only.is_stronger_than(earlier_materialized));
+
+        let mut bridge = state::InventoryEquipmentBridgeState {
+            queued_client_gui_status_outputs: 17,
+            client_gui_status_response_live_object_packets: 18,
+            last_queued_client_gui_status_output: Some(
+                state::InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                    update_index: 17,
+                    emission_index: 17,
+                    event_index: 21,
+                    candidate: Some(candidate),
+                    ready_objects: 65,
+                    deferred_feature25_only_objects: 0,
+                    object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                    player_inventory_gui: true,
+                    trigger_client_sequence: 83,
+                    synthetic_sequence: 99,
+                    ack_sequence: 57,
+                },
+            ),
+            best_client_gui_status_response: Some(later_live_object_only),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            bridge.client_gui_status_response_outcome(),
+            state::InventoryEquipmentBridgeClientGuiStatusResponseOutcome::LiveObjectOnly
+        );
+        assert_eq!(
+            bridge.best_client_gui_status_response_association(),
+            state::InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate
+        );
+
+        bridge.best_client_gui_status_response = Some(earlier_live_object_only);
+        assert_eq!(
+            bridge.best_client_gui_status_response_association(),
+            state::InventoryEquipmentBridgeClientGuiStatusResponseAssociation::QueuedUpdateMismatch
+        );
+    }
+
+    #[test]
     fn quickbar_hint_augmentation_serializes_queued_client_gui_status_output() {
         let mut bridge = state::InventoryEquipmentBridgeState::default();
         bridge.queued_client_gui_status_outputs = 1;

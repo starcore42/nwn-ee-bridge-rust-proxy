@@ -140,12 +140,18 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
                     self.materialized_item_object_ids,
                     self.live_gui_records,
                     self.live_gui_fragment_bits,
+                    self.queued_update_index,
+                    self.ack_sequence,
                     self.server_sequence,
+                    self.compact_item_emission_ready_objects,
                 ) > (
                     other.materialized_item_object_ids,
                     other.live_gui_records,
                     other.live_gui_fragment_bits,
+                    other.queued_update_index,
+                    other.ack_sequence,
                     other.server_sequence,
+                    other.compact_item_emission_ready_objects,
                 ))
     }
 }

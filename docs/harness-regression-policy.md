@@ -33,8 +33,31 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-09 19:01 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-09 23:01 +10: the freshest
 gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-client-gui-status-association-current-20260709-225811\harness-proxy-20260709-225914`.
+It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
+gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
+`Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject` traffic. It wrote
+`quickbar-item-refresh-hint.json` and `proxy.structured.log` through
+`2026-07-09T23:01:47+10:00`, and produced no quarantine directory. The delayed
+inventory action fired: 21 `ClientGuiInventory` handoffs, 17 ready handoffs,
+17 queued proxy-owned `ClientGuiInventory_Status` requests, and 18 post-status
+live-object responses. The final hint reported candidate `0x80015379`,
+`inventory_equipment_bridge_output_status="queued_client_gui_status_output"`,
+`inventory_equipment_bridge_output_client_gui_status_response_outcome="live_object_only"`,
+18 live-object response packets, 0 counted live-GUI response packets, and 0
+counted materialized-item response packets. The exact-validator log also
+reported a separate `live_gui_records=1` / `materialized_item_object_ids=21`
+live-object packet between the first and later status bursts, but the bridge
+state did not attribute that packet to the proxy-owned status response. As of
+2026-07-09 23:12 +10, proxy2 tie-breaks equal-strength retained status
+responses toward the latest queued update/ACK/ready-object count so repeated
+live-object-only responses stay associated with the latest matching candidate
+rather than surfacing a stale `queued_update_mismatch`. The next production
+target is the response-attribution gap for that live-GUI/materialized packet.
+
+Previous live HG proxy status, as of 2026-07-09 19:01 +10:
 `C:\nwnbridge\codex-live-c008-delayed-inventory-confirm-20260709-185755\harness-proxy-20260709-185759`.
 It selected `C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe`, reached
 gameplay through `Module_Loaded`, `Area_ClientArea`, proxy-generated
