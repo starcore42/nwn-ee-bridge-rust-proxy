@@ -36,6 +36,24 @@ not as standalone workaround targets.
   fail the exact validator. Active next path: reproduce the delayed-inventory
   seq51 shape or replay its dumped 516-byte candidate and fix the live-object
   translator/declared-window rule before continuing ClientGui writer behavior.
+- 2026-07-09 reject-row preview diagnostic: live-data gate reused current
+  gameplay-reaching evidence
+  `C:\nwnbridge\codex-live-current-live-object-diagnostics-20260709-125914\harness-proxy-20260709-125919`
+  (`proxy.structured.log` through `2026-07-09T13:01:31+10:00`, about 1h55m
+  old at gate, gameplay reached, no quarantine directory). Proxy2 now threads
+  the exact reject-row preview through `claim_payload_diagnostics` and both
+  live-object reject log sites: reject window length, opcode/ascii, object
+  type, object id, and the first WORD/DWORD after the object id. This does not
+  relax strict validation or accept new rows; it only makes the next replay/live
+  failure identify which `A/D/G/P/U/W` row and mask-like header failed. Bounded
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-reject-record-preview-20260709-1505`
+  processed the 164-packet Diamond autoplay baseline with 304 strict allows, 0
+  strict quarantines, 0 quarantine files, and 0 live-object terminal residuals.
+  Active next path: rerun the delayed forced-inventory live HG probe or replay
+  the seq51 candidate on this build, read `claim_reject_record_*`, then
+  implement the specific live-object row/cursor repair rather than another
+  broad declared-window heuristic.
 - 2026-07-07 BNK2 stall diagnostic and inventory/equipment handoff live
   confirmation: live-data gate first found the gameplay-reaching HG proxy
   capture

@@ -116,8 +116,17 @@ stage/cursor, and declared-repair candidate counts. As of 2026-07-09 13:10 +10,
 proxy2 also logs the same exact-claim diagnostics on the intermediate
 `live-object-semantic-candidate-rejected-exact-validator` rewrite path, which is
 the path that dumped the 516-byte candidate from the 10:58 seq51 quarantine.
-Fix that live-object translator/declared-window blocker before resuming
-ClientGui response validation. If the live-object path stays clean and server
+As of 2026-07-09 15:14 +10, those diagnostics also include
+`claim_reject_record_*` fields for the exact reject-row window: length,
+opcode/ascii, object type, object id, and the first WORD/DWORD after the object
+id. Bounded strict replay
+`C:\nwnbridge\codex-proxy2-replay-reject-record-preview-20260709-1505` over
+the 164-packet Diamond autoplay baseline reported 304 strict allows, 0 strict
+quarantines, 0 quarantine files, and 0 live-object terminal residuals. Fix that
+live-object translator/declared-window blocker before resuming ClientGui
+response validation: rerun the delayed forced-inventory probe or replay the
+seq51 candidate on this build, read `claim_reject_record_*`, and implement the
+specific row/cursor repair. If the live-object path stays clean and server
 `Inventory` traffic returns first, continue the claim-neighborhood provenance
 path instead.
 

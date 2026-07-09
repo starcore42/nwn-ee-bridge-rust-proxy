@@ -1381,6 +1381,7 @@ fn rewrite_live_object_high_level_payload_for_ee(
     rewrite.quarantine_reason = Some(reason);
     let claim_diagnostics = live_update::claim_payload_diagnostics(payload);
     let claim_reject = claim_diagnostics.reject;
+    let claim_reject_record = claim_diagnostics.reject_record_preview;
     let dump_path = dump_unrewritten_semantic_payload(payload, reason);
     tracing::warn!(
         reason,
@@ -1407,6 +1408,43 @@ fn rewrite_live_object_high_level_payload_for_ee(
         claim_reject_bit_cursor_known = claim_reject.and_then(|reject| reject.bit_cursor).is_some(),
         claim_reject_bit_cursor = claim_reject
             .and_then(|reject| reject.bit_cursor)
+            .unwrap_or_default(),
+        claim_reject_record_known = claim_reject_record.is_some(),
+        claim_reject_record_length = claim_reject_record
+            .map(|record| record.record_length)
+            .unwrap_or_default(),
+        claim_reject_record_opcode_known = claim_reject_record
+            .and_then(|record| record.opcode)
+            .is_some(),
+        claim_reject_record_opcode = claim_reject_record
+            .and_then(|record| record.opcode)
+            .unwrap_or_default(),
+        claim_reject_record_opcode_ascii = claim_reject_record
+            .map(|record| record.opcode_ascii())
+            .unwrap_or(""),
+        claim_reject_record_object_type_known = claim_reject_record
+            .and_then(|record| record.object_type)
+            .is_some(),
+        claim_reject_record_object_type = claim_reject_record
+            .and_then(|record| record.object_type)
+            .unwrap_or_default(),
+        claim_reject_record_object_id_known = claim_reject_record
+            .and_then(|record| record.object_id)
+            .is_some(),
+        claim_reject_record_object_id = claim_reject_record
+            .and_then(|record| record.object_id)
+            .unwrap_or_default(),
+        claim_reject_record_first_word_after_object_id_known = claim_reject_record
+            .and_then(|record| record.first_word_after_object_id)
+            .is_some(),
+        claim_reject_record_first_word_after_object_id = claim_reject_record
+            .and_then(|record| record.first_word_after_object_id)
+            .unwrap_or_default(),
+        claim_reject_record_first_dword_after_object_id_known = claim_reject_record
+            .and_then(|record| record.first_dword_after_object_id)
+            .is_some(),
+        claim_reject_record_first_dword_after_object_id = claim_reject_record
+            .and_then(|record| record.first_dword_after_object_id)
             .unwrap_or_default(),
         declared_repair_candidates = claim_diagnostics.repair_candidate_count,
         first_declared_repair_known = claim_diagnostics.first_repair_new_declared.is_some(),
@@ -4065,6 +4103,7 @@ fn translate_live_object_records_if_verified(
         });
         let claim_diagnostics = live_update::claim_payload_diagnostics(&candidate);
         let claim_reject = claim_diagnostics.reject;
+        let claim_reject_record = claim_diagnostics.reject_record_preview;
         tracing::debug!(
             source,
             add_changed = add_before_update_summary.is_some()
@@ -4113,6 +4152,43 @@ fn translate_live_object_records_if_verified(
                 claim_reject.and_then(|reject| reject.bit_cursor).is_some(),
             claim_reject_bit_cursor = claim_reject
                 .and_then(|reject| reject.bit_cursor)
+                .unwrap_or_default(),
+            claim_reject_record_known = claim_reject_record.is_some(),
+            claim_reject_record_length = claim_reject_record
+                .map(|record| record.record_length)
+                .unwrap_or_default(),
+            claim_reject_record_opcode_known = claim_reject_record
+                .and_then(|record| record.opcode)
+                .is_some(),
+            claim_reject_record_opcode = claim_reject_record
+                .and_then(|record| record.opcode)
+                .unwrap_or_default(),
+            claim_reject_record_opcode_ascii = claim_reject_record
+                .map(|record| record.opcode_ascii())
+                .unwrap_or(""),
+            claim_reject_record_object_type_known = claim_reject_record
+                .and_then(|record| record.object_type)
+                .is_some(),
+            claim_reject_record_object_type = claim_reject_record
+                .and_then(|record| record.object_type)
+                .unwrap_or_default(),
+            claim_reject_record_object_id_known = claim_reject_record
+                .and_then(|record| record.object_id)
+                .is_some(),
+            claim_reject_record_object_id = claim_reject_record
+                .and_then(|record| record.object_id)
+                .unwrap_or_default(),
+            claim_reject_record_first_word_after_object_id_known = claim_reject_record
+                .and_then(|record| record.first_word_after_object_id)
+                .is_some(),
+            claim_reject_record_first_word_after_object_id = claim_reject_record
+                .and_then(|record| record.first_word_after_object_id)
+                .unwrap_or_default(),
+            claim_reject_record_first_dword_after_object_id_known = claim_reject_record
+                .and_then(|record| record.first_dword_after_object_id)
+                .is_some(),
+            claim_reject_record_first_dword_after_object_id = claim_reject_record
+                .and_then(|record| record.first_dword_after_object_id)
                 .unwrap_or_default(),
             declared_repair_candidates = claim_diagnostics.repair_candidate_count,
             first_declared_repair_known = claim_diagnostics.first_repair_new_declared.is_some(),

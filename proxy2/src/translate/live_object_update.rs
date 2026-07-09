@@ -219,6 +219,40 @@ mod diagnostic_tests {
         );
     }
 
+    #[test]
+    fn live_object_claim_diagnostics_reports_reject_record_preview() {
+        let live = [
+            b'U',
+            CREATURE_OBJECT_TYPE,
+            0x78,
+            0x56,
+            0x34,
+            0x12,
+            0x10,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        let declared = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![b'P', 0x05, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.push(0x60);
+
+        let diagnostics = claim_payload_diagnostics(&payload);
+
+        let preview = diagnostics
+            .reject_record_preview
+            .expect("invalid U/5 row should expose a reject preview");
+        assert_eq!(preview.record_length, 2);
+        assert_eq!(preview.opcode, Some(b'U'));
+        assert_eq!(preview.opcode_ascii(), "U");
+        assert_eq!(preview.object_type, Some(CREATURE_OBJECT_TYPE));
+        assert_eq!(preview.object_id, Some(0x1234_5678));
+        assert_eq!(preview.first_word_after_object_id, Some(0x0010));
+        assert_eq!(preview.first_dword_after_object_id, Some(0x0000_0010));
+    }
+
     fn assert_synthesized_custom_carrier_origins(
         summary: &LiveObjectUpdateRewriteSummary,
         after_add: u32,
@@ -20314,6 +20348,31 @@ impl LiveObjectPayloadClaimReject {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectPayloadClaimRejectRecordPreview {
+    pub record_length: usize,
+    pub opcode: Option<u8>,
+    pub object_type: Option<u8>,
+    pub object_id: Option<u32>,
+    pub first_word_after_object_id: Option<u16>,
+    pub first_dword_after_object_id: Option<u32>,
+}
+
+impl LiveObjectPayloadClaimRejectRecordPreview {
+    pub fn opcode_ascii(self) -> &'static str {
+        match self.opcode {
+            Some(b'A') => "A",
+            Some(b'D') => "D",
+            Some(b'G') => "G",
+            Some(b'P') => "P",
+            Some(b'U') => "U",
+            Some(b'W') => "W",
+            Some(_) => "unknown",
+            None => "",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectPayloadClaimDiagnostics {
     pub payload_length: usize,
     pub declared: Option<usize>,
@@ -20328,6 +20387,7 @@ pub struct LiveObjectPayloadClaimDiagnostics {
     pub first_capacity_plausible_repair_read_bytes_length: Option<usize>,
     pub first_capacity_plausible_repair_fragment_bytes_length: Option<usize>,
     pub reject: Option<LiveObjectPayloadClaimReject>,
+    pub reject_record_preview: Option<LiveObjectPayloadClaimRejectRecordPreview>,
 }
 
 pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagnostics {
@@ -20353,6 +20413,9 @@ pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagno
             payload, candidate,
         )
     });
+    let reject = claim_payload_if_verified_with_reject(payload).err();
+    let reject_record_preview =
+        live_object_claim_reject_record_preview(payload, declared_window, reject);
 
     LiveObjectPayloadClaimDiagnostics {
         payload_length: payload.len(),
@@ -20371,8 +20434,36 @@ pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagno
             .map(|candidate| candidate.read_bytes_length),
         first_capacity_plausible_repair_fragment_bytes_length: first_capacity_plausible_repair
             .map(|candidate| candidate.fragment_bytes_length),
-        reject: claim_payload_if_verified_with_reject(payload).err(),
+        reject,
+        reject_record_preview,
     }
+}
+
+fn live_object_claim_reject_record_preview(
+    payload: &[u8],
+    declared_window: Option<usize>,
+    reject: Option<LiveObjectPayloadClaimReject>,
+) -> Option<LiveObjectPayloadClaimRejectRecordPreview> {
+    let declared = declared_window?;
+    let reject = reject?;
+    let offset = reject.offset?;
+    let live_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let live_bytes = payload.get(live_start..declared)?;
+    if offset >= live_bytes.len() {
+        return None;
+    }
+    let record_end = reject
+        .record_end
+        .unwrap_or(live_bytes.len())
+        .clamp(offset, live_bytes.len());
+    Some(LiveObjectPayloadClaimRejectRecordPreview {
+        record_length: record_end.saturating_sub(offset),
+        opcode: live_bytes.get(offset).copied(),
+        object_type: live_bytes.get(offset + 1).copied(),
+        object_id: read_u32_le(live_bytes, offset + 2),
+        first_word_after_object_id: read_u16_le(live_bytes, offset + 6),
+        first_dword_after_object_id: read_u32_le(live_bytes, offset + 6),
+    })
 }
 
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaimSummary> {
