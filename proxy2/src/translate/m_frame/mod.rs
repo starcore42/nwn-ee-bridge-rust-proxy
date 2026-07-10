@@ -417,7 +417,6 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     {
         return match rewrite {
             coalesced::CoalescedRewrite::Single { proof, packet } => {
-                observe_verified_server_m_packet(state, &proof, &packet);
                 finalize_server_to_client_emit(
                     state,
                     Emit::VerifiedProofPackets {
@@ -427,20 +426,12 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
                     pending_count_before,
                 )
             }
-            coalesced::CoalescedRewrite::Split { packets } => {
-                for (proof, packet) in &packets {
-                    observe_verified_server_m_packet(state, proof, packet);
-                }
-                finalize_server_to_client_emit(
-                    state,
-                    Emit::MixedVerifiedProofPackets(packets),
-                    pending_count_before,
-                )
-            }
+            coalesced::CoalescedRewrite::Split { packets } => finalize_server_to_client_emit(
+                state,
+                Emit::MixedVerifiedProofPackets(packets),
+                pending_count_before,
+            ),
             coalesced::CoalescedRewrite::SplitPreShifted { packets } => {
-                for (proof, packet) in &packets {
-                    observe_verified_server_m_packet(state, proof, packet);
-                }
                 finalize_server_to_client_emit(
                     state,
                     Emit::MixedVerifiedProofPacketsPreShifted(packets),
@@ -532,33 +523,40 @@ fn observe_verified_server_m_packet(
         payload,
         Some(&state.area_context.latest_area_placeables),
     );
+    apply_verified_server_semantic_side_effects(state, proof, view.sequence, view.ack_sequence);
+}
+
+pub(super) fn apply_verified_server_semantic_side_effects(
+    state: &mut SessionState,
+    proof: &VerifiedProof,
+    sequence: u16,
+    ack_sequence: u16,
+) {
     inventory_equipment::maybe_record_client_gui_status_live_object_response(
         state,
         proof,
-        view.sequence,
-        view.ack_sequence,
+        sequence,
+        ack_sequence,
     );
-    if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
-        state,
-        view.sequence,
-        view.ack_sequence,
-    ) {
+    if let Err(err) =
+        inventory_equipment::maybe_queue_confirmed_inventory_replay(state, sequence, ack_sequence)
+    {
         tracing::warn!(
             error = %err,
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
+            sequence,
+            ack_sequence,
             "failed to queue confirmed ClientGui status Inventory replay"
         );
     }
     if let Err(err) = inventory_equipment::maybe_queue_inventory_equipment_bridge_output(
         state,
-        view.sequence,
-        view.ack_sequence,
+        sequence,
+        ack_sequence,
     ) {
         tracing::warn!(
             error = %err,
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
+            sequence,
+            ack_sequence,
             "failed to queue inventory/equipment bridge output"
         );
     }

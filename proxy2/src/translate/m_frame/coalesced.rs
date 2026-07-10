@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     CNW_LENGTH_BYTES, SessionState, deferred_module_resources,
-    deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate},
+    deflate::deflate_zlib,
     hex_prefix, inflated_cnw_fragment_offset_valid, login_waypoint,
     queue_area_client_area_side_effects_for_window,
     reassembly::{
@@ -32,7 +32,7 @@ use super::{
         trim_coalesced_split_sequence_shifts, trim_sequence_shifts,
     },
     server_dispatch,
-    state::CompletedCoalescedStreamRecord,
+    state::{CompletedCoalescedDeflatedRecord, CompletedCoalescedDirectRecord},
 };
 
 pub(super) enum CoalescedRewrite {
@@ -527,7 +527,7 @@ struct CoalescedRecordRewrite {
     abort_window_if_primary_consumed: bool,
 }
 
-fn replay_completed_coalesced_stream_record(
+fn replay_completed_coalesced_deflated_record(
     state: &SessionState,
     record: &[u8],
     sequence: u16,
@@ -537,8 +537,8 @@ fn replay_completed_coalesced_stream_record(
     compressed: &[u8],
 ) -> Option<CoalescedRecordRewrite> {
     let entry = state
-        .deflate
-        .completed_coalesced_stream_records
+        .coalesced_replay
+        .completed_deflated_records
         .iter()
         .find(|entry| {
             entry.sequence == sequence
@@ -556,13 +556,13 @@ fn replay_completed_coalesced_stream_record(
         proof = entry.proof.as_str(),
         dropped = entry.dropped,
         rewritten_deflated = entry.rewritten_deflated,
-        "server coalesced zlib-stream record replayed from typed cache without re-inflating duplicate"
+        "server coalesced deflated record replayed from typed cache without re-inflating duplicate"
     );
     let mut replay_record = entry.record.clone();
     if replay_record.len() >= LEGACY_GAMEPLAY_PAYLOAD_OFFSET
         && record.len() >= LEGACY_GAMEPLAY_PAYLOAD_OFFSET
     {
-        // Retransmitted coalesced stream records can carry newer reliable-window
+        // Retransmitted coalesced deflated records can carry newer reliable-window
         // sequence/ACK fields even when the compressed gameplay bytes are a
         // duplicate of an already-classified semantic span. The replay cache owns
         // only the proven payload rewrite, not those transport fields.
@@ -580,11 +580,11 @@ fn replay_completed_coalesced_stream_record(
         changed: true,
         dropped: entry.dropped,
         rewritten_deflated: entry.rewritten_deflated,
-        abort_window_if_primary_consumed: false,
+        abort_window_if_primary_consumed: entry.abort_window_if_primary_consumed,
     })
 }
 
-fn remember_completed_coalesced_stream_record(
+fn remember_completed_coalesced_deflated_record(
     state: &mut SessionState,
     sequence: u16,
     offset: usize,
@@ -593,7 +593,7 @@ fn remember_completed_coalesced_stream_record(
     compressed: &[u8],
     outcome: &CoalescedRecordRewrite,
 ) {
-    let entry = CompletedCoalescedStreamRecord {
+    let entry = CompletedCoalescedDeflatedRecord {
         sequence,
         offset,
         payload_length,
@@ -603,11 +603,12 @@ fn remember_completed_coalesced_stream_record(
         record: outcome.record.clone(),
         dropped: outcome.dropped,
         rewritten_deflated: outcome.rewritten_deflated,
+        abort_window_if_primary_consumed: outcome.abort_window_if_primary_consumed,
     };
 
     if let Some(existing) = state
-        .deflate
-        .completed_coalesced_stream_records
+        .coalesced_replay
+        .completed_deflated_records
         .iter_mut()
         .find(|existing| {
             existing.sequence == sequence
@@ -621,16 +622,108 @@ fn remember_completed_coalesced_stream_record(
         return;
     }
 
-    const MAX_COMPLETED_COALESCED_STREAM_RECORDS: usize = 64;
-    state.deflate.completed_coalesced_stream_records.push(entry);
-    if state.deflate.completed_coalesced_stream_records.len()
-        > MAX_COMPLETED_COALESCED_STREAM_RECORDS
+    const MAX_COMPLETED_COALESCED_DEFLATED_RECORDS: usize = 64;
+    state
+        .coalesced_replay
+        .completed_deflated_records
+        .push(entry);
+    if state.coalesced_replay.completed_deflated_records.len()
+        > MAX_COMPLETED_COALESCED_DEFLATED_RECORDS
     {
-        let overflow = state.deflate.completed_coalesced_stream_records.len()
-            - MAX_COMPLETED_COALESCED_STREAM_RECORDS;
+        let overflow = state.coalesced_replay.completed_deflated_records.len()
+            - MAX_COMPLETED_COALESCED_DEFLATED_RECORDS;
         state
-            .deflate
-            .completed_coalesced_stream_records
+            .coalesced_replay
+            .completed_deflated_records
+            .drain(0..overflow);
+    }
+}
+
+fn replay_completed_coalesced_direct_record(
+    state: &SessionState,
+    record: &[u8],
+    sequence: u16,
+    offset: usize,
+    payload: &[u8],
+) -> Option<CoalescedRecordRewrite> {
+    let entry = state
+        .coalesced_replay
+        .completed_direct_records
+        .iter()
+        .find(|entry| {
+            entry.sequence == sequence
+                && entry.offset == offset
+                && entry.payload.as_slice() == payload
+        })?;
+
+    let mut replay_record = entry.record.clone();
+    if replay_record.len() >= LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+        && record.len() >= LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+    {
+        // EE's reliable-window receive path identifies a retransmission by its
+        // sequence slot. ACK and packetized transport fields may advance while
+        // the gameplay payload remains the same, so replay the proven rewrite
+        // with the current transport header without re-running game semantics.
+        replay_record[3..10].copy_from_slice(&record[3..10]);
+    }
+    tracing::info!(
+        sequence,
+        offset,
+        payload_length = payload.len(),
+        proof = entry.proof.as_str(),
+        dropped = entry.dropped,
+        "server coalesced direct record replayed from typed cache without reapplying semantic effects"
+    );
+    Some(CoalescedRecordRewrite {
+        changed: replay_record.as_slice() != record,
+        record: replay_record,
+        proof: entry.proof.clone(),
+        dropped: entry.dropped,
+        rewritten_deflated: false,
+        abort_window_if_primary_consumed: entry.abort_window_if_primary_consumed,
+    })
+}
+
+fn remember_completed_coalesced_direct_record(
+    state: &mut SessionState,
+    sequence: u16,
+    offset: usize,
+    payload: &[u8],
+    outcome: &CoalescedRecordRewrite,
+) {
+    let entry = CompletedCoalescedDirectRecord {
+        sequence,
+        offset,
+        payload: payload.to_vec(),
+        proof: outcome.proof.clone(),
+        record: outcome.record.clone(),
+        dropped: outcome.dropped,
+        abort_window_if_primary_consumed: outcome.abort_window_if_primary_consumed,
+    };
+    if let Some(existing) = state
+        .coalesced_replay
+        .completed_direct_records
+        .iter_mut()
+        .find(|existing| {
+            existing.sequence == sequence
+                && existing.offset == offset
+                && existing.payload.as_slice() == payload
+        })
+    {
+        *existing = entry;
+        return;
+    }
+
+    const MAX_COMPLETED_COALESCED_DIRECT_RECORDS: usize = 128;
+    state.coalesced_replay.completed_direct_records.push(entry);
+    if state.coalesced_replay.completed_direct_records.len()
+        > MAX_COMPLETED_COALESCED_DIRECT_RECORDS
+    {
+        let overflow = state.coalesced_replay.completed_direct_records.len()
+            - MAX_COMPLETED_COALESCED_DIRECT_RECORDS;
+        state
+            .coalesced_replay
+            .completed_direct_records
             .drain(0..overflow);
     }
 }
@@ -666,7 +759,13 @@ fn rewrite_coalesced_record_for_ee(
         .map(|deflated| deflated.plausible && payload_length >= CNW_LENGTH_BYTES)
         .unwrap_or(false);
     if !prefer_deflated && let Some(high) = high {
-        let mut payload = payload.to_vec();
+        if let Some(replay) =
+            replay_completed_coalesced_direct_record(state, record, sequence, offset, payload)
+        {
+            return Ok(replay);
+        }
+        let source_payload = payload.to_vec();
+        let mut payload = source_payload.clone();
         if high.major == 0x01 && high.minor == 0x03 {
             if let Some(shape) = deferred_module_resources::capture_early_status_payload_if_needed(
                 &payload,
@@ -684,14 +783,22 @@ fn rewrite_coalesced_record_for_ee(
                     fragment_tail_len = shape.fragment_tail_len,
                     "server coalesced early ServerStatus_ModuleRunning consumed as verified deferred module-resource status"
                 );
-                return consume_coalesced_record_with_proof(
+                let outcome = consume_coalesced_record_with_proof(
                     record,
                     offset,
                     "deferred-module-resources-pending",
                     VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
                     false,
                     false,
+                )?;
+                remember_completed_coalesced_direct_record(
+                    state,
+                    sequence,
+                    offset,
+                    &source_payload,
+                    &outcome,
                 );
+                return Ok(outcome);
             }
         }
         let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
@@ -717,7 +824,15 @@ fn rewrite_coalesced_record_for_ee(
                 prefix = %hex_prefix(record, 32),
                 "server coalesced M record quarantined: semantic translator did not claim high-level payload"
             );
-            return consume_coalesced_record(record, offset, "unclaimed-high-level");
+            let outcome = consume_coalesced_record(record, offset, "unclaimed-high-level")?;
+            remember_completed_coalesced_direct_record(
+                state,
+                sequence,
+                offset,
+                &source_payload,
+                &outcome,
+            );
+            return Ok(outcome);
         }
         if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
             state.area_context.latest_area_placeables = summary.placeable_context.clone();
@@ -752,6 +867,12 @@ fn rewrite_coalesced_record_for_ee(
             &payload,
             Some(&state.area_context.latest_area_placeables),
         );
+        super::apply_verified_server_semantic_side_effects(
+            state,
+            &verified_proof,
+            record_sequence,
+            record_ack_sequence,
+        );
         queue_module_resources_after_coalesced_module_info_if_ready(
             state,
             &verified_proof,
@@ -776,14 +897,22 @@ fn rewrite_coalesced_record_for_ee(
             changed,
             "server coalesced direct high-level record semantically claimed for EE"
         );
-        return Ok(CoalescedRecordRewrite {
+        let outcome = CoalescedRecordRewrite {
             record: out_record,
             proof: verified_proof,
             changed,
             dropped: false,
             rewritten_deflated: false,
             abort_window_if_primary_consumed: false,
-        });
+        };
+        remember_completed_coalesced_direct_record(
+            state,
+            sequence,
+            offset,
+            &source_payload,
+            &outcome,
+        );
+        return Ok(outcome);
     }
 
     let Some(deflated) = deflated else {
@@ -808,19 +937,16 @@ fn rewrite_coalesced_record_for_ee(
     }
 
     let compressed = &payload[CNW_LENGTH_BYTES..];
-    let stream_payload = (flags & 0x01) != 0 && !looks_like_zlib_wrapped_deflate(compressed);
-    if stream_payload {
-        if let Some(replay) = replay_completed_coalesced_stream_record(
-            state,
-            record,
-            sequence,
-            offset,
-            payload_length,
-            deflated.inflated_length,
-            compressed,
-        ) {
-            return Ok(replay);
-        }
+    if let Some(replay) = replay_completed_coalesced_deflated_record(
+        state,
+        record,
+        sequence,
+        offset,
+        payload_length,
+        deflated.inflated_length,
+        compressed,
+    ) {
+        return Ok(replay);
     }
     let InflatedGameplayPayload {
         bytes: mut inflated,
@@ -844,17 +970,15 @@ fn rewrite_coalesced_record_for_ee(
             state,
             sequence,
         )? {
-            if used_server_stream {
-                remember_completed_coalesced_stream_record(
-                    state,
-                    sequence,
-                    offset,
-                    payload_length,
-                    deflated.inflated_length,
-                    compressed,
-                    &outcome,
-                );
-            }
+            remember_completed_coalesced_deflated_record(
+                state,
+                sequence,
+                offset,
+                payload_length,
+                deflated.inflated_length,
+                compressed,
+                &outcome,
+            );
             return Ok(outcome);
         }
         let reason = if single_incomplete_stream_unit {
@@ -872,17 +996,15 @@ fn rewrite_coalesced_record_for_ee(
             "server coalesced M deflated record quarantined: no complete high-level payload"
         );
         let outcome = consume_coalesced_record(record, offset, reason)?;
-        if used_server_stream {
-            remember_completed_coalesced_stream_record(
-                state,
-                sequence,
-                offset,
-                payload_length,
-                deflated.inflated_length,
-                compressed,
-                &outcome,
-            );
-        }
+        remember_completed_coalesced_deflated_record(
+            state,
+            sequence,
+            offset,
+            payload_length,
+            deflated.inflated_length,
+            compressed,
+            &outcome,
+        );
         return Ok(outcome);
     }
 
@@ -908,17 +1030,15 @@ fn rewrite_coalesced_record_for_ee(
             "server coalesced M deflated record quarantined: required semantic translation is missing"
         );
         let outcome = consume_coalesced_record(record, offset, reason)?;
-        if used_server_stream {
-            remember_completed_coalesced_stream_record(
-                state,
-                sequence,
-                offset,
-                payload_length,
-                deflated.inflated_length,
-                compressed,
-                &outcome,
-            );
-        }
+        remember_completed_coalesced_deflated_record(
+            state,
+            sequence,
+            offset,
+            payload_length,
+            deflated.inflated_length,
+            compressed,
+            &outcome,
+        );
         return Ok(outcome);
     }
     if !inflated_cnw_fragment_offset_valid(&inflated) {
@@ -934,17 +1054,15 @@ fn rewrite_coalesced_record_for_ee(
             "server coalesced M deflated record quarantined: invalid CNW fragment offset"
         );
         let outcome = consume_coalesced_record(record, offset, "invalid-cnw-fragment-offset")?;
-        if used_server_stream {
-            remember_completed_coalesced_stream_record(
-                state,
-                sequence,
-                offset,
-                payload_length,
-                deflated.inflated_length,
-                compressed,
-                &outcome,
-            );
-        }
+        remember_completed_coalesced_deflated_record(
+            state,
+            sequence,
+            offset,
+            payload_length,
+            deflated.inflated_length,
+            compressed,
+            &outcome,
+        );
         return Ok(outcome);
     }
     if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
@@ -966,6 +1084,14 @@ fn rewrite_coalesced_record_for_ee(
         &verified_proof,
         &inflated,
         Some(&state.area_context.latest_area_placeables),
+    );
+    let record_sequence = read_be_u16(record, 3).unwrap_or(sequence);
+    let record_ack_sequence = read_be_u16(record, 5).unwrap_or(ack_sequence);
+    super::apply_verified_server_semantic_side_effects(
+        state,
+        &verified_proof,
+        record_sequence,
+        record_ack_sequence,
     );
     queue_module_resources_after_coalesced_module_info_if_ready(
         state,
@@ -993,17 +1119,15 @@ fn rewrite_coalesced_record_for_ee(
             "server coalesced M deflated record quarantined: rewritten payload too large"
         );
         let outcome = consume_coalesced_record(record, offset, "rewritten-payload-too-large")?;
-        if used_server_stream {
-            remember_completed_coalesced_stream_record(
-                state,
-                sequence,
-                offset,
-                payload_length,
-                deflated.inflated_length,
-                compressed,
-                &outcome,
-            );
-        }
+        remember_completed_coalesced_deflated_record(
+            state,
+            sequence,
+            offset,
+            payload_length,
+            deflated.inflated_length,
+            compressed,
+            &outcome,
+        );
         return Ok(outcome);
     }
 
@@ -1033,17 +1157,15 @@ fn rewrite_coalesced_record_for_ee(
         rewritten_deflated: true,
         abort_window_if_primary_consumed: false,
     };
-    if used_server_stream {
-        remember_completed_coalesced_stream_record(
-            state,
-            sequence,
-            offset,
-            payload_length,
-            deflated.inflated_length,
-            compressed,
-            &outcome,
-        );
-    }
+    remember_completed_coalesced_deflated_record(
+        state,
+        sequence,
+        offset,
+        payload_length,
+        deflated.inflated_length,
+        compressed,
+        &outcome,
+    );
     Ok(outcome)
 }
 
@@ -1312,7 +1434,7 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_stream_replay_cache_returns_typed_shell_without_reinflate() {
+    fn coalesced_deflated_replay_cache_returns_typed_shell_without_reinflate() {
         let compressed = [0x10, 0x20, 0x30, 0x40];
         let proof = VerifiedProof::family(VerifiedFamily::ServerZlibStreamContinuation {
             owner: ContinuationOwner::GuiQuickbar,
@@ -1334,7 +1456,7 @@ mod tests {
         };
         let mut state = SessionState::default();
 
-        remember_completed_coalesced_stream_record(
+        remember_completed_coalesced_deflated_record(
             &mut state,
             34,
             67,
@@ -1349,7 +1471,7 @@ mod tests {
         current_record[7] = 0x01;
         current_record[8..10].copy_from_slice(&0x2222u16.to_be_bytes());
 
-        let replay = replay_completed_coalesced_stream_record(
+        let replay = replay_completed_coalesced_deflated_record(
             &state,
             &current_record,
             34,
@@ -1368,6 +1490,104 @@ mod tests {
         assert_eq!(replay.record[7] & 0x01, 0);
         assert_eq!(&replay.record[10..12], &outcome.record[10..12]);
         assert_eq!(replay.proof, proof);
+    }
+
+    #[test]
+    fn coalesced_direct_replay_cache_refreshes_transport_without_semantic_reapply() {
+        let payload =
+            crate::translate::inventory::build_ee_inventory_payload(0x01, 0x8000_1234, true, 4)
+                .expect("exact Inventory payload");
+        let mut cached_record = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        cached_record[0] = b'M';
+        cached_record[3..5].copy_from_slice(&53u16.to_be_bytes());
+        cached_record[5..7].copy_from_slice(&80u16.to_be_bytes());
+        cached_record[7] = 0x0A;
+        cached_record[8..10].copy_from_slice(&1u16.to_be_bytes());
+        cached_record[10..12].copy_from_slice(&(payload.len() as u16).to_be_bytes());
+        cached_record.extend_from_slice(&payload);
+        let outcome = CoalescedRecordRewrite {
+            record: cached_record.clone(),
+            proof: VerifiedProof::family(VerifiedFamily::Inventory),
+            changed: false,
+            dropped: false,
+            rewritten_deflated: false,
+            abort_window_if_primary_consumed: false,
+        };
+        let mut state = SessionState::default();
+        remember_completed_coalesced_direct_record(&mut state, 53, 132, &payload, &outcome);
+
+        let mut current_record = cached_record;
+        current_record[5..7].copy_from_slice(&83u16.to_be_bytes());
+        current_record[8..10].copy_from_slice(&2u16.to_be_bytes());
+        let replay =
+            replay_completed_coalesced_direct_record(&state, &current_record, 53, 132, &payload)
+                .expect("matching direct reliable retransmit should replay typed output");
+
+        assert_eq!(&replay.record[3..10], &current_record[3..10]);
+        assert_eq!(
+            replay.proof,
+            VerifiedProof::family(VerifiedFamily::Inventory)
+        );
+        assert!(!replay.dropped);
+        assert!(!replay.rewritten_deflated);
+    }
+
+    #[test]
+    fn coalesced_direct_inventory_retransmit_observes_semantics_once() {
+        let inventory =
+            crate::translate::inventory::build_ee_inventory_payload(0x01, 0x8000_1234, true, 4)
+                .expect("exact Inventory payload");
+        let chat = [b'P', 0x09, 0x05];
+        let mut packet = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        packet[3..5].copy_from_slice(&53u16.to_be_bytes());
+        packet[5..7].copy_from_slice(&80u16.to_be_bytes());
+        packet[7] = 0x0A;
+        packet[8..10].copy_from_slice(&1u16.to_be_bytes());
+        packet[10..12].copy_from_slice(&(inventory.len() as u16).to_be_bytes());
+        packet.extend_from_slice(&inventory);
+
+        let mut trailing = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        trailing[3..5].copy_from_slice(&54u16.to_be_bytes());
+        trailing[5..7].copy_from_slice(&80u16.to_be_bytes());
+        trailing[7] = 0x0A;
+        trailing[8..10].copy_from_slice(&1u16.to_be_bytes());
+        trailing[10..12].copy_from_slice(&(chat.len() as u16).to_be_bytes());
+        trailing.extend_from_slice(&chat);
+        packet.extend_from_slice(&trailing);
+        assert!(encode_legacy_m_crc(&mut packet));
+
+        let mut state = SessionState::default();
+        state
+            .semantic
+            .objects
+            .observe_materialized_item_object_ids(&[0x8000_1234]);
+        super::super::translate_server_to_client(&packet, &mut state)
+            .expect("first coalesced Inventory window should translate");
+        assert_eq!(
+            state
+                .semantic
+                .ui
+                .inventory_equipment_bridge_handoff_emissions,
+            1
+        );
+        assert_eq!(state.coalesced_replay.completed_direct_records.len(), 2);
+
+        let mut retransmit = packet;
+        retransmit[5..7].copy_from_slice(&81u16.to_be_bytes());
+        assert!(encode_legacy_m_crc(&mut retransmit));
+        super::super::translate_server_to_client(&retransmit, &mut state)
+            .expect("coalesced Inventory retransmit should replay typed output");
+
+        assert_eq!(
+            state
+                .semantic
+                .ui
+                .inventory_equipment_bridge_handoff_emissions,
+            1,
+            "the same reliable source record must not re-enter the semantic reducer"
+        );
+        assert_eq!(state.coalesced_replay.completed_direct_records.len(), 2);
     }
 
     #[test]

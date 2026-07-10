@@ -32,16 +32,31 @@ not as standalone workaround targets.
   proves the quickbar candidate became preserved slot-0 item `0x80016172`, while
   the separate generic inventory bridge candidate remained `0x8001616A`.
 
-  The same run exposed the next generalized state issue: cached retransmission
-  of one split quickbar/Inventory unit replayed translated packets without
-  reinflation but reapplied semantic side effects. The hint counted 18 server
-  quickbar events before any client action and suppressed the UseItem probe as
-  `server_quickbar_response_before_first_client_action`; the repeated unknown
-  Inventory claim also advanced ClientGui status queue update indices. Next
-  production path: make reliable cached replay reuse transport output without
-  re-observing semantic events or requeuing proxy-owned side effects, then
-  rerun the same live probe and require one semantic observation/side effect
-  per source unit before evaluating the real item action response.
+  ~~The same run exposed a generalized reliable-replay state issue: cached
+  retransmission of one split quickbar/Inventory unit reapplied semantic events
+  and proxy-owned side effects. Resolved and live-confirmed 2026-07-11.~~
+  Coalesced direct and deflated records now retain typed replay entries keyed by
+  source sequence, record offset, and exact gameplay bytes. Retransmits refresh
+  their ACK/packetized transport fields but do not re-enter the semantic reducer
+  or bridge-output scheduler; coalesced split output is no longer parsed a
+  second time as if its compressed bytes were high-level payloads.
+
+  Fresh HG capture
+  `C:\nwnbridge\codex-live-coalesced-side-effects-20260711-025757\harness-proxy-20260711-025759`
+  reached `Module_Loaded`, `Area_ClientArea`, and sustained live-object gameplay
+  through `2026-07-11T03:01:07+10:00` with zero quarantine files. It exercised
+  29 direct and 18 deflated typed-cache replays. The repeated burst contained
+  exactly one semantic server `Inventory_Equip` claim instead of repeatedly
+  advancing that claim; the earlier false 18-quickbar-event result did not
+  recur. One genuine live-object `GQ` use-count row resolved preserved slot-0
+  candidate `0x800180D3` before the opt-in UseItem could dispatch, so this is
+  clean refresh/replay evidence rather than an item-action result. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-coalesced-side-effects-20260711-025602`
+  processed 164 packets with 304 strict allows, zero strict quarantines, zero
+  quarantine files, and zero live-object terminal residuals. Next production
+  path: capture a real EE item action after materialization when no genuine GQ
+  row has already satisfied the refresh, then implement the first proven shared
+  quickbar or engine-facing mismatch instead of forcing a redundant action.
 - ~~2026-07-10 post-inventory full-appearance visible-equipment quarantine:
   resolved and live-confirmed 2026-07-10.~~ The original gameplay capture
   `C:\nwnbridge\codex-live-mainloop-inventory-proof-20260710-204026\harness-proxy-20260710-204028`

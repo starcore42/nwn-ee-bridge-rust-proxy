@@ -22,14 +22,19 @@ pub(super) struct DeflateState {
     pub(super) server_reassembly: Option<ServerDeflatedReassembly>,
     pub(super) server_zlib_inflater: Option<Decompress>,
     pub(super) completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
-    pub(super) completed_coalesced_stream_records: Vec<CompletedCoalescedStreamRecord>,
     pub(super) server_zlib_stream_proxy_owned: bool,
     pub(super) server_zlib_stream_owner: Option<ContinuationOwner>,
     pub(super) server_zlib_stream_epoch: u64,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct CoalescedReplayState {
+    pub(super) completed_deflated_records: Vec<CompletedCoalescedDeflatedRecord>,
+    pub(super) completed_direct_records: Vec<CompletedCoalescedDirectRecord>,
+}
+
 #[derive(Debug, Clone)]
-pub(super) struct CompletedCoalescedStreamRecord {
+pub(super) struct CompletedCoalescedDeflatedRecord {
     pub(super) sequence: u16,
     pub(super) offset: usize,
     pub(super) payload_length: usize,
@@ -39,6 +44,18 @@ pub(super) struct CompletedCoalescedStreamRecord {
     pub(super) record: Vec<u8>,
     pub(super) dropped: bool,
     pub(super) rewritten_deflated: bool,
+    pub(super) abort_window_if_primary_consumed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CompletedCoalescedDirectRecord {
+    pub(super) sequence: u16,
+    pub(super) offset: usize,
+    pub(super) payload: Vec<u8>,
+    pub(super) proof: VerifiedProof,
+    pub(super) record: Vec<u8>,
+    pub(super) dropped: bool,
+    pub(super) abort_window_if_primary_consumed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -481,6 +498,7 @@ pub(super) struct AreaContextState {
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub(super) deflate: DeflateState,
+    pub(super) coalesced_replay: CoalescedReplayState,
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
@@ -504,6 +522,7 @@ impl SessionState {
     ) -> Self {
         Self {
             deflate: DeflateState::default(),
+            coalesced_replay: CoalescedReplayState::default(),
             quickbar: QuickbarStreamState::default(),
             live_object: LiveObjectStreamState::default(),
             sequence: SequenceState::default(),
