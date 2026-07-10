@@ -29,7 +29,7 @@ use super::{
 
 const INVENTORY_EQUIPMENT_BRIDGE_REASON: &str =
     "inventory/equipment ready item-state bridge Inventory output";
-const CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON: &str =
+pub(super) const CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON: &str =
     "inventory/equipment materialized ClientGui status Inventory replay";
 const INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT: u16 = 1;
 
@@ -1345,6 +1345,33 @@ mod tests {
         assert_eq!(
             state.inventory_equipment.confirmed_inventory_replay_outputs,
             1
+        );
+
+        let emit = super::super::take_pending_server_to_client_packets(&mut state);
+        assert!(matches!(
+            emit,
+            crate::translate::Emit::MixedVerifiedProofPacketsPreShifted(_)
+        ));
+        assert_eq!(
+            state
+                .inventory_equipment
+                .confirmed_inventory_replay_dispatches,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_confirmed_inventory_replay_dispatch_update_index,
+            Some(update.update_index)
+        );
+        assert!(
+            !state
+                .inventory_equipment
+                .confirmed_inventory_replay_queued_for_dispatch()
+        );
+        assert_eq!(
+            state.inventory_equipment.output_status().as_str(),
+            "client_gui_status_inventory_replay_dispatched"
         );
     }
 

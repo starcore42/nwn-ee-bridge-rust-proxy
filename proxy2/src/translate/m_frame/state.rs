@@ -253,6 +253,7 @@ pub(super) enum InventoryEquipmentBridgeOutputStatus {
     QueuedClientGuiStatusOutput,
     ClientGuiStatusRefreshConfirmed,
     ClientGuiStatusInventoryReplayQueued,
+    ClientGuiStatusInventoryReplayDispatched,
     BlockedCandidateMismatch,
     DeferredMissingClaim,
     AwaitingClientGuiWriter,
@@ -268,6 +269,9 @@ impl InventoryEquipmentBridgeOutputStatus {
             Self::ClientGuiStatusRefreshConfirmed => "client_gui_status_refresh_confirmed",
             Self::ClientGuiStatusInventoryReplayQueued => {
                 "client_gui_status_inventory_replay_queued"
+            }
+            Self::ClientGuiStatusInventoryReplayDispatched => {
+                "client_gui_status_inventory_replay_dispatched"
             }
             Self::BlockedCandidateMismatch => "blocked_candidate_mismatch",
             Self::DeferredMissingClaim => "deferred_missing_claim",
@@ -304,6 +308,7 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) queued_outputs: u64,
     pub(super) queued_client_gui_status_outputs: u64,
     pub(super) confirmed_inventory_replay_outputs: u64,
+    pub(super) confirmed_inventory_replay_dispatches: u64,
     pub(super) client_gui_status_response_live_object_packets: u64,
     pub(super) client_gui_status_response_live_gui_record_packets: u64,
     pub(super) client_gui_status_response_materialized_item_packets: u64,
@@ -320,6 +325,7 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) pending_confirmed_inventory_replay:
         Option<InventoryEquipmentBridgePendingConfirmedInventoryReplay>,
     pub(super) last_confirmed_inventory_replay_update_index: Option<u64>,
+    pub(super) last_confirmed_inventory_replay_dispatch_update_index: Option<u64>,
     pub(super) last_client_gui_status_response:
         Option<InventoryEquipmentBridgeClientGuiStatusResponse>,
     pub(super) best_client_gui_status_response:
@@ -328,8 +334,10 @@ pub(super) struct InventoryEquipmentBridgeState {
 
 impl InventoryEquipmentBridgeState {
     pub(super) fn output_status(&self) -> InventoryEquipmentBridgeOutputStatus {
-        if self.confirmed_inventory_replay_outputs > 0 {
+        if self.confirmed_inventory_replay_queued_for_dispatch() {
             InventoryEquipmentBridgeOutputStatus::ClientGuiStatusInventoryReplayQueued
+        } else if self.confirmed_inventory_replay_dispatches > 0 {
+            InventoryEquipmentBridgeOutputStatus::ClientGuiStatusInventoryReplayDispatched
         } else if self.queued_outputs > 0 {
             InventoryEquipmentBridgeOutputStatus::QueuedInventoryOutput
         } else if self.client_gui_status_refresh_confirmed() {
@@ -351,6 +359,17 @@ impl InventoryEquipmentBridgeState {
 
     pub(super) fn requires_client_gui_writer(&self) -> bool {
         self.output_status() == InventoryEquipmentBridgeOutputStatus::AwaitingClientGuiWriter
+    }
+
+    pub(super) fn confirmed_inventory_replay_queued_for_dispatch(&self) -> bool {
+        self.confirmed_inventory_replay_outputs > self.confirmed_inventory_replay_dispatches
+    }
+
+    pub(super) fn record_confirmed_inventory_replay_dispatch(&mut self) {
+        self.confirmed_inventory_replay_dispatches =
+            self.confirmed_inventory_replay_dispatches.saturating_add(1);
+        self.last_confirmed_inventory_replay_dispatch_update_index =
+            self.last_confirmed_inventory_replay_update_index;
     }
 
     pub(super) fn client_gui_status_refresh_confirmed(&self) -> bool {

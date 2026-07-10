@@ -364,6 +364,23 @@ fn take_due_pending_server_packets(
             .server_synthetic_packets
             .saturating_add(1);
         observe_verified_synthetic_server_m_packet(state, pending.family, &pending.packet);
+        if pending.family == VerifiedFamily::Inventory
+            && pending.reason == inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON
+        {
+            state
+                .inventory_equipment
+                .record_confirmed_inventory_replay_dispatch();
+            tracing::info!(
+                dispatched_packets = state
+                    .inventory_equipment
+                    .confirmed_inventory_replay_dispatches,
+                update_index = state
+                    .inventory_equipment
+                    .last_confirmed_inventory_replay_dispatch_update_index
+                    .unwrap_or(0),
+                "inventory/equipment confirmed Inventory replay dispatched to client transport"
+            );
+        }
         due.push(pending);
     }
 
@@ -847,6 +864,9 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_pending\": {},\n",
             "  \"inventory_equipment_bridge_output_last_confirmed_inventory_replay_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_dispatched_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_queued_for_dispatch\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_confirmed_inventory_replay_dispatch_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_client_gui_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_missing_claim_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_blocked_candidate_mismatch_updates\": {},\n",
@@ -995,6 +1015,11 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         bridge.pending_confirmed_inventory_replay.is_some(),
         bridge
             .last_confirmed_inventory_replay_update_index
+            .unwrap_or(0),
+        bridge.confirmed_inventory_replay_dispatches,
+        bridge.confirmed_inventory_replay_queued_for_dispatch(),
+        bridge
+            .last_confirmed_inventory_replay_dispatch_update_index
             .unwrap_or(0),
         bridge.deferred_client_gui_updates,
         bridge.deferred_missing_claim_updates,
@@ -1946,6 +1971,30 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_confirmed_inventory_replay_update_index\": 12"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_confirmed_inventory_replay_dispatched_packets\": 0"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_confirmed_inventory_replay_queued_for_dispatch\": true"
+        ));
+
+        bridge.record_confirmed_inventory_replay_dispatch();
+        let dispatched_body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+        assert!(dispatched_body.contains(
+            "\"inventory_equipment_bridge_output_status\": \"client_gui_status_inventory_replay_dispatched\""
+        ));
+        assert!(dispatched_body.contains(
+            "\"inventory_equipment_bridge_output_confirmed_inventory_replay_dispatched_packets\": 1"
+        ));
+        assert!(dispatched_body.contains(
+            "\"inventory_equipment_bridge_output_confirmed_inventory_replay_queued_for_dispatch\": false"
+        ));
+        assert!(dispatched_body.contains(
+            "\"inventory_equipment_bridge_output_last_confirmed_inventory_replay_dispatch_update_index\": 12"
         ));
     }
 

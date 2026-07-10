@@ -33,36 +33,41 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-10 19:04 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-10 20:42 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-mainloop-playerlist-20260710-1903\harness-proxy-20260710-190221`.
-It selected the current debug proxy, reached `Module_Loaded`,
-`Area_ClientArea`, opened the post-area gate, and sustained
-`GameObjUpdate_LiveObject` through
-`2026-07-10T19:04:41+10:00`; its quarantine directory is empty. This session
-emitted only one-row PlayerList traffic, not the previous six-row shape, and it
-did not emit `Party_GetList`, so the harness did not schedule
-`AutoOpenInventory` and cannot count as live proof of the new main-loop action
-dispatcher or confirmed Inventory replay.
+`C:\nwnbridge\codex-live-mainloop-inventory-proof-20260710-204026\harness-proxy-20260710-204028`.
+It was launched with:
 
-The immediately preceding gameplay capture
-`C:\nwnbridge\codex-live-confirmed-inventory-replay-manual-20260710-170009\harness-proxy-20260710-170013`
-did emit `Party_GetList` and scheduled a 25-second inventory action, but the
-old build had no later dispatch callback and therefore produced no
-`ClientGuiInventory`. The current driver retains that scheduling message and
-services the due action from EE's client internal main loop on the game thread.
-Its two quarantined 430-byte, six-entry `PlayerList_All` units now both pass an
-exact current-code reduction: 6 EE identity insertions, 3 zero player-name
-length repairs at printable-name/repeated-creature-id boundaries, 1 locstring
-length repair, all 28 captured MSB-first fragment bits consumed, and no
-residual. The next live proof must encounter `Party_GetList` on the current
-driver and require `source=client main loop`, a real `ClientGuiInventory`
-handoff, exactly one confirmed Inventory replay, and no quarantine. A
-recurrence of the six-entry PlayerList should also be retained to confirm its
-exact live rewrite summary. Bounded strict replay
-`C:\nwnbridge\codex-proxy2-replay-playerlist-mainloop-20260710-1911` processed
-164 Diamond packet files with 304 strict allows, 0 strict quarantines, 0
-quarantine files, and 0 live-object terminal residuals.
+```powershell
+.\tools\test-hg-bridge.ps1 -Server 213 -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -SeedNwsyncClientCache -SkipAssets -SkipBuild -SkipInjectTest -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-mainloop-inventory-proof-20260710-204026
+```
+
+The run reached `Module_Loaded`, `Area_ClientArea`, and sustained
+`GameObjUpdate_LiveObject` through `2026-07-10T20:42:16+10:00`.
+`Party_GetList` scheduled auto-inventory at `20:41:47.605`; the EE client main
+loop dispatched it at `20:41:52.608` (the exact 5-second due tick) with
+`source=client main loop`, and `ClientGuiInventory` returned success. The live
+six-row `PlayerList_All` recurrence exact-translated twice. HG materialized the
+pending item and proxy2 queued and released exactly one retained Inventory
+replay. Current production code now records that pending-queue release as
+`client_gui_status_inventory_replay_dispatched`, separately from
+`client_gui_status_inventory_replay_queued`; this terminal state still needs a
+live rerun because the capture predates the new counter.
+
+The run is not clean: one unique 417-byte post-inventory P/5 payload was dumped
+twice in `quarantine\`. It contains the current-player inventory header, a
+creature add, a full appearance with eight visible-equipment rows, and a
+following `U/5 0x3967`. Exact byte audit confirms the final nested item has all
+eight zero values required by its `0xFF` trailer mask, so the remaining defect
+is the P/5 nested-name fragment-proof/cursor selection rather than missing
+read-buffer data. Retain
+`proxy2\fixtures\live_object\hg_live_inventory_town_watch_20260710_legacy.bin`
+as the private regression seed. Strict replay
+`C:\nwnbridge\codex-strict-inventory-dispatch-20260710-2147` processed 164
+Diamond packet files with 304 strict allows, 0 strict quarantines, 0 quarantine
+files, and 0 live-object terminal residuals. The next live proof must run after
+the P/5 fix and require both terminal dispatched replay status and zero
+quarantine.
 
 Latest clean live HG proxy status, as of 2026-07-10 07:12 +10, is
 `C:\nwnbridge\codex-live-clientgui-refresh-confirmed-current-20260710-0710\harness-proxy-20260710-070818`.
@@ -1692,8 +1697,9 @@ work.
 | --- | --- | --- |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
-| Gameplay reaches `Party_GetList` and logs `auto-inventory scheduled`, but the due time passes with no `ClientGuiInventory` event before disconnect | The 2026-07-10 17:00 build checked delayed auto-inventory only from a later server dispatch; an idle gameplay connection supplied none | Current code retains the scheduling CNWMessage and checks the due action from EE's client internal main loop on the game thread. Do not count this fixed until a current live run logs `source=client main loop` and a real `ClientGuiInventory` begin/result row. The 19:02 rerun reached gameplay but HG emitted no `Party_GetList`, so no action was scheduled. |
-| Gameplay continues through a synthetic `Area_AreaLoaded`, while proxy2 quarantines a 430-byte `PlayerList_All` payload beginning `50 0A 01 AA 01 00 00 06` | Three of six legacy rows have a zero player-name CExoString length followed by printable name bytes and the same row's creature object id | Current code repairs only that exact boundary and then requires the decompile-backed typed body and all 28 MSB-first fragment bits. Both retained artifacts rewrite exactly with 6 identity insertions, 3 player-name repairs, and 1 locstring repair. The 19:02 rerun had zero quarantine but did not reproduce the six-row shape; retain the next recurrence as the final live confirmation. |
+| Gameplay reaches `Party_GetList` and logs `auto-inventory scheduled`, but the due time passes with no `ClientGuiInventory` event before disconnect | The 2026-07-10 17:00 build checked delayed auto-inventory only from a later server dispatch; an idle gameplay connection supplied none | Fixed and live-confirmed 2026-07-10 20:41: the driver retains the scheduling CNWMessage and services the action from EE's client main loop on the game thread. The 5-second run logged `source=client main loop` at the exact due tick and a successful real `ClientGuiInventory` call. If it recurs, verify that main-loop servicing remains installed before changing server-dispatch timing. |
+| Gameplay continues through a synthetic `Area_AreaLoaded`, while proxy2 quarantines a 430-byte `PlayerList_All` payload beginning `50 0A 01 AA 01 00 00 06` | Three of six legacy rows have a zero player-name CExoString length followed by printable name bytes and the same row's creature object id | Fixed and live-confirmed 2026-07-10 20:41: current code repairs only that exact boundary and then requires the complete decompile-backed typed body and all 28 MSB-first fragment bits. The fresh six-row shape recurred twice and both units translated without PlayerList quarantine. |
+| A successful forced-inventory run releases one confirmed Inventory replay, then quarantines a 417-byte live-object payload beginning `50 05 01 9B 01 00 00` (often under two dump names for one inflated unit) | The current full P/5 parser cannot prove the exact fragment cursor across three nested visible-equipment item-name branches and the following `U/5 0x3967`; byte audit disproves a missing active-property value byte | Deduplicate by payload content, retain the private fixture, and run with `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1` plus owner offset 59. Trace the nested item branches against Diamond `sub_451020` and EE `sub_14076BD30`; do not insert or borrow bytes. Implement only the exact shared cursor rule, then require a live rerun with zero quarantine. |
 | Live HG reaches gameplay, then the final hint stays `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` with 0 `ClientGuiInventory` events despite `-AutoOpenInventory` | The driver/client exited or missed the inventory-open timing before the GUI action was emitted | Count the artifact as gameplay freshness evidence only, not forced-inventory evidence. Rerun with manual inventory opening or an explicit post-area `-AutoOpenInventoryDelayMilliseconds` value, and require `ClientGuiInventory` log rows before using the run to validate ClientGui writer/response counters. The 2026-07-09 09:19 current-code run hit this timing miss after reaching gameplay. |
 | Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-07 16:37 failure was followed by a 16:47 retry that observed BNK3 after 106ms and reached gameplay. |
 | `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |
