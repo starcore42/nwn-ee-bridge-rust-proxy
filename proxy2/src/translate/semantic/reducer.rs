@@ -1061,7 +1061,19 @@ fn remember_quickbar_item_context_if_relevant(
     state: &mut SemanticSessionState,
     source: &'static str,
 ) {
-    let item_context = state.objects.inventory_item_context_summary();
+    // A post-quickbar inventory response may materialize dozens of items at
+    // once. The lowest object id is deterministic, but it need not identify a
+    // quickbar button. Prefer the first preserved quickbar item only when the
+    // object registry independently proves that exact item is ready; otherwise
+    // keep the existing direct/shared/Feature-25 proof-priority fallback.
+    let preferred_ready_object_id = state
+        .ui
+        .last_quickbar_stream_probe
+        .and_then(|probe| probe.first_preserved_active_item_signature)
+        .map(|signature| signature.object_id);
+    let item_context = state
+        .objects
+        .inventory_item_context_summary_with_preferred_ready_candidate(preferred_ready_object_id);
     if !item_context.has_quickbar_item_context_evidence() {
         return;
     }
@@ -3955,6 +3967,7 @@ mod fixture_free_tests {
     #[test]
     fn pending_quickbar_refresh_resolves_on_prior_candidate_use_count_state() {
         let owner_id = 0x8000_0010u32;
+        let unrelated_lower_item_id = 0x8000_00f0u32;
         let candidate_id = 0x8000_0100u32;
         let mut live = vec![b'I'];
         live.extend_from_slice(&owner_id.to_le_bytes());
@@ -3967,6 +3980,12 @@ mod fixture_free_tests {
         let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
             .expect("blank quickbar payload should build");
         let mut state = SemanticSessionState::default();
+
+        apply_event(
+            &mut state,
+            direct_item_live_event(unrelated_lower_item_id),
+            None,
+        );
 
         observe_verified_payload(
             &mut state,
@@ -4018,6 +4037,16 @@ mod fixture_free_tests {
         );
 
         apply_event(&mut state, direct_item_live_event(candidate_id), None);
+
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_previous_post_item_context
+                .and_then(|context| context.compact_item_emission_ready_candidate)
+                .map(|candidate| candidate.object_id),
+            Some(candidate_id),
+            "post-quickbar selection must prefer the directly proven visible quickbar item over an unrelated lower item id"
+        );
 
         assert!(
             !state.ui.post_committed_quickbar_item_refresh_pending,

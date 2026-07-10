@@ -17,6 +17,31 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-11 quickbar-relevant materialized candidate selection: fresh live HG
+  capture
+  `C:\nwnbridge\codex-live-quickbar-preferred-candidate-20260711-004730\harness-proxy-20260711-004731`
+  reached `Module_Loaded`, `Area_ClientArea`, sustained live-object gameplay,
+  materialized 51 inventory items, committed a 36-slot/21-item quickbar, and
+  produced zero quarantine files through `2026-07-11T00:50:04+10:00`. The old
+  post-quickbar candidate rule chose the numerically lowest ready inventory
+  object; in the preceding clean capture that was `0x80016045` while the first
+  preserved quickbar item was `0x8001604D`, leaving an unrelated false pending
+  refresh. Proxy2 now prefers the first preserved quickbar item only when the
+  object registry independently proves that exact object is ready, then falls
+  back to the existing direct/shared/Feature-25 proof order. The fresh run
+  proves the quickbar candidate became preserved slot-0 item `0x80016172`, while
+  the separate generic inventory bridge candidate remained `0x8001616A`.
+
+  The same run exposed the next generalized state issue: cached retransmission
+  of one split quickbar/Inventory unit replayed translated packets without
+  reinflation but reapplied semantic side effects. The hint counted 18 server
+  quickbar events before any client action and suppressed the UseItem probe as
+  `server_quickbar_response_before_first_client_action`; the repeated unknown
+  Inventory claim also advanced ClientGui status queue update indices. Next
+  production path: make reliable cached replay reuse transport output without
+  re-observing semantic events or requeuing proxy-owned side effects, then
+  rerun the same live probe and require one semantic observation/side effect
+  per source unit before evaluating the real item action response.
 - ~~2026-07-10 post-inventory full-appearance visible-equipment quarantine:
   resolved and live-confirmed 2026-07-10.~~ The original gameplay capture
   `C:\nwnbridge\codex-live-mainloop-inventory-proof-20260710-204026\harness-proxy-20260710-204028`

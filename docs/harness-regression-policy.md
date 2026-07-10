@@ -33,35 +33,41 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-10 23:18 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-11 00:50 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-visible-equipment-cost-boundary-20260710-231503\harness-proxy-20260710-231505`.
+`C:\nwnbridge\codex-live-quickbar-preferred-candidate-20260711-004730\harness-proxy-20260711-004731`.
 It was launched with:
 
 ```powershell
-.\tools\test-hg-bridge.ps1 -Server 213 -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -SeedNwsyncClientCache -SkipAssets -SkipBuild -SkipInjectTest -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-visible-equipment-cost-boundary-20260710-231503
+.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -AutoQuickbarItemRefreshUseItem -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-quickbar-preferred-candidate-20260711-004730
 ```
 
 The run reached `Module_Loaded`, `Area_ClientArea`, and sustained
-`GameObjUpdate_LiveObject` through `2026-07-10T23:18:17+10:00`. The real
-`Party_GetList`/`ClientGuiInventory` path ran, HG materialized 52 item rows, and
-proxy2 released and transport-dispatched exactly one retained Inventory replay.
-The final hint reports
-`inventory_equipment_bridge_output_status="client_gui_status_inventory_replay_dispatched"`,
-one confirmed replay, one dispatched replay, no pending replay, and a confirmed
-materialized ClientGui refresh.
+`GameObjUpdate_LiveObject` through `2026-07-11T00:50:04+10:00`. A real
+`ClientGuiInventory_Status` response materialized 51 items, the later
+`GuiQuickbar_SetAllButtons` committed 36 slots with 21 item buttons, and
+`quarantine\` remained empty. The post-quickbar candidate is now the directly
+proven first preserved item `0x80016172` in slot 0 instead of the unrelated
+lowest ready inventory item `0x8001616A`; this confirms the generalized
+quickbar-relevant candidate preference on live HG.
 
-This run is clean: the post-inventory P/5 visible-equipment stream reached exact
-EE shape and `quarantine\` remained empty. The repaired shared rule stops a
-bare-inline item name before a printable low byte in the following cost DWORD
-only when the remaining Diamond/EE active-property suffix is exact. The private
-417-byte Town Watch regression proves the three item-name branches consume 6,
-6, and 7 Diamond bits after the creature-name cursor and hand off to the
-following U/5 at cursor 28; EE adds exactly one active-property BOOL per item.
-Strict replay
-`C:\nwnbridge\codex-proxy2-replay-visible-equipment-cost-boundary-20260710-231327`
-processed all 164 Diamond packet files with strict translation, 0 strict
-quarantines, 0 quarantine files, and 0 live-object terminal residuals.
+The opted-in UseItem did not dispatch because cached reliable replay of the
+same split quickbar/Inventory unit was counted as 18 server quickbar responses
+before a client action. The same cached replay also repeated the unknown
+Inventory/ClientGui status side effect. Treat this as replay/state evidence,
+not as an item-action result. Diagnose the cached translated-packet replay path
+and require one semantic observation and one proxy-owned side effect per source
+unit before rerunning the action probe. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-quickbar-preferred-candidate-20260711-004454`
+processed 164 Diamond packet files with 304 strict allows, zero strict
+quarantines, zero quarantine files, and zero live-object terminal residuals.
+
+Previous clean live HG inventory-replay status, as of 2026-07-10 23:18 +10,
+is
+`C:\nwnbridge\codex-live-visible-equipment-cost-boundary-20260710-231503\harness-proxy-20260710-231505`.
+It reached sustained gameplay, materialized 52 item rows, dispatched exactly
+one retained Inventory replay, reached exact visible-equipment EE shape, and
+produced zero quarantine files.
 
 Latest clean live HG proxy status, as of 2026-07-10 07:12 +10, is
 `C:\nwnbridge\codex-live-clientgui-refresh-confirmed-current-20260710-0710\harness-proxy-20260710-070818`.
@@ -1694,6 +1700,7 @@ work.
 | Gameplay reaches `Party_GetList` and logs `auto-inventory scheduled`, but the due time passes with no `ClientGuiInventory` event before disconnect | The 2026-07-10 17:00 build checked delayed auto-inventory only from a later server dispatch; an idle gameplay connection supplied none | Fixed and live-confirmed 2026-07-10 20:41: the driver retains the scheduling CNWMessage and services the action from EE's client main loop on the game thread. The 5-second run logged `source=client main loop` at the exact due tick and a successful real `ClientGuiInventory` call. If it recurs, verify that main-loop servicing remains installed before changing server-dispatch timing. |
 | Gameplay continues through a synthetic `Area_AreaLoaded`, while proxy2 quarantines a 430-byte `PlayerList_All` payload beginning `50 0A 01 AA 01 00 00 06` | Three of six legacy rows have a zero player-name CExoString length followed by printable name bytes and the same row's creature object id | Fixed and live-confirmed 2026-07-10 20:41: current code repairs only that exact boundary and then requires the complete decompile-backed typed body and all 28 MSB-first fragment bits. The fresh six-row shape recurred twice and both units translated without PlayerList quarantine. |
 | A successful forced-inventory run releases one confirmed Inventory replay, then quarantines a 417-byte live-object payload beginning `50 05 01 9B 01 00 00` (often under two dump names for one inflated unit) | Fixed 2026-07-10: the bare-inline `Militia Shield` name was followed by cost DWORD `0x00000032`, and its printable low byte was greedily consumed as a trailing `2`; the exact fragment cursor was already correct | The parser now tries bounded printable endpoints longest-first and accepts only a complete decompile-backed active-property suffix. The private fixture exact-translates with item-name widths 6/6/7 and U/5 at cursor 28. Fresh live capture `codex-live-visible-equipment-cost-boundary-20260710-231503` reached gameplay, dispatched one confirmed replay, and produced zero quarantine files. |
+| A live item-action probe commits a valid item quickbar, then the hint reports many `quickbar_events_before_first_client_action`, suppresses the action as `server_quickbar_response_before_first_client_action`, and repeats ClientGui status queue update indices within milliseconds | Cached reliable replay is reusing translated transport packets but reapplying semantic observations and proxy-owned bridge side effects for the same source unit | Retain the capture as replay-state evidence, not an item-action result. Inspect the typed-cache/coalesced split replay handoff, make duplicate transport replay side-effect-free, and rerun. The 2026-07-11 capture showed 18 quickbar observations and repeated status updates from one replay burst with zero quarantine. |
 | Live HG reaches gameplay, then the final hint stays `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` with 0 `ClientGuiInventory` events despite `-AutoOpenInventory` | The driver/client exited or missed the inventory-open timing before the GUI action was emitted | Count the artifact as gameplay freshness evidence only, not forced-inventory evidence. Rerun with manual inventory opening or an explicit post-area `-AutoOpenInventoryDelayMilliseconds` value, and require `ClientGuiInventory` log rows before using the run to validate ClientGui writer/response counters. The 2026-07-09 09:19 current-code run hit this timing miss after reaching gameplay. |
 | Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-07 16:37 failure was followed by a 16:47 retry that observed BNK3 after 106ms and reached gameplay. |
 | `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |

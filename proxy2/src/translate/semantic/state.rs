@@ -4030,7 +4030,16 @@ impl ObjectRegistry {
         &self,
         direct_item_proof_objects: &BTreeSet<u32>,
         feature25_item_proof_objects: &BTreeSet<u32>,
+        preferred_ready_object_id: Option<u32>,
     ) -> Option<InventoryItemContextCandidate> {
+        if let Some(candidate) = Self::preferred_ready_item_candidate(
+            direct_item_proof_objects,
+            feature25_item_proof_objects,
+            preferred_ready_object_id,
+        ) {
+            return Some(candidate);
+        }
+
         if let Some(object_id) = direct_item_proof_objects
             .difference(feature25_item_proof_objects)
             .next()
@@ -4072,7 +4081,16 @@ impl ObjectRegistry {
         &self,
         direct_item_proof_objects: &BTreeSet<u32>,
         feature25_item_proof_objects: &BTreeSet<u32>,
+        preferred_ready_object_id: Option<u32>,
     ) -> Option<InventoryItemContextCandidate> {
+        if let Some(candidate) = Self::preferred_ready_item_candidate(
+            direct_item_proof_objects,
+            feature25_item_proof_objects,
+            preferred_ready_object_id,
+        ) {
+            return Some(candidate);
+        }
+
         if let Some(object_id) = direct_item_proof_objects
             .difference(feature25_item_proof_objects)
             .next()
@@ -4096,6 +4114,26 @@ impl ObjectRegistry {
         })
     }
 
+    fn preferred_ready_item_candidate(
+        direct_item_proof_objects: &BTreeSet<u32>,
+        feature25_item_proof_objects: &BTreeSet<u32>,
+        preferred_ready_object_id: Option<u32>,
+    ) -> Option<InventoryItemContextCandidate> {
+        let object_id = preferred_ready_object_id?;
+        if !direct_item_proof_objects.contains(&object_id) {
+            return None;
+        }
+        Some(InventoryItemContextCandidate {
+            object_id,
+            proof: InventoryItemObjectProof::ActiveObject,
+            source: if feature25_item_proof_objects.contains(&object_id) {
+                InventoryItemContextCandidateSource::Shared
+            } else {
+                InventoryItemContextCandidateSource::DirectOnly
+            },
+        })
+    }
+
     pub(crate) fn has_known_inventory_item_object_id(&self, object_id: u32) -> bool {
         if self.materialized_item_object_ids.contains(&object_id) {
             return true;
@@ -4107,6 +4145,13 @@ impl ObjectRegistry {
     }
 
     pub(crate) fn inventory_item_context_summary(&self) -> InventoryItemContextSummary {
+        self.inventory_item_context_summary_with_preferred_ready_candidate(None)
+    }
+
+    pub(crate) fn inventory_item_context_summary_with_preferred_ready_candidate(
+        &self,
+        preferred_ready_object_id: Option<u32>,
+    ) -> InventoryItemContextSummary {
         let active_item_objects = self
             .known
             .values()
@@ -4137,11 +4182,13 @@ impl ObjectRegistry {
         let compact_item_emission_candidate = self.compact_item_emission_candidate(
             &direct_item_proof_objects,
             &feature25_item_proof_objects,
+            preferred_ready_object_id,
         );
         let compact_item_emission_ready_objects = direct_item_proof_objects.len();
         let compact_item_emission_ready_candidate = self.compact_item_emission_ready_candidate(
             &direct_item_proof_objects,
             &feature25_item_proof_objects,
+            preferred_ready_object_id,
         );
         InventoryItemContextSummary {
             active_item_objects: active_item_objects.len(),
@@ -9195,6 +9242,35 @@ mod tests {
         assert_eq!(
             direct_only_summary.inventory_equipment_handoff_outcome(),
             InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs
+        );
+
+        let mut quickbar_preferred = ObjectRegistry::default();
+        quickbar_preferred.observe_materialized_item_object_ids(&[0x8000_0100, 0x8000_0108]);
+        let quickbar_preferred_summary = quickbar_preferred
+            .inventory_item_context_summary_with_preferred_ready_candidate(Some(0x8000_0108));
+        assert_eq!(
+            quickbar_preferred_summary.compact_item_emission_ready_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0108,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            "a directly proven preserved quickbar item must outrank an unrelated lower object id"
+        );
+        assert_eq!(
+            quickbar_preferred_summary.compact_item_emission_candidate,
+            quickbar_preferred_summary.compact_item_emission_ready_candidate
+        );
+        assert_eq!(
+            quickbar_preferred
+                .inventory_item_context_summary_with_preferred_ready_candidate(Some(0x8000_0109))
+                .compact_item_emission_ready_candidate,
+            Some(InventoryItemContextCandidate {
+                object_id: 0x8000_0100,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            "an unproven preferred id must not bypass the normal proof-priority fallback"
         );
 
         let mut pure_ready = ObjectRegistry::default();
