@@ -7150,6 +7150,7 @@ fn parse_legacy_visible_equipment_records(
                             bit_proof,
                             legacy_bits_before,
                             ee_extra_bits_before,
+                            cursor,
                         ) {
                             continue;
                         }
@@ -7262,6 +7263,7 @@ fn parse_legacy_visible_equipment_records(
                         bit_proof,
                         legacy_bits_before,
                         ee_extra_bits_before,
+                        cursor,
                     ) {
                         continue;
                     }
@@ -7559,6 +7561,7 @@ fn parse_legacy_compact_visible_equipment_records(
                             bit_proof,
                             legacy_bits_before,
                             ee_extra_bits_before,
+                            cursor,
                         ) {
                             continue;
                         }
@@ -7668,6 +7671,7 @@ fn parse_legacy_compact_visible_equipment_records(
                         bit_proof,
                         legacy_bits_before,
                         ee_extra_bits_before,
+                        cursor,
                     ) {
                         continue;
                     }
@@ -7837,6 +7841,7 @@ fn item_add_record_matches_bit_proof(
     bit_proof: Option<AppearanceBitProof<'_>>,
     legacy_bits_before: usize,
     ee_extra_bits_before: usize,
+    read_cursor: usize,
 ) -> bool {
     let Some(proof) = bit_proof else {
         return true;
@@ -7869,6 +7874,7 @@ fn item_add_record_matches_bit_proof(
             consumed_bits,
             item,
             proof,
+            read_cursor,
         );
         return false;
     }
@@ -7882,6 +7888,7 @@ fn item_add_record_matches_bit_proof(
             consumed_bits,
             item,
             proof,
+            read_cursor,
         );
         return false;
     }
@@ -7897,6 +7904,7 @@ fn item_add_record_matches_bit_proof(
                     consumed_bits,
                     item,
                     proof,
+                    read_cursor,
                 );
                 return false;
             };
@@ -7907,12 +7915,13 @@ fn item_add_record_matches_bit_proof(
                     consumed_bits,
                     item,
                     proof,
+                    read_cursor,
                 );
                 return false;
             }
         }
     }
-    trace_visible_equipment_bit_proof_accept(start_cursor, consumed_bits, item, proof);
+    trace_visible_equipment_bit_proof_accept(start_cursor, consumed_bits, item, proof, read_cursor);
     true
 }
 
@@ -7955,6 +7964,7 @@ fn trace_visible_equipment_bit_proof_reject(
     consumed_bits: usize,
     item: &LegacyAppearanceItemAddRecord,
     proof: AppearanceBitProof<'_>,
+    read_cursor: usize,
 ) {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF").is_none() {
         return;
@@ -7996,7 +8006,7 @@ fn trace_visible_equipment_bit_proof_reject(
         )
         .unwrap_or(&[]);
     eprintln!(
-        "live-object visible-equipment bit proof rejected: reason={reason} owner_offset={} start_cursor={start_cursor} consumed_bits={consumed_bits} translated_ee={} name_proof={:?} item_bits={} item_ee_extra_bits={} item_ee_insert_offsets={:?} bits={:?}",
+        "live-object visible-equipment bit proof rejected: reason={reason} owner_offset={} read_cursor={read_cursor} start_cursor={start_cursor} consumed_bits={consumed_bits} translated_ee={} name_proof={:?} item_bits={} item_ee_extra_bits={} item_ee_insert_offsets={:?} bits={:?}",
         proof.owner_offset,
         proof.translated_ee,
         item.name_fragment_proof,
@@ -8012,6 +8022,7 @@ fn trace_visible_equipment_bit_proof_accept(
     consumed_bits: usize,
     item: &LegacyAppearanceItemAddRecord,
     proof: AppearanceBitProof<'_>,
+    read_cursor: usize,
 ) {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF_ACCEPT").is_none() {
         return;
@@ -8053,7 +8064,7 @@ fn trace_visible_equipment_bit_proof_accept(
         )
         .unwrap_or(&[]);
     eprintln!(
-        "live-object visible-equipment bit proof accepted: owner_offset={} start_cursor={start_cursor} consumed_bits={consumed_bits} translated_ee={} name_proof={:?} item_bits={} item_ee_extra_bits={} item_ee_insert_offsets={:?} bits={:?}",
+        "live-object visible-equipment bit proof accepted: owner_offset={} read_cursor={read_cursor} start_cursor={start_cursor} consumed_bits={consumed_bits} translated_ee={} name_proof={:?} item_bits={} item_ee_extra_bits={} item_ee_insert_offsets={:?} bits={:?}",
         proof.owner_offset,
         proof.translated_ee,
         item.name_fragment_proof,
@@ -9282,7 +9293,20 @@ fn parse_legacy_active_item_properties_tail_after_bare_inline_string(
     while text_end < text_limit && is_legacy_bare_active_item_name_byte(tail[text_end]) {
         text_end += 1;
     }
-    text_end > text_start && parse_legacy_active_item_properties_tail_after_name(tail, text_end)
+    if text_end == text_start {
+        return false;
+    }
+
+    // A byte in the first active-property DWORD may itself be printable.  The
+    // live 2026-07-10 shield row ends the bare name `Militia Shield` immediately
+    // before cost DWORD `0x00000032`; greedily treating that low byte as ASCII
+    // `2` hides the exact property-count/mask suffix. Diamond `sub_451020` and
+    // EE `sub_14076BD30` define the suffix boundary, so use the same bounded
+    // longest-first endpoint search as the quickbar active-property parser and
+    // accept only the endpoint whose complete byte tail is exact.
+    (text_start + 1..=text_end).rev().any(|candidate_end| {
+        parse_legacy_active_item_properties_tail_after_name(tail, candidate_end)
+    })
 }
 
 fn legacy_direct_bare_inline_active_item_name_length(tail: &[u8], cursor: usize) -> Option<usize> {
@@ -11403,6 +11427,27 @@ mod public_tests {
         assert!(
             !parse_legacy_active_item_properties_tail(&trailing_byte),
             "active-property tail proof must end exactly after the masked values"
+        );
+    }
+
+    #[test]
+    fn bare_inline_item_name_stops_before_printable_cost_low_byte() {
+        let mut tail = Vec::new();
+        push_u32(&mut tail, 0); // Legacy zero-length bare-inline name marker.
+        tail.extend_from_slice(b"Militia Shield");
+        push_u32(&mut tail, 0x32); // Printable ASCII `2` is the cost low byte.
+        push_u32(&mut tail, 1); // Stack/charges.
+        tail.push(0); // Active-property count.
+        tail.push(0); // State mask.
+        tail.push(0xFF); // Value mask.
+        tail.extend_from_slice(&[0; 8]);
+
+        assert!(parse_legacy_active_item_properties_tail_after_bare_inline_string(&tail, 0));
+
+        tail.pop();
+        assert!(
+            !parse_legacy_active_item_properties_tail_after_bare_inline_string(&tail, 0),
+            "the endpoint search must still require every value-mask byte"
         );
     }
 

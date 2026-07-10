@@ -17,45 +17,39 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
-- 2026-07-10 main-loop inventory proof and post-refresh P/5 quarantine: the
-  gate began from the gameplay-reaching
-  `C:\nwnbridge\codex-live-mainloop-playerlist-20260710-1903\harness-proxy-20260710-190221`
-  capture (last gameplay artifact `2026-07-10T19:04:41+10:00`, about 1h35m old),
-  then ran a fresh live HG probe at
-  `C:\nwnbridge\codex-live-mainloop-inventory-proof-20260710-204026\harness-proxy-20260710-204028`.
-  The fresh run reached `Module_Loaded`, `Area_ClientArea`, and sustained
-  `GameObjUpdate_LiveObject` through `2026-07-10T20:42:16+10:00`.
-  `Party_GetList` scheduled the 5-second action at `20:41:47.605`; EE's client
-  main loop dispatched it at `20:41:52.608` with
-  `source=client main loop`, and the real `ClientGuiInventory` call succeeded.
-  Both recurring six-row `PlayerList_All` units exact-translated with no
-  PlayerList quarantine. HG then materialized the pending inventory object and
-  proxy2 queued and released exactly one retained Inventory replay. Proxy2 now
-  distinguishes that transport release from the earlier queue state, records
-  confirmed replay-dispatch count/update index, and exports terminal status
-  `client_gui_status_inventory_replay_dispatched` in hints and replay summaries.
-  Focused replay-state tests and `cargo check -p hgbridge-proxy2` pass; strict
-  replay
-  `C:\nwnbridge\codex-strict-inventory-dispatch-20260710-2147` processed 164
-  files with 304 strict allows, 0 strict quarantines, 0 quarantine files, and
-  0 live-object terminal residuals.
+- ~~2026-07-10 post-inventory full-appearance visible-equipment quarantine:
+  resolved and live-confirmed 2026-07-10.~~ The original gameplay capture
+  `C:\nwnbridge\codex-live-mainloop-inventory-proof-20260710-204026\harness-proxy-20260710-204028`
+  produced one unique 417-byte P/5 stream containing a current-player inventory
+  header, creature add, full appearance with five dummy and three nested item
+  rows, and following `U/5 0x3967`. The generalized defect was byte-side, not a
+  borrowed fragment bit or missing property value: the second item's bare-inline
+  name `Militia Shield` is followed by cost DWORD `0x00000032`, whose printable
+  low byte was greedily consumed as a trailing `2`. The parser now tests bounded
+  printable endpoints longest-first and accepts only the endpoint whose complete
+  decompile-backed active-property suffix is exact.
 
-  One generalized live-object blocker remains: after the inventory response,
-  sequence 53 produced one unique 417-byte inflated P/5 stream dumped under
-  two quarantine names. It contains the current-player inventory header, a
-  creature add, a full creature appearance with eight visible-equipment rows
-  (five dummy and three nested item adds), and a following `U/5 0x3967` row.
-  Byte re-audit confirmed the final nested item's `0xFF` property-value mask
-  already owns all eight required zero bytes; inserting a ninth byte is
-  disproved. The failure is therefore still in the full-appearance
-  fragment-proof/cursor selection, not an active-property byte truncation.
-  The private regression seed is
-  `proxy2/fixtures/live_object/hg_live_inventory_town_watch_20260710_legacy.bin`.
-  Active next path: trace the three nested item name branches and the following
-  U/5 cursor against Diamond `sub_451020` and EE `sub_14076BD30`, implement the
-  exact shared P/5 rule, then rerun live on the dispatch-status build and
-  require terminal `client_gui_status_inventory_replay_dispatched` plus zero
-  quarantine.
+  Diamond `sub_451020` and EE `sub_14076BD30` prove the bit handoff. Starting at
+  P/5 cursor 6, the creature locstring pair consumes 3 bits; the three item-name
+  branches then consume 6, 6, and 7 Diamond bits and land the following U/5
+  exactly at cursor 28. EE inserts one active-property BOOL per item, so the
+  appearance span widens from 22 to 25 bits without borrowing from U/5. The
+  private 417-byte regression seed
+  `proxy2/fixtures/live_object/hg_live_inventory_town_watch_20260710_legacy.bin`
+  now exact-translates and claims.
+
+  Fresh HG capture
+  `C:\nwnbridge\codex-live-visible-equipment-cost-boundary-20260710-231503\harness-proxy-20260710-231505`
+  reached `Module_Loaded`, `Area_ClientArea`, sustained live-object gameplay,
+  and the forced inventory refresh. HG materialized 52 item rows, proxy2
+  released and transport-dispatched exactly one retained Inventory replay, the
+  final hint reports `client_gui_status_inventory_replay_dispatched`, and the
+  visible-equipment stream reached exact EE shape. Artifacts continued through
+  `2026-07-10T23:18:17+10:00` with zero quarantine files. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-visible-equipment-cost-boundary-20260710-231327`
+  processed all 164 baseline packets with strict translation, zero strict
+  quarantines, zero quarantine artifacts, and zero live-object terminal
+  residuals.
 - 2026-07-10 PlayerList inline-name repair and game-thread delayed action:
   the live-data gate used
   `C:\nwnbridge\codex-live-confirmed-inventory-replay-manual-20260710-170009\harness-proxy-20260710-170013`
