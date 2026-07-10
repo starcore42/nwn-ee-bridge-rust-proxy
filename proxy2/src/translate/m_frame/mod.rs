@@ -521,6 +521,18 @@ fn observe_verified_server_m_packet(
         view.sequence,
         view.ack_sequence,
     );
+    if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
+        state,
+        view.sequence,
+        view.ack_sequence,
+    ) {
+        tracing::warn!(
+            error = %err,
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            "failed to queue confirmed ClientGui status Inventory replay"
+        );
+    }
     if let Err(err) = inventory_equipment::maybe_queue_inventory_equipment_bridge_output(
         state,
         view.sequence,
@@ -832,6 +844,9 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_requires_client_gui_writer\": {},\n",
             "  \"inventory_equipment_bridge_output_client_gui_status_refresh_confirmed\": {},\n",
             "  \"inventory_equipment_bridge_output_queued_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_pending\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_confirmed_inventory_replay_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_client_gui_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_deferred_missing_claim_updates\": {},\n",
             "  \"inventory_equipment_bridge_output_blocked_candidate_mismatch_updates\": {},\n",
@@ -976,6 +991,11 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         requires_client_gui_writer,
         client_gui_status_refresh_confirmed,
         bridge.queued_outputs,
+        bridge.confirmed_inventory_replay_outputs,
+        bridge.pending_confirmed_inventory_replay.is_some(),
+        bridge
+            .last_confirmed_inventory_replay_update_index
+            .unwrap_or(0),
         bridge.deferred_client_gui_updates,
         bridge.deferred_missing_claim_updates,
         bridge.blocked_candidate_mismatch_updates,
@@ -1901,6 +1921,32 @@ mod tests {
         assert!(
             body.contains("\"inventory_equipment_bridge_output_last_queued_equip_slot\": 131072")
         );
+    }
+
+    #[test]
+    fn quickbar_hint_augmentation_serializes_confirmed_inventory_replay() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.queued_outputs = 1;
+        bridge.confirmed_inventory_replay_outputs = 1;
+        bridge.last_confirmed_inventory_replay_update_index = Some(12);
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_status\": \"client_gui_status_inventory_replay_queued\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_confirmed_inventory_replay_packets\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_confirmed_inventory_replay_pending\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_confirmed_inventory_replay_update_index\": 12"
+        ));
     }
 
     #[test]
@@ -3734,6 +3780,23 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
     if inserted_extra_output_frames {
         pre_shift_current_server_packets(state, &mut outputs)?;
         record_extra_deflated_output_sequence_shift(state, &reassembly, outputs.len())?;
+    }
+    let response_last_sequence = reassembly
+        .frames
+        .last()
+        .map(|frame| frame.sequence)
+        .unwrap_or(reassembly.first_sequence);
+    if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
+        state,
+        response_last_sequence,
+        response_ack_sequence,
+    ) {
+        tracing::warn!(
+            error = %err,
+            response_last_sequence,
+            response_ack_sequence,
+            "failed to queue confirmed deflated ClientGui status Inventory replay"
+        );
     }
     if used_server_stream {
         reassembly::remember_completed_server_stream_window(

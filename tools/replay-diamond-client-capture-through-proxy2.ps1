@@ -1474,6 +1474,9 @@ try {
     $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects = 0
     $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects = 0
     $quickbarHintInventoryEquipmentBridgeOutputQueuedPackets = 0
+    $quickbarHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPackets = 0
+    $quickbarHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPending = $false
+    $quickbarHintInventoryEquipmentBridgeOutputLastConfirmedInventoryReplayUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = 0
     $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = 0
     $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = 0
@@ -1904,6 +1907,9 @@ try {
         $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_last_state_update_ready_objects'
         $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects = & $getQuickbarHintInt64 'inventory_equipment_bridge_handoff_last_state_update_deferred_feature25_only_objects'
         $quickbarHintInventoryEquipmentBridgeOutputQueuedPackets = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_queued_packets'
+        $quickbarHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPackets = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_confirmed_inventory_replay_packets'
+        $quickbarHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPending = & $getQuickbarHintBoolAny -Names @('inventory_equipment_bridge_output_confirmed_inventory_replay_pending')
+        $quickbarHintInventoryEquipmentBridgeOutputLastConfirmedInventoryReplayUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_confirmed_inventory_replay_update_index'
         $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_client_gui_updates'
         $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_deferred_missing_claim_updates'
         $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_blocked_candidate_mismatch_updates'
@@ -2476,6 +2482,9 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects = $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateReadyObjects
         QuickbarItemRefreshHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects = $quickbarHintInventoryEquipmentBridgeHandoffLastStateUpdateDeferredFeature25OnlyObjects
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputQueuedPackets = $quickbarHintInventoryEquipmentBridgeOutputQueuedPackets
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPackets = $quickbarHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPackets
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPending = $quickbarHintInventoryEquipmentBridgeOutputConfirmedInventoryReplayPending
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastConfirmedInventoryReplayUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastConfirmedInventoryReplayUpdateIndex
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredClientGuiUpdates
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates = $quickbarHintInventoryEquipmentBridgeOutputDeferredMissingClaimUpdates
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates

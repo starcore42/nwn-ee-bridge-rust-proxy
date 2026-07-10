@@ -17,6 +17,39 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-10 confirmed Inventory replay after ClientGui materialization:
+  live-data gate reused the clean gameplay-reaching HG proxy capture
+  `C:\nwnbridge\codex-live-clientgui-refresh-confirmed-current-20260710-0710\harness-proxy-20260710-070818`
+  (`proxy.structured.log` through `2026-07-10T07:12:44+10:00`, about 9h22m
+  old at the `2026-07-10T16:35+10:00` gate; gameplay reached; no quarantine).
+  Proxy2 now retains an original server `Inventory_Equip` claim while its
+  unknown item triggers the proxy-owned `ClientGuiInventory_Status` fallback,
+  and replays that exact EE Inventory result only after one associated
+  materialized response proves both the queued current-item candidate and the
+  original claim object. The replay follows the complete response frame batch,
+  uses the decompile-backed EE Inventory writer/validator order (object id and
+  equip slot in the read buffer, result BOOL in the MSB fragment), and is
+  idempotent per bridge update. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-confirmed-inventory-replay-current-20260710-165225`
+  processed 164 packet files with 304 strict allows, 0 strict quarantines,
+  no quarantine directory, and 0 live-object terminal residuals; the baseline
+  does not contain the live ClientGui fallback, so its new counters correctly
+  remain zero. Fresh live probes
+  `C:\nwnbridge\codex-live-confirmed-inventory-replay-20260710-165429\harness-proxy-20260710-165434`
+  and
+  `C:\nwnbridge\codex-live-confirmed-inventory-replay-manual-20260710-170009\harness-proxy-20260710-170013`
+  both reached gameplay, but did not exercise the replay. The retry scheduled
+  auto-inventory from `Party_GetList` at `17:01:34+10:00` with a 25-second
+  delay, then received no later dispatch callback on which the driver could
+  service the due action before disconnect. Both probes also quarantined an
+  unclaimed 430-byte, six-entry `PlayerList_All` stream unit (`P 0A 01`,
+  declared length `0x01AA`). Active next paths: make delayed auto-inventory
+  fire from a reliable post-area callback/timer rather than waiting
+  indefinitely for another client dispatch; reduce the new PlayerList shape
+  to a typed, decompile-backed locstring/cursor variant; then rerun live and
+  require
+  `inventory_equipment_bridge_output_status="client_gui_status_inventory_replay_queued"`,
+  exactly one confirmed replay packet, and no quarantine.
 - 2026-07-10 ClientGui status refresh confirmation: live-data gate reused the
   gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-inventory-clientgui-fallback-current-20260710-031303\harness-proxy-20260710-031307`

@@ -20,6 +20,7 @@ use super::{
     state::{
         InventoryEquipmentBridgeClientGuiStatusResponse, InventoryEquipmentBridgeOutputDecision,
         InventoryEquipmentBridgeOutputDecisionKind,
+        InventoryEquipmentBridgePendingConfirmedInventoryReplay,
         InventoryEquipmentBridgeQueuedClientGuiStatusOutput, InventoryEquipmentBridgeQueuedOutput,
         SessionState,
     },
@@ -28,6 +29,8 @@ use super::{
 
 const INVENTORY_EQUIPMENT_BRIDGE_REASON: &str =
     "inventory/equipment ready item-state bridge Inventory output";
+const CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON: &str =
+    "inventory/equipment materialized ClientGui status Inventory replay";
 const INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT: u16 = 1;
 
 pub(super) fn maybe_queue_inventory_equipment_bridge_output(
@@ -251,7 +254,7 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
         .semantic
         .ui
         .last_live_object_inventory_materialization
-        .as_ref()
+        .clone()
     else {
         return;
     };
@@ -337,6 +340,7 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     if update_best {
         state.inventory_equipment.best_client_gui_status_response = Some(response);
     }
+    maybe_stage_confirmed_inventory_replay(state, &summary);
     tracing::info!(
         queued_update_index,
         server_sequence,
@@ -356,6 +360,181 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .unwrap_or_else(|| "none".to_string()),
         "inventory/equipment bridge observed server live-object response after proxy-owned ClientGuiInventory_Status"
     );
+}
+
+fn maybe_stage_confirmed_inventory_replay(
+    state: &mut SessionState,
+    summary: &crate::translate::semantic::LiveObjectInventoryMaterializationSummary,
+) {
+    let Some(decision) = state.inventory_equipment.last_decision else {
+        return;
+    };
+    let Some(queued_status) = state
+        .inventory_equipment
+        .last_queued_client_gui_status_output
+    else {
+        return;
+    };
+    let Some(queued_candidate) = queued_status.candidate else {
+        return;
+    };
+    let Some(claim) = decision.server_inventory_claim else {
+        return;
+    };
+    if decision.kind != InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput
+        || decision.consumer
+            != crate::translate::semantic::InventoryEquipmentHandoffConsumer::ServerInventory
+        || decision.update_index != queued_status.update_index
+        || state
+            .inventory_equipment
+            .last_confirmed_inventory_replay_update_index
+            == Some(decision.update_index)
+        || state
+            .inventory_equipment
+            .pending_confirmed_inventory_replay
+            .is_some()
+        || !summary
+            .materialized_item_object_ids
+            .contains(&queued_candidate.object_id)
+        || !summary
+            .materialized_item_object_ids
+            .contains(&claim.object_id)
+        || !matches!(
+            state
+                .semantic
+                .objects
+                .inventory_item_object_status(claim.object_id),
+            crate::translate::semantic::InventoryItemObjectStatus::Proven(_)
+        )
+    {
+        return;
+    }
+
+    state.inventory_equipment.pending_confirmed_inventory_replay =
+        Some(InventoryEquipmentBridgePendingConfirmedInventoryReplay {
+            update_index: decision.update_index,
+            emission_index: decision.emission_index,
+            event_index: decision.event_index,
+            claim,
+        });
+    tracing::info!(
+        update_index = decision.update_index,
+        queued_candidate_object_id = %format_args!("0x{:08X}", queued_candidate.object_id),
+        claim_object_id = %format_args!("0x{:08X}", claim.object_id),
+        claim_minor = claim.minor,
+        claim_result = claim.result,
+        claim_equip_slot = claim.equip_slot,
+        "inventory/equipment bridge staged original Inventory result after associated ClientGui status materialized its claim object"
+    );
+}
+
+pub(super) fn maybe_queue_confirmed_inventory_replay(
+    state: &mut SessionState,
+    response_last_sequence: u16,
+    ack_sequence: u16,
+) -> anyhow::Result<bool> {
+    let Some(pending) = state
+        .inventory_equipment
+        .pending_confirmed_inventory_replay
+        .take()
+    else {
+        return Ok(false);
+    };
+    if state
+        .inventory_equipment
+        .last_confirmed_inventory_replay_update_index
+        == Some(pending.update_index)
+    {
+        return Ok(false);
+    }
+
+    // `inventory::build_ee_inventory_payload` owns the decompile-backed EE
+    // writer order: OBJECTIDServer and DWORD equip slot in the CNW read
+    // buffer, followed by the single MSB-owned result BOOL in the fragment
+    // stream. Reusing its exact validator here prevents a materialization
+    // timing repair from becoming a second, weaker packet writer.
+    let claim = pending.claim;
+    let payload = inventory::build_ee_inventory_payload(
+        claim.minor,
+        claim.object_id,
+        claim.result,
+        claim.equip_slot,
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!("confirmed ClientGui status replay did not build exact Inventory payload")
+    })?;
+    let shifted_response_last_sequence = shift_sequence_for_peer(
+        &state.sequence.server_sequence_shifts,
+        response_last_sequence,
+    );
+    let synthetic_sequence = shifted_response_last_sequence.wrapping_add(1);
+    let packet =
+        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
+
+    let future_shift_base = response_last_sequence.wrapping_add(1);
+    state.sequence.server_sequence_shifts.push(SequenceShift {
+        base: future_shift_base,
+        delta: INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
+    });
+    trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
+    state
+        .synthetic_area
+        .pending_server_to_client_packets
+        .push(PendingServerPacket {
+            family: VerifiedFamily::Inventory,
+            packet,
+            due_at: Instant::now(),
+            reason: CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
+            placement: PendingServerPacketPlacement::AfterCurrentEmit,
+        });
+
+    let claim_object_status = state
+        .semantic
+        .objects
+        .inventory_item_object_status(claim.object_id);
+    if let Some(decision) = state.inventory_equipment.last_decision.as_mut()
+        && decision.update_index == pending.update_index
+    {
+        decision.kind = InventoryEquipmentBridgeOutputDecisionKind::QueuedConfirmedInventoryReplay;
+        decision.server_inventory_claim_object_status = claim_object_status;
+        decision.server_inventory_claim_proven_neighborhood = state
+            .semantic
+            .objects
+            .inventory_item_object_proven_neighborhood(claim.object_id);
+    }
+    state.inventory_equipment.last_queued_state_update_index = Some(pending.update_index);
+    state
+        .inventory_equipment
+        .last_confirmed_inventory_replay_update_index = Some(pending.update_index);
+    state.inventory_equipment.queued_outputs =
+        state.inventory_equipment.queued_outputs.saturating_add(1);
+    state.inventory_equipment.confirmed_inventory_replay_outputs = state
+        .inventory_equipment
+        .confirmed_inventory_replay_outputs
+        .saturating_add(1);
+    state.inventory_equipment.last_queued_output = Some(InventoryEquipmentBridgeQueuedOutput {
+        update_index: pending.update_index,
+        emission_index: pending.emission_index,
+        event_index: pending.event_index,
+        minor: claim.minor,
+        object_id: claim.object_id,
+        result: claim.result,
+        equip_slot: claim.equip_slot,
+        trigger_sequence: response_last_sequence,
+        synthetic_sequence,
+    });
+
+    tracing::info!(
+        update_index = pending.update_index,
+        object_id = %format_args!("0x{:08X}", claim.object_id),
+        equip_slot = claim.equip_slot,
+        result = claim.result,
+        response_last_sequence,
+        synthetic_sequence,
+        future_shift_base,
+        "inventory/equipment bridge queued exact Inventory replay after materialized ClientGui status response"
+    );
+    Ok(true)
 }
 
 fn maybe_queue_client_gui_status_output(
@@ -1025,6 +1204,147 @@ mod tests {
                 .inventory_equipment
                 .best_client_gui_status_response_candidate_delta_from_queued_status(),
             -8
+        );
+    }
+
+    #[test]
+    fn replays_original_inventory_result_after_status_materializes_claim_object() {
+        let candidate = InventoryItemContextCandidate {
+            object_id: 0x8001_5322,
+            proof: InventoryItemObjectProof::ActiveObject,
+            source: InventoryItemContextCandidateSource::DirectOnly,
+        };
+        let claim =
+            InventoryEquipmentServerInventoryClaim::new(0x01, 0x8001_53D3, false, 0x0002_0000);
+        let mut update = ready_server_inventory_update();
+        update.candidate = candidate;
+        update.ready_objects = 18;
+        update.server_inventory_claim = Some(claim);
+
+        let mut state = SessionState::default();
+        record_output_decision(
+            &mut state,
+            update,
+            InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput,
+        );
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(update.update_index);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: update.update_index,
+                emission_index: update.emission_index,
+                event_index: update.event_index,
+                candidate: Some(candidate),
+                ready_objects: update.ready_objects,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: 80,
+                synthetic_sequence: 83,
+                ack_sequence: 55,
+            });
+        state
+            .semantic
+            .objects
+            .observe_materialized_item_object_ids(&[candidate.object_id, claim.object_id]);
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 52,
+                live_gui_fragment_bits: 355,
+                materialized_item_object_ids: vec![candidate.object_id, claim.object_id],
+                compact_item_emission_ready_objects: 66,
+                compact_item_emission_ready_candidate: Some(candidate),
+            },
+        );
+
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            60,
+            82,
+        );
+        assert_eq!(
+            state.inventory_equipment.pending_confirmed_inventory_replay,
+            Some(InventoryEquipmentBridgePendingConfirmedInventoryReplay {
+                update_index: update.update_index,
+                emission_index: update.emission_index,
+                event_index: update.event_index,
+                claim,
+            })
+        );
+
+        assert!(
+            maybe_queue_confirmed_inventory_replay(&mut state, 61, 82)
+                .expect("confirmed Inventory replay should queue")
+        );
+        assert_eq!(
+            state.inventory_equipment.confirmed_inventory_replay_outputs,
+            1
+        );
+        assert_eq!(state.inventory_equipment.queued_outputs, 1);
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_confirmed_inventory_replay_update_index,
+            Some(update.update_index)
+        );
+        assert_eq!(
+            state.inventory_equipment.output_status().as_str(),
+            "client_gui_status_inventory_replay_queued"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_decision
+                .expect("replay decision should be retained")
+                .kind,
+            InventoryEquipmentBridgeOutputDecisionKind::QueuedConfirmedInventoryReplay
+        );
+        assert_eq!(
+            state.inventory_equipment.last_queued_output,
+            Some(InventoryEquipmentBridgeQueuedOutput {
+                update_index: update.update_index,
+                emission_index: update.emission_index,
+                event_index: update.event_index,
+                minor: claim.minor,
+                object_id: claim.object_id,
+                result: claim.result,
+                equip_slot: claim.equip_slot,
+                trigger_sequence: 61,
+                synthetic_sequence: 62,
+            })
+        );
+        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
+        assert_eq!(state.sequence.server_sequence_shifts[0].base, 62);
+        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+
+        let pending = state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .first()
+            .expect("confirmed replay packet should be pending");
+        let view = MFrameView::parse(&pending.packet).expect("replay frame should parse");
+        assert_eq!(view.sequence, 62);
+        assert_eq!(view.ack_sequence, 82);
+        let payload = super::super::parse_window::primary_payload(&pending.packet, &view)
+            .expect("replay packet should expose exact payload");
+        let replay_claim = inventory::claim_payload_if_verified(payload)
+            .expect("replayed Inventory payload should pass the exact EE validator");
+        assert_eq!(replay_claim.object_id, claim.object_id);
+        assert_eq!(replay_claim.result, claim.result);
+        assert_eq!(replay_claim.equip_slot, claim.equip_slot);
+
+        assert!(
+            !maybe_queue_confirmed_inventory_replay(&mut state, 62, 82)
+                .expect("same update must not replay twice")
+        );
+        assert_eq!(
+            state.inventory_equipment.confirmed_inventory_replay_outputs,
+            1
         );
     }
 
