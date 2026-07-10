@@ -35,6 +35,12 @@
 //!   repair that declaration after an exact legacy PlayerList parse proves a
 //!   unique read-body/tail split; following live-object continuation bytes are
 //!   therefore rejected instead of being folded into PlayerList.
+//! - A six-entry live HG `PlayerList_All` keeps a zero CExoString length for
+//!   some player names, then places the printable name bytes immediately before
+//!   the same per-entry creature OBJECTID. Diamond `sub_453BD0` and EE's sender
+//!   both put the player-name CExoString between the DM BOOL and has-creature
+//!   BOOL/creature body. We repair only that exact zero-length/name/object-id
+//!   boundary and still require the complete MSB-first BOOL stream and body.
 //! - EE PlayerList object-id fields are read with `ReadOBJECTIDServer`, whose
 //!   decompile consumes a raw DWORD and clears only bit 31. Real Diamond/HG
 //!   session-local player ids such as `0xffff_fffe`/`0xffff_ff8e` therefore
@@ -77,6 +83,7 @@ pub struct PlayerListRewriteSummary {
     pub consumed_fragment_bits: u32,
     pub fragments_rewritten: bool,
     pub locstring_length_repairs: u32,
+    pub player_name_length_repairs: u32,
     pub object_id_repairs: u32,
     pub old_payload_length: usize,
     pub new_payload_length: usize,
@@ -130,6 +137,7 @@ struct ParsedPlayerList {
     entry_count: u8,
     insert_offsets: Vec<usize>,
     locstring_repairs: Vec<LegacyLocStringLengthRepair>,
+    player_name_length_repairs: Vec<LegacyPlayerNameLengthRepair>,
     object_id_repairs: Vec<(usize, u32)>,
     object_ids: Vec<PlayerListObjectIds>,
     consumed_fragment_bits: usize,
@@ -174,6 +182,18 @@ enum LegacyLocStringLengthRepair {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyPlayerNameLengthRepair {
+    /// Some HG PlayerList rows retain a zero CExoString length, then place the
+    /// printable player name directly before the repeated creature object id.
+    /// Extend the existing slot; no bytes or fragment bits move.
+    ExtendCurrentEmptyBeforeCreature {
+        length_offset: usize,
+        raw_start: usize,
+        raw_end: usize,
+    },
+}
+
 impl LegacyLocStringLengthRepair {
     fn net_read_size_delta(self) -> usize {
         match self {
@@ -188,6 +208,12 @@ impl LegacyLocStringLengthRepair {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct LocStringRead {
     empty_inline_length_offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct StringRead {
+    empty_length_offset: Option<usize>,
+    data_start: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,6 +321,9 @@ pub fn rewrite_player_list_payload_if_possible(
     for repair in parsed.locstring_repairs.iter().copied() {
         enqueue_legacy_locstring_length_repair(repair, &mut mutations)?;
     }
+    for repair in parsed.player_name_length_repairs.iter().copied() {
+        enqueue_legacy_player_name_length_repair(repair, &mut mutations)?;
+    }
     for (offset, value) in parsed.object_id_repairs.iter().copied() {
         mutations.push(PlayerListReadMutation::WriteObjectId { offset, value });
     }
@@ -331,6 +360,7 @@ pub fn rewrite_player_list_payload_if_possible(
         consumed_fragment_bits: parsed.consumed_fragment_bits as u32,
         fragments_rewritten,
         locstring_length_repairs: parsed.locstring_repairs.len() as u32,
+        player_name_length_repairs: parsed.player_name_length_repairs.len() as u32,
         object_id_repairs: parsed.object_id_repairs.len() as u32,
         old_payload_length,
         new_payload_length: payload.len(),
@@ -670,6 +700,7 @@ fn parse_player_list_cnw(
             entry_count: 1,
             insert_offsets: Vec::new(),
             locstring_repairs: Vec::new(),
+            player_name_length_repairs: Vec::new(),
             object_id_repairs: Vec::new(),
             object_ids: Vec::new(),
             consumed_fragment_bits,
@@ -689,6 +720,7 @@ fn parse_player_list_cnw(
 
     let mut insert_offsets = Vec::new();
     let mut locstring_repairs = Vec::new();
+    let mut player_name_length_repairs = Vec::new();
     let mut object_id_repairs = Vec::new();
     let mut object_ids = Vec::new();
     for _ in 0..entry_count {
@@ -702,8 +734,24 @@ fn parse_player_list_cnw(
             &mut object_id_repairs,
         )?;
         let _dm = reader.read_bool()?;
-        reader.read_string(256)?;
+        let player_name = reader.read_string_field(256)?;
         let has_creature = reader.read_bool()?;
+
+        if has_creature
+            && identity_shape == PlatformIdentityShape::InsertMissing
+            && !looks_like_ee_identity(&reader)
+        {
+            if let Some(length_offset) = player_name.empty_length_offset {
+                if let Some(repair) = reader.read_legacy_player_name_before_creature(
+                    length_offset,
+                    player_name.data_start,
+                    256,
+                    player_object,
+                ) {
+                    player_name_length_repairs.push(repair);
+                }
+            }
+        }
 
         match identity_shape {
             PlatformIdentityShape::InsertMissing => {
@@ -763,6 +811,7 @@ fn parse_player_list_cnw(
         entry_count,
         insert_offsets,
         locstring_repairs,
+        player_name_length_repairs,
         object_id_repairs,
         object_ids,
         consumed_fragment_bits,
@@ -819,12 +868,57 @@ impl<'a> Reader<'a> {
     }
 
     fn read_string(&mut self, max_length: u32) -> Option<()> {
+        self.read_string_field(max_length).map(|_| ())
+    }
+
+    fn read_string_field(&mut self, max_length: u32) -> Option<StringRead> {
+        let length_offset = self.cursor;
         let length = self.read_u32()? as usize;
         if length > max_length as usize || length > self.read_size.checked_sub(self.cursor)? {
             return None;
         }
+        let data_start = self.cursor;
         self.cursor += length;
-        Some(())
+        Some(StringRead {
+            empty_length_offset: (length == 0).then_some(length_offset),
+            data_start,
+        })
+    }
+
+    fn read_legacy_player_name_before_creature(
+        &mut self,
+        length_offset: usize,
+        raw_start: usize,
+        max_length: usize,
+        expected_creature_object_id: u32,
+    ) -> Option<LegacyPlayerNameLengthRepair> {
+        if raw_start != self.cursor
+            || raw_start >= self.read_size
+            || read_u32_le(self.read_buffer, length_offset)? != 0
+        {
+            return None;
+        }
+        let remaining = self.read_size.checked_sub(raw_start)?;
+        let max_candidate = max_length.min(remaining.checked_sub(4)?);
+        for raw_len in 1..=max_candidate {
+            let raw_end = raw_start.checked_add(raw_len)?;
+            let raw = self.read_buffer.get(raw_start..raw_end)?;
+            if !raw.iter().all(is_player_list_inline_text_byte) {
+                break;
+            }
+            if read_u32_le(self.read_buffer, raw_end)? != expected_creature_object_id {
+                continue;
+            }
+            self.cursor = raw_end;
+            return Some(
+                LegacyPlayerNameLengthRepair::ExtendCurrentEmptyBeforeCreature {
+                    length_offset,
+                    raw_start,
+                    raw_end,
+                },
+            );
+        }
+        None
     }
 
     fn read_locstring(
@@ -1251,6 +1345,26 @@ fn enqueue_legacy_locstring_length_repair(
     Some(())
 }
 
+fn enqueue_legacy_player_name_length_repair(
+    repair: LegacyPlayerNameLengthRepair,
+    mutations: &mut Vec<PlayerListReadMutation>,
+) -> Option<()> {
+    match repair {
+        LegacyPlayerNameLengthRepair::ExtendCurrentEmptyBeforeCreature {
+            length_offset,
+            raw_start,
+            raw_end,
+        } => {
+            let raw_len = u32::try_from(raw_end.checked_sub(raw_start)?).ok()?;
+            mutations.push(PlayerListReadMutation::WriteLength {
+                offset: length_offset,
+                length: raw_len,
+            });
+        }
+    }
+    Some(())
+}
+
 fn apply_player_list_read_mutations(
     payload: &mut Vec<u8>,
     mut mutations: Vec<PlayerListReadMutation>,
@@ -1465,6 +1579,25 @@ mod tests {
     }
 
     #[test]
+    fn legacy_all_extends_zero_length_player_name_before_creature_object() {
+        let mut payload = build_legacy_player_list_all_with_inline_player_name();
+        assert_eq!(read_u32_le(&payload, 16), Some(0));
+
+        let old_len = payload.len();
+        let summary = rewrite_player_list_payload_if_possible(&mut payload)
+            .expect("inline legacy player name should normalize to EE");
+
+        assert_eq!(summary.entries, 2);
+        assert_eq!(summary.insertions, 2);
+        assert_eq!(summary.player_name_length_repairs, 1);
+        assert_eq!(summary.locstring_length_repairs, 0);
+        assert_eq!(summary.bytes_inserted, 10);
+        assert_eq!(payload.len(), old_len + 10);
+        assert_eq!(read_u32_le(&payload, 16), Some(5));
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
     fn legacy_delete_is_claimed_as_exact_identity_shape() {
         let mut payload =
             include_bytes!("../../fixtures/player_list/hg_player_list_delete_legacy.bin").to_vec();
@@ -1491,6 +1624,28 @@ mod tests {
             0xFFFF_FFAD,
             0x0000_0002,
         )
+    }
+
+    fn build_legacy_player_list_all_with_inline_player_name() -> Vec<u8> {
+        let mut read = Vec::new();
+        read.extend_from_slice(&[0, 0, 0, 0]);
+        read.push(2);
+        append_legacy_entry_with_inline_player_name(&mut read, 1, 0xFFFF_FFAD, "Alpha");
+        append_legacy_entry(&mut read, 2, 0xFFFF_FFAE, 0xFFFF_FFAE, "Beta");
+
+        let declared = u32::try_from(read.len() + HIGH_LEVEL_HEADER_BYTES)
+            .expect("fixture declared length should fit");
+        read[0..4].copy_from_slice(&declared.to_le_bytes());
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[
+            HIGH_LEVEL_ENVELOPE,
+            PLAYER_LIST_MAJOR,
+            PLAYER_LIST_ALL_MINOR,
+        ]);
+        payload.extend_from_slice(&read);
+        payload.extend_from_slice(&[0x94, 0x40]);
+        payload
     }
 
     fn build_legacy_player_list_all_fixture_with_object_ids(
@@ -1543,6 +1698,22 @@ mod tests {
         read.extend_from_slice(&player_object_id.to_le_bytes());
         append_string(read, name);
         read.extend_from_slice(&creature_object_id.to_le_bytes());
+        append_string(read, "");
+        append_string(read, "");
+        read.extend_from_slice(&1u16.to_le_bytes());
+    }
+
+    fn append_legacy_entry_with_inline_player_name(
+        read: &mut Vec<u8>,
+        player_id: u32,
+        object_id: u32,
+        name: &str,
+    ) {
+        read.extend_from_slice(&player_id.to_le_bytes());
+        read.extend_from_slice(&object_id.to_le_bytes());
+        read.extend_from_slice(&0u32.to_le_bytes());
+        read.extend_from_slice(name.as_bytes());
+        read.extend_from_slice(&object_id.to_le_bytes());
         append_string(read, "");
         append_string(read, "");
         read.extend_from_slice(&1u16.to_le_bytes());

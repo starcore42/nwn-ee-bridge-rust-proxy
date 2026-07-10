@@ -17,6 +17,40 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-10 PlayerList inline-name repair and game-thread delayed action:
+  the live-data gate used
+  `C:\nwnbridge\codex-live-confirmed-inventory-replay-manual-20260710-170009\harness-proxy-20260710-170013`
+  (`proxy.stdout.log` through `2026-07-10T17:03:49+10:00`, about 1h36m old
+  at the `18:39+10:00` gate; gameplay reached). Reduction of both quarantined
+  430-byte `PlayerList_All` units found the same generalized legacy defect:
+  three of six rows retained a zero player-name CExoString length followed by
+  printable name bytes and then the same row's creature object id. Diamond
+  client `sub_453BD0` and EE
+  `CNWSMessage::SendServerToPlayerPlayerList_All` both prove the order
+  player id, player object, DM BOOL, player-name CExoString, has-creature BOOL,
+  optional EE identity, and creature body. The captured fragment
+  `84 44 44 4B` is exactly the 28 MSB-first header/BOOL bits for six rows.
+  Proxy2 now repairs only the zero-length/name/repeated-object-id boundary,
+  then requires the complete typed body and fragment claim. Both real units
+  rewrite from 430 to 460 bytes with 6 EE identity insertions, 3 name-length
+  repairs, 1 existing locstring repair, 28 consumed bits, and no fragment
+  rewrite or residual. The driver also retains the scheduling CNWMessage and
+  services a due harness-only inventory action from EE's client internal main
+  loop on the game thread instead of depending on a later server dispatch.
+  Fresh live capture
+  `C:\nwnbridge\codex-live-mainloop-playerlist-20260710-1903\harness-proxy-20260710-190221`
+  reached `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject` through
+  `2026-07-10T19:04:41+10:00` with zero quarantine. That session emitted only
+  one-row PlayerList traffic and no `Party_GetList`, so it did not schedule or
+  exercise the delayed main-loop action. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-playerlist-mainloop-20260710-1911`
+  processed the 164-packet Diamond baseline with 304 strict allows, 0 strict
+  quarantines, 0 quarantine files, and 0 live-object terminal residuals.
+  Active next verification: capture a recurrence of the six-row PlayerList and
+  a run that emits `Party_GetList`; require a `source=client main loop`
+  dispatch, real `ClientGuiInventory`, one confirmed Inventory replay, and
+  zero quarantine.
 - 2026-07-10 confirmed Inventory replay after ClientGui materialization:
   live-data gate reused the clean gameplay-reaching HG proxy capture
   `C:\nwnbridge\codex-live-clientgui-refresh-confirmed-current-20260710-0710\harness-proxy-20260710-070818`
