@@ -313,12 +313,13 @@ impl HighLevel {
             (0x06, 0x11) => "Input_UnMemorizeSpell",
             (0x06, 0x12) => "Input_CastSpell",
             // Chat family confirmed from EE's packet-name table:
-            // 0x0904 = Chat_Tell, 0x0905 = Chat_ServerTell, 0x0907 =
+            // 0x0901 = Chat_Talk, 0x0904 = Chat_Tell, 0x0905 = Chat_ServerTell, 0x0907 =
             // Chat_AIAction_PlaySound, 0x0908..0x090A are Chat_StrRef
             // variants, and 0x090B/0x090C = Chat_TokenTalk variants. These are normal
             // CNWMessage-backed server-to-player payloads in the decompiled
             // chat senders, so strict mode may classify them as known only
             // when the focused chat translator proves the exact byte shape.
+            (0x09, 0x01) => "Chat_Talk",
             (0x09, 0x04) => "Chat_Tell",
             (0x09, 0x05) => "Chat_ServerTell",
             (0x09, 0x07) => "Chat_AIAction_PlaySound",

@@ -17,6 +17,36 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-12 active quickbar-slot diagnostics and Chat_Talk ownership: proxy2
+  now writes the exact count and ordered slot array for all retained
+  decompile-owned 36-slot active-item signatures into both pending and idle
+  `quickbar-item-refresh-hint.json` states. Fresh HG gameplay capture
+  `C:\nwnbridge\codex-live-active-slot-hint-20260712-0052\harness-proxy-20260712-005140`
+  proved 21 signatures at slots
+  `[0,1,5,10,11,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35]`, 52
+  materialized items, one dispatched confirmed Inventory replay, and prior-GQ
+  suppression for slot-0 candidate `0x800162EE`. That run also reduced two
+  quarantined `0x09/0x01` talk messages to the generalized original-client
+  shape: speaker OBJECTID, bounded `CExoString`, exact declared-byte handoff,
+  and one fragment byte containing only the three-bit CNW header.
+
+  Diamond `CNWSMessage::SendServerToPlayerChatMessage` helper `0x0043D9A0`
+  proves that channel 1 writes the object id and string, performs no fragment
+  field write, and sends family/minor `0x09/0x01`. Proxy2 now claims only that
+  exact `Chat_Talk` shape and rejects trailing read bytes or fragment data bits.
+  Focused chat tests and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-chat-talk-active-slots-20260712-0102`
+  passed; the replay processed 164 packets with 304 strict allows, zero
+  quarantines, and zero live-object terminal residuals. The first verification
+  retry stalled after BNK2; a traced retry observed BNK3 after 70 ms and fresh
+  capture
+  `C:\nwnbridge\codex-live-chat-talk-active-slots-retry-20260712-0107\harness-proxy-20260712-010711`
+  reached module/area/live-object gameplay, reproduced the 21-slot set,
+  materialized 52 items, dispatched one Inventory replay, and remained at zero
+  quarantine files through `2026-07-12T01:09:41+10:00`. The exact talk message
+  did not recur in the retry, so the next live recurrence remains the direct
+  production proof for `Chat_Talk`; the quickbar action target remains a
+  preserved active slot whose matching durable GQ row is absent.
 - 2026-07-11 unresolved preserved quickbar-item selection: proxy2 now retains
   the active-item signature at every decompile-owned 36-slot
   `GuiQuickbar_SetAllButtons` position. Post-materialization action probes walk

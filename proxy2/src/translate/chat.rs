@@ -4,6 +4,13 @@
 //! of relying on strict's high-level opcode classifier as an allow decision.
 //!
 //! Decompile evidence:
+//! - Diamond `CNWSMessage::SendServerToPlayerChatMessage` routes channel `1`
+//!   through helper `0x0043D9A0`. That helper creates the read buffer from the
+//!   message length plus eight bytes, writes the raw speaker object id, writes
+//!   the `CExoString` body, and sends family `0x09`, minor `0x01`; it performs
+//!   no fragment-field write. Current HG/1.69 talk packets therefore end at the
+//!   exact string boundary and carry only the canonical three-bit CNW fragment
+//!   header. EE uses the same `Chat_Talk` family/minor and reader field order.
 //! - EE `CNWSMessage::SendServerToPlayerChatMessage` case 5 calls
 //!   `CNWMessage::CreateWriteMessage(strlen + 4, ..., 1)`, then
 //!   `WriteCExoString(..., 0x20)`, then sends high-level family `0x09`,
@@ -40,6 +47,7 @@
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
 const CHAT_MAJOR: u8 = 0x09;
+const CHAT_TALK_MINOR: u8 = 0x01;
 const CHAT_TELL_MINOR: u8 = 0x04;
 const SERVER_TELL_MINOR: u8 = 0x05;
 const AI_ACTION_PLAY_SOUND_MINOR: u8 = 0x07;
@@ -80,6 +88,7 @@ pub struct ChatClaimSummary {
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSummary> {
     let high = HighLevel::parse(payload)?;
     match (high.major, high.minor) {
+        (CHAT_MAJOR, CHAT_TALK_MINOR) => claim_chat_talk(payload, high.minor),
         (CHAT_MAJOR, CHAT_TELL_MINOR) => claim_chat_tell(payload, high.minor),
         (CHAT_MAJOR, SERVER_TELL_MINOR) => claim_server_tell(payload, high.minor),
         (CHAT_MAJOR, AI_ACTION_PLAY_SOUND_MINOR) => claim_ai_action_play_sound(payload, high.minor),
@@ -91,6 +100,38 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSummary> {
         }
         _ => None,
     }
+}
+
+fn claim_chat_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
+    if payload.len() < READ_START + OBJECT_ID_BYTES + CNW_LENGTH_BYTES + SINGLE_FRAGMENT_BYTE {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if payload.len() != declared.checked_add(SINGLE_FRAGMENT_BYTE)?
+        || !cnw_fragment_tail_has_exact_data_bits(&payload[declared..], 0)
+    {
+        return None;
+    }
+
+    let object_id = read_le_u32(payload, READ_START)?;
+    if !looks_like_chat_object_id(object_id) {
+        return None;
+    }
+
+    let text_offset = READ_START.checked_add(OBJECT_ID_BYTES)?;
+    let (text_end, text_len) =
+        read_bounded_cexo_string_end(payload, text_offset, declared, MAX_CHAT_TEXT_BYTES)?;
+    if text_end != declared {
+        return None;
+    }
+
+    Some(ChatClaimSummary {
+        minor,
+        declared,
+        text_len,
+        fragment_bytes: SINGLE_FRAGMENT_BYTE,
+    })
 }
 
 fn claim_chat_tell(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
@@ -419,6 +460,59 @@ fn cnw_fragment_tail_data_bits(fragment: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_talk_live_shape_matches_decompile_order() {
+        let text = b"<c\xD0\xD0\xD0>Found Apport Arcane<c\xD0\xD0\xD0>.";
+        let declared = READ_START + OBJECT_ID_BYTES + CNW_LENGTH_BYTES + text.len();
+        let mut payload = vec![0x50, CHAT_MAJOR, CHAT_TALK_MINOR];
+        payload.extend_from_slice(&u32::try_from(declared).unwrap().to_le_bytes());
+        payload.extend_from_slice(&0xFFFF_FFDBu32.to_le_bytes());
+        payload.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+        payload.extend_from_slice(text);
+        payload.push(0x60);
+
+        let summary = claim_payload_if_verified(&payload).expect("chat talk should claim");
+        assert_eq!(summary.minor, CHAT_TALK_MINOR);
+        assert_eq!(summary.declared, declared);
+        assert_eq!(summary.text_len, text.len());
+        assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[test]
+    fn chat_talk_rejects_fragment_data_bits_or_trailing_read_bytes() {
+        let mut payload = [
+            0x50,
+            CHAT_MAJOR,
+            CHAT_TALK_MINOR,
+            0x14,
+            0,
+            0,
+            0,
+            0xDB,
+            0xFF,
+            0xFF,
+            0xFF,
+            5,
+            0,
+            0,
+            0,
+            b'h',
+            b'e',
+            b'l',
+            b'l',
+            b'o',
+            0x60,
+        ];
+        assert!(claim_payload_if_verified(&payload).is_some());
+
+        payload[20] = 0x80;
+        assert!(claim_payload_if_verified(&payload).is_none());
+
+        payload[20] = 0x60;
+        payload[3] = 0x13;
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
 
     #[test]
     fn chat_talk_ref_capture_matches_decompile_shape() {

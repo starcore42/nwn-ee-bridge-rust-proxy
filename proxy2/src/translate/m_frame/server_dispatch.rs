@@ -1260,7 +1260,7 @@ fn translator_may_claim_parsed_high_level(family_name: &str, high: HighLevel) ->
         "GuiTimingEvent_Info" => high.major == 0x30 && high.minor == 0x01,
         "ClientSideMessage" => high.major == 0x12 && high.minor == 0x0B,
         "Journal" => high.major == 0x1C && matches!(high.minor, 0x01..=0x05 | 0x07..=0x09 | 0x0C),
-        "Chat" => high.major == 0x09 && matches!(high.minor, 0x04 | 0x05 | 0x07..=0x0C),
+        "Chat" => high.major == 0x09 && matches!(high.minor, 0x01 | 0x04 | 0x05 | 0x07..=0x0C),
         "Sound" => high.major == 0x17 && high.minor == 0x03,
         "Ambient" => high.major == 0x28 && matches!(high.minor, 0x01..=0x08),
         "Dialog" => high.major == 0x14 && matches!(high.minor, 0x01 | 0x02 | 0x04 | 0x05),

@@ -1742,6 +1742,26 @@ impl QuickbarStreamProbeSummary {
                 (signature.object_id == object_id).then_some((u8::try_from(slot).ok()?, signature))
             })
     }
+
+    fn preserved_active_item_signature_count(self) -> usize {
+        self.preserved_active_item_signatures
+            .0
+            .iter()
+            .flatten()
+            .count()
+    }
+
+    fn preserved_active_item_slots_json(self) -> String {
+        let slots = self
+            .preserved_active_item_signatures
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, signature)| signature.map(|_| slot.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[{slots}]")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1905,6 +1925,9 @@ impl QuickbarItemRefreshHarnessHint {
     pub(crate) fn to_json(self) -> String {
         let first_client_action_detail = self.first_client_action_detail;
         let stream_probe = self.stream_probe;
+        let preserved_active_item_signature_count =
+            stream_probe.preserved_active_item_signature_count();
+        let preserved_active_item_slots_json = stream_probe.preserved_active_item_slots_json();
         let first_active_item = self.first_preserved_active_item_signature;
         let action_active_item = self.candidate_preserved_active_item_signature;
         let action_active_item_slot = self.candidate_preserved_active_item_slot;
@@ -2333,6 +2356,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"stream_probe_item_objects_rejected_missing_state_cleared_area_reset\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_explicit_self_materialization\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_active_state\": {},\n",
+                "  \"stream_probe_preserved_active_item_signature_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_slots\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
@@ -2665,6 +2690,8 @@ impl QuickbarItemRefreshHarnessHint {
             stream_probe.item_objects_rejected_missing_state_cleared_area_reset,
             stream_probe.item_objects_preserved_by_explicit_self_materialization,
             stream_probe.item_objects_preserved_by_active_state,
+            preserved_active_item_signature_count,
+            preserved_active_item_slots_json,
             stream_probe.item_objects_preserved_by_feature25_first,
             stream_probe.item_objects_preserved_by_feature25_second,
             stream_probe.item_objects_preserved_by_feature25_legacy_tail,
@@ -6019,6 +6046,10 @@ impl UiState {
         )
         .as_str();
         let stream_probe = self.last_quickbar_stream_probe.unwrap_or_default();
+        let stream_probe_preserved_active_item_signature_count =
+            stream_probe.preserved_active_item_signature_count();
+        let stream_probe_preserved_active_item_slots_json =
+            stream_probe.preserved_active_item_slots_json();
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
             .unwrap_or_default();
@@ -6226,6 +6257,8 @@ impl UiState {
                 "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
+                "  \"stream_probe_preserved_active_item_signature_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_slots\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot\": {},\n",
@@ -6441,6 +6474,8 @@ impl UiState {
             stream_probe.item_objects_preserved_by_feature25_first,
             stream_probe.item_objects_preserved_by_feature25_second,
             stream_probe.item_objects_preserved_by_feature25_legacy_tail,
+            stream_probe_preserved_active_item_signature_count,
+            stream_probe_preserved_active_item_slots_json,
             stream_probe_active_item_known,
             stream_probe_active_item_slot_known,
             stream_probe_active_item_slot,
@@ -10238,6 +10273,8 @@ mod tests {
             "\"stream_probe_item_objects_preserved_by_explicit_self_materialization\": 11"
         ));
         assert!(json.contains("\"stream_probe_item_objects_preserved_by_active_state\": 12"));
+        assert!(json.contains("\"stream_probe_preserved_active_item_signature_count\": 1"));
+        assert!(json.contains("\"stream_probe_preserved_active_item_slots\": [2]"));
         assert!(json.contains("\"stream_probe_item_objects_preserved_by_feature25_first\": 13"));
         assert!(json.contains("\"stream_probe_item_objects_preserved_by_feature25_second\": 14"));
         assert!(
@@ -11179,6 +11216,10 @@ mod tests {
             first_preserved_active_item_slot: Some(9),
             ..QuickbarStreamProbeSummary::default()
         });
+        if let Some(probe) = ui.last_quickbar_stream_probe.as_mut() {
+            probe.preserved_active_item_signatures.0[9] =
+                probe.first_preserved_active_item_signature;
+        }
         ui.last_quickbar_stream_probe_materialization_context = Some(InventoryItemContextSummary {
             direct_item_proof_objects: 1,
             ..Default::default()
@@ -11240,6 +11281,13 @@ mod tests {
         assert!(
             stream_probe_no_commit
                 .contains("\"stream_probe_item_objects_preserved_by_active_state\": 13")
+        );
+        assert!(
+            stream_probe_no_commit
+                .contains("\"stream_probe_preserved_active_item_signature_count\": 1")
+        );
+        assert!(
+            stream_probe_no_commit.contains("\"stream_probe_preserved_active_item_slots\": [9]")
         );
         assert!(
             stream_probe_no_commit
