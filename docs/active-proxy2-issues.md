@@ -17,6 +17,30 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- ~~2026-07-11 ClientGui status response-window over-attribution: resolved and
+  live-confirmed 2026-07-11.~~ Capture
+  `C:\nwnbridge\codex-live-item-action-current-20260711-0442\harness-proxy-20260711-044124`
+  reached gameplay with zero quarantine, but after its second proxy-owned
+  `ClientGuiInventory_Status` request the bridge attributed 49 later
+  `GameObjUpdate_LiveObject` packets to that request even though server sequence
+  58 had already returned the matching 52-item materialized set. The retained
+  terminal response stayed correct, but the open-ended window polluted response
+  counts and allowed unrelated later object state to replace the last response.
+
+  Proxy2 now closes each queued status response window when the first
+  materialized response proves the queued candidate, ignores later live-object
+  traffic for that update, and reopens attribution when a newer bridge update
+  queues another status request. Fresh HG capture
+  `C:\nwnbridge\codex-live-clientgui-response-window-20260711-205328\harness-proxy-20260711-205330`
+  reached `Module_Loaded`, `Area_ClientArea`, and sustained
+  `GameObjUpdate_LiveObject` through `2026-07-11T20:56:23+10:00` with zero
+  quarantine files. Its one status request completed on the first matching
+  51-item materialized response (`server_sequence=48`); after more than a minute
+  of later gameplay the final hint still reported exactly one response packet,
+  one materialized packet, and `matches_queued_status_candidate`. Next
+  production path: capture a real EE action for a preserved materialized item
+  in a run where no genuine `GQ` row has already satisfied the refresh, then
+  implement the first proven shared quickbar or engine-facing state mismatch.
 - 2026-07-11 quickbar-relevant materialized candidate selection: fresh live HG
   capture
   `C:\nwnbridge\codex-live-quickbar-preferred-candidate-20260711-004730\harness-proxy-20260711-004731`

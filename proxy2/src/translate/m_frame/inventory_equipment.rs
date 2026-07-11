@@ -247,6 +247,9 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
 ) {
     if state.inventory_equipment.queued_client_gui_status_outputs == 0
         || !proof.contains_family(VerifiedFamily::GameObjUpdateLiveObject)
+        || state
+            .inventory_equipment
+            .client_gui_status_response_window_complete()
     {
         return;
     }
@@ -334,6 +337,7 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     };
     state.inventory_equipment.last_client_gui_status_response = Some(response);
     let update_best = match state.inventory_equipment.best_client_gui_status_response {
+        Some(best) if best.queued_update_index != queued_update_index => true,
         Some(best) => response.is_stronger_than(best),
         None => true,
     };
@@ -341,6 +345,20 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
         state.inventory_equipment.best_client_gui_status_response = Some(response);
     }
     maybe_stage_confirmed_inventory_replay(state, &summary);
+    if state
+        .inventory_equipment
+        .client_gui_status_refresh_confirmed()
+    {
+        state
+            .inventory_equipment
+            .last_completed_client_gui_status_response_update_index = Some(queued_update_index);
+        tracing::info!(
+            queued_update_index,
+            server_sequence,
+            ack_sequence,
+            "inventory/equipment bridge completed proxy-owned ClientGuiInventory_Status response window"
+        );
+    }
     tracing::info!(
         queued_update_index,
         server_sequence,
@@ -1204,6 +1222,82 @@ mod tests {
                 .inventory_equipment
                 .best_client_gui_status_response_candidate_delta_from_queued_status(),
             -8
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_completed_client_gui_status_response_update_index,
+            Some(1)
+        );
+
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 0,
+                live_gui_fragment_bits: 0,
+                materialized_item_object_ids: Vec::new(),
+                compact_item_emission_ready_objects: 66,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_5386,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+            },
+        );
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            61,
+            78,
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_live_object_packets,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_client_gui_status_response
+                .expect("completed response should remain terminal")
+                .server_sequence,
+            60
+        );
+
+        state.inventory_equipment.queued_client_gui_status_outputs = 2;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(2);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output
+            .as_mut()
+            .expect("queued status should exist")
+            .update_index = 2;
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            62,
+            79,
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_live_object_packets,
+            2
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response
+                .expect("new response window should replace the completed best response")
+                .queued_update_index,
+            2
+        );
+        assert!(
+            !state
+                .inventory_equipment
+                .client_gui_status_response_window_complete()
         );
     }
 

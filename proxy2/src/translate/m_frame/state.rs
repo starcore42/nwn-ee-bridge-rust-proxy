@@ -341,6 +341,7 @@ pub(super) struct InventoryEquipmentBridgeState {
         Option<InventoryEquipmentBridgeQueuedClientGuiStatusOutput>,
     pub(super) pending_confirmed_inventory_replay:
         Option<InventoryEquipmentBridgePendingConfirmedInventoryReplay>,
+    pub(super) last_completed_client_gui_status_response_update_index: Option<u64>,
     pub(super) last_confirmed_inventory_replay_update_index: Option<u64>,
     pub(super) last_confirmed_inventory_replay_dispatch_update_index: Option<u64>,
     pub(super) last_client_gui_status_response:
@@ -380,6 +381,12 @@ impl InventoryEquipmentBridgeState {
 
     pub(super) fn confirmed_inventory_replay_queued_for_dispatch(&self) -> bool {
         self.confirmed_inventory_replay_outputs > self.confirmed_inventory_replay_dispatches
+    }
+
+    pub(super) fn client_gui_status_response_window_complete(&self) -> bool {
+        self.last_queued_client_gui_status_update_index.is_some()
+            && self.last_completed_client_gui_status_response_update_index
+                == self.last_queued_client_gui_status_update_index
     }
 
     pub(super) fn record_confirmed_inventory_replay_dispatch(&mut self) {

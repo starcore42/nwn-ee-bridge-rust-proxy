@@ -33,28 +33,36 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-11 03:01 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-11 20:56 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-coalesced-side-effects-20260711-025757\harness-proxy-20260711-025759`.
+`C:\nwnbridge\codex-live-clientgui-response-window-20260711-205328\harness-proxy-20260711-205330`.
 It was launched with:
 
 ```powershell
-.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -AutoQuickbarItemRefreshUseItem -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-coalesced-side-effects-20260711-025757
+.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -AutoQuickbarItemRefreshUseItem -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-clientgui-response-window-20260711-205328
 ```
 
 The run reached `Module_Loaded`, `Area_ClientArea`, and sustained
-`GameObjUpdate_LiveObject` through `2026-07-11T03:01:07+10:00`; `quarantine\`
-remained empty. Typed replay handled 29 direct and 18 deflated coalesced records
-without reapplying semantics. The repeated source burst produced exactly one
-semantic server `Inventory_Equip` claim, and the prior false count of 18 server
-quickbar events did not recur. The committed 36-slot/21-item quickbar selected
-preserved slot-0 item `0x800180D3`; one genuine live-object `GQ` use-count row
-then satisfied its refresh before UseItem dispatch, so the final idle hint is
-`pending_item_refresh=false` with bridge status
-`client_gui_status_refresh_confirmed`. Strict replay
-`C:\nwnbridge\codex-proxy2-replay-coalesced-side-effects-20260711-025602`
-processed 164 Diamond packet files with 304 strict allows, zero strict
-quarantines, zero quarantine files, and zero live-object terminal residuals.
+`GameObjUpdate_LiveObject` through `2026-07-11T20:56:23+10:00`; `quarantine\`
+remained empty. The delayed inventory path queued one proxy-owned
+`ClientGuiInventory_Status` request. HG's first following materialized response
+contained 51 item ids including the queued candidate, so proxy2 completed that
+response window at `server_sequence=48`. More than a minute of later sustained
+live-object traffic did not enter the completed window: the final hint retained
+exactly one response packet, one materialized packet, association
+`matches_queued_status_candidate`, and bridge status
+`client_gui_status_refresh_confirmed`. This confirms the generalized rule that
+a matching materialized set terminates one status request's response window and
+a newer queued bridge update is required to reopen attribution.
+
+The immediately preceding gameplay-reaching capture was
+`C:\nwnbridge\codex-live-item-action-current-20260711-0442\harness-proxy-20260711-044124`.
+It reached gameplay and produced zero quarantine files, but exposed the fixed
+failure mode: its second status request kept attributing 49 later live-object
+packets after the matching materialized response at server sequence 58. Use the
+fresh 20:56 run as current gameplay and response-window evidence. The next live
+target is a real EE item action after materialization in a run where no genuine
+`GQ` use-count row has already resolved the pending refresh.
 
 Previous clean live HG inventory-replay status, as of 2026-07-10 23:18 +10,
 is
