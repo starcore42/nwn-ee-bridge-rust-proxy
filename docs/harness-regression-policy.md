@@ -33,30 +33,37 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-12 01:09 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-12 03:00 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-chat-talk-active-slots-retry-20260712-0107\harness-proxy-20260712-010711`.
+`C:\nwnbridge\codex-live-active-gq-coverage-20260712-0300\harness-proxy-20260712-025724`.
 It was launched with:
 
 ```powershell
 $env:HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS = '1'
-.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -AutoQuickbarItemRefreshUseItem -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-chat-talk-active-slots-retry-20260712-0107
+.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -AutoQuickbarItemRefreshUseItem -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-active-gq-coverage-20260712-0300
 ```
 
-The run observed BNK3 70 ms after deferred BNK2, reached `Module_Loaded`,
+The run observed BNK3 95 ms after deferred BNK2, reached `Module_Loaded`,
 `Area_ClientArea`, proxy-generated `Area_AreaLoaded`, and sustained
-`GameObjUpdate_LiveObject` through `2026-07-12T01:09:41+10:00` with zero
+`GameObjUpdate_LiveObject` through `2026-07-12T03:00:16+10:00` with zero
 quarantine files. It committed a 36-slot/21-item quickbar, exposed all 21
 retained active-signature slots as
 `[0,1,5,10,11,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35]`, materialized
-52 ClientGui inventory items, dispatched one confirmed Inventory replay, and
-again resolved the slot-0 candidate from matching prior GQ state without a
-redundant automatic `UseItem`. The immediately preceding gameplay run exposed
-two `Chat_Talk` `0x09/0x01` quarantines; current code now claims only the exact
-decompile-backed OBJECTID/string/three-header-bit shape. The talk family did not
-recur in this zero-quarantine retry, so a future recurrence is still required
-as direct live confirmation. The next quickbar target remains a preserved
-active item with no matching GQ row.
+52 ClientGui inventory items, exposed 66 ready item objects, and dispatched one
+confirmed Inventory replay. The new exact coverage fields first reported all
+21 preserved slots missing durable GQ state, then reported the same 21 slots as
+matching after HG delivered gameplay state. The final missing set was empty, so
+the driver correctly suppressed a redundant automatic `UseItem`. The next
+quickbar action target must come from a different module/character state whose
+missing-GQ set remains nonempty after inventory materialization.
+
+The immediately preceding clean gameplay harness was
+`C:\nwnbridge\codex-live-chat-talk-active-slots-retry-20260712-0107\harness-proxy-20260712-010711`.
+It first proved the 21-slot active-signature set and directly recovered from the
+intermittent BNK handoff stall. The prior gameplay run exposed two `Chat_Talk`
+`0x09/0x01` quarantines; current code claims only the exact decompile-backed
+OBJECTID/string/three-header-bit shape. The talk family has not recurred since,
+so a future recurrence is still required as direct live confirmation.
 
 The first current-code verification attempt at
 `C:\nwnbridge\codex-live-chat-talk-active-slots-20260712-0105\harness-proxy-20260712-010525`

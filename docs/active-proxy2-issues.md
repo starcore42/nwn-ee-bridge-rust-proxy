@@ -17,6 +17,29 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-12 preserved active-slot GQ coverage: proxy2 now derives candidate
+  selection and harness diagnostics from one typed 36-slot coverage rule. A
+  preserved active slot is satisfied only by durable `GQ` state with the same
+  wire slot, object id, and item button type; pending and idle hints expose the
+  ordered matching and missing slot sets. The selector walks that same missing
+  set in wire order and still requires independent item-readiness proof before
+  choosing a candidate.
+
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-active-gq-coverage-20260712-0320`
+  processed 164 packet files with 304 strict allows, zero strict quarantines or
+  files, and zero live-object terminal residuals. Fresh HG capture
+  `C:\nwnbridge\codex-live-active-gq-coverage-20260712-0300\harness-proxy-20260712-025724`
+  reached module/area/live-object gameplay and remained at zero quarantines
+  through `2026-07-12T03:00:16+10:00`. At quickbar commit its 21 retained
+  active slots were all missing GQ state. After HG completed gameplay state,
+  all 21 exact slots moved to matching GQ coverage; 66 item objects were ready,
+  52 ClientGui items materialized, and one confirmed Inventory replay was
+  dispatched. Suppressing the redundant automatic `UseItem` was therefore
+  correct for this character. The next action capture requires a different
+  module/character state where the coverage remains nonempty after inventory
+  materialization; do not keep forcing actions against this fully satisfied
+  21-slot profile.
 - 2026-07-12 active quickbar-slot diagnostics and Chat_Talk ownership: proxy2
   now writes the exact count and ordered slot array for all retained
   decompile-owned 36-slot active-item signatures into both pending and idle

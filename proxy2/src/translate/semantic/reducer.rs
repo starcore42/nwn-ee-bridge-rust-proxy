@@ -1071,35 +1071,18 @@ fn remember_quickbar_item_context_if_relevant(
     // can close the pending window explicitly.
     let stream_probe = state.ui.last_quickbar_stream_probe;
     let mut item_context = None;
-    if let Some(probe) = stream_probe {
-        for (slot, signature) in probe.preserved_active_item_signatures.0.iter().enumerate() {
-            let Some(signature) = *signature else {
-                continue;
-            };
-            let Ok(slot) = u8::try_from(slot) else {
-                continue;
-            };
-            let has_matching_use_count =
-                state.ui.quickbar_item_use_count_state.values().any(|row| {
-                    row.object_id == signature.object_id
-                        && row.slot == slot
-                        && row.button_type == client_quickbar::ITEM_SET_BUTTON_TYPE
-                });
-            if has_matching_use_count {
-                continue;
-            }
-            let candidate_context = state
-                .objects
-                .inventory_item_context_summary_with_preferred_ready_candidate(Some(
-                    signature.object_id,
-                ));
-            if candidate_context
-                .compact_item_emission_ready_candidate
-                .is_some_and(|candidate| candidate.object_id == signature.object_id)
-            {
-                item_context = Some(candidate_context);
-                break;
-            }
+    for (_, signature) in state.ui.preserved_active_items_without_use_count_state() {
+        let candidate_context = state
+            .objects
+            .inventory_item_context_summary_with_preferred_ready_candidate(Some(
+                signature.object_id,
+            ));
+        if candidate_context
+            .compact_item_emission_ready_candidate
+            .is_some_and(|candidate| candidate.object_id == signature.object_id)
+        {
+            item_context = Some(candidate_context);
+            break;
         }
     }
     let preferred_ready_object_id = stream_probe
@@ -4169,6 +4152,21 @@ mod fixture_free_tests {
         ));
         assert!(
             idle_json
+                .contains("\"stream_probe_preserved_active_item_matching_use_count_count\": 1")
+        );
+        assert!(
+            idle_json
+                .contains("\"stream_probe_preserved_active_item_matching_use_count_slots\": [0]")
+        );
+        assert!(
+            idle_json.contains("\"stream_probe_preserved_active_item_missing_use_count_count\": 0")
+        );
+        assert!(
+            idle_json
+                .contains("\"stream_probe_preserved_active_item_missing_use_count_slots\": []")
+        );
+        assert!(
+            idle_json
                 .contains("\"candidate_quickbar_item_use_count_state_active_property_index\": 255")
         );
     }
@@ -4255,6 +4253,16 @@ mod fixture_free_tests {
         assert!(json.contains("\"recommended_client_action_should_dispatch\": true"));
         assert!(json.contains("\"recommended_use_item_first_property_subtype_low_byte\": 23"));
         assert!(json.contains("\"recommended_client_action_suppressed_reason\": \"none\""));
+        assert!(
+            json.contains("\"stream_probe_preserved_active_item_matching_use_count_count\": 1")
+        );
+        assert!(
+            json.contains("\"stream_probe_preserved_active_item_matching_use_count_slots\": [0]")
+        );
+        assert!(json.contains("\"stream_probe_preserved_active_item_missing_use_count_count\": 1"));
+        assert!(
+            json.contains("\"stream_probe_preserved_active_item_missing_use_count_slots\": [1]")
+        );
     }
 
     #[test]

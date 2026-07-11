@@ -1762,6 +1762,85 @@ impl QuickbarStreamProbeSummary {
             .join(", ");
         format!("[{slots}]")
     }
+
+    fn preserved_active_item_use_count_coverage(
+        self,
+        use_count_state: &BTreeMap<QuickbarItemUseCountKey, QuickbarItemRefreshUseCountRow>,
+    ) -> QuickbarPreservedActiveItemUseCountCoverage {
+        let mut coverage = QuickbarPreservedActiveItemUseCountCoverage::default();
+        for (slot, signature) in self
+            .preserved_active_item_signatures
+            .0
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let Some(signature) = signature else {
+                continue;
+            };
+            let Ok(slot) = u8::try_from(slot) else {
+                continue;
+            };
+            // GQ is the decompile-owned quickbar use-count row. Durable state
+            // satisfies an active slot only when the wire slot, item object,
+            // and button type all agree; an unrelated row for the same item
+            // must not suppress the action probe for this slot.
+            let has_matching_use_count = use_count_state.values().any(|row| {
+                row.object_id == signature.object_id
+                    && row.slot == slot
+                    && row.button_type == client_quickbar::ITEM_SET_BUTTON_TYPE
+            });
+            coverage.observe(slot, has_matching_use_count);
+        }
+        coverage
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct QuickbarPreservedActiveItemUseCountCoverage {
+    matching_use_count_slot_mask: u64,
+    missing_use_count_slot_mask: u64,
+}
+
+impl QuickbarPreservedActiveItemUseCountCoverage {
+    fn observe(&mut self, slot: u8, has_matching_use_count: bool) {
+        let bit = 1u64.checked_shl(u32::from(slot)).unwrap_or(0);
+        if has_matching_use_count {
+            self.matching_use_count_slot_mask |= bit;
+        } else {
+            self.missing_use_count_slot_mask |= bit;
+        }
+    }
+
+    fn matching_use_count_slot_count(self) -> u32 {
+        self.matching_use_count_slot_mask.count_ones()
+    }
+
+    fn missing_use_count_slot_count(self) -> u32 {
+        self.missing_use_count_slot_mask.count_ones()
+    }
+
+    fn matching_use_count_slots_json(self) -> String {
+        quickbar_slot_mask_json(self.matching_use_count_slot_mask)
+    }
+
+    fn missing_use_count_slots_json(self) -> String {
+        quickbar_slot_mask_json(self.missing_use_count_slot_mask)
+    }
+
+    fn missing_use_count_slot(self, slot: u8) -> bool {
+        let bit = 1u64.checked_shl(u32::from(slot)).unwrap_or(0);
+        self.missing_use_count_slot_mask & bit != 0
+    }
+}
+
+fn quickbar_slot_mask_json(mask: u64) -> String {
+    let slots = (0..u64::BITS)
+        .filter(|slot| mask & (1u64 << slot) != 0)
+        .map(|slot| slot.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{slots}]")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1778,6 +1857,8 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) first_preserved_active_item_use_count_state: Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) quickbar_item_use_count_state_rows: usize,
     pub(crate) quickbar_item_use_count_updates_observed: u64,
+    pub(crate) preserved_active_item_use_count_coverage:
+        QuickbarPreservedActiveItemUseCountCoverage,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
@@ -1928,6 +2009,11 @@ impl QuickbarItemRefreshHarnessHint {
         let preserved_active_item_signature_count =
             stream_probe.preserved_active_item_signature_count();
         let preserved_active_item_slots_json = stream_probe.preserved_active_item_slots_json();
+        let use_count_coverage = self.preserved_active_item_use_count_coverage;
+        let preserved_active_item_matching_use_count_slots_json =
+            use_count_coverage.matching_use_count_slots_json();
+        let preserved_active_item_missing_use_count_slots_json =
+            use_count_coverage.missing_use_count_slots_json();
         let first_active_item = self.first_preserved_active_item_signature;
         let action_active_item = self.candidate_preserved_active_item_signature;
         let action_active_item_slot = self.candidate_preserved_active_item_slot;
@@ -2358,6 +2444,10 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"stream_probe_item_objects_preserved_by_active_state\": {},\n",
                 "  \"stream_probe_preserved_active_item_signature_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_matching_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_matching_use_count_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_missing_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
@@ -2692,6 +2782,10 @@ impl QuickbarItemRefreshHarnessHint {
             stream_probe.item_objects_preserved_by_active_state,
             preserved_active_item_signature_count,
             preserved_active_item_slots_json,
+            use_count_coverage.matching_use_count_slot_count(),
+            preserved_active_item_matching_use_count_slots_json,
+            use_count_coverage.missing_use_count_slot_count(),
+            preserved_active_item_missing_use_count_slots_json,
             stream_probe.item_objects_preserved_by_feature25_first,
             stream_probe.item_objects_preserved_by_feature25_second,
             stream_probe.item_objects_preserved_by_feature25_legacy_tail,
@@ -5633,6 +5727,30 @@ impl UiState {
             })
     }
 
+    pub(crate) fn preserved_active_items_without_use_count_state(
+        &self,
+    ) -> Vec<(u8, QuickbarActiveItemSignature)> {
+        let Some(probe) = self.last_quickbar_stream_probe else {
+            return Vec::new();
+        };
+        let coverage =
+            probe.preserved_active_item_use_count_coverage(&self.quickbar_item_use_count_state);
+        probe
+            .preserved_active_item_signatures
+            .0
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(slot, signature)| {
+                let signature = signature?;
+                let slot = u8::try_from(slot).ok()?;
+                coverage
+                    .missing_use_count_slot(slot)
+                    .then_some((slot, signature))
+            })
+            .collect()
+    }
+
     pub(crate) fn observe_quickbar_stream_probe(
         &mut self,
         summary: &QuickbarRewriteSummary,
@@ -6050,6 +6168,12 @@ impl UiState {
             stream_probe.preserved_active_item_signature_count();
         let stream_probe_preserved_active_item_slots_json =
             stream_probe.preserved_active_item_slots_json();
+        let stream_probe_preserved_active_item_use_count_coverage = stream_probe
+            .preserved_active_item_use_count_coverage(&self.quickbar_item_use_count_state);
+        let stream_probe_preserved_active_item_matching_use_count_slots_json =
+            stream_probe_preserved_active_item_use_count_coverage.matching_use_count_slots_json();
+        let stream_probe_preserved_active_item_missing_use_count_slots_json =
+            stream_probe_preserved_active_item_use_count_coverage.missing_use_count_slots_json();
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
             .unwrap_or_default();
@@ -6259,6 +6383,10 @@ impl UiState {
                 "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
                 "  \"stream_probe_preserved_active_item_signature_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_matching_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_matching_use_count_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_missing_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot\": {},\n",
@@ -6476,6 +6604,11 @@ impl UiState {
             stream_probe.item_objects_preserved_by_feature25_legacy_tail,
             stream_probe_preserved_active_item_signature_count,
             stream_probe_preserved_active_item_slots_json,
+            stream_probe_preserved_active_item_use_count_coverage
+                .matching_use_count_slot_count(),
+            stream_probe_preserved_active_item_matching_use_count_slots_json,
+            stream_probe_preserved_active_item_use_count_coverage.missing_use_count_slot_count(),
+            stream_probe_preserved_active_item_missing_use_count_slots_json,
             stream_probe_active_item_known,
             stream_probe_active_item_slot_known,
             stream_probe_active_item_slot,
@@ -6781,6 +6914,10 @@ impl UiState {
                 ),
             quickbar_item_use_count_state_rows: self.quickbar_item_use_count_state.len(),
             quickbar_item_use_count_updates_observed: self.quickbar_item_use_count_updates_observed,
+            preserved_active_item_use_count_coverage: self
+                .last_quickbar_stream_probe
+                .unwrap_or_default()
+                .preserved_active_item_use_count_coverage(&self.quickbar_item_use_count_state),
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
             events_since_pending_refresh: summary.events_since_pending_refresh,
             event_breakdown: summary.event_breakdown,
