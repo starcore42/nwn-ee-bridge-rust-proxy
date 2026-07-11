@@ -27,7 +27,10 @@ use crate::translate::{
         LiveObjectQuickbarItemUseCountUpdate, area_static_row_scalar_orientation, object_ids,
     },
     player_list::PlayerListObjectIds,
-    quickbar::{QuickbarActiveItemSignature, QuickbarRewriteSummary, QuickbarValidatedSlotProfile},
+    quickbar::{
+        QuickbarActiveItemSignature, QuickbarPreservedActiveItemSignatures, QuickbarRewriteSummary,
+        QuickbarValidatedSlotProfile,
+    },
 };
 
 use super::event::{
@@ -1673,6 +1676,7 @@ pub(crate) struct QuickbarStreamProbeSummary {
     pub(crate) item_objects_preserved_by_feature25_first: u32,
     pub(crate) item_objects_preserved_by_feature25_second: u32,
     pub(crate) item_objects_preserved_by_feature25_legacy_tail: u32,
+    pub(crate) preserved_active_item_signatures: QuickbarPreservedActiveItemSignatures,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) first_preserved_active_item_slot: Option<u8>,
 }
@@ -1719,9 +1723,24 @@ impl QuickbarStreamProbeSummary {
                 .item_objects_preserved_by_feature25_second,
             item_objects_preserved_by_feature25_legacy_tail: summary
                 .item_objects_preserved_by_feature25_legacy_tail,
+            preserved_active_item_signatures: summary.preserved_active_item_signatures,
             first_preserved_active_item_signature: summary.first_preserved_active_item_signature,
             first_preserved_active_item_slot: summary.first_preserved_active_item_slot,
         }
+    }
+
+    fn preserved_active_item_for_object(
+        self,
+        object_id: u32,
+    ) -> Option<(u8, QuickbarActiveItemSignature)> {
+        self.preserved_active_item_signatures
+            .0
+            .iter()
+            .enumerate()
+            .find_map(|(slot, signature)| {
+                let signature = (*signature)?;
+                (signature.object_id == object_id).then_some((u8::try_from(slot).ok()?, signature))
+            })
     }
 }
 
@@ -1733,6 +1752,8 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) stream_probe: QuickbarStreamProbeSummary,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) first_preserved_active_item_slot: Option<u8>,
+    pub(crate) candidate_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
+    pub(crate) candidate_preserved_active_item_slot: Option<u8>,
     pub(crate) candidate_use_count_state: Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) first_preserved_active_item_use_count_state: Option<QuickbarItemRefreshUseCountRow>,
     pub(crate) quickbar_item_use_count_state_rows: usize,
@@ -1885,6 +1906,8 @@ impl QuickbarItemRefreshHarnessHint {
         let first_client_action_detail = self.first_client_action_detail;
         let stream_probe = self.stream_probe;
         let first_active_item = self.first_preserved_active_item_signature;
+        let action_active_item = self.candidate_preserved_active_item_signature;
+        let action_active_item_slot = self.candidate_preserved_active_item_slot;
         let first_active_item_first_property =
             first_active_item.and_then(|signature| signature.first_property);
         let first_active_item_known = first_active_item.is_some();
@@ -1901,7 +1924,7 @@ impl QuickbarItemRefreshHarnessHint {
             .map(|slot| slot == self.recommended_set_button_slot)
             .unwrap_or(false);
         let first_property_subtype_low_byte = first_property_subtype_low_byte_for_candidate(
-            first_active_item,
+            action_active_item,
             self.candidate.object_id,
         );
         let recommended_use_item_payload =
@@ -2073,7 +2096,7 @@ impl QuickbarItemRefreshHarnessHint {
             .and_then(|detail| detail.matches_candidate_object)
             .unwrap_or(false);
         let first_client_action_matches_preserved_active_item = first_client_action_detail
-            .map(|detail| detail.matches_preserved_active_item(first_active_item))
+            .map(|detail| detail.matches_preserved_active_item(action_active_item))
             .unwrap_or(false);
         let first_client_action_matches_recommended_client_quickbar_set_button =
             first_client_action_detail
@@ -2098,7 +2121,7 @@ impl QuickbarItemRefreshHarnessHint {
                 .map(|detail| {
                     detail.matches_recommended_client_use_item_first_property_subtype_low(
                         self.candidate.object_id,
-                        first_active_item,
+                        action_active_item,
                     )
                 })
                 .unwrap_or(false);
@@ -2110,7 +2133,7 @@ impl QuickbarItemRefreshHarnessHint {
                 first_client_action_detail,
                 Some(self.candidate.object_id),
                 self.recommended_set_button_slot,
-                first_active_item,
+                action_active_item,
             )
             .as_str();
         let first_event_after_client_action = self
@@ -2132,9 +2155,13 @@ impl QuickbarItemRefreshHarnessHint {
                 self.first_preserved_active_item_use_count_state,
                 self.first_preserved_active_item_slot,
             );
-        let matching_candidate_use_count_state = first_active_item_matches_candidate
-            && candidate_use_count_state_slot_relation.matches_preserved_active_item_slot();
-        let matching_preserved_active_item_use_count_state = !first_active_item_matches_candidate
+        let candidate_is_preserved_active_item = action_active_item.is_some();
+        let matching_candidate_use_count_state = candidate_is_preserved_active_item
+            && self.candidate_use_count_state.is_some_and(|row| {
+                Some(row.slot) == action_active_item_slot
+                    && row.button_type == client_quickbar::ITEM_SET_BUTTON_TYPE
+            });
+        let matching_preserved_active_item_use_count_state = !candidate_is_preserved_active_item
             && !candidate_use_count_state_slot_relation.matches_preserved_active_item_slot()
             && first_active_item_use_count_state_slot_relation.matches_preserved_active_item_slot()
             && self
@@ -2160,7 +2187,7 @@ impl QuickbarItemRefreshHarnessHint {
                 first_client_action_detail,
                 Some(self.candidate.object_id),
                 self.recommended_set_button_slot,
-                first_active_item,
+                action_active_item,
                 event_breakdown_before_first_client_action,
                 self.event_breakdown_after_first_client_action,
             )
@@ -6692,6 +6719,13 @@ impl UiState {
         let first_preserved_active_item_slot = self
             .last_quickbar_stream_probe
             .and_then(|probe| probe.first_preserved_active_item_slot);
+        let candidate_preserved_active_item = self
+            .last_quickbar_stream_probe
+            .and_then(|probe| probe.preserved_active_item_for_object(candidate.object_id));
+        let candidate_preserved_active_item_slot =
+            candidate_preserved_active_item.map(|(slot, _)| slot);
+        let candidate_preserved_active_item_signature =
+            candidate_preserved_active_item.map(|(_, signature)| signature);
         Some(QuickbarItemRefreshHarnessHint {
             candidate,
             recommended_set_button_slot,
@@ -6699,9 +6733,11 @@ impl UiState {
             stream_probe: self.last_quickbar_stream_probe.unwrap_or_default(),
             first_preserved_active_item_signature,
             first_preserved_active_item_slot,
+            candidate_preserved_active_item_signature,
+            candidate_preserved_active_item_slot,
             candidate_use_count_state: self.quickbar_item_use_count_state_for_candidate(
                 candidate.object_id,
-                first_preserved_active_item_slot,
+                candidate_preserved_active_item_slot,
             ),
             first_preserved_active_item_use_count_state: self
                 .quickbar_item_use_count_state_for_preserved_active_item(
@@ -6870,8 +6906,8 @@ mod tests {
         QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
         QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
         QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass,
-        QuickbarItemRefreshUseCountRow, QuickbarRewriteSummary, QuickbarStreamProbeSummary,
-        QuickbarValidatedSlotProfile, UiState,
+        QuickbarItemRefreshUseCountRow, QuickbarPreservedActiveItemSignatures,
+        QuickbarRewriteSummary, QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
     };
 
     #[test]
@@ -9746,6 +9782,7 @@ mod tests {
             item_objects_preserved_by_feature25_first: 0,
             item_objects_preserved_by_feature25_second: 0,
             item_objects_preserved_by_feature25_legacy_tail: 0,
+            preserved_active_item_signatures: QuickbarPreservedActiveItemSignatures::default(),
             first_preserved_active_item_signature: None,
             first_preserved_active_item_slot: None,
             validated_slot_profile: profile,
@@ -9985,6 +10022,10 @@ mod tests {
             first_preserved_active_item_slot: Some(2),
             ..QuickbarStreamProbeSummary::default()
         });
+        if let Some(probe) = ui.last_quickbar_stream_probe.as_mut() {
+            probe.preserved_active_item_signatures.0[2] =
+                probe.first_preserved_active_item_signature;
+        }
         ui.observe_quickbar_item_use_count_updates(&[
             LiveObjectQuickbarItemUseCountUpdate {
                 slot: 8,

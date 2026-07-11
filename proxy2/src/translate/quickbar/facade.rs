@@ -391,6 +391,7 @@ fn summarize_quickbar_rewrite(
     let mut rejection_counts = QuickbarItemRejectionCounts::default();
     let mut missing_state_object_counts = QuickbarMissingStateObjectCounts::default();
     let mut materialization_counts = QuickbarMaterializationCounts::default();
+    let mut preserved_active_item_signatures = QuickbarPreservedActiveItemSignatures::default();
     let mut first_preserved_active_item_signature = None;
     let mut first_preserved_active_item_slot = None;
     for (slot_index, button) in parsed.buttons.iter().enumerate() {
@@ -448,10 +449,13 @@ fn summarize_quickbar_rewrite(
         };
         item_buttons_emitted = item_buttons_emitted.saturating_add(1);
         materialization_counts.observe(proofs);
-        if first_preserved_active_item_signature.is_none() {
-            let signature = quickbar_active_item_signature(primary)
-                .or_else(|| quickbar_active_item_signature(secondary));
-            if signature.is_some() {
+        let signature = quickbar_active_item_signature(primary)
+            .or_else(|| quickbar_active_item_signature(secondary));
+        if let Some(slot_signature) = signature {
+            if let Some(slot) = preserved_active_item_signatures.0.get_mut(slot_index) {
+                *slot = Some(slot_signature);
+            }
+            if first_preserved_active_item_signature.is_none() {
                 first_preserved_active_item_signature = signature;
                 first_preserved_active_item_slot = u8::try_from(slot_index).ok();
             }
@@ -568,6 +572,7 @@ fn summarize_quickbar_rewrite(
         item_objects_preserved_by_feature25_second: materialization_counts.feature25_second,
         item_objects_preserved_by_feature25_legacy_tail: materialization_counts
             .feature25_legacy_tail,
+        preserved_active_item_signatures,
         first_preserved_active_item_signature,
         first_preserved_active_item_slot,
         validated_slot_profile: super::validator::validated_set_all_buttons_slot_profile(

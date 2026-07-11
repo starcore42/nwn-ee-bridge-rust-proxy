@@ -1061,19 +1061,57 @@ fn remember_quickbar_item_context_if_relevant(
     state: &mut SemanticSessionState,
     source: &'static str,
 ) {
-    // A post-quickbar inventory response may materialize dozens of items at
-    // once. The lowest object id is deterministic, but it need not identify a
-    // quickbar button. Prefer the first preserved quickbar item only when the
-    // object registry independently proves that exact item is ready; otherwise
-    // keep the existing direct/shared/Feature-25 proof-priority fallback.
-    let preferred_ready_object_id = state
-        .ui
-        .last_quickbar_stream_probe
+    // Diamond and EE both own exactly 36 SetAllButtons slots. Walk those
+    // preserved slots in wire order and prefer the first independently ready
+    // item without a matching durable GQ use-count row. A slot whose GQ state
+    // is already proven does not need a synthetic action; moving to the next
+    // unresolved preserved item keeps the live harness focused on an actual
+    // engine-facing state gap. If every preserved slot is already satisfied,
+    // retain the old first-slot selection so the existing prior-GQ resolver
+    // can close the pending window explicitly.
+    let stream_probe = state.ui.last_quickbar_stream_probe;
+    let mut item_context = None;
+    if let Some(probe) = stream_probe {
+        for (slot, signature) in probe.preserved_active_item_signatures.0.iter().enumerate() {
+            let Some(signature) = *signature else {
+                continue;
+            };
+            let Ok(slot) = u8::try_from(slot) else {
+                continue;
+            };
+            let has_matching_use_count =
+                state.ui.quickbar_item_use_count_state.values().any(|row| {
+                    row.object_id == signature.object_id
+                        && row.slot == slot
+                        && row.button_type == client_quickbar::ITEM_SET_BUTTON_TYPE
+                });
+            if has_matching_use_count {
+                continue;
+            }
+            let candidate_context = state
+                .objects
+                .inventory_item_context_summary_with_preferred_ready_candidate(Some(
+                    signature.object_id,
+                ));
+            if candidate_context
+                .compact_item_emission_ready_candidate
+                .is_some_and(|candidate| candidate.object_id == signature.object_id)
+            {
+                item_context = Some(candidate_context);
+                break;
+            }
+        }
+    }
+    let preferred_ready_object_id = stream_probe
         .and_then(|probe| probe.first_preserved_active_item_signature)
         .map(|signature| signature.object_id);
-    let item_context = state
-        .objects
-        .inventory_item_context_summary_with_preferred_ready_candidate(preferred_ready_object_id);
+    let item_context = item_context.unwrap_or_else(|| {
+        state
+            .objects
+            .inventory_item_context_summary_with_preferred_ready_candidate(
+                preferred_ready_object_id,
+            )
+    });
     if !item_context.has_quickbar_item_context_evidence() {
         return;
     }
@@ -4133,6 +4171,90 @@ mod fixture_free_tests {
             idle_json
                 .contains("\"candidate_quickbar_item_use_count_state_active_property_index\": 255")
         );
+    }
+
+    #[test]
+    fn pending_quickbar_refresh_selects_next_preserved_item_without_use_count_state() {
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0108u32;
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let first_signature = quickbar::QuickbarActiveItemSignature {
+            object_id: first_item_id,
+            base_item: 0x34,
+            appearance_type: 0,
+            active_property_count: 1,
+            first_property: Some(quickbar::QuickbarActivePropertySignature {
+                property: 15,
+                subtype: 0x020D,
+                cost_table_value: 13,
+                param: 0,
+            }),
+            has_armor_word: false,
+            name_is_locstring: true,
+            state_mask: 1,
+            value_mask: 0xFF,
+        };
+        let second_signature = quickbar::QuickbarActiveItemSignature {
+            object_id: second_item_id,
+            first_property: Some(quickbar::QuickbarActivePropertySignature {
+                subtype: 0x0217,
+                ..first_signature.first_property.unwrap()
+            }),
+            ..first_signature
+        };
+        let mut preserved = quickbar::QuickbarPreservedActiveItemSignatures::default();
+        preserved.0[0] = Some(first_signature);
+        preserved.0[1] = Some(second_signature);
+        let mut state = SemanticSessionState::default();
+
+        apply_event(&mut state, direct_item_live_event(first_item_id), None);
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+        state.ui.last_quickbar_stream_probe = Some(QuickbarStreamProbeSummary {
+            slot_records_owned: 36,
+            item_buttons_seen: 2,
+            item_buttons_preserved: 2,
+            preserved_active_item_signatures: preserved,
+            first_preserved_active_item_signature: Some(first_signature),
+            first_preserved_active_item_slot: Some(0),
+            ..QuickbarStreamProbeSummary::default()
+        });
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 0,
+                    button_type: client_quickbar::ITEM_SET_BUTTON_TYPE,
+                    object_id: first_item_id,
+                    active_property_index: 0xFF,
+                    use_count: 1,
+                },
+            ]),
+            None,
+        );
+
+        apply_event(&mut state, direct_item_live_event(second_item_id), None);
+
+        let hint = state
+            .ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("the second preserved item still needs a live action probe");
+        assert_eq!(hint.candidate.object_id, second_item_id);
+        assert_eq!(hint.candidate_preserved_active_item_slot, Some(1));
+        assert_eq!(
+            hint.candidate_preserved_active_item_signature,
+            Some(second_signature)
+        );
+        assert_eq!(hint.candidate_use_count_state, None);
+        let json = hint.to_json();
+        assert!(json.contains("\"recommended_client_action_should_dispatch\": true"));
+        assert!(json.contains("\"recommended_use_item_first_property_subtype_low_byte\": 23"));
+        assert!(json.contains("\"recommended_client_action_suppressed_reason\": \"none\""));
     }
 
     #[test]

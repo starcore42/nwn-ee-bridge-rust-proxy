@@ -17,6 +17,31 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-11 unresolved preserved quickbar-item selection: proxy2 now retains
+  the active-item signature at every decompile-owned 36-slot
+  `GuiQuickbar_SetAllButtons` position. Post-materialization action probes walk
+  those slots in wire order and choose the first independently ready item that
+  lacks a matching durable `GQ` use-count row; the candidate's own active
+  property drives subtype-low `UseItem` construction and suppression. If all
+  preserved active items are already satisfied, the prior-GQ resolver closes
+  the window without sending a redundant action. Regression coverage proves a
+  satisfied slot 0 advances to unresolved slot 1. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-unsatisfied-preserved-item-20260711-2320`
+  processed 164 packets with 304 strict allows, zero quarantines, and zero
+  live-object terminal residuals.
+
+  Fresh HG capture
+  `C:\nwnbridge\codex-live-unsatisfied-preserved-item-20260711-2305\harness-proxy-20260711-230422`
+  reached `Module_Loaded`, `Area_ClientArea`, proxy-generated
+  `Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject` through
+  `2026-07-11T23:07:12+10:00` with zero quarantine files. It committed 36
+  slots/21 items, materialized 52 ClientGui items, dispatched the confirmed
+  inventory replay, and retained slot-0 candidate `0x80015866`; HG had already
+  supplied its exact button-type-1 `GQ` row, so no `UseItem` was sent. Next
+  production path: expose the preserved active-signature count/slot set in the
+  harness hint and capture a module/character state with a preserved active
+  item whose `GQ` row is genuinely absent, then use that real EE action/response
+  window to implement the first proven engine-facing mismatch.
 - ~~2026-07-11 ClientGui status response-window over-attribution: resolved and
   live-confirmed 2026-07-11.~~ Capture
   `C:\nwnbridge\codex-live-item-action-current-20260711-0442\harness-proxy-20260711-044124`

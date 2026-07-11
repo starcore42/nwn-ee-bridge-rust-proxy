@@ -185,6 +185,11 @@ pub struct QuickbarRewriteSummary {
     pub item_objects_preserved_by_feature25_first: u32,
     pub item_objects_preserved_by_feature25_second: u32,
     pub item_objects_preserved_by_feature25_legacy_tail: u32,
+    /// Preserved active-item signatures indexed by the decompile-owned
+    /// 36-slot SetAllButtons order. Keeping every slot lets later semantic
+    /// state choose an unresolved materialized quickbar item instead of
+    /// repeatedly probing a slot whose GQ use-count state is already proven.
+    pub(crate) preserved_active_item_signatures: QuickbarPreservedActiveItemSignatures,
     pub(crate) first_preserved_active_item_signature: Option<QuickbarActiveItemSignature>,
     pub(crate) first_preserved_active_item_slot: Option<u8>,
     pub(crate) validated_slot_profile: Option<QuickbarValidatedSlotProfile>,
@@ -209,6 +214,17 @@ pub(crate) struct QuickbarActiveItemSignature {
     pub(crate) name_is_locstring: bool,
     pub(crate) state_mask: u8,
     pub(crate) value_mask: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuickbarPreservedActiveItemSignatures(
+    pub(crate) [Option<QuickbarActiveItemSignature>; super::constants::LEGACY_QUICKBAR_BUTTON_COUNT],
+);
+
+impl Default for QuickbarPreservedActiveItemSignatures {
+    fn default() -> Self {
+        Self([None; super::constants::LEGACY_QUICKBAR_BUTTON_COUNT])
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
