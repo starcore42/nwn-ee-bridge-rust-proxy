@@ -17,6 +17,22 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-13 delayed inventory pre-pump handoff: the newest account-1 capture
+  exposed a harness-driving boundary, not a packet parser defect. EE reported
+  `GuiInventory_Status` success and opened the local panel, but proxy2 saw no
+  client frame because the delayed call ran after that main-loop iteration's
+  network pump. The bridge now queues the request at the pre-pump edge of the
+  same game-thread callback.
+
+  Fresh capture
+  `C:\nwnbridge\codex-live-inventory-prepump-20260713-0242\harness-proxy-20260713-024110`
+  reached module/area/live-object gameplay, strictly claimed real
+  `ClientGuiInventory` sequences 80/81, materialized 31 HG inventory items,
+  dispatched one confirmed Inventory replay, and remained at zero quarantine
+  files through `2026-07-13T02:43:20+10:00`. All 14 preserved active slots then
+  had matching durable GQ state, so `UseItem` suppression remained correct.
+  The next action capture still requires a character/module state whose durable
+  GQ coverage remains incomplete after this now-reliable inventory handoff.
 - 2026-07-12 preserved active-slot GQ coverage: proxy2 now derives candidate
   selection and harness diagnostics from one typed 36-slot coverage rule. A
   preserved active slot is satisfied only by durable `GQ` state with the same
