@@ -33,8 +33,27 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-13 02:43 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-13 05:48 +10: the freshest
 gameplay-reaching proxy harness is
+`C:\nwnbridge\codex-live-account2-testpm-action-retry-20260713-0545\harness-proxy-20260713-054529`.
+It used account 2 and the typed vault-discovered `testpm` resref, reached
+`Module_Loaded`, strictly owned the password talk, reached `Area_ClientArea`,
+synthetic `Area_AreaLoaded`, and sustained exact `GameObjUpdate_LiveObject`
+gameplay through `2026-07-13T05:47:56+10:00` with zero quarantine decisions or
+files. Delayed pre-pump inventory produced real `ClientGuiInventory` sequences
+80/81. Its 36-slot quickbar contained 0 item buttons, so the later generic
+ready inventory candidate was not a valid quickbar action target. Current code
+suppresses that shape as `candidate_not_preserved_active_item` and preserves a
+per-generation union of observed actionable missing-GQ slots for scouting
+profiles whose current mask later resolves. The first account-2 discovery run
+and an immediate retry did not reach gameplay; the retry was rejected with
+documented HG detail 6 until the session reservation cooldown elapsed.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-preserved-action-gate-20260713-0555`
+processed 164 packet files with 304 strict allows, zero quarantines/files, and
+zero terminal live-object residuals.
+
+The immediately preceding gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-inventory-prepump-20260713-0242\harness-proxy-20260713-024110`.
 It was launched with:
 
@@ -1787,6 +1806,7 @@ work.
 | UseObject probe reaches gameplay, final hint has `first_client_action_match_class="recommended_use_object"`, but `quickbar_events_after_first_client_action=0` and `server_quickbar_item_use_count_events_after_first_client_action=0` | The bounded `Input_UseObject` payload lands, but it is not sufficient to make HG emit the original item-refresh quickbar update as either full `GuiQuickbar` or live-object `GQ` item-use-count rows | Stop retesting exact probe identity. Trace original-client active-property item action/state semantics beyond SetButton, GuiEvent_Notify, UseItem, and UseObject before changing broad translation rules. |
 | UseItem subtype-low probe reaches gameplay, final hint has `first_client_action_match_class="recommended_use_item_first_property_subtype_low"`, but `quickbar_events_after_first_client_action=0` and `server_quickbar_item_use_count_events_after_first_client_action=0` | The decompile-ordered subtype-low `Input_UseItem` payload lands, but it is not sufficient to make HG emit the original item-refresh quickbar update as either full `GuiQuickbar` or live-object `GQ` item-use-count rows | Stop retesting exact probe identity. Trace original-client active-property item action/state semantics beyond SetButton, GuiEvent_Notify, UseObject, zero-byte UseItem, and subtype-low UseItem before changing broad translation rules. |
 | Live auto-UseItem hint reports `stream_probe_quickbar_item_candidates_without_committed_profile` | Proxy2 can parse stream-probe `GuiQuickbar_SetAllButtons` candidates, but no accepted committed quickbar profile has reached semantic state | Inspect splitter/stream commitment and quickbar buffering before trying to inject UseItem; the driver should wait for a pending hint or a committed profile. |
+| A committed quickbar with zero preserved item buttons later emits a ready generic inventory candidate | Inventory readiness alone does not prove that an object is an authentic quickbar action target; the old fallback could recommend an unrelated active inventory object | Fixed 2026-07-13: dispatch requires the candidate to match a typed preserved active-item signature and otherwise reports `candidate_not_preserved_active_item`. Use the observed actionable missing-GQ slot union to choose another profile rather than forcing the generic object. |
 
 Rules:
 

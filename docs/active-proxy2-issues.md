@@ -33,6 +33,29 @@ not as standalone workaround targets.
   had matching durable GQ state, so `UseItem` suppression remained correct.
   The next action capture still requires a character/module state whose durable
   GQ coverage remains incomplete after this now-reliable inventory handoff.
+- 2026-07-13 preserved-slot action ownership: fresh account-2 capture
+  `C:\nwnbridge\codex-live-account2-testpm-action-retry-20260713-0545\harness-proxy-20260713-054529`
+  selected `testpm`, reached module/area/live-object gameplay, strictly claimed
+  the password talk and delayed `ClientGuiInventory` requests, and wrote zero
+  quarantine files through `2026-07-13T05:47:56+10:00`. Its exact committed
+  36-slot profile had 26 blanks, 6 spells, 4 general buttons, and no item
+  buttons. Four later ready inventory objects nevertheless caused the old hint
+  path to recommend a generic active object even though the typed quickbar
+  stream had no preserved active-item signature. That candidate is not an
+  authentic quickbar action target.
+
+  Proxy2 now permits harness action dispatch only when the ready candidate
+  matches a preserved active-item signature and otherwise reports
+  `candidate_not_preserved_active_item`. It also retains the union of actionable
+  missing-GQ slots observed during the current quickbar generation, so a later
+  GQ resolution no longer erases evidence that a profile briefly exposed the
+  target state. Current and observed masks remain separate in pending and idle
+  hints. Next, use the observed mask to scout another account/character with a
+  real preserved item, then capture its native EE action and HG response.
+  Focused hint/preserved-slot regressions, `cargo check`, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-preserved-action-gate-20260713-0555`
+  passed; the replay processed 164 packet files with 304 strict allows, zero
+  quarantine decisions/files, and zero terminal live-object residuals.
 - 2026-07-12 preserved active-slot GQ coverage: proxy2 now derives candidate
   selection and harness diagnostics from one typed 36-slot coverage rule. A
   preserved active slot is satisfied only by durable `GQ` state with the same

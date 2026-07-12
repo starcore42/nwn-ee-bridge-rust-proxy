@@ -1870,6 +1870,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) preserved_active_item_use_count_coverage:
         QuickbarPreservedActiveItemUseCountCoverage,
     pub(crate) preserved_active_item_actionable_missing_use_count_slot_mask: u64,
+    pub(crate) observed_preserved_active_item_actionable_missing_use_count_slot_mask: u64,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
@@ -2031,6 +2032,13 @@ impl QuickbarItemRefreshHarnessHint {
         let preserved_active_item_actionable_missing_use_count_slots_json = quickbar_slot_mask_json(
             self.preserved_active_item_actionable_missing_use_count_slot_mask,
         );
+        let observed_preserved_active_item_actionable_missing_use_count_slot_count = self
+            .observed_preserved_active_item_actionable_missing_use_count_slot_mask
+            .count_ones();
+        let observed_preserved_active_item_actionable_missing_use_count_slots_json =
+            quickbar_slot_mask_json(
+                self.observed_preserved_active_item_actionable_missing_use_count_slot_mask,
+            );
         let first_active_item = self.first_preserved_active_item_signature;
         let action_active_item = self.candidate_preserved_active_item_signature;
         let action_active_item_slot = self.candidate_preserved_active_item_slot;
@@ -2293,20 +2301,21 @@ impl QuickbarItemRefreshHarnessHint {
             && self
                 .first_preserved_active_item_use_count_state
                 .is_some_and(|row| row.button_type == client_quickbar::ITEM_SET_BUTTON_TYPE);
-        let recommended_client_action_should_dispatch =
-            !server_quickbar_response_before_first_client_action
-                && !matching_candidate_use_count_state
-                && !matching_preserved_active_item_use_count_state;
-        let recommended_client_action_suppressed_reason =
-            if server_quickbar_response_before_first_client_action {
-                "server_quickbar_response_before_first_client_action"
-            } else if matching_candidate_use_count_state {
-                "matching_quickbar_use_count_state"
-            } else if matching_preserved_active_item_use_count_state {
-                "preserved_active_item_quickbar_use_count_state_candidate_mismatch"
-            } else {
-                "none"
-            };
+        let recommended_client_action_should_dispatch = candidate_is_preserved_active_item
+            && !server_quickbar_response_before_first_client_action
+            && !matching_candidate_use_count_state
+            && !matching_preserved_active_item_use_count_state;
+        let recommended_client_action_suppressed_reason = if !candidate_is_preserved_active_item {
+            "candidate_not_preserved_active_item"
+        } else if server_quickbar_response_before_first_client_action {
+            "server_quickbar_response_before_first_client_action"
+        } else if matching_candidate_use_count_state {
+            "matching_quickbar_use_count_state"
+        } else if matching_preserved_active_item_use_count_state {
+            "preserved_active_item_quickbar_use_count_state_candidate_mismatch"
+        } else {
+            "none"
+        };
         let action_outcome = self.action_outcome.as_str();
         let recommended_action_outcome =
             QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
@@ -2467,6 +2476,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"stream_probe_preserved_active_item_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_preserved_active_item_actionable_missing_use_count_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
@@ -2807,6 +2818,8 @@ impl QuickbarItemRefreshHarnessHint {
             preserved_active_item_missing_use_count_slots_json,
             preserved_active_item_actionable_missing_use_count_slot_count,
             preserved_active_item_actionable_missing_use_count_slots_json,
+            observed_preserved_active_item_actionable_missing_use_count_slot_count,
+            observed_preserved_active_item_actionable_missing_use_count_slots_json,
             stream_probe.item_objects_preserved_by_feature25_first,
             stream_probe.item_objects_preserved_by_feature25_second,
             stream_probe.item_objects_preserved_by_feature25_legacy_tail,
@@ -5466,6 +5479,8 @@ pub(crate) struct UiState {
     pub(crate) post_committed_quickbar_item_refresh_resolved_by_server_use_count: bool,
     pub(crate) post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state: bool,
     pub(crate) post_committed_quickbar_item_refresh_pending_updates: u64,
+    pub(crate) post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask:
+        u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_events: u64,
     pub(crate) post_committed_quickbar_item_refresh_pending_event_breakdown:
         QuickbarItemRefreshEventBreakdown,
@@ -5911,6 +5926,8 @@ impl UiState {
         self.post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
         self.post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state = false;
         self.post_committed_quickbar_item_refresh_pending_updates = 0;
+        self.post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask =
+            0;
         self.post_committed_quickbar_item_refresh_pending_events = 0;
         self.post_committed_quickbar_item_refresh_pending_event_breakdown =
             QuickbarItemRefreshEventBreakdown::default();
@@ -6200,6 +6217,13 @@ impl UiState {
             context.preserved_active_item_actionable_missing_use_count_slot_count();
         let stream_probe_preserved_active_item_actionable_missing_use_count_slots_json =
             context.preserved_active_item_actionable_missing_use_count_slots_json();
+        let stream_probe_preserved_active_item_observed_actionable_missing_use_count_slot_count =
+            self.post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask
+                .count_ones();
+        let stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots_json =
+            quickbar_slot_mask_json(
+                self.post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask,
+            );
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
             .unwrap_or_default();
@@ -6415,6 +6439,8 @@ impl UiState {
                 "  \"stream_probe_preserved_active_item_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_preserved_active_item_actionable_missing_use_count_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot\": {},\n",
@@ -6639,6 +6665,8 @@ impl UiState {
             stream_probe_preserved_active_item_missing_use_count_slots_json,
             stream_probe_preserved_active_item_actionable_missing_use_count_slot_count,
             stream_probe_preserved_active_item_actionable_missing_use_count_slots_json,
+            stream_probe_preserved_active_item_observed_actionable_missing_use_count_slot_count,
+            stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots_json,
             stream_probe_active_item_known,
             stream_probe_active_item_slot_known,
             stream_probe_active_item_slot,
@@ -6951,6 +6979,8 @@ impl UiState {
             preserved_active_item_actionable_missing_use_count_slot_mask: summary
                 .item_context
                 .preserved_active_item_actionable_missing_use_count_slot_mask,
+            observed_preserved_active_item_actionable_missing_use_count_slot_mask: self
+                .post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask,
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
             events_since_pending_refresh: summary.events_since_pending_refresh,
             event_breakdown: summary.event_breakdown,
@@ -10653,6 +10683,34 @@ mod tests {
         );
         assert!(matching_prior_state_json.contains(
             "\"recommended_client_action_suppressed_reason\": \"matching_quickbar_use_count_state\""
+        ));
+        let unbound_candidate_json = QuickbarItemRefreshHarnessHint {
+            stream_probe: QuickbarStreamProbeSummary::default(),
+            first_preserved_active_item_signature: None,
+            first_preserved_active_item_slot: None,
+            candidate_preserved_active_item_signature: None,
+            candidate_preserved_active_item_slot: None,
+            candidate_use_count_state: None,
+            first_preserved_active_item_use_count_state: None,
+            event_breakdown: QuickbarItemRefreshEventBreakdown::default(),
+            event_breakdown_after_first_client_action: QuickbarItemRefreshEventBreakdown::default(),
+            first_candidate_use_count_row: None,
+            first_candidate_use_count_row_before_first_client_action: None,
+            first_candidate_use_count_row_after_first_client_action: None,
+            first_followup_event: None,
+            first_client_action: None,
+            first_client_action_detail: None,
+            first_event_after_client_action: None,
+            action_outcome: QuickbarItemRefreshActionOutcome::AwaitingClientAction,
+            followup_events_before_first_client_action: 0,
+            ..hint
+        }
+        .to_json();
+        assert!(
+            unbound_candidate_json.contains("\"recommended_client_action_should_dispatch\": false")
+        );
+        assert!(unbound_candidate_json.contains(
+            "\"recommended_client_action_suppressed_reason\": \"candidate_not_preserved_active_item\""
         ));
         assert!(
             matching_prior_state_json

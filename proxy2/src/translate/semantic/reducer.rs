@@ -1101,6 +1101,10 @@ fn remember_quickbar_item_context_if_relevant(
     });
     item_context.preserved_active_item_actionable_missing_use_count_slot_mask =
         actionable_missing_use_count_slot_mask;
+    state
+        .ui
+        .post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask |=
+        actionable_missing_use_count_slot_mask;
     if !item_context.has_quickbar_item_context_evidence() {
         return;
     }
@@ -4274,6 +4278,38 @@ mod fixture_free_tests {
         ));
         assert!(json.contains(
             "\"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": [1]"
+        ));
+        assert!(json.contains(
+            "\"stream_probe_preserved_active_item_observed_actionable_missing_use_count_count\": 1"
+        ));
+        assert!(json.contains(
+            "\"stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots\": [1]"
+        ));
+
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 1,
+                    button_type: client_quickbar::ITEM_SET_BUTTON_TYPE,
+                    object_id: second_item_id,
+                    active_property_index: 0xFF,
+                    use_count: 1,
+                },
+            ]),
+            None,
+        );
+
+        assert!(state.ui.quickbar_item_refresh_harness_hint().is_none());
+        let idle_json = state.ui.quickbar_item_refresh_harness_idle_json();
+        assert!(idle_json.contains(
+            "\"stream_probe_preserved_active_item_actionable_missing_use_count_count\": 0"
+        ));
+        assert!(idle_json.contains(
+            "\"stream_probe_preserved_active_item_observed_actionable_missing_use_count_count\": 1"
+        ));
+        assert!(idle_json.contains(
+            "\"stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots\": [1]"
         ));
     }
 
