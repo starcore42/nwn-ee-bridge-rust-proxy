@@ -117,6 +117,32 @@ not as standalone workaround targets.
   reader to prove whether unused tail bits are ignored; if they are, canonicalize
   only those unused bits before coalesced typed proof rather than relaxing the
   exact chat body or broad coalesced validation.
+
+  ~~The coalesced `Chat_Talk` proof failure is resolved in code 2026-07-12;
+  direct live source recurrence remains pending.~~ Diamond
+  `CNWMessage::GetWriteMessage` (`sub_4FC920`) masks the tail byte with `0x1F`
+  before inserting the valid-bit count in bits 7..5, preserving stale data in
+  the unused low five bits. EE `CNWMessage::SetReadMessage`
+  (`0x1402DA7B0`) consumes only that high three-bit count, and `ReadBits`
+  (`0x1402D9700`) never examines unread padding. The exact live source shape
+  ends in `0x64`: valid-count 3 plus stale low bit 2. Proxy2 now proves the
+  speaker OBJECTID, bounded string, declared-byte boundary, single tail byte,
+  and three-bit count before clearing only the low five bits; strict validation
+  then requires the canonical `0x60` result. Shifted valid-bit counts and string
+  boundaries still reject.
+
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-chat-padding-20260712-1930` processed 164
+  packet files with 304 strict allows, zero quarantines/files, and zero
+  live-object terminal residuals. Fresh HG capture
+  `C:\nwnbridge\codex-live-chat-padding-20260712-1945\harness-proxy-20260712-190730`
+  reached module/area/live-object gameplay, recorded 24 strict coalesced-window
+  allows, and remained at zero strict quarantines/files through
+  `2026-07-12T19:10:54+10:00`. The server echo did not recur, nor did the fixed
+  `G I/R A` or unresolved `U/5 0x0000004F` source shapes. The `U/5 0x4F`
+  position/orientation/action/status/`0x40` cursor is now the next production
+  target; require a future server `Chat_Talk` recurrence before marking the
+  padding repair live-confirmed.
 - 2026-07-12 active quickbar-slot diagnostics and Chat_Talk ownership: proxy2
   now writes the exact count and ordered slot array for all retained
   decompile-owned 36-slot active-item signatures into both pending and idle

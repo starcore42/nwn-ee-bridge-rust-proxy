@@ -1753,7 +1753,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         ) => {
             HighPayloadValidation::Exact(client_input::claim_payload_if_verified(payload).is_some())
         }
-        (0x09, 0x04 | 0x05 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C) => {
+        (0x09, 0x01 | 0x04 | 0x05 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C) => {
             HighPayloadValidation::Exact(chat_shape_valid(payload, high))
         }
         (0x0A, 0x01 | 0x02 | 0x03) => {
@@ -1880,6 +1880,13 @@ fn module_time_shape_valid(payload: &[u8]) -> bool {
 
 fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
     // Decompile-backed shape:
+    // Diamond `CNWMessage::GetWriteMessage` stores the fragment valid-bit count
+    // in tail bits 7..5 while preserving the unused low five scratch-buffer
+    // bits. EE `CNWMessage::SetReadMessage` consumes only that high count and
+    // its `ReadBits` helper never examines unread padding. The focused server
+    // translator canonicalizes exact no-data `Chat_Talk` tails to 0x60 before
+    // this strict check; strict still requires the canonical result.
+    //
     // EE `CNWSMessage::SendServerToPlayerChat_ServerTell` calls
     // `CreateWriteMessage(message_len + 4, ..., 1)`, writes exactly one
     // `CExoString` via `WriteCExoString(..., 0x20)`, and sends high-level
@@ -1897,7 +1904,7 @@ fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
     // so the same decompile-backed cursor proof gates direct and verified
     // frames.
     match high.minor {
-        0x04 | 0x05 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C => {
+        0x01 | 0x04 | 0x05 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C => {
             chat::claim_payload_if_verified(payload).is_some()
         }
         _ => false,

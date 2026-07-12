@@ -1533,6 +1533,47 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_direct_chat_talk_canonicalizes_diamond_padding_before_proof() {
+        let source_payload = [
+            0x50, 0x09, 0x01, 0x16, 0, 0, 0, 0xC3, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0, b'c', b'h', b'e',
+            b'e', b's', b'e', b'7', 0x64,
+        ];
+        let mut record = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        record[0] = b'M';
+        record[3..5].copy_from_slice(&32u16.to_be_bytes());
+        record[5..7].copy_from_slice(&75u16.to_be_bytes());
+        record[7] = 0x0A;
+        record[8..10].copy_from_slice(&1u16.to_be_bytes());
+        record[10..12].copy_from_slice(&(source_payload.len() as u16).to_be_bytes());
+        record.extend_from_slice(&source_payload);
+
+        let mut state = SessionState::default();
+        let outcome = rewrite_coalesced_record_for_ee(
+            &record,
+            0x0A,
+            HighLevel::parse(&source_payload),
+            None,
+            source_payload.len(),
+            &mut state,
+            32,
+            75,
+            203,
+        )
+        .expect("exact live Chat_Talk record should translate");
+
+        assert_eq!(outcome.proof, VerifiedProof::family(VerifiedFamily::Chat));
+        assert!(outcome.changed);
+        assert!(!outcome.dropped);
+        assert_eq!(
+            outcome.record[LEGACY_GAMEPLAY_PAYLOAD_OFFSET..],
+            [
+                0x50, 0x09, 0x01, 0x16, 0, 0, 0, 0xC3, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0, b'c', b'h',
+                b'e', b'e', b's', b'e', b'7', 0x60,
+            ]
+        );
+    }
+
+    #[test]
     fn coalesced_direct_inventory_retransmit_observes_semantics_once() {
         let inventory =
             crate::translate::inventory::build_ee_inventory_payload(0x01, 0x8000_1234, true, 4)

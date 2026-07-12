@@ -1200,7 +1200,8 @@ fn focused_chat_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
             let Some(payload) = bytes.get(offset..end) else {
                 break;
             };
-            if chat::claim_payload_if_verified(payload).is_some()
+            let mut probe = payload.to_vec();
+            if chat::claim_or_rewrite_server_payload_if_verified(&mut probe).is_some()
                 && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
             {
                 return FocusedUnitEnd::Exact(end);

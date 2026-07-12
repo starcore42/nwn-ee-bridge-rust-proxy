@@ -3302,7 +3302,7 @@ fn translate_chat(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if chat::claim_payload_if_verified(payload).is_some() {
+    if chat::claim_or_rewrite_server_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None

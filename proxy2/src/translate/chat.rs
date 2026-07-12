@@ -9,8 +9,14 @@
 //!   message length plus eight bytes, writes the raw speaker object id, writes
 //!   the `CExoString` body, and sends family `0x09`, minor `0x01`; it performs
 //!   no fragment-field write. Current HG/1.69 talk packets therefore end at the
-//!   exact string boundary and carry only the canonical three-bit CNW fragment
-//!   header. EE uses the same `Chat_Talk` family/minor and reader field order.
+//!   exact string boundary and carry only the three-bit CNW fragment header.
+//!   Diamond `CNWMessage::GetWriteMessage` (`sub_4FC920`) masks the tail byte
+//!   with `0x1F` before inserting the valid-bit count in bits 7..5, so the five
+//!   unused low bits retain stale scratch-buffer data. EE
+//!   `CNWMessage::SetReadMessage` (`0x1402DA7B0`) reads only that high three-bit
+//!   count, and `ReadBits` (`0x1402D9700`) never examines unread padding. The
+//!   bridge therefore canonicalizes only those unused low bits before exact EE
+//!   validation; declared bytes and the valid-bit count remain unchanged.
 //! - EE client talk sender `sub_1407BA7E0` creates a write message sized to
 //!   `text_len + 4`, writes exactly one `CExoString` with 32-bit length, then
 //!   sends family `0x09`, minor `0x01`; it writes no fragment data bits.
@@ -106,6 +112,25 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSummary> {
     }
 }
 
+/// Canonicalize decompile-proven unused padding in a server `Chat_Talk` tail,
+/// then apply the same exact claimant used by strict validation.
+///
+/// This is deliberately narrower than accepting arbitrary chat fragment
+/// tails: the payload must already have the exact speaker/string read boundary
+/// and exactly the three CNW header bits. Only the five unread low bits of the
+/// single fragment byte may change.
+pub fn claim_or_rewrite_server_payload_if_verified(payload: &mut [u8]) -> Option<ChatClaimSummary> {
+    let high = HighLevel::parse(payload)?;
+    if (high.major, high.minor) != (CHAT_MAJOR, CHAT_TALK_MINOR) {
+        return claim_payload_if_verified(payload);
+    }
+
+    let summary = claim_chat_talk_shape(payload, high.minor, false)?;
+    let fragment = payload.get_mut(summary.declared)?;
+    *fragment &= 0xE0;
+    claim_payload_if_verified(payload)
+}
+
 pub fn claim_client_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSummary> {
     let high = HighLevel::parse(payload)?;
     if (high.major, high.minor) != (CHAT_MAJOR, CHAT_TALK_MINOR) {
@@ -134,13 +159,23 @@ pub fn claim_client_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSumma
 }
 
 fn claim_chat_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
+    claim_chat_talk_shape(payload, minor, true)
+}
+
+fn claim_chat_talk_shape(
+    payload: &[u8],
+    minor: u8,
+    require_canonical_padding: bool,
+) -> Option<ChatClaimSummary> {
     if payload.len() < READ_START + OBJECT_ID_BYTES + CNW_LENGTH_BYTES + SINGLE_FRAGMENT_BYTE {
         return None;
     }
 
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    let fragment = payload.get(declared..)?;
     if payload.len() != declared.checked_add(SINGLE_FRAGMENT_BYTE)?
-        || !cnw_fragment_tail_has_exact_data_bits(&payload[declared..], 0)
+        || !cnw_fragment_tail_has_exact_data_bits(fragment, 0)
+        || (require_canonical_padding && fragment[0] & 0x1F != 0)
     {
         return None;
     }
@@ -508,6 +543,85 @@ mod tests {
         assert_eq!(summary.declared, declared);
         assert_eq!(summary.text_len, text.len());
         assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[test]
+    fn server_chat_talk_canonicalizes_only_unread_fragment_padding() {
+        // Live HG shape from the coalesced PlayerList/Chat window: Diamond's
+        // writer stored valid-bit count 3 in 0x64 but left low padding bit 2
+        // stale. EE SetReadMessage consumes only the high count bits.
+        let mut payload = [
+            0x50,
+            CHAT_MAJOR,
+            CHAT_TALK_MINOR,
+            0x16,
+            0,
+            0,
+            0,
+            0xC3,
+            0xFF,
+            0xFF,
+            0xFF,
+            7,
+            0,
+            0,
+            0,
+            b'c',
+            b'h',
+            b'e',
+            b'e',
+            b's',
+            b'e',
+            b'7',
+            0x64,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+        let summary = claim_or_rewrite_server_payload_if_verified(&mut payload)
+            .expect("exact Chat_Talk should canonicalize");
+
+        assert_eq!(summary.declared, 0x16);
+        assert_eq!(summary.text_len, 7);
+        assert_eq!(payload[22], 0x60);
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn server_chat_talk_padding_repair_rejects_shifted_valid_bits_or_body() {
+        let mut payload = [
+            0x50,
+            CHAT_MAJOR,
+            CHAT_TALK_MINOR,
+            0x16,
+            0,
+            0,
+            0,
+            0xC3,
+            0xFF,
+            0xFF,
+            0xFF,
+            7,
+            0,
+            0,
+            0,
+            b'c',
+            b'h',
+            b'e',
+            b'e',
+            b's',
+            b'e',
+            b'7',
+            0x84,
+        ];
+        let original = payload;
+        assert!(claim_or_rewrite_server_payload_if_verified(&mut payload).is_none());
+        assert_eq!(payload, original);
+
+        payload[22] = 0x64;
+        payload[11] = 8;
+        let original = payload;
+        assert!(claim_or_rewrite_server_payload_if_verified(&mut payload).is_none());
+        assert_eq!(payload, original);
     }
 
     #[test]
