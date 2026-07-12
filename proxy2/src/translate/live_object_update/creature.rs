@@ -3976,7 +3976,16 @@ fn simulate_legacy_live_creature_update_tail_cursor(
 }
 
 fn legacy_creature_update_status_precedes_action_followup(raw_mask: u32) -> bool {
-    matches!(raw_mask, 0x0000_000F)
+    // Diamond `sub_44ADD0` reaches the mask-0x0008 status-effect helper at
+    // `0x44B5D1` immediately after the mask-0x0004 action-code branch. It then
+    // reads the action-state BYTE and movement follow-up before the mask-0x0040
+    // branch at `0x44C05E`. EE `sub_140781E80` preserves that order at
+    // `loc_140782FA6`, `loc_140782FD1`, `loc_1407839B1`, and
+    // `loc_140783A7A`. Apply the order to the lower action+status family with
+    // an optional 0x0040 state tail (`0x000F`/`0x004F`). Higher-mask C40F/C44F
+    // self/status packets use their separately proven no-bridge-followup
+    // dialect and must stay on that focused path.
+    matches!(raw_mask, 0x0000_000F | 0x0000_004F)
 }
 
 fn legacy_creature_update_action_branch_omits_bridge_followup(raw_mask: u32) -> bool {
@@ -4293,6 +4302,42 @@ mod tests {
         bits
     }
 
+    fn creature_update_004f_status_then_state_live_bytes() -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05];
+        bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_004Fu32.to_le_bytes());
+        bytes.extend_from_slice(&0x1111u16.to_le_bytes()); // position X low 16 bits.
+        bytes.extend_from_slice(&0x2222u16.to_le_bytes()); // position Y low 16 bits.
+        bytes.extend_from_slice(&0x3333u16.to_le_bytes()); // position Z low 16 bits.
+        bytes.push(0x44); // scalar orientation low 8 bits.
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // action scalar.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // action code 0.
+        bytes.extend_from_slice(&2u16.to_le_bytes()); // two status-effect rows.
+        bytes.push(b'A');
+        bytes.extend_from_slice(&VFX_DUR_LOWLIGHTVISION_ROW.to_le_bytes());
+        bytes.push(b'D');
+        bytes.extend_from_slice(&VFX_DUR_LOWLIGHTVISION_ROW.to_le_bytes());
+        bytes.push(0); // action state byte after the status rows.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // zero movement follow-up count.
+        bytes.extend_from_slice(&0xFFFFu16.to_le_bytes()); // 0x0040 first WORD.
+        bytes.push(1); // 0x0040 mode without optional object id.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // 0x0040 second WORD.
+        bytes.push(1); // 0x0040 final BYTE.
+        bytes
+    }
+
+    fn creature_update_004f_fragment_bits() -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            true, false, // position Z high bits.
+            false, // scalar orientation branch.
+            true, false, true, false, // scalar orientation residual bits.
+            false, // explicit orientation-target guard: no target object id.
+            true,  // 0x0040 state BOOL after status/action-state/follow-up.
+        ]);
+        bits
+    }
+
     fn creature_update_3967_action0_scalar_live_bytes() -> Vec<u8> {
         let mut bytes = vec![b'U', 0x05];
         bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
@@ -4438,6 +4483,62 @@ mod tests {
         let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
         bits.extend_from_slice(body_bits);
         bits
+    }
+
+    #[test]
+    fn creature_update_004f_status_precedes_action_state_and_state_tail() {
+        let mut bytes = creature_update_004f_status_then_state_live_bytes();
+        let fragment_bits = creature_update_004f_fragment_bits();
+        let mut record_end = bytes.len();
+
+        let rewrite = insert_creature_update_status_effect_identity_maps_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &fragment_bits,
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("the action/status/state family should locate and widen both effect rows");
+
+        assert_eq!(rewrite.entries, 2);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            2 * EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+        );
+        assert_eq!(record_end, bytes.len());
+
+        let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                record_end,
+                &fragment_bits,
+                &mut bit_cursor,
+            ),
+            "the exact EE cursor should consume status rows before action state/follow-up and the 0x0040 BOOL"
+        );
+        assert_eq!(bit_cursor, fragment_bits.len());
+
+        let mut shifted = creature_update_004f_status_then_state_live_bytes();
+        let status_start = 10 + 6 + 1 + 6;
+        shifted.splice(status_start..status_start, [0, 0, 0]);
+        shifted.drain(status_start + 3 + 2 + 6..status_start + 3 + 2 + 6 + 3);
+        let shifted_original = shifted.clone();
+        let mut shifted_end = shifted.len();
+        assert!(
+            insert_creature_update_status_effect_identity_maps_for_ee(
+                &mut shifted,
+                0,
+                &mut shifted_end,
+                &fragment_bits,
+                super::super::CNW_FRAGMENT_HEADER_BITS,
+            )
+            .is_none(),
+            "moving the action-state/follow-up bytes before the status count must not be accepted"
+        );
+        assert_eq!(shifted, shifted_original);
+        assert_eq!(shifted_end, shifted_original.len());
     }
 
     #[test]

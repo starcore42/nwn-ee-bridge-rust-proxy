@@ -86,8 +86,8 @@ not as standalone workaround targets.
   but `0x4408` did not recur before shutdown. It exposed two new generalized
   live-object blockers instead: a 1,987-byte top-level `G I A` inventory stream
   rejected at the first GUI boundary, and an 88-byte `U/5` current-player update
-  with mask `0x0000004F` rejected at its typed record boundary. Preserve both as
-  next regression seeds; do not treat the run as clean-zero-quarantine evidence.
+  with mask `0x0000004F` rejected at its typed record boundary. Both are now
+  resolved in code; preserve their source shapes only as regression evidence.
 
   ~~The 1,987-byte top-level `G I/R A` stream was rejected because the earlier
   add-map transport walker entered a fragment-proven GUI item body and treated
@@ -99,8 +99,24 @@ not as standalone workaround targets.
   inside an unproven GUI row. A fixture-free active-property lookalike regression
   passes through the production adapter. The original 30-row live stream also
   rewrites from 1,987 to 2,401 bytes and exact-claims all 30 item-create rows,
-  consuming 200 GUI fragment bits. The independent `U/5 0x0000004F` record is
-  now the first unresolved quarantine from this capture.
+  consuming 200 GUI fragment bits.
+
+  ~~The independent `U/5 0x0000004F` record was unowned because proxy2 applied
+  the action/status ordering only to exact mask `0x000F`. Resolved in code
+  2026-07-12; direct live recurrence remains pending.~~ Diamond `sub_44ADD0`
+  reads mask `0x0008` status effects immediately after the mask-`0x0004`
+  action code at `0x44B5D1`, then the action-state BYTE and follow-up before the
+  mask-`0x0040` tail at `0x44C05E`. EE `sub_140781E80` preserves that order at
+  `loc_140782FA6`, `loc_140782FD1`, `loc_1407839B1`, and `loc_140783A7A`; the
+  state tail is `WORD, BYTE, WORD, BYTE, BOOL`, with the BOOL remaining in the
+  shared MSB-first fragment stream. Proxy2 now applies the ordering to the
+  lower action+status family after the existing 43-byte candidate boundary is
+  selected. The original
+  SHA-256 `34DC5631894403EEF8479D94E344F2A18C8898A57624721C9BEBA5133F01A6B5`
+  seed widens all three effect rows by 24 bytes, exact-claims the creature
+  update through fragment bit 12, then exact-claims its inventory record through
+  bit 13. Fixture-free tests reject moving action-state/follow-up before the
+  status count.
 
   Fresh current-code HG capture
   `C:\nwnbridge\codex-live-gui-add-boundary-20260712-171117\harness-proxy-20260712-171118`
@@ -143,11 +159,22 @@ not as standalone workaround targets.
   rejected an intermediate combined-record GUI boundary, after which the same
   source succeeded through the generalized declared-length repair and exact
   claimed one inventory plus one GUI row; it is not a dropped-packet blocker.
-  The server echo did not recur, nor did the fixed
-  `G I/R A` or unresolved `U/5 0x0000004F` source shapes. The `U/5 0x4F`
-  position/orientation/action/status/`0x40` cursor is now the next production
-  target; require a future server `Chat_Talk` recurrence before marking the
-  padding repair live-confirmed.
+  The server echo did not recur, nor did the fixed `G I/R A` or then-unresolved
+  `U/5 0x0000004F` source shapes.
+
+  Current-code HG capture
+  `C:\nwnbridge\codex-live-u5-004f-current-20260712-0010\harness-proxy-20260712-234624`
+  reached `Module_Loaded`, `Area_ClientArea`, proxy `Area_AreaLoaded`, and
+  sustained exact live-object gameplay through `2026-07-12T23:48:12+10:00`
+  with zero quarantine files. `0x004F`, the GUI stream, and stale-padding
+  `Chat_Talk` did not recur, so all three retain a direct-recurrence requirement.
+  Strict replay `C:\nwnbridge\codex-proxy2-replay-u5-004f-20260712-2351`
+  processed 164 packet files with 304 strict allows, zero quarantines/files,
+  zero semantic-quarantine matches, and zero terminal live-object residuals.
+  With the known account-1 quarantines now owned, the next production path is
+  again a character/module state whose preserved active quickbar set remains
+  missing durable GQ after inventory materialization, so a real EE item action
+  and HG response window can expose the next shared engine-facing mismatch.
 - 2026-07-12 active quickbar-slot diagnostics and Chat_Talk ownership: proxy2
   now writes the exact count and ordered slot array for all retained
   decompile-owned 36-slot active-item signatures into both pending and idle
