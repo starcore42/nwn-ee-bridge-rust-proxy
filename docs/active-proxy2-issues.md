@@ -88,6 +88,35 @@ not as standalone workaround targets.
   rejected at the first GUI boundary, and an 88-byte `U/5` current-player update
   with mask `0x0000004F` rejected at its typed record boundary. Preserve both as
   next regression seeds; do not treat the run as clean-zero-quarantine evidence.
+
+  ~~The 1,987-byte top-level `G I/R A` stream was rejected because the earlier
+  add-map transport walker entered a fragment-proven GUI item body and treated
+  active-property bytes as a top-level creature add. Resolved in code
+  2026-07-12; direct live recurrence remains pending.~~ Diamond `sub_4589A0`
+  and EE `sub_1407B3F30` prove that the GUI prefix hands the whole nested object
+  to the shared item-create reader. The add-map walker now carries that focused
+  row end and exact Diamond fragment cursor, and hard-stops rather than scanning
+  inside an unproven GUI row. A fixture-free active-property lookalike regression
+  passes through the production adapter. The original 30-row live stream also
+  rewrites from 1,987 to 2,401 bytes and exact-claims all 30 item-create rows,
+  consuming 200 GUI fragment bits. The independent `U/5 0x0000004F` record is
+  now the first unresolved quarantine from this capture.
+
+  Fresh current-code HG capture
+  `C:\nwnbridge\codex-live-gui-add-boundary-20260712-171117\harness-proxy-20260712-171118`
+  reached `Module_Loaded`, `Area_ClientArea`, proxy-generated
+  `Area_AreaLoaded`, and sustained `GameObjUpdate_LiveObject` gameplay through
+  `2026-07-12T17:13:44+10:00`. It wrote no quarantine files, but it repeatedly
+  rejected one three-span `PlayerList_Add` / `PlayerList_All` / `Chat_Talk`
+  coalesced datagram as `coalesced-record-proof-invalid`. The focused chat
+  claimant saw the exact declared string boundary and one fragment byte, but
+  rejected nonzero unused bits below the three-bit CNW fragment header. The
+  `G I/R A` and `U/5 0x0000004F` shapes did not recur before this earlier
+  blocker, so neither gains direct live confirmation from the run. Before
+  changing chat ownership, trace Diamond `GetWriteMessage` and the EE fragment
+  reader to prove whether unused tail bits are ignored; if they are, canonicalize
+  only those unused bits before coalesced typed proof rather than relaxing the
+  exact chat body or broad coalesced validation.
 - 2026-07-12 active quickbar-slot diagnostics and Chat_Talk ownership: proxy2
   now writes the exact count and ordered slot array for all retained
   decompile-owned 36-slot active-item signatures into both pending and idle

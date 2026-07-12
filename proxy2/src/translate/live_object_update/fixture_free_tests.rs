@@ -613,6 +613,25 @@ fn inject_live_boundary_lookalike_into_item_property_values(live: &mut [u8]) {
     ]);
 }
 
+fn inject_creature_add_lookalike_into_item_property_values(live: &mut [u8]) {
+    let name_start = live
+        .windows(b"Lance".len())
+        .position(|window| window == b"Lance")
+        .expect("item name in typed item-create fixture");
+    let active_property_tail_start = name_start + b"Lance".len();
+    let value_bytes_start = active_property_tail_start + 11;
+    live[value_bytes_start..value_bytes_start + 8].copy_from_slice(&[
+        b'A',
+        super::CREATURE_OBJECT_TYPE,
+        0xC3,
+        0xFF,
+        0xFF,
+        0xFF,
+        0x00,
+        0x00,
+    ]);
+}
+
 fn legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes() -> Vec<u8> {
     let mut live = vec![b'A', super::ITEM_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
@@ -2451,6 +2470,44 @@ fn live_gui_missing_inventory_add_opcode_is_not_byte_only_boundary() {
         !super::boundary::looks_like_legacy_live_object_sub_message_boundary(&missing, 0),
         "generic live-object boundary scans must leave G I 00 to the focused proof path"
     );
+}
+
+#[test]
+fn creature_add_map_pass_does_not_enter_fragment_proven_gui_item_body() {
+    // Diamond `sub_4589A0` and EE `sub_1407B3F30` consume the `G I A`
+    // prefix and then hand the whole nested object to the shared item-create
+    // reader. The add-map transport walker must therefore carry the exact item
+    // fragment cursor across the row before looking for later top-level adds;
+    // typed-looking `A/5` bytes inside active-property values are still item
+    // data and cannot become a creature-add rewrite target.
+    let mut live = legacy_width_gui_inventory_model_type2_item_create_live_bytes();
+    inject_creature_add_lookalike_into_item_property_values(&mut live);
+    let mut payload = live_object_payload_with_bits(&live, vec![false; 5]);
+    let original = payload.clone();
+
+    assert!(
+        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut payload,
+            None,
+        )
+        .is_none(),
+        "GUI item property bytes must not produce a creature visual-map rewrite"
+    );
+    assert_eq!(
+        payload, original,
+        "the add-map walk must leave the GUI row untouched"
+    );
+
+    assert!(
+        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None,
+        ),
+        "the bounded production adapter should route the untouched GUI row to its focused rewrite"
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("the rewritten GUI item row should exact-claim");
+    assert_eq!(claim.live_gui_item_create_records, 1);
 }
 
 #[test]

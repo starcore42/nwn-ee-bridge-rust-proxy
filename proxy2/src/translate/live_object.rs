@@ -1873,6 +1873,28 @@ fn rewrite_creature_add_visual_transform_maps_inner(
             live_bytes.len(),
         )
         .min(live_bytes.len());
+        if fragment_bits_reliable
+            && live_bytes.get(offset).copied() == Some(b'G')
+            && let Some(bits) = fragment_bits.as_ref()
+        {
+            let Some(gui_record_end) =
+                crate::translate::live_object_update::legacy_live_gui_record_end_for_transport(
+                    &live_bytes,
+                    offset,
+                    live_bytes.len(),
+                    bits,
+                    fragment_bit_cursor,
+                )
+            else {
+                // `G I/R A` rows are lengthless wrappers around the shared item
+                // reader. Their names and active-property bytes may contain
+                // typed-looking `A/5` sequences, so an unproven GUI cursor is a
+                // hard stop for this transport-adjacent add-map walk, not
+                // permission to scan inside the item body.
+                break;
+            };
+            record_end = gui_record_end;
+        }
         if let Some(compact_placeable_end) =
             compact_placeable_add_end_before_same_object_update_like_tail(
                 &live_bytes,
@@ -1908,6 +1930,22 @@ fn rewrite_creature_add_visual_transform_maps_inner(
 
         if fragment_bits_reliable {
             if let Some(bits) = fragment_bits.as_mut() {
+                if live_bytes.get(offset).copied() == Some(b'G') {
+                    if !crate::translate::live_object_update::advance_legacy_live_gui_fragment_cursor_for_transport(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        bits,
+                        &mut fragment_bit_cursor,
+                    ) {
+                        break;
+                    }
+                    // The focused GUI/update pass owns EE item-appearance and
+                    // active-property widening. This add-map pass only carries
+                    // the exact Diamond cursor across the complete nested row.
+                    offset = record_end.max(offset + 1);
+                    continue;
+                }
                 let before_fragment_bits_len = bits.len();
                 let before_fragment_bit_cursor = fragment_bit_cursor;
                 if let Some(record_rewrite) = rewrite_legacy_door_placeable_add_record_for_ee(
