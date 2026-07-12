@@ -9,8 +9,11 @@
 //! - EE `CNWSMessage::SendServerToPlayerCharList` calls
 //!   `CreateWriteMessage`, writes a WORD character count, then for each
 //!   `NWPlayerCharacterList_st` writes first-name and last-name server
-//!   locstrings, a fixed 16-byte portrait resref, a BYTE, a WORD, a second
-//!   fixed 16-byte resref, a BYTE class count, and then class INT/BYTE pairs.
+//!   locstrings, the character's fixed 16-byte BIC resref, a BYTE, a WORD, a
+//!   fixed 16-byte portrait resref, a BYTE class count, and then class
+//!   INT/BYTE pairs. Live HG account-vault lists independently prove this
+//!   order: the first field carries selectable vault resrefs while the second
+//!   carries `po_*` portrait resrefs.
 //!   It then calls `GetWriteMessage` and sends family `0x11`, minor `0x02`.
 //! - EE `CNWCMessage::HandleServerToPlayerCharacterList` dispatches minor
 //!   `0x02` through `ReadCExoLocStringClient` for those two name fields, then
@@ -69,6 +72,12 @@ const MAX_REASONABLE_REASSEMBLED_GAMEPLAY_PAYLOAD: usize = 1024 * 1024;
 pub struct CharListClaimSummary {
     pub kind: CharListClaimKind,
     pub character_count: u16,
+    /// Exact fixed-width BIC resrefs in server wire order.
+    ///
+    /// Keep these as bytes in the typed model: `CResRef(16)` is a bounded
+    /// protocol field, not an arbitrary UTF-8 string. Diagnostics may render
+    /// the occupied ASCII prefix after the packet has been claimed exactly.
+    pub character_resrefs: Vec<[u8; C_RESREF_TEXT_BYTES]>,
     pub declared: usize,
     pub fragment_bytes: usize,
     pub bic_rewritten: bool,
@@ -111,10 +120,11 @@ fn claim_list_response(payload: &[u8]) -> Option<CharListClaimSummary> {
         return None;
     }
 
+    let mut character_resrefs = Vec::with_capacity(usize::from(character_count));
     for _ in 0..character_count {
         reader.read_server_locstring()?;
         reader.read_server_locstring()?;
-        reader.skip_bytes(C_RESREF_TEXT_BYTES)?;
+        character_resrefs.push(reader.read_resref()?);
         reader.skip_bytes(1)?;
         reader.skip_bytes(2)?;
         reader.skip_bytes(C_RESREF_TEXT_BYTES)?;
@@ -133,6 +143,7 @@ fn claim_list_response(payload: &[u8]) -> Option<CharListClaimSummary> {
     Some(CharListClaimSummary {
         kind: CharListClaimKind::ListResponse,
         character_count,
+        character_resrefs,
         declared,
         fragment_bytes: payload.len() - declared,
         bic_rewritten: false,
@@ -222,6 +233,16 @@ impl<'a> CharListListResponseReader<'a> {
         let chunk = self.read_buffer.get(self.cursor..next)?;
         self.cursor = next;
         Some(u32::from_le_bytes(chunk.try_into().ok()?))
+    }
+
+    fn read_resref(&mut self) -> Option<[u8; C_RESREF_TEXT_BYTES]> {
+        let next = self.cursor.checked_add(C_RESREF_TEXT_BYTES)?;
+        if next > self.declared {
+            return None;
+        }
+        let value = self.read_buffer.get(self.cursor..next)?.try_into().ok()?;
+        self.cursor = next;
+        Some(value)
     }
 
     fn read_string(&mut self) -> Option<()> {
@@ -332,6 +353,7 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
         return Some(CharListClaimSummary {
             kind: CharListClaimKind::UpdateCharResponse,
             character_count: 0,
+            character_resrefs: Vec::new(),
             declared,
             fragment_bytes: payload.len() - declared,
             bic_rewritten: false,
@@ -388,6 +410,7 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
     Some(CharListClaimSummary {
         kind: CharListClaimKind::UpdateCharResponse,
         character_count: 0,
+        character_resrefs: Vec::new(),
         declared: new_declared,
         fragment_bytes: payload.len() - new_declared,
         bic_rewritten: true,
@@ -433,10 +456,10 @@ mod tests {
     fn push_character(read: &mut Vec<u8>, first_name: &str, bic_resref: &str) {
         push_c_exo_string(read, first_name);
         push_c_exo_string(read, "");
-        push_resref(read, "po_heurodis_");
+        push_resref(read, bic_resref);
         read.push(0);
         read.extend_from_slice(&4u16.to_le_bytes());
-        push_resref(read, bic_resref);
+        push_resref(read, "po_heurodis_");
         read.push(1);
         read.extend_from_slice(&37u32.to_le_bytes());
         read.push(40);
@@ -519,6 +542,13 @@ mod tests {
 
         assert_eq!(summary.kind, CharListClaimKind::ListResponse);
         assert_eq!(summary.character_count, 2);
+        assert_eq!(
+            summary.character_resrefs,
+            [
+                *b"char00\0\0\0\0\0\0\0\0\0\0",
+                *b"char01\0\0\0\0\0\0\0\0\0\0",
+            ]
+        );
         assert_eq!(summary.fragment_bytes, 1);
         assert!(!summary.bic_rewritten);
     }

@@ -3529,11 +3529,30 @@ fn translate_char_list(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if char_list::claim_payload_if_verified(payload).is_some() {
-        claimed()
-    } else {
-        ServerTranslatorOutcome::None
+    let Some(summary) = char_list::claim_payload_if_verified(payload) else {
+        return ServerTranslatorOutcome::None;
+    };
+    if summary.kind == char_list::CharListClaimKind::ListResponse {
+        let character_resrefs: Vec<String> = summary
+            .character_resrefs
+            .iter()
+            .map(|resref| {
+                let occupied = resref
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(resref.len());
+                String::from_utf8_lossy(&resref[..occupied]).into_owned()
+            })
+            .collect();
+        tracing::info!(
+            character_count = summary.character_count,
+            character_resrefs = ?character_resrefs,
+            declared = summary.declared,
+            fragment_bytes = summary.fragment_bytes,
+            "validated character vault list"
+        );
     }
+    claimed()
 }
 
 fn translate_player_list(

@@ -33,25 +33,41 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-13 05:48 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-13 08:55 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-account2-testpm-action-retry-20260713-0545\harness-proxy-20260713-054529`.
-It used account 2 and the typed vault-discovered `testpm` resref, reached
-`Module_Loaded`, strictly owned the password talk, reached `Area_ClientArea`,
-synthetic `Area_AreaLoaded`, and sustained exact `GameObjUpdate_LiveObject`
-gameplay through `2026-07-13T05:47:56+10:00` with zero quarantine decisions or
-files. Delayed pre-pump inventory produced real `ClientGuiInventory` sequences
-80/81. Its 36-slot quickbar contained 0 item buttons, so the later generic
-ready inventory candidate was not a valid quickbar action target. Current code
-suppresses that shape as `candidate_not_preserved_active_item` and preserves a
-per-generation union of observed actionable missing-GQ slots for scouting
-profiles whose current mask later resolves. The first account-2 discovery run
-and an immediate retry did not reach gameplay; the retry was rejected with
-documented HG detail 6 until the session reservation cooldown elapsed.
+`C:\nwnbridge\codex-live-account3-cleric5-action-20260713-0910\harness-proxy-20260713-085210`.
+It used account 3 and the typed vault-discovered `starcore-cleric5` resref,
+reached `Module_Loaded`, strictly owned the password talk, reached
+`Area_ClientArea`, synthetic `Area_AreaLoaded`, and sustained exact
+`GameObjUpdate_LiveObject` gameplay through `2026-07-13T08:54:35+10:00` with
+zero quarantine decisions or files. Delayed pre-pump inventory emitted real
+`ClientGuiInventory` traffic. The exact 36-slot quickbar retained 12 item
+buttons at slots `[1,10,19,20,21,23,24,25,26,27,31,32]`; all 12 acquired
+matching durable GQ state, so the optional action remained correctly
+suppressed.
+
+The same run verified the new typed vault diagnostic: after exact
+`CharList_ListResponse` validation proxy2 logs all fixed-width BIC resrefs in
+server order. Account 3 discovery artifact
+`C:\nwnbridge\codex-live-account3-vault-typed-retry-20260713-0900\harness-proxy-20260713-084841`
+reported five resrefs. Corrected account 4 discovery artifact
+`C:\nwnbridge\codex-live-account4-vault-typed-corrected-20260713-0915\harness-proxy-20260713-085456`
+reported `starcore-bard-pi`, `starcore-buffbot`, `starcore-reincth`,
+`starcore-bard50`, `starcore-helper`, and `amithraliatest`, with zero
+quarantines. Use a placeholder no longer than 16 characters (for example
+`vaultprobe`) to solicit the typed list without selecting a real character:
+
+```powershell
+$hgPassword = '<load account password without printing it>'
+.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -DiamondAccount 4 -AutoCharacter vaultprobe -Password $hgPassword -AutoSpeakPassword -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-account4-vault-typed
+```
+
 Strict replay
-`C:\nwnbridge\codex-proxy2-replay-preserved-action-gate-20260713-0555`
+`C:\nwnbridge\codex-proxy2-replay-charlist-vault-resrefs-20260713-0905`
 processed 164 packet files with 304 strict allows, zero quarantines/files, and
-zero terminal live-object residuals.
+zero terminal live-object residuals. Next, probe the typed account-4 profiles
+after HG's reconnect cooldown and select one whose preserved active item
+remains missing durable GQ after inventory materialization.
 
 The immediately preceding gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-inventory-prepump-20260713-0242\harness-proxy-20260713-024110`.
@@ -1775,6 +1791,7 @@ work.
 | --- | --- | --- |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
+| A vault-scouting run reaches `BNVR A` but never sends `CharList_Request` | `-AutoCharacter` was empty or the discovery placeholder exceeded the engine's 16-byte `CResRef` limit, so auto-character was disabled | Use a non-real placeholder of at most 16 characters such as `vaultprobe`. Require proxy2's `validated character vault list` row and use only its typed resrefs for the later gameplay run. |
 | `-DiamondAccount 1` selects an account-1 character, but proxy startup logs `C:\NWN\Config\5.nwncdkey.ini` or the launcher injects the wrong player name | The proxy starts before the launcher and inherited stale/default account-5 identity; native app-manager state can also retain the previous name | Fixed 2026-07-12: `test-hg-bridge.ps1` resolves and exports the selected account's CD-key/player paths before proxy startup, restores the prior environment afterward, and the bridge prefers the launcher-selected name. Require matching proxy and launcher identity rows on every alternate-account run. |
 | HG sends “speak your password” feedback, proxy logs an unowned 81-byte `ClientSideMessage_Feedback` id `0x5E`, then the run stops after `Module_Loaded` | EE's case-11 feedback reader expects a build-gated BOOL that the legacy writer omitted; the coalesced prompt can also bypass the bridge's high-level text detector | Fixed 2026-07-12: proxy2 inserts only the decompile-proven default-false BOOL at the exact string boundary, and opt-in `-AutoSpeakPassword` falls back after successful `Module_Loaded` only if no prompt-triggered attempt ran. Load the secret without printing it and require a strict `ClientChat` allow. |
 | Account-1 gameplay emits two `live-object-unclaimed-strict-family` files for one 962-byte payload beginning `50 05 01 AE 03 00 00 55 05 C3 FF FF FF 08 44` | Fixed 2026-07-12: the typed `U/5 0x4408` rewrite succeeded, but transport boundary selection split inside the five inserted effect-row identity maps before the four-WORD scalar suffix | The scanner now owns the exact decompile-backed byte span and leaves the seven `0x4000` BOOLs to the exact cursor validator. The private live fixture rewrites and claims the following inventory through bit 153; strict replay is clean. Require a future live recurrence before calling it live-confirmed. |

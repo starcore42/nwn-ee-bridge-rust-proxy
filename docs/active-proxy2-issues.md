@@ -17,6 +17,34 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-13 typed character-vault scouting: `CharList_ListResponse` now
+  retains every fixed 16-byte BIC resref in server wire order after exact
+  read-buffer and locstring-fragment validation, and the production translator
+  logs the complete validated resref list. EE `SendServerToPlayerCharList` and
+  `HandleServerToPlayerCharacterList` establish the field sequence; live HG
+  independently proved the first fixed resref is the selectable BIC resref and
+  the later fixed resref is the `po_*` portrait.
+
+  Account 3 discovery artifact
+  `C:\nwnbridge\codex-live-account3-vault-typed-retry-20260713-0900\harness-proxy-20260713-084841`
+  exposed five typed resrefs. Follow-up capture
+  `C:\nwnbridge\codex-live-account3-cleric5-action-20260713-0910\harness-proxy-20260713-085210`
+  selected `starcore-cleric5`, reached module/area/live-object gameplay, and
+  remained at zero quarantines through `2026-07-13T08:54:35+10:00`. Its
+  36-slot profile retained 12 item buttons at slots
+  `[1,10,19,20,21,23,24,25,26,27,31,32]`; all 12 gained matching durable GQ,
+  so no item action was sent. Corrected account 4 discovery artifact
+  `C:\nwnbridge\codex-live-account4-vault-typed-corrected-20260713-0915\harness-proxy-20260713-085456`
+  exposed `starcore-bard-pi`, `starcore-buffbot`, `starcore-reincth`,
+  `starcore-bard50`, `starcore-helper`, and `amithraliatest`. Next, probe those
+  typed profiles after HG's reconnect cooldown and require a preserved active
+  item to remain missing GQ after inventory materialization.
+
+  Focused character-list tests, `cargo check`, the harness-target build, and
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-charlist-vault-resrefs-20260713-0905`
+  passed. Replay processed 164 packets with 304 strict allows, zero strict
+  quarantines/files, and zero terminal live-object residuals.
 - 2026-07-13 delayed inventory pre-pump handoff: the newest account-1 capture
   exposed a harness-driving boundary, not a packet parser defect. EE reported
   `GuiInventory_Status` success and opened the local panel, but proxy2 saw no
