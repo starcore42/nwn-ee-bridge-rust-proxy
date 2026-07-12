@@ -9,9 +9,9 @@
 use crate::{
     packet::{hex_prefix, m::HighLevel},
     translate::{
-        VerifiedFamily, client_area, client_char_list, client_character_sheet, client_gui_event,
-        client_gui_inventory, client_input, client_login, client_module, client_quickbar,
-        client_server_status, dialog, journal, party, play_module_character_list,
+        VerifiedFamily, chat, client_area, client_char_list, client_character_sheet,
+        client_gui_event, client_gui_inventory, client_input, client_login, client_module,
+        client_quickbar, client_server_status, dialog, journal, party, play_module_character_list,
         semantic::SemanticSessionState,
     },
 };
@@ -108,6 +108,22 @@ pub fn claim_or_rewrite_payload_if_verified(
             family_name: "ClientModule",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientModule,
+        });
+    }
+    if client_translator_may_claim_parsed_high_level("ClientChat", high)
+        && let Some(summary) = chat::claim_client_payload_if_verified(payload)
+    {
+        tracing::info!(
+            packet_name = high.name(),
+            text_len = summary.text_len,
+            declared = summary.declared,
+            fragment_bytes = summary.fragment_bytes,
+            "client Chat payload validated for Diamond/1.69"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientChat",
+            packet_name: high.name(),
+            verified_family: VerifiedFamily::ClientChat,
         });
     }
     if client_translator_may_claim_parsed_high_level("ClientGuiInventory", high)
@@ -247,6 +263,7 @@ fn client_translator_may_claim_parsed_high_level(family_name: &str, high: HighLe
         "ClientServerStatus" => high.major == 0x01 && high.minor == 0x00,
         "ClientLogin" => high.major == 0x02 && matches!(high.minor, 0x0D | 0x11),
         "ClientModule" => high.major == 0x03 && high.minor == 0x02,
+        "ClientChat" => high.major == 0x09 && high.minor == 0x01,
         "ClientArea" => high.major == 0x04 && high.minor == 0x03,
         "ClientInput" => {
             high.major == 0x06

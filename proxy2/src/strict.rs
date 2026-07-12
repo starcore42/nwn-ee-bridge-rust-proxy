@@ -517,6 +517,7 @@ fn client_verified_family(family: VerifiedFamily) -> bool {
         family,
         VerifiedFamily::ClientArea
             | VerifiedFamily::ClientCharList
+            | VerifiedFamily::ClientChat
             | VerifiedFamily::ClientCharacterSheet
             | VerifiedFamily::ClientDialog
             | VerifiedFamily::ClientGuiEvent
@@ -1419,6 +1420,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && client_area::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientCharList => client_char_list_shape_valid(payload),
+        VerifiedFamily::ClientChat => {
+            high.major == 0x09
+                && high.minor == 0x01
+                && chat::claim_client_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::ClientCharacterSheet => {
             high.major == 0x15
                 && high.minor == 0x01

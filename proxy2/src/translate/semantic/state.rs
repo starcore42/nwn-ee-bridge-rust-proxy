@@ -664,6 +664,7 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) compact_item_emission_candidate: Option<InventoryItemContextCandidate>,
     pub(crate) compact_item_emission_ready_objects: usize,
     pub(crate) compact_item_emission_ready_candidate: Option<InventoryItemContextCandidate>,
+    pub(crate) preserved_active_item_actionable_missing_use_count_slot_mask: u64,
     pub(crate) compact_item_emission_direct_only_proof_objects: usize,
     pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
     pub(crate) compact_item_emission_shared_proof_objects: usize,
@@ -694,6 +695,15 @@ pub(crate) struct LiveObjectInventoryMaterializationSummary {
 }
 
 impl InventoryItemContextSummary {
+    pub(crate) fn preserved_active_item_actionable_missing_use_count_slot_count(&self) -> u32 {
+        self.preserved_active_item_actionable_missing_use_count_slot_mask
+            .count_ones()
+    }
+
+    pub(crate) fn preserved_active_item_actionable_missing_use_count_slots_json(&self) -> String {
+        quickbar_slot_mask_json(self.preserved_active_item_actionable_missing_use_count_slot_mask)
+    }
+
     pub(crate) fn has_quickbar_item_context_evidence(&self) -> bool {
         self.direct_item_proof_objects != 0
             || self.feature25_item_proof_objects != 0
@@ -1859,6 +1869,7 @@ pub(crate) struct QuickbarItemRefreshHarnessHint {
     pub(crate) quickbar_item_use_count_updates_observed: u64,
     pub(crate) preserved_active_item_use_count_coverage:
         QuickbarPreservedActiveItemUseCountCoverage,
+    pub(crate) preserved_active_item_actionable_missing_use_count_slot_mask: u64,
     pub(crate) updates_since_committed_quickbar: u64,
     pub(crate) events_since_pending_refresh: u64,
     pub(crate) event_breakdown: QuickbarItemRefreshEventBreakdown,
@@ -2014,6 +2025,12 @@ impl QuickbarItemRefreshHarnessHint {
             use_count_coverage.matching_use_count_slots_json();
         let preserved_active_item_missing_use_count_slots_json =
             use_count_coverage.missing_use_count_slots_json();
+        let preserved_active_item_actionable_missing_use_count_slot_count = self
+            .preserved_active_item_actionable_missing_use_count_slot_mask
+            .count_ones();
+        let preserved_active_item_actionable_missing_use_count_slots_json = quickbar_slot_mask_json(
+            self.preserved_active_item_actionable_missing_use_count_slot_mask,
+        );
         let first_active_item = self.first_preserved_active_item_signature;
         let action_active_item = self.candidate_preserved_active_item_signature;
         let action_active_item_slot = self.candidate_preserved_active_item_slot;
@@ -2448,6 +2465,8 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"stream_probe_preserved_active_item_matching_use_count_slots\": {},\n",
                 "  \"stream_probe_preserved_active_item_missing_use_count_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_missing_use_count_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_actionable_missing_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
@@ -2786,6 +2805,8 @@ impl QuickbarItemRefreshHarnessHint {
             preserved_active_item_matching_use_count_slots_json,
             use_count_coverage.missing_use_count_slot_count(),
             preserved_active_item_missing_use_count_slots_json,
+            preserved_active_item_actionable_missing_use_count_slot_count,
+            preserved_active_item_actionable_missing_use_count_slots_json,
             stream_probe.item_objects_preserved_by_feature25_first,
             stream_probe.item_objects_preserved_by_feature25_second,
             stream_probe.item_objects_preserved_by_feature25_legacy_tail,
@@ -4347,6 +4368,7 @@ impl ObjectRegistry {
             compact_item_emission_candidate,
             compact_item_emission_ready_objects,
             compact_item_emission_ready_candidate,
+            preserved_active_item_actionable_missing_use_count_slot_mask: 0,
             compact_item_emission_direct_only_proof_objects,
             compact_item_emission_feature25_only_proof_objects,
             compact_item_emission_shared_proof_objects,
@@ -6174,6 +6196,10 @@ impl UiState {
             stream_probe_preserved_active_item_use_count_coverage.matching_use_count_slots_json();
         let stream_probe_preserved_active_item_missing_use_count_slots_json =
             stream_probe_preserved_active_item_use_count_coverage.missing_use_count_slots_json();
+        let stream_probe_preserved_active_item_actionable_missing_use_count_slot_count =
+            context.preserved_active_item_actionable_missing_use_count_slot_count();
+        let stream_probe_preserved_active_item_actionable_missing_use_count_slots_json =
+            context.preserved_active_item_actionable_missing_use_count_slots_json();
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
             .unwrap_or_default();
@@ -6387,6 +6413,8 @@ impl UiState {
                 "  \"stream_probe_preserved_active_item_matching_use_count_slots\": {},\n",
                 "  \"stream_probe_preserved_active_item_missing_use_count_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_missing_use_count_slots\": {},\n",
+                "  \"stream_probe_preserved_active_item_actionable_missing_use_count_count\": {},\n",
+                "  \"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot\": {},\n",
@@ -6609,6 +6637,8 @@ impl UiState {
             stream_probe_preserved_active_item_matching_use_count_slots_json,
             stream_probe_preserved_active_item_use_count_coverage.missing_use_count_slot_count(),
             stream_probe_preserved_active_item_missing_use_count_slots_json,
+            stream_probe_preserved_active_item_actionable_missing_use_count_slot_count,
+            stream_probe_preserved_active_item_actionable_missing_use_count_slots_json,
             stream_probe_active_item_known,
             stream_probe_active_item_slot_known,
             stream_probe_active_item_slot,
@@ -6918,6 +6948,9 @@ impl UiState {
                 .last_quickbar_stream_probe
                 .unwrap_or_default()
                 .preserved_active_item_use_count_coverage(&self.quickbar_item_use_count_state),
+            preserved_active_item_actionable_missing_use_count_slot_mask: summary
+                .item_context
+                .preserved_active_item_actionable_missing_use_count_slot_mask,
             updates_since_committed_quickbar: summary.updates_since_committed_quickbar,
             events_since_pending_refresh: summary.events_since_pending_refresh,
             event_breakdown: summary.event_breakdown,

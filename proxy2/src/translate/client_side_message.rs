@@ -31,6 +31,10 @@ const MAX_FRAGMENT_BYTES: usize = 64;
 const MAX_FEEDBACK_TEXT_BYTES: usize = 4096;
 const MAX_FIXED_ARGUMENT_BYTES: usize = 64;
 const BULK_FEEDBACK_STRING_ID: u16 = 0x00CC;
+const CUSTOM_STRING_FEEDBACK_ID: u16 = 0x005E;
+const OBJECT_ID_BYTES: usize = 4;
+const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+const EE_FALSE_BOOL_FRAGMENT: u8 = 0x80;
 const LEGACY_BOUNDED_CC_READ_WINDOW_BYTES: u32 = 0x0000_0079;
 
 #[derive(Debug, Clone, Copy)]
@@ -53,6 +57,9 @@ pub fn claim_or_rewrite_payload_if_verified(
 ) -> Option<ClientSideMessageClaimSummary> {
     if let Some(summary) = claim_payload_if_verified(payload) {
         return Some(summary);
+    }
+    if rewrite_legacy_custom_string_feedback_bool(payload).is_some() {
+        return claim_feedback(payload);
     }
     if rewrite_legacy_feedback_94_preamble_cc_string(payload).is_some() {
         return claim_feedback(payload);
@@ -87,9 +94,13 @@ fn claim_feedback(payload: &[u8]) -> Option<ClientSideMessageClaimSummary> {
     let feedback_id = read_u16_le(payload, READ_START)?;
     let tail_start = READ_START + FEEDBACK_ID_BYTES;
     let tail_len = declared - tail_start;
-    let tail_valid = tail_len == 0
-        || feedback_string_tail_valid(payload, tail_start, declared)
-        || fixed_dword_tail_valid(tail_len);
+    let tail_valid = if feedback_id == CUSTOM_STRING_FEEDBACK_ID {
+        custom_string_feedback_target_tail_valid(payload, tail_start, declared)
+    } else {
+        tail_len == 0
+            || feedback_string_tail_valid(payload, tail_start, declared)
+            || fixed_dword_tail_valid(tail_len)
+    };
     if !tail_valid {
         return None;
     }
@@ -99,6 +110,71 @@ fn claim_feedback(payload: &[u8]) -> Option<ClientSideMessageClaimSummary> {
         declared,
         fragment_bytes: payload.len() - declared,
     })
+}
+
+fn rewrite_legacy_custom_string_feedback_bool(payload: &mut [u8]) -> Option<()> {
+    let high = HighLevel::parse(payload)?;
+    if (high.major, high.minor) != (CLIENT_SIDE_MAJOR, FEEDBACK_MINOR) {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared <= READ_START + FEEDBACK_ID_BYTES
+        || payload.len() != declared.checked_add(1)?
+        || read_u16_le(payload, READ_START)? != CUSTOM_STRING_FEEDBACK_ID
+    {
+        return None;
+    }
+
+    // Diamond `SendServerToPlayerCCMessage` case 11/id 0x5E emits the shared
+    // WORD id, OBJECTID, and CExoString but has no build-0x24 BOOL branch. The
+    // EE writer preserves that byte order and appends WriteBOOL(GetInteger(0))
+    // only for clients satisfying build 0x2001/0x24/1. CNWCCMessageData's
+    // GetInteger returns zero for an absent slot, which is the only recoverable
+    // source value when this exact Diamond fragment ends at the header cursor.
+    let tail_start = READ_START + FEEDBACK_ID_BYTES;
+    if !custom_string_feedback_read_tail_valid(payload, tail_start, declared) {
+        return None;
+    }
+    let source_fragment = *payload.get(declared)?;
+    if usize::from((source_fragment & 0xE0) >> 5) != CNW_FRAGMENT_HEADER_BITS {
+        return None;
+    }
+
+    *payload.get_mut(declared)? = EE_FALSE_BOOL_FRAGMENT;
+    Some(())
+}
+
+fn custom_string_feedback_target_tail_valid(
+    payload: &[u8],
+    tail_start: usize,
+    declared: usize,
+) -> bool {
+    custom_string_feedback_read_tail_valid(payload, tail_start, declared)
+        && payload.len() == declared.saturating_add(1)
+        && matches!(payload.get(declared), Some(0x80 | 0x90))
+}
+
+fn custom_string_feedback_read_tail_valid(
+    payload: &[u8],
+    tail_start: usize,
+    declared: usize,
+) -> bool {
+    let Some(object_end) = tail_start.checked_add(OBJECT_ID_BYTES) else {
+        return false;
+    };
+    let Some(length_end) = object_end.checked_add(CNW_LENGTH_BYTES) else {
+        return false;
+    };
+    if length_end > declared || read_le_u32(payload, tail_start) == Some(0x7F00_0000) {
+        return false;
+    }
+    let Some(text_len) =
+        read_le_u32(payload, object_end).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    text_len <= MAX_FEEDBACK_TEXT_BYTES && length_end.checked_add(text_len) == Some(declared)
 }
 
 fn rewrite_legacy_bulk_feedback_string(
@@ -705,6 +781,59 @@ fn cnw_fragment_offset_valid(payload: &[u8], declared: u32) -> bool {
         return false;
     }
     (declared as usize - HIGH_LEVEL_HEADER_BYTES) < read_message_len
+}
+
+#[cfg(test)]
+mod fixture_free_tests {
+    use super::*;
+
+    fn legacy_custom_string_feedback(fragment: u8) -> Vec<u8> {
+        let text = b"<c>profile password prompt</c>";
+        let declared =
+            READ_START + FEEDBACK_ID_BYTES + OBJECT_ID_BYTES + CNW_LENGTH_BYTES + text.len();
+        let mut payload = vec![b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&CUSTOM_STRING_FEEDBACK_ID.to_le_bytes());
+        payload.extend_from_slice(&0xFFFF_FFC3u32.to_le_bytes());
+        payload.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        payload.extend_from_slice(text);
+        payload.push(fragment);
+        payload
+    }
+
+    #[test]
+    fn legacy_custom_string_feedback_inserts_exact_ee_build_24_bool() {
+        // Diamond GetWriteMessage reports only its three header bits here; the
+        // captured low nibble is unused source padding, not another field.
+        let mut payload = legacy_custom_string_feedback(0x6C);
+        assert!(claim_payload_if_verified(&payload).is_none());
+
+        let summary = claim_or_rewrite_payload_if_verified(&mut payload)
+            .expect("Diamond id-0x5E feedback should gain EE's build-0x24 BOOL");
+
+        assert_eq!(summary.feedback_id, CUSTOM_STRING_FEEDBACK_ID);
+        assert_eq!(summary.fragment_bytes, 1);
+        assert_eq!(payload.last(), Some(&EE_FALSE_BOOL_FRAGMENT));
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn custom_string_feedback_rejects_shifted_read_or_fragment_cursor() {
+        let mut shifted_read = legacy_custom_string_feedback(0x60);
+        let declared = read_le_u32(&shifted_read, HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+        shifted_read.insert(declared, 0);
+        shifted_read[HIGH_LEVEL_HEADER_BYTES..READ_START]
+            .copy_from_slice(&((declared + 1) as u32).to_le_bytes());
+        assert!(claim_or_rewrite_payload_if_verified(&mut shifted_read).is_none());
+
+        let mut shifted_fragment = legacy_custom_string_feedback(0x81);
+        assert!(claim_payload_if_verified(&shifted_fragment).is_none());
+        assert!(claim_or_rewrite_payload_if_verified(&mut shifted_fragment).is_none());
+
+        let mut exact_true = legacy_custom_string_feedback(0x90);
+        assert!(claim_payload_if_verified(&exact_true).is_some());
+        assert!(claim_or_rewrite_payload_if_verified(&mut exact_true).is_some());
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]

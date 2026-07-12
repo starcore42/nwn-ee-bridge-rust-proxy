@@ -1071,7 +1071,8 @@ fn remember_quickbar_item_context_if_relevant(
     // can close the pending window explicitly.
     let stream_probe = state.ui.last_quickbar_stream_probe;
     let mut item_context = None;
-    for (_, signature) in state.ui.preserved_active_items_without_use_count_state() {
+    let mut actionable_missing_use_count_slot_mask = 0_u64;
+    for (slot, signature) in state.ui.preserved_active_items_without_use_count_state() {
         let candidate_context = state
             .objects
             .inventory_item_context_summary_with_preferred_ready_candidate(Some(
@@ -1081,20 +1082,25 @@ fn remember_quickbar_item_context_if_relevant(
             .compact_item_emission_ready_candidate
             .is_some_and(|candidate| candidate.object_id == signature.object_id)
         {
-            item_context = Some(candidate_context);
-            break;
+            actionable_missing_use_count_slot_mask |=
+                1_u64.checked_shl(u32::from(slot)).unwrap_or(0);
+            if item_context.is_none() {
+                item_context = Some(candidate_context);
+            }
         }
     }
     let preferred_ready_object_id = stream_probe
         .and_then(|probe| probe.first_preserved_active_item_signature)
         .map(|signature| signature.object_id);
-    let item_context = item_context.unwrap_or_else(|| {
+    let mut item_context = item_context.unwrap_or_else(|| {
         state
             .objects
             .inventory_item_context_summary_with_preferred_ready_candidate(
                 preferred_ready_object_id,
             )
     });
+    item_context.preserved_active_item_actionable_missing_use_count_slot_mask =
+        actionable_missing_use_count_slot_mask;
     if !item_context.has_quickbar_item_context_evidence() {
         return;
     }
@@ -4263,6 +4269,12 @@ mod fixture_free_tests {
         assert!(
             json.contains("\"stream_probe_preserved_active_item_missing_use_count_slots\": [1]")
         );
+        assert!(json.contains(
+            "\"stream_probe_preserved_active_item_actionable_missing_use_count_count\": 1"
+        ));
+        assert!(json.contains(
+            "\"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": [1]"
+        ));
     }
 
     #[test]

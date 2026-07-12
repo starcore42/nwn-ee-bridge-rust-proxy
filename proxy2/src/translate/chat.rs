@@ -11,6 +11,10 @@
 //!   no fragment-field write. Current HG/1.69 talk packets therefore end at the
 //!   exact string boundary and carry only the canonical three-bit CNW fragment
 //!   header. EE uses the same `Chat_Talk` family/minor and reader field order.
+//! - EE client talk sender `sub_1407BA7E0` creates a write message sized to
+//!   `text_len + 4`, writes exactly one `CExoString` with 32-bit length, then
+//!   sends family `0x09`, minor `0x01`; it writes no fragment data bits.
+//!   Diamond's server-side talk reader consumes that same bounded string body.
 //! - EE `CNWSMessage::SendServerToPlayerChatMessage` case 5 calls
 //!   `CNWMessage::CreateWriteMessage(strlen + 4, ..., 1)`, then
 //!   `WriteCExoString(..., 0x20)`, then sends high-level family `0x09`,
@@ -100,6 +104,33 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSummary> {
         }
         _ => None,
     }
+}
+
+pub fn claim_client_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSummary> {
+    let high = HighLevel::parse(payload)?;
+    if (high.major, high.minor) != (CHAT_MAJOR, CHAT_TALK_MINOR) {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if payload.len() != declared.checked_add(SINGLE_FRAGMENT_BYTE)?
+        || !cnw_fragment_tail_has_exact_data_bits(&payload[declared..], 0)
+    {
+        return None;
+    }
+
+    let (text_end, text_len) =
+        read_bounded_cexo_string_end(payload, READ_START, declared, MAX_CHAT_TEXT_BYTES)?;
+    if text_end != declared {
+        return None;
+    }
+
+    Some(ChatClaimSummary {
+        minor: high.minor,
+        declared,
+        text_len,
+        fragment_bytes: SINGLE_FRAGMENT_BYTE,
+    })
 }
 
 fn claim_chat_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
@@ -477,6 +508,55 @@ mod tests {
         assert_eq!(summary.declared, declared);
         assert_eq!(summary.text_len, text.len());
         assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[test]
+    fn client_chat_talk_live_password_shape_matches_decompile_order() {
+        let payload = [
+            0x50,
+            CHAT_MAJOR,
+            CHAT_TALK_MINOR,
+            0x0C,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            b'a',
+            0x78,
+        ];
+
+        let summary = claim_client_payload_if_verified(&payload).expect("client talk should claim");
+        assert_eq!(summary.declared, 0x0C);
+        assert_eq!(summary.text_len, 1);
+        assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[test]
+    fn client_chat_talk_rejects_shifted_string_or_fragment_cursor() {
+        let mut payload = [
+            0x50,
+            CHAT_MAJOR,
+            CHAT_TALK_MINOR,
+            0x0C,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            b'a',
+            0x78,
+        ];
+        payload[7] = 2;
+        assert!(claim_client_payload_if_verified(&payload).is_none());
+
+        payload[7] = 1;
+        payload[12] = 0x98;
+        assert!(claim_client_payload_if_verified(&payload).is_none());
     }
 
     #[test]
