@@ -136,9 +136,14 @@ not as standalone workaround targets.
   packet files with 304 strict allows, zero quarantines/files, and zero
   live-object terminal residuals. Fresh HG capture
   `C:\nwnbridge\codex-live-chat-padding-20260712-1945\harness-proxy-20260712-190730`
-  reached module/area/live-object gameplay, recorded 24 strict coalesced-window
-  allows, and remained at zero strict quarantines/files through
-  `2026-07-12T19:10:54+10:00`. The server echo did not recur, nor did the fixed
+  reached module/area/live-object gameplay, recorded 27 strict coalesced-window
+  allows, and remained at zero strict quarantine decisions through
+  `2026-07-12T19:11:05+10:00`. One 162-byte diagnostic candidate (SHA-256
+  `AEA3603AED4637A3B1386DEB6D9098B327F7D3774FFD3295488A8E40DDC7C955`)
+  rejected an intermediate combined-record GUI boundary, after which the same
+  source succeeded through the generalized declared-length repair and exact
+  claimed one inventory plus one GUI row; it is not a dropped-packet blocker.
+  The server echo did not recur, nor did the fixed
   `G I/R A` or unresolved `U/5 0x0000004F` source shapes. The `U/5 0x4F`
   position/orientation/action/status/`0x40` cursor is now the next production
   target; require a future server `Chat_Talk` recurrence before marking the

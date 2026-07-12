@@ -49,9 +49,13 @@ the proxy log must show the selected account's CD-key path and the launcher log
 must show its matching player name. The run reached `Module_Loaded`, strictly
 owned the opt-in one-character password send as `ClientChat`, reached
 `Area_ClientArea`, proxy-generated `Area_AreaLoaded`, and sustained
-`GameObjUpdate_LiveObject` gameplay through `2026-07-12T19:10:54+10:00`. It
-recorded 24 strict coalesced-window allows and wrote zero strict quarantines or
-quarantine files. The client password talk was strictly owned, but the server
+`GameObjUpdate_LiveObject` gameplay through `2026-07-12T19:11:05+10:00`. It
+recorded 27 strict coalesced-window allows and zero strict quarantine decisions.
+One 162-byte diagnostic-only intermediate live-object candidate was dumped
+under the quarantine diagnostics tree; the same source packet then passed the
+generalized declared-length repair and exact-claimed one inventory plus one GUI
+record, so no datagram was dropped. The client password talk was strictly owned,
+but the server
 `Chat_Talk` echo with stale low tail bits did not recur, so the exact source
 normalization still awaits direct live recurrence. The fixed 1,987-byte
 `G I/R A` stream and unresolved 88-byte `U/5 0x0000004F` update also did not
