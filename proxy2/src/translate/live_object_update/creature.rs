@@ -730,11 +730,45 @@ pub(super) fn try_get_ee_creature_update_c408_record_end(
     // boundary helper exists only for already-EE-shaped C408 records after the
     // semantic rewriter has inserted those maps; compact Diamond records remain
     // owned by the legacy scanner/rewrite pass.
+    try_get_ee_creature_update_status_with_scalar_suffix_record_end(
+        bytes,
+        offset,
+        scan_end,
+        0x0000_C408,
+    )
+}
+
+pub(super) fn try_get_ee_creature_update_4408_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    // Diamond `sub_44ADD0` and EE `sub_140781E80` keep the same ordered body
+    // for this status family: mask bit 0x0008 owns the WORD count and typed
+    // effect rows, mask bit 0x0400 then owns exactly four WORD scalars, and
+    // mask bit 0x4000 owns seven CNW BOOLs without adding read-buffer bytes.
+    // After the focused effect-row rewrite, the byte boundary is therefore the
+    // typed EE effect list plus eight scalar bytes. The exact creature cursor
+    // validator separately proves the seven BOOLs from the inherited cursor.
+    try_get_ee_creature_update_status_with_scalar_suffix_record_end(
+        bytes,
+        offset,
+        scan_end,
+        0x0000_4408,
+    )
+}
+
+fn try_get_ee_creature_update_status_with_scalar_suffix_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    expected_mask: u32,
+) -> Option<usize> {
     if offset + 12 > scan_end
         || scan_end > bytes.len()
         || bytes.get(offset).copied()? != b'U'
         || bytes.get(offset + 1).copied()? != 0x05
-        || read_u32_le(bytes, offset + 6)? != 0x0000_C408
+        || read_u32_le(bytes, offset + 6)? != expected_mask
     {
         return None;
     }

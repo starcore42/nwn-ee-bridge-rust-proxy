@@ -7438,6 +7438,42 @@ fn creature_effect_only_target_shape_yields_to_shorter_live_boundary() {
 }
 
 #[test]
+fn creature_4408_transport_boundary_keeps_effect_rows_and_scalar_suffix_together() {
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&0xFFFF_FFC3u32.to_le_bytes());
+    live.extend_from_slice(&0x0000_4408u32.to_le_bytes());
+    live.extend_from_slice(&2u16.to_le_bytes());
+    for (opcode, row) in [(b'A', 0x00B6u16), (b'D', 0x01A5u16)] {
+        live.push(opcode);
+        live.extend_from_slice(&row.to_le_bytes());
+        live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    }
+    live.extend_from_slice(&[0x84, 0x08, 0x42, 0x01, 0x00, 0x00, 0x84, 0x08]);
+    let status_end = live.len();
+    live.extend_from_slice(&[b'W', 0x10, 0x20]);
+
+    assert_eq!(
+        super::boundary::try_get_ee_creature_update_record_end_for_transport(&live, 0, live.len()),
+        Some(status_end),
+        "0x4408 owns the count, complete effect rows, and four-WORD scalar suffix"
+    );
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        status_end,
+        "effect-row opcode bytes and identity-map zeros must not split the creature record"
+    );
+
+    let payload = live_object_payload_with_bits(&live[..status_end], vec![false; 7]);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("four-WORD scalar suffix plus seven 0x4000 BOOLs is exact EE shape");
+    assert_eq!(claim.creature_update_records, 1);
+}
+
+#[test]
 fn creature_status_effect_three_byte_target_payload_is_not_exact_ee_shape() {
     let payload = creature_status_effect_4008_payload(&[(0x1234, Some(&[0x44, 0x33, 0x22]))]);
 

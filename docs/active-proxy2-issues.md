@@ -40,6 +40,54 @@ not as standalone workaround targets.
   module/character state where the coverage remains nonempty after inventory
   materialization; do not keep forcing actions against this fully satisfied
   21-slot profile.
+- 2026-07-12 alternate-account live gate and password-flow ownership: the HG
+  harness now binds proxy2 and the launcher to the selected Diamond account
+  before proxy startup, and the bridge prefers that selected profile name over
+  stale native app-manager state. For characters behind HG's spoken-password
+  gate, successful `Module_Loaded` provides an opt-in fallback send only when
+  the earlier prompt detector made no attempt.
+
+  The first account-1 entry exposed an 81-byte `ClientSideMessage_Feedback`
+  `0x12/0x0B`, id `0x5E`. EE `CNWSMessage::SendServerToPlayerCCMessage` case 11
+  writes WORD id, OBJECTID, bounded `CExoString`, then a build-gated BOOL;
+  `CNWCCMessageData::GetInteger` returns zero for the legacy message's absent
+  integer. Proxy2 now accepts only that exact read boundary and canonicalizes
+  the source three-header-bit fragment to one false BOOL. The opt-in client
+  password send then exposed client `Chat_Talk`: EE sender `sub_1407BA7E0`
+  creates `text_len + 4`, writes exactly one 32-bit-length `CExoString`, and
+  sends `0x09/0x01` without fragment data bits. A separate `ClientChat` family
+  now owns exactly that source shape; shifted string or fragment cursors are
+  rejected.
+
+  Fresh HG capture
+  `C:\nwnbridge\codex-live-account1-owned-talk-20260712-1325\harness-proxy-20260712-132508`
+  used account 1 and `starcore-stormre`, strictly allowed the password talk as
+  `ClientChat`, reached `Module_Loaded`, `Area_ClientArea`, `Area_AreaLoaded`,
+  sustained `GameObjUpdate_LiveObject`, and committed a 36-slot/14-item
+  quickbar through `2026-07-12T13:27:05+10:00`. All 14 slots eventually gained
+  matching GQ state, so the actionable-missing set correctly remained empty.
+  ~~The later `U/5 0x4408` record was rejected after its five effect rows were
+  translated because the transport boundary scanner split inside their inserted
+  EE identity maps. Resolved in code 2026-07-12; direct live recurrence remains
+  pending.~~ Diamond `sub_44ADD0` and EE `sub_140781E80` prove the ordered body:
+  `0x0008` WORD count plus typed effect rows, `0x0400` four WORD scalars, then
+  `0x4000` seven CNW BOOLs without more read bytes. The typed transport owner now
+  keeps that full byte span together and leaves exact validation to advance the
+  inherited fragment cursor `3 -> 10`. The private 962-byte live regression
+  rewrites all five rows, then exact-claims the following `I/0xD5FF` state through
+  bit 153. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-u5-4408-boundary-retry-20260712-1530`
+  processed 164 files with 304 strict allows, zero quarantines/files, and zero
+  terminal live-object residuals.
+
+  Fresh verification capture
+  `C:\nwnbridge\codex-live-u5-4408-boundary-20260712-1512\harness-proxy-20260712-151148`
+  reached module/area/live-object gameplay and strictly owned the password talk,
+  but `0x4408` did not recur before shutdown. It exposed two new generalized
+  live-object blockers instead: a 1,987-byte top-level `G I A` inventory stream
+  rejected at the first GUI boundary, and an 88-byte `U/5` current-player update
+  with mask `0x0000004F` rejected at its typed record boundary. Preserve both as
+  next regression seeds; do not treat the run as clean-zero-quarantine evidence.
 - 2026-07-12 active quickbar-slot diagnostics and Chat_Talk ownership: proxy2
   now writes the exact count and ordered slot array for all retained
   decompile-owned 36-slot active-item signatures into both pending and idle

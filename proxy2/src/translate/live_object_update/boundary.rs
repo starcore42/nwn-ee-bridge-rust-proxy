@@ -998,6 +998,7 @@ pub(super) fn try_get_ee_creature_update_record_end_for_transport(
         .or_else(|| creature::try_get_ee_creature_update_4008_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_8008_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c008_record_end(bytes, offset, scan_end))
+        .or_else(|| creature::try_get_ee_creature_update_4408_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end))

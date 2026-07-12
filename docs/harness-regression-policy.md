@@ -33,29 +33,31 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-12 03:00 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-12 15:14 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-active-gq-coverage-20260712-0300\harness-proxy-20260712-025724`.
+`C:\nwnbridge\codex-live-u5-4408-boundary-20260712-1512\harness-proxy-20260712-151148`.
 It was launched with:
 
 ```powershell
 $env:HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS = '1'
-.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -AutoQuickbarItemRefreshUseItem -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-active-gq-coverage-20260712-0300
+$hgPassword = '<load account password without printing it>'
+.\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -DiamondAccount 1 -AutoCharacter starcore-stormre -Password $hgPassword -AutoSpeakPassword -AutoOpenInventory -AutoOpenInventoryDelayMilliseconds 5000 -AutoQuickbarItemRefreshUseItem -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-u5-4408-boundary-20260712-1512
 ```
 
-The run observed BNK3 95 ms after deferred BNK2, reached `Module_Loaded`,
-`Area_ClientArea`, proxy-generated `Area_AreaLoaded`, and sustained
-`GameObjUpdate_LiveObject` through `2026-07-12T03:00:16+10:00` with zero
-quarantine files. It committed a 36-slot/21-item quickbar, exposed all 21
-retained active-signature slots as
-`[0,1,5,10,11,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35]`, materialized
-52 ClientGui inventory items, exposed 66 ready item objects, and dispatched one
-confirmed Inventory replay. The new exact coverage fields first reported all
-21 preserved slots missing durable GQ state, then reported the same 21 slots as
-matching after HG delivered gameplay state. The final missing set was empty, so
-the driver correctly suppressed a redundant automatic `UseItem`. The next
-quickbar action target must come from a different module/character state whose
-missing-GQ set remains nonempty after inventory materialization.
+The wrapper bound proxy2 and the launcher to account 1 before proxy startup;
+the proxy log must show the selected account's CD-key path and the launcher log
+must show its matching player name. The run reached `Module_Loaded`, strictly
+owned the opt-in one-character password send as `ClientChat`, reached
+`Area_ClientArea`, proxy-generated `Area_AreaLoaded`, sustained
+`GameObjUpdate_LiveObject`, and sustained gameplay through
+`2026-07-12T15:14:43+10:00`. The prior `U/5 0x4408` failure did not recur, but
+its private 962-byte regression now translates the five typed effect rows,
+keeps the four-WORD scalar suffix in the same record, advances the seven
+`0x4000` BOOLs from fragment cursor 3 to 10, and exact-claims the following
+inventory stream through bit 153. The live retry exposed a 1,987-byte top-level
+`G I A` stream and an 88-byte `U/5 0x0000004F` update as new strict failures.
+Gameplay was reached, but the capture has three dump files for two logical
+quarantines and is not clean-zero-quarantine evidence.
 
 The immediately preceding clean gameplay harness was
 `C:\nwnbridge\codex-live-chat-talk-active-slots-retry-20260712-0107\harness-proxy-20260712-010711`.
@@ -1722,6 +1724,11 @@ work.
 | --- | --- | --- |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
+| `-DiamondAccount 1` selects an account-1 character, but proxy startup logs `C:\NWN\Config\5.nwncdkey.ini` or the launcher injects the wrong player name | The proxy starts before the launcher and inherited stale/default account-5 identity; native app-manager state can also retain the previous name | Fixed 2026-07-12: `test-hg-bridge.ps1` resolves and exports the selected account's CD-key/player paths before proxy startup, restores the prior environment afterward, and the bridge prefers the launcher-selected name. Require matching proxy and launcher identity rows on every alternate-account run. |
+| HG sends “speak your password” feedback, proxy logs an unowned 81-byte `ClientSideMessage_Feedback` id `0x5E`, then the run stops after `Module_Loaded` | EE's case-11 feedback reader expects a build-gated BOOL that the legacy writer omitted; the coalesced prompt can also bypass the bridge's high-level text detector | Fixed 2026-07-12: proxy2 inserts only the decompile-proven default-false BOOL at the exact string boundary, and opt-in `-AutoSpeakPassword` falls back after successful `Module_Loaded` only if no prompt-triggered attempt ran. Load the secret without printing it and require a strict `ClientChat` allow. |
+| Account-1 gameplay emits two `live-object-unclaimed-strict-family` files for one 962-byte payload beginning `50 05 01 AE 03 00 00 55 05 C3 FF FF FF 08 44` | Fixed 2026-07-12: the typed `U/5 0x4408` rewrite succeeded, but transport boundary selection split inside the five inserted effect-row identity maps before the four-WORD scalar suffix | The scanner now owns the exact decompile-backed byte span and leaves the seven `0x4000` BOOLs to the exact cursor validator. The private live fixture rewrites and claims the following inventory through bit 153; strict replay is clean. Require a future live recurrence before calling it live-confirmed. |
+| Account-1 gameplay quarantines a 1,987-byte payload beginning `50 05 01 AD 07 00 00 47 49 41 01 00 00 00` | A top-level `G I A` inventory item-create stream reaches the dedicated GUI family, but its first typed row has no exact byte/fragment boundary under current item/materialization state | Active as of 2026-07-12 15:13. Preserve SHA-256 `7AF84AEE4E7923BA17FE9CFCA822AAFEC60F7D060D2107BD3B9ACA4A69613D13`, trace the embedded item appearance/active-property row from the first GUI cursor, and implement only the shared typed boundary rule. |
+| Account-1 gameplay quarantines an 88-byte payload beginning `50 05 01 56 00 00 00 55 05 C3 FF FF FF 4F 00 00 00` | A current-player `U/5` mask `0x0000004F` action/status variant is not owned by the existing exact creature cursor at its 43-byte candidate boundary | Active as of 2026-07-12 15:14. Preserve SHA-256 `34DC5631894403EEF8479D94E344F2A18C8898A57624721C9BEBA5133F01A6B5`; trace position/orientation/action/status/`0x40` field and BOOL order in Diamond `sub_44ADD0` and EE `sub_140781E80` before extending the typed parser. |
 | Gameplay reaches `Party_GetList` and logs `auto-inventory scheduled`, but the due time passes with no `ClientGuiInventory` event before disconnect | The 2026-07-10 17:00 build checked delayed auto-inventory only from a later server dispatch; an idle gameplay connection supplied none | Fixed and live-confirmed 2026-07-10 20:41: the driver retains the scheduling CNWMessage and services the action from EE's client main loop on the game thread. The 5-second run logged `source=client main loop` at the exact due tick and a successful real `ClientGuiInventory` call. If it recurs, verify that main-loop servicing remains installed before changing server-dispatch timing. |
 | Gameplay continues through a synthetic `Area_AreaLoaded`, while proxy2 quarantines a 430-byte `PlayerList_All` payload beginning `50 0A 01 AA 01 00 00 06` | Three of six legacy rows have a zero player-name CExoString length followed by printable name bytes and the same row's creature object id | Fixed and live-confirmed 2026-07-10 20:41: current code repairs only that exact boundary and then requires the complete decompile-backed typed body and all 28 MSB-first fragment bits. The fresh six-row shape recurred twice and both units translated without PlayerList quarantine. |
 | A successful forced-inventory run releases one confirmed Inventory replay, then quarantines a 417-byte live-object payload beginning `50 05 01 9B 01 00 00` (often under two dump names for one inflated unit) | Fixed 2026-07-10: the bare-inline `Militia Shield` name was followed by cost DWORD `0x00000032`, and its printable low byte was greedily consumed as a trailing `2`; the exact fragment cursor was already correct | The parser now tries bounded printable endpoints longest-first and accepts only a complete decompile-backed active-property suffix. The private fixture exact-translates with item-name widths 6/6/7 and U/5 at cursor 28. Fresh live capture `codex-live-visible-equipment-cost-boundary-20260710-231503` reached gameplay, dispatched one confirmed replay, and produced zero quarantine files. |
