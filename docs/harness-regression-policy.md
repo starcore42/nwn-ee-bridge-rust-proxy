@@ -61,9 +61,15 @@ zero quarantine files. It then held one proxy CPU core in the existing
 live-object combined-record candidate path before any quickbar arrived; the
 last diagnostic was an exact record-boundary rejection after HAK baseitems
 loading. Stop that run's client/proxy pair rather than treating it as a
-quickbar measurement. The next production target is bounding or reusing exact
-analysis in that live-object path, followed by another Bard50 inventory probe
-to measure quickbar latency and isolate the two-distinct-request `BNDP` cause.
+quickbar measurement. Production code now bounds that path: exact rejection
+diagnostics no longer repeat the exhaustive repair scan, and a reject after at
+least one complete source row uses only exact-validated full-stream splits and
+shrinking physical-tail hypotheses. Offset-zero rejects retain the general
+search required by accepted forward-fragment fixtures. Focused profiling cut
+the duplicate 651-byte diagnostic from 46.43 seconds to millisecond scale and
+completed its bounded repair analysis in 2.62 seconds. The next harness step is
+a fresh Bard50 inventory probe to live-confirm sustained gameplay and quickbar
+latency, then isolate the two-distinct-request `BNDP` cause.
 
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,

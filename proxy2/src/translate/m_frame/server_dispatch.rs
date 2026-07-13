@@ -1446,6 +1446,8 @@ fn rewrite_live_object_high_level_payload_for_ee(
         claim_reject_record_first_dword_after_object_id = claim_reject_record
             .and_then(|record| record.first_dword_after_object_id)
             .unwrap_or_default(),
+        declared_repair_candidate_scan_performed =
+            claim_diagnostics.repair_candidate_scan_performed,
         declared_repair_candidates = claim_diagnostics.repair_candidate_count,
         first_declared_repair_known = claim_diagnostics.first_repair_new_declared.is_some(),
         first_declared_repair_new_declared = claim_diagnostics
@@ -3696,7 +3698,6 @@ fn translate_live_object_declared_length_repair(
     let mut last_fragment_capacity_repair: Option<
         live_object::LiveObjectDeclaredLengthRepairCandidate,
     > = None;
-
     if let Some(repair) =
         live_object::declared_length_repair_creature_appearance_update_read_split_candidate(payload)
     {
@@ -3730,7 +3731,31 @@ fn translate_live_object_declared_length_repair(
         }
     }
 
-    for repair in live_object::declared_length_repair_candidates(payload) {
+    let source_claim_diagnostics = live_update::claim_payload_diagnostics(payload);
+    let source_exact_record_progress = source_claim_diagnostics.reject.is_some_and(|reject| {
+        reject.stage.as_str() == "record-validator" && reject.offset.unwrap_or_default() > 0
+    });
+    let candidates = if source_exact_record_progress {
+        let candidates =
+            live_object::declared_length_repair_candidates_after_exact_record_progress(payload);
+        let reject = source_claim_diagnostics.reject;
+        tracing::debug!(
+            source_declared = source_claim_diagnostics.declared.unwrap_or_default(),
+            exact_reject_offset = reject.and_then(|reject| reject.offset).unwrap_or_default(),
+            exact_reject_record_end = reject
+                .and_then(|reject| reject.record_end)
+                .unwrap_or_default(),
+            exact_reject_bit_cursor = reject
+                .and_then(|reject| reject.bit_cursor)
+                .unwrap_or_default(),
+            retained_candidates = candidates.len(),
+            "live-object declared-length repair bounded after exact source-record progress"
+        );
+        candidates
+    } else {
+        live_object::declared_length_repair_candidates(payload)
+    };
+    for repair in candidates {
         if repair.old_declared == repair.new_declared {
             continue;
         }
@@ -4209,6 +4234,8 @@ fn translate_live_object_records_if_verified(
             claim_reject_record_first_dword_after_object_id = claim_reject_record
                 .and_then(|record| record.first_dword_after_object_id)
                 .unwrap_or_default(),
+            declared_repair_candidate_scan_performed =
+                claim_diagnostics.repair_candidate_scan_performed,
             declared_repair_candidates = claim_diagnostics.repair_candidate_count,
             first_declared_repair_known = claim_diagnostics.first_repair_new_declared.is_some(),
             first_declared_repair_new_declared = claim_diagnostics

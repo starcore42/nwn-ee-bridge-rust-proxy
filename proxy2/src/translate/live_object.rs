@@ -289,6 +289,79 @@ pub fn declared_length_repair_candidates(
     candidates
 }
 
+pub fn declared_length_repair_candidates_after_exact_record_progress(
+    payload: &[u8],
+) -> Vec<LiveObjectDeclaredLengthRepairCandidate> {
+    if payload.len() < LEGACY_LIVE_BYTES_OFFSET + 1
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != GAME_OBJECT_UPDATE_MAJOR
+        || payload[2] != LIVE_OBJECT_MINOR
+    {
+        return Vec::new();
+    }
+
+    let Some(old_declared) = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES) else {
+        return Vec::new();
+    };
+    let Ok(old_declared_usize) = usize::try_from(old_declared) else {
+        return Vec::new();
+    };
+    if old_declared_usize < LEGACY_LIVE_BYTES_OFFSET || old_declared_usize >= payload.len() {
+        return Vec::new();
+    }
+
+    // The exact validator already consumed at least one complete source row
+    // before rejecting a later row inside the declared read window. Preserve
+    // all full-stream decompile-owned boundaries, but do not repeatedly parse
+    // that unsupported row against each end-dependent 1..=16-byte tail. Later
+    // physical-tail hypotheses remain eligible only when they shrink a stale
+    // declared overrun. Every returned candidate still needs the dispatcher's
+    // fragment-capacity, semantic rewrite, and exact EE validator proof.
+    let mut candidates = Vec::new();
+    let mut seen_splits = HashSet::new();
+    for split in decompile_owned_live_object_read_split_candidates(
+        payload,
+        LEGACY_LIVE_BYTES_OFFSET,
+        payload.len(),
+    ) {
+        if let Some(candidate) = declared_length_repair_candidate_for_split(
+            payload,
+            old_declared,
+            split,
+            &mut seen_splits,
+            true,
+        ) {
+            candidates.push(candidate);
+        }
+    }
+
+    const MAX_DECLARED_REPAIR_FRAGMENT_TAIL_SEARCH_BYTES: usize = 96;
+    const END_DEPENDENT_PREFIX_TAIL_BYTES: usize = 16;
+    let max_tail = payload
+        .len()
+        .saturating_sub(LEGACY_LIVE_BYTES_OFFSET)
+        .min(MAX_DECLARED_REPAIR_FRAGMENT_TAIL_SEARCH_BYTES);
+    for tail_len in (END_DEPENDENT_PREFIX_TAIL_BYTES + 1)..=max_tail {
+        let split = payload.len().saturating_sub(tail_len);
+        if split <= LEGACY_LIVE_BYTES_OFFSET {
+            break;
+        }
+        if let Some(candidate) = declared_length_repair_candidate_for_split(
+            payload,
+            old_declared,
+            split,
+            &mut seen_splits,
+            false,
+        ) {
+            if candidate.new_declared <= candidate.old_declared {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
+}
+
 pub fn declared_length_window_transport_plausible(payload: &[u8]) -> bool {
     if payload.len() < LEGACY_LIVE_BYTES_OFFSET
         || payload[0] != HIGH_LEVEL_ENVELOPE
@@ -8138,6 +8211,39 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&stale_payload),
             "the declared-length classifier must not move trigger tail bytes into the CNW tail"
+        );
+    }
+}
+
+#[cfg(test)]
+mod declared_length_candidate_budget_tests {
+    use super::*;
+
+    #[test]
+    fn exact_record_progress_excludes_unproven_forward_tail_hypotheses() {
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&8u32.to_le_bytes());
+        payload.push(b'X');
+        payload.extend_from_slice(&[0u8; 64]);
+
+        let unrestricted = declared_length_repair_candidates(&payload);
+        assert_eq!(unrestricted.len(), 48);
+        assert!(
+            unrestricted
+                .iter()
+                .any(|candidate| candidate.new_declared > candidate.old_declared)
+        );
+
+        let after_exact_progress =
+            declared_length_repair_candidates_after_exact_record_progress(&payload);
+        assert!(
+            after_exact_progress
+                .iter()
+                .all(|candidate| { candidate.new_declared <= candidate.old_declared })
         );
     }
 }

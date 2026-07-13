@@ -17,6 +17,22 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-14 live-object exact-rejection CPU bound: the fresh Bard50 gameplay
+  capture below exposed a 651-byte combined-record candidate whose rejection
+  diagnostics redundantly ran the full declared-length repair search. That
+  diagnostic-only scan took 46.43 seconds and found 98 speculative candidates;
+  a full repair attempt on the reconstructed 643-byte source exceeded 90
+  seconds. Production rejection diagnostics now report exact record/cursor
+  state without enumerating repairs. When exact validation has consumed at
+  least one complete source row before rejecting a later row, the repair path
+  uses a separate exact-validated candidate set limited to decompile-owned
+  full-stream splits and shrinking physical-tail hypotheses. Offset-zero and
+  other pre-progress rejects keep the existing general search, preserving the
+  accepted forward-fragment and stale-overrun fixtures. The captured candidate
+  reduced from 46.43 seconds of duplicate diagnostics to millisecond-scale
+  diagnostics; focused repair-path profiling completed in 2.62 seconds.
+  A fresh live Bard50 run must now confirm sustained gameplay and quickbar
+  arrival before returning to the two-distinct-inventory-request `BNDP` issue.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable
