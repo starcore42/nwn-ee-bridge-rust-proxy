@@ -17,22 +17,43 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
-- 2026-07-14 live-object exact-rejection CPU bound: the fresh Bard50 gameplay
-  capture below exposed a 651-byte combined-record candidate whose rejection
-  diagnostics redundantly ran the full declared-length repair search. That
-  diagnostic-only scan took 46.43 seconds and found 98 speculative candidates;
-  a full repair attempt on the reconstructed 643-byte source exceeded 90
-  seconds. Production rejection diagnostics now report exact record/cursor
-  state without enumerating repairs. When exact validation has consumed at
-  least one complete source row before rejecting a later row, the repair path
-  uses a separate exact-validated candidate set limited to decompile-owned
-  full-stream splits and shrinking physical-tail hypotheses. Offset-zero and
-  other pre-progress rejects keep the existing general search, preserving the
-  accepted forward-fragment and stale-overrun fixtures. The captured candidate
-  reduced from 46.43 seconds of duplicate diagnostics to millisecond-scale
-  diagnostics; focused repair-path profiling completed in 2.62 seconds.
-  A fresh live Bard50 run must now confirm sustained gameplay and quickbar
-  arrival before returning to the two-distinct-inventory-request `BNDP` issue.
+- ~~2026-07-14 live-object exact-rejection CPU bound~~: fixed and live-confirmed
+  2026-07-14. Fresh pre-fix capture
+  `C:\nwnbridge\codex-live-bard50-bounded-20260714-0245\harness-proxy-20260714-024358`
+  reached native `Area_AreaLoaded` at `2026-07-14T02:45:36+10:00` with zero
+  quarantine files, then held one proxy CPU core after a 651-byte combined
+  live-object candidate. The prior diagnostics fix emitted its exact rejection
+  in milliseconds, proving the remaining cost was the repair scan itself.
+
+  Production declared-length repair now treats a nonzero exact-validator
+  rejection offset as the last decompile-owned source boundary instead of
+  parsing CNW fragment storage as another possible record stream. The
+  appearance/update exception and normal repair loop share one candidate set;
+  provenance keeps that exception restricted to decompile-owned candidates.
+  Offset-zero failures retain the unrestricted search required by accepted
+  forward-fragment shapes. The exact live 651-byte artifact now returns from
+  the repair dispatcher in 1.87 ms.
+
+  Post-fix capture
+  `C:\nwnbridge\codex-live-bard50-exact-prefix-20260714-0312\harness-proxy-20260714-031015`
+  reached native `Area_AreaLoaded` at `2026-07-14T03:11:19+10:00`, continued
+  through the formerly stalled phase, committed one exact 36-slot quickbar at
+  `03:12:09`, retained 43 ready item objects and 19 quickbar use-count rows,
+  and wrote zero quarantine files. The live-object CPU blocker is closed.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-exact-prefix-20260714-0321`
+  processed 164 packet files with 304 strict allows, zero strict or semantic
+  quarantines/files, and zero terminal live-object residuals.
+
+  Remaining generalized inventory handoff issue: the run observed the two
+  distinct typed `GuiInventory_Status` payloads before quickbar materialization
+  made item state ready. Both typed events were recorded as
+  `blocked_without_ready_state`; later state became `ready_item_state`, but no
+  new GUI event retriggered the handoff and no proxy-owned inventory request was
+  queued. Next, retain a bounded typed pending GUI claim and reconsider it when
+  verified live-object/quickbar materialization transitions the shared item
+  state to ready. Require exact request ownership and response association; do
+  not force a generic candidate.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

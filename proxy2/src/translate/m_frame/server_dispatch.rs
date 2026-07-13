@@ -3698,9 +3698,46 @@ fn translate_live_object_declared_length_repair(
     let mut last_fragment_capacity_repair: Option<
         live_object::LiveObjectDeclaredLengthRepairCandidate,
     > = None;
-    if let Some(repair) =
-        live_object::declared_length_repair_creature_appearance_update_read_split_candidate(payload)
-    {
+
+    let source_claim_diagnostics = live_update::claim_payload_diagnostics(payload);
+    let source_reject = source_claim_diagnostics.reject;
+    let exact_reject_offset = source_reject
+        .filter(|reject| reject.stage.as_str() == "record-validator")
+        .and_then(|reject| reject.offset)
+        .filter(|offset| *offset > 0);
+    let candidate_set = if let Some(exact_reject_offset) = exact_reject_offset {
+        let candidate_set =
+            live_object::declared_length_repair_candidate_set_after_exact_record_progress(
+                payload,
+                exact_reject_offset,
+            );
+        tracing::debug!(
+            source_declared = source_claim_diagnostics.declared.unwrap_or_default(),
+            exact_reject_offset,
+            exact_reject_record_end = source_reject
+                .and_then(|reject| reject.record_end)
+                .unwrap_or_default(),
+            exact_reject_bit_cursor = source_reject
+                .and_then(|reject| reject.bit_cursor)
+                .unwrap_or_default(),
+            retained_candidates = candidate_set.candidates.len(),
+            "live-object declared-length repair bounded to exact-owned source-record progress"
+        );
+        candidate_set
+    } else {
+        live_object::declared_length_repair_candidate_set(payload)
+    };
+
+    // The appearance/update exception and the ordinary repair loop must share
+    // one candidate set. Both are transport-boundary consumers of the same
+    // decompile proof; enumerating the full physical tail independently made
+    // fragment storage look like a second recursive read stream.
+    let creature_appearance_update_repair = live_object::
+        declared_length_repair_creature_appearance_update_read_split_candidate_from_candidates(
+            payload,
+            &candidate_set.candidates[..candidate_set.decompile_owned_len],
+        );
+    if let Some(repair) = creature_appearance_update_repair {
         if let Some((candidate, claim, changed_by_semantic_rewrite)) =
             build_declared_length_repaired_live_object_candidate(
                 payload,
@@ -3731,31 +3768,7 @@ fn translate_live_object_declared_length_repair(
         }
     }
 
-    let source_claim_diagnostics = live_update::claim_payload_diagnostics(payload);
-    let source_exact_record_progress = source_claim_diagnostics.reject.is_some_and(|reject| {
-        reject.stage.as_str() == "record-validator" && reject.offset.unwrap_or_default() > 0
-    });
-    let candidates = if source_exact_record_progress {
-        let candidates =
-            live_object::declared_length_repair_candidates_after_exact_record_progress(payload);
-        let reject = source_claim_diagnostics.reject;
-        tracing::debug!(
-            source_declared = source_claim_diagnostics.declared.unwrap_or_default(),
-            exact_reject_offset = reject.and_then(|reject| reject.offset).unwrap_or_default(),
-            exact_reject_record_end = reject
-                .and_then(|reject| reject.record_end)
-                .unwrap_or_default(),
-            exact_reject_bit_cursor = reject
-                .and_then(|reject| reject.bit_cursor)
-                .unwrap_or_default(),
-            retained_candidates = candidates.len(),
-            "live-object declared-length repair bounded after exact source-record progress"
-        );
-        candidates
-    } else {
-        live_object::declared_length_repair_candidates(payload)
-    };
-    for repair in candidates {
+    for repair in candidate_set.candidates {
         if repair.old_declared == repair.new_declared {
             continue;
         }

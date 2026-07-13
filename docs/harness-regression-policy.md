@@ -33,16 +33,16 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-13 21:04 +10: fresh capture
-`C:\nwnbridge\codex-live-bard50-direct-quickbar-20260713-2055\harness-proxy-20260713-205146`
-selected typed `starcore-bard50`, reached `Module_Loaded`, exact area load, and
-sustained gameplay through 120 exact `GameObjUpdate_LiveObject` deliveries with
-zero quarantine decisions or files. Its real 36-slot `SetAllButtons` payload
-exact-decoded and committed. It live-confirmed reliable-M effect ownership: 85
-retransmissions were retained for transport with duplicate semantic and bridge
-effects suppressed, while only the two distinct inventory-status payload
-events queued two bridge requests. HG still returned `BNDP CE 16` after those
-two distinct requests; response association remains `awaiting_response`.
+Latest known live HG proxy status, as of 2026-07-14 03:12 +10: fresh capture
+`C:\nwnbridge\codex-live-bard50-exact-prefix-20260714-0312\harness-proxy-20260714-031015`
+selected typed `starcore-bard50`, reached `Module_Loaded`, exact
+`Area_ClientArea`, native `Area_AreaLoaded` at `03:11:19`, and sustained
+gameplay into the committed quickbar and inventory probe. It committed one
+exact 36-slot `GuiQuickbar_SetAllButtons` rewrite at `03:12:09`, retained 43
+ready item objects and 19 use-count rows, observed the two distinct typed
+`GuiInventory_Status` payloads, and wrote zero quarantine files. This capture
+is current gameplay evidence and live-confirms that the combined live-object
+candidate CPU blocker no longer prevents quickbar arrival.
 
 Current production code routes structurally valid CNW-declared quickbars to the
 exact direct reader before source-form normalization in both gameplay boundary
@@ -54,22 +54,27 @@ mandatory. Strict replay
 processed 164 packet files with 304 strict allows, zero quarantine decisions or
 files, one 36-slot quickbar profile, and zero terminal live-object residuals.
 
-A bounded post-change capture
-`C:\nwnbridge\codex-live-bard50-direct-routing-20260713-2115\harness-proxy-20260713-210146`
-reached module/area gameplay and delivered 73 exact live-object updates with
-zero quarantine files. It then held one proxy CPU core in the existing
-live-object combined-record candidate path before any quickbar arrived; the
-last diagnostic was an exact record-boundary rejection after HAK baseitems
-loading. Stop that run's client/proxy pair rather than treating it as a
-quickbar measurement. Production code now bounds that path: exact rejection
-diagnostics no longer repeat the exhaustive repair scan, and a reject after at
-least one complete source row uses only exact-validated full-stream splits and
-shrinking physical-tail hypotheses. Offset-zero rejects retain the general
-search required by accepted forward-fragment fixtures. Focused profiling cut
-the duplicate 651-byte diagnostic from 46.43 seconds to millisecond scale and
-completed its bounded repair analysis in 2.62 seconds. The next harness step is
-a fresh Bard50 inventory probe to live-confirm sustained gameplay and quickbar
-latency, then isolate the two-distinct-request `BNDP` cause.
+The pre-fix recurrence
+`C:\nwnbridge\codex-live-bard50-bounded-20260714-0245\harness-proxy-20260714-024358`
+reached native gameplay with zero quarantine files, then stalled after a
+651-byte live-object candidate. Production now bounds a nonzero exact-validator
+reject to the last exact-owned source-record boundary and shares the resulting
+candidate set between the special appearance/update proof and ordinary repair
+loop. The captured dispatcher call fell from more than a minute to 1.87 ms;
+offset-zero failures still use the general decompile-backed search. The current
+03:12 capture above live-confirms continued traffic past that point.
+Strict replay `C:\nwnbridge\codex-proxy2-replay-exact-prefix-20260714-0321`
+processed 164 files with 304 strict allows, zero quarantine decisions/files,
+and zero terminal live-object residuals.
+
+Current inventory-harness finding: both distinct GUI status events occurred
+before verified item materialization became ready, so the bridge recorded two
+`blocked_without_ready_state` events and queued no proxy-owned inventory
+request. The final hint reached `inventory_equipment_handoff_outcome` =
+`ready_item_state`, but no later GUI event retriggered the handoff. The next
+capture should verify a bounded pending-claim implementation that reconsiders
+the exact typed GUI claim on the later item-state transition and then associates
+the first HG response with that request.
 
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,

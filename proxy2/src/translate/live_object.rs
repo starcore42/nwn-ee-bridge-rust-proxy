@@ -140,6 +140,12 @@ pub struct LiveObjectDeclaredLengthRepairCandidate {
     pub fragment_bytes_length: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LiveObjectDeclaredLengthRepairCandidateSet {
+    pub candidates: Vec<LiveObjectDeclaredLengthRepairCandidate>,
+    pub decompile_owned_len: usize,
+}
+
 pub fn raw_prefixed_live_object_split(payload: &[u8]) -> Option<RawPrefixedLiveObjectSplit> {
     if payload.len() < 3 || payload.first().copied() == Some(HIGH_LEVEL_ENVELOPE) {
         return None;
@@ -208,22 +214,28 @@ pub fn looks_like_legacy_prefixed_live_object_high_level(payload: &[u8]) -> bool
 pub fn declared_length_repair_candidates(
     payload: &[u8],
 ) -> Vec<LiveObjectDeclaredLengthRepairCandidate> {
+    declared_length_repair_candidate_set(payload).candidates
+}
+
+pub fn declared_length_repair_candidate_set(
+    payload: &[u8],
+) -> LiveObjectDeclaredLengthRepairCandidateSet {
     if payload.len() < LEGACY_LIVE_BYTES_OFFSET + 1
         || payload[0] != HIGH_LEVEL_ENVELOPE
         || payload[1] != GAME_OBJECT_UPDATE_MAJOR
         || payload[2] != LIVE_OBJECT_MINOR
     {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     }
 
     let Some(old_declared) = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES) else {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     };
     let Ok(old_declared_usize) = usize::try_from(old_declared) else {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     };
     if old_declared_usize < LEGACY_LIVE_BYTES_OFFSET || old_declared_usize >= payload.len() {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     }
 
     // Decompile discipline:
@@ -256,6 +268,7 @@ pub fn declared_length_repair_candidates(
             candidates.push(candidate);
         }
     }
+    let decompile_owned_len = candidates.len();
 
     // Some stale-declared captures end a decompile-owned record with adjacent
     // CNW fragment storage rather than another live-object opcode. Search only
@@ -286,54 +299,58 @@ pub fn declared_length_repair_candidates(
         }
     }
 
-    candidates
+    LiveObjectDeclaredLengthRepairCandidateSet {
+        candidates,
+        decompile_owned_len,
+    }
 }
 
-pub fn declared_length_repair_candidates_after_exact_record_progress(
+pub fn declared_length_repair_candidate_set_after_exact_record_progress(
     payload: &[u8],
-) -> Vec<LiveObjectDeclaredLengthRepairCandidate> {
+    exact_reject_offset: usize,
+) -> LiveObjectDeclaredLengthRepairCandidateSet {
     if payload.len() < LEGACY_LIVE_BYTES_OFFSET + 1
         || payload[0] != HIGH_LEVEL_ENVELOPE
         || payload[1] != GAME_OBJECT_UPDATE_MAJOR
         || payload[2] != LIVE_OBJECT_MINOR
     {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     }
 
     let Some(old_declared) = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES) else {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     };
     let Ok(old_declared_usize) = usize::try_from(old_declared) else {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     };
     if old_declared_usize < LEGACY_LIVE_BYTES_OFFSET || old_declared_usize >= payload.len() {
-        return Vec::new();
+        return LiveObjectDeclaredLengthRepairCandidateSet::default();
     }
 
-    // The exact validator already consumed at least one complete source row
-    // before rejecting a later row inside the declared read window. Preserve
-    // all full-stream decompile-owned boundaries, but do not repeatedly parse
-    // that unsupported row against each end-dependent 1..=16-byte tail. Later
-    // physical-tail hypotheses remain eligible only when they shrink a stale
-    // declared overrun. Every returned candidate still needs the dispatcher's
-    // fragment-capacity, semantic rewrite, and exact EE validator proof.
+    // The exact validator already consumed complete source rows up to
+    // `exact_reject_offset` before rejecting a later row inside the declared
+    // read window. That offset is a stronger read-boundary proof than scanning
+    // the remaining physical bytes: those bytes include CNW fragment storage,
+    // which can contain many opcode-looking sequences and made one live HG
+    // appearance burst spend over a minute recursively rediscovering false
+    // read streams. Retain the exact-owned boundary plus shrinking physical-tail
+    // hypotheses only. Offset-zero failures still use the unrestricted search.
+    // Every candidate still needs fragment-capacity, semantic rewrite, and exact
+    // EE validator proof before dispatch can claim it.
     let mut candidates = Vec::new();
     let mut seen_splits = HashSet::new();
-    for split in decompile_owned_live_object_read_split_candidates(
-        payload,
-        LEGACY_LIVE_BYTES_OFFSET,
-        payload.len(),
-    ) {
+    if let Some(split) = LEGACY_LIVE_BYTES_OFFSET.checked_add(exact_reject_offset) {
         if let Some(candidate) = declared_length_repair_candidate_for_split(
             payload,
             old_declared,
             split,
             &mut seen_splits,
-            true,
+            false,
         ) {
             candidates.push(candidate);
         }
     }
+    let decompile_owned_len = candidates.len();
 
     const MAX_DECLARED_REPAIR_FRAGMENT_TAIL_SEARCH_BYTES: usize = 96;
     const END_DEPENDENT_PREFIX_TAIL_BYTES: usize = 16;
@@ -359,7 +376,10 @@ pub fn declared_length_repair_candidates_after_exact_record_progress(
         }
     }
 
-    candidates
+    LiveObjectDeclaredLengthRepairCandidateSet {
+        candidates,
+        decompile_owned_len,
+    }
 }
 
 pub fn declared_length_window_transport_plausible(payload: &[u8]) -> bool {
@@ -902,39 +922,28 @@ pub fn declared_length_repair_read_window_ends_after_creature_appearance_update_
 pub fn declared_length_repair_creature_appearance_update_read_split_candidate(
     payload: &[u8],
 ) -> Option<LiveObjectDeclaredLengthRepairCandidate> {
-    if payload.len() < LEGACY_LIVE_BYTES_OFFSET + 1
-        || payload[0] != HIGH_LEVEL_ENVELOPE
-        || payload[1] != GAME_OBJECT_UPDATE_MAJOR
-        || payload[2] != LIVE_OBJECT_MINOR
-    {
-        return None;
-    }
-
-    let old_declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
-    let mut seen_splits = HashSet::new();
-    decompile_owned_live_object_read_split_candidates(
+    let candidate_set = declared_length_repair_candidate_set(payload);
+    declared_length_repair_creature_appearance_update_read_split_candidate_from_candidates(
         payload,
-        LEGACY_LIVE_BYTES_OFFSET,
-        payload.len(),
+        &candidate_set.candidates[..candidate_set.decompile_owned_len],
     )
-    .into_iter()
-    .filter_map(|split| {
-        declared_length_repair_candidate_for_split(
-            payload,
-            old_declared,
-            split,
-            &mut seen_splits,
-            true,
-        )
-    })
-    .filter(|candidate| {
-        declared_length_repair_tail_contains_live_object_read_boundary(payload, candidate)
-            && declared_length_repair_fragment_capacity_plausible(payload, candidate)
-            && declared_length_repair_read_window_ends_after_creature_appearance_update_pair(
-                payload, candidate,
-            )
-    })
-    .max_by_key(|candidate| candidate.read_bytes_length)
+}
+
+pub fn declared_length_repair_creature_appearance_update_read_split_candidate_from_candidates(
+    payload: &[u8],
+    candidates: &[LiveObjectDeclaredLengthRepairCandidate],
+) -> Option<LiveObjectDeclaredLengthRepairCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            declared_length_repair_tail_contains_live_object_read_boundary(payload, candidate)
+                && declared_length_repair_fragment_capacity_plausible(payload, candidate)
+                && declared_length_repair_read_window_ends_after_creature_appearance_update_pair(
+                    payload, candidate,
+                )
+        })
+        .max_by_key(|candidate| candidate.read_bytes_length)
+        .cloned()
 }
 
 pub fn declared_length_repair_fragment_capacity_plausible(
@@ -8239,9 +8248,13 @@ mod declared_length_candidate_budget_tests {
         );
 
         let after_exact_progress =
-            declared_length_repair_candidates_after_exact_record_progress(&payload);
+            declared_length_repair_candidate_set_after_exact_record_progress(&payload, 1);
+        assert_eq!(after_exact_progress.decompile_owned_len, 1);
+        assert_eq!(after_exact_progress.candidates.len(), 1);
+        assert_eq!(after_exact_progress.candidates[0].new_declared, 8);
         assert!(
             after_exact_progress
+                .candidates
                 .iter()
                 .all(|candidate| { candidate.new_declared <= candidate.old_declared })
         );
