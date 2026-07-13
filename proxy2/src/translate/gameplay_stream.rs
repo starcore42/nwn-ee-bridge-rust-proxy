@@ -1057,6 +1057,20 @@ fn quickbar_payload_claims_complete_unit(
         return true;
     }
 
+    // A valid CNW declared offset already gives the candidate unit boundary.
+    // Route that ordinary transport shape through the exact direct reader
+    // before asking the source-form normalizer to rediscover the same 36-slot
+    // boundary. The direct reader and EE validator remain the ownership proof;
+    // this only avoids an otherwise redundant full read-window parse.
+    let direct_declared = quickbar::quickbar_has_structurally_plausible_cnw_declared(payload);
+    if direct_declared {
+        return direct_quickbar_payload_claims_complete_unit(
+            payload,
+            quickbar_materialization,
+            quickbar_stream_probe_summary,
+        );
+    }
+
     let mut probe = payload.to_vec();
     if let Some((_, summary)) =
         quickbar::normalize_and_rewrite_quickbar_payload_with_context_for_stream_probe_if_possible(
@@ -1069,19 +1083,30 @@ fn quickbar_payload_claims_complete_unit(
             && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
     }
 
+    direct_quickbar_payload_claims_complete_unit(
+        payload,
+        quickbar_materialization,
+        quickbar_stream_probe_summary,
+    )
+}
+
+fn direct_quickbar_payload_claims_complete_unit(
+    payload: &[u8],
+    quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
+    quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
+) -> bool {
     let mut probe = payload.to_vec();
-    if let Some(summary) =
+    let Some(summary) =
         quickbar::rewrite_simple_quickbar_payload_with_context_for_stream_probe_if_possible(
             &mut probe,
             quickbar_materialization,
         )
-    {
-        *quickbar_stream_probe_summary = Some(summary.clone());
-        return !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
-            && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
-    }
-
-    false
+    else {
+        return false;
+    };
+    *quickbar_stream_probe_summary = Some(summary.clone());
+    !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
+        && quickbar::ee_set_all_buttons_payload_shape_valid(&probe)
 }
 
 fn focused_client_quickbar_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {

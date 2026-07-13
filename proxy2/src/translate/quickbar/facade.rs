@@ -77,25 +77,37 @@ fn rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
 }
 
 pub(super) fn quickbar_has_plausible_cnw_declared(payload: &[u8]) -> bool {
-    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
+    if !quickbar_has_structurally_plausible_cnw_declared(payload) {
         return false;
     }
-    let Some(declared) = read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES) else {
-        return false;
-    };
-    let Ok(declared) = usize::try_from(declared) else {
-        return false;
-    };
+    let declared = read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)
+        .and_then(|declared| usize::try_from(declared).ok())
+        .expect("structurally plausible quickbar declared offset");
     let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
-    if declared < read_start || declared > MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES {
-        return false;
-    }
-    if declared >= payload.len() {
-        return false;
-    }
     let read_buffer = &payload[read_start..declared];
     let fragments = &payload[declared..];
     quickbar_read_window_parses(read_buffer, fragments)
+}
+
+pub(crate) fn quickbar_has_structurally_plausible_cnw_declared(payload: &[u8]) -> bool {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
+        return false;
+    }
+    let Some(high) = HighLevel::parse(payload) else {
+        return false;
+    };
+    if !is_quickbar_family(high) {
+        return false;
+    }
+    let Some(declared) = read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)
+        .and_then(|declared| usize::try_from(declared).ok())
+    else {
+        return false;
+    };
+    let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    declared >= read_start
+        && declared <= MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES
+        && declared < payload.len()
 }
 
 pub fn normalize_and_rewrite_quickbar_payload_if_possible(

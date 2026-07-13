@@ -71,10 +71,46 @@ not as standalone workaround targets.
   `C:\nwnbridge\codex-proxy2-replay-client-reliable-effects-20260713-175105`
   processed 164 packet files with 304 strict allows, zero quarantine
   decisions/files, zero semantic quarantine matches, and zero terminal
-  live-object residuals. Direct live recurrence is still required before
-  marking the fix live-confirmed. Next, bound quickbar stream candidate-analysis
-  latency independently of retransmission suppression. Do not force a generic
-  candidate.
+  live-object residuals. Fresh live recurrence
+  `C:\nwnbridge\codex-live-bard50-direct-quickbar-20260713-2055\harness-proxy-20260713-205146`
+  reached module/area gameplay, delivered 120 exact live-object updates, and
+  logged 85 retransmissions with duplicate semantic/bridge effects suppressed.
+  Only the two distinct inventory-status payload events queued bridge requests;
+  repeated retransmissions did not rerun those effects. This marks reliable-M
+  effect ownership live-confirmed. HG still ended the delayed inventory probe
+  with `BNDP CE 16`; the two distinct events and their two proxy-owned requests
+  remain the next inventory handoff issue. Do not force a generic candidate.
+- 2026-07-13 declared quickbar direct routing: ordinary `SetAllButtons`
+  payloads with a structurally valid CNW declared offset now try the exact
+  direct 36-slot reader before source-form transport normalization in both
+  gameplay unit-boundary discovery and committed materialization. Previously,
+  normalization proved the same declared read window with the full reader and
+  the direct path then parsed all slots again. Zero-declared and other
+  source-only prefixed-fragment forms remain owned by normalization.
+
+  This changes retry order only. The direct path still requires the exact byte
+  reader, shared MSB-first fragment cursor, typed EE writer, no trailing read
+  bytes, and exact EE payload validator; no field widths, BOOL order, optional
+  guards, fragment handoff, or bit-cursor movement changed. Focused tests cover
+  the live declared form, direct materialization route, and zero-declared
+  normalization form. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-direct-quickbar-complete-20260713-2110`
+  processed 164 packet files with 304 strict allows, zero quarantine decisions
+  or files, one exact 36-slot quickbar profile, and zero terminal live-object
+  residuals.
+
+  The pre-final-routing live capture above exact-decoded and committed a real
+  Bard50 36-slot quickbar with zero quarantine files. A bounded current-code
+  rerun at
+  `C:\nwnbridge\codex-live-bard50-direct-routing-20260713-2115\harness-proxy-20260713-210146`
+  reached module/area gameplay and delivered 73 exact live-object updates with
+  zero quarantine files, but then held one proxy CPU core in the existing
+  live-object candidate path before a quickbar arrived. Its last diagnostic was
+  an intermediate combined-record exact-boundary rejection after loading the
+  HAK baseitems table. Therefore it is gameplay evidence but not a quickbar
+  timing comparison. Next, bound or reuse exact candidate analysis in the
+  live-object combined-record path, then repeat Bard50 and measure the two
+  necessary quickbar passes: unit ownership and committed rewrite.
 - 2026-07-13 typed character-vault scouting: `CharList_ListResponse` now
   retains every fixed 16-byte BIC resref in server wire order after exact
   read-buffer and locstring-fragment validation, and the production translator

@@ -33,43 +33,37 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-13 15:13 +10: the freshest
-gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-bard50-stale-area-fast-20260713\harness-proxy-20260713-151017`.
-It selected the typed vault-discovered `starcore-bard50` resref, reached
-`Module_Loaded`, exact `Area_ClientArea`, native `Area_AreaLoaded`, and
-sustained exact `GameObjUpdate_LiveObject` gameplay through
-`2026-07-13T15:13:00.891+10:00`, with zero quarantine decisions or files.
-The retransmitted area unit carried the corrected 732-byte declared read
-window and exact-rewrote to EE's 764-byte window; the immediately preceding
-attempt had exposed the same 735-byte area object with a stale 220-byte
-declared window and a three-byte final transport fragment. Current code now
-recovers that boundary only from a unique exact legacy parse plus exact EE
-LoadArea cursor proof before allowing persistent-zlib continuation ownership.
-Strict replay
-`C:\nwnbridge\codex-proxy2-replay-stale-area-window-20260713-1520`
-processed 164 packet files with 304 strict allows, zero quarantine
-decisions/files, and zero terminal live-object residuals.
+Latest known live HG proxy status, as of 2026-07-13 21:04 +10: fresh capture
+`C:\nwnbridge\codex-live-bard50-direct-quickbar-20260713-2055\harness-proxy-20260713-205146`
+selected typed `starcore-bard50`, reached `Module_Loaded`, exact area load, and
+sustained gameplay through 120 exact `GameObjUpdate_LiveObject` deliveries with
+zero quarantine decisions or files. Its real 36-slot `SetAllButtons` payload
+exact-decoded and committed. It live-confirmed reliable-M effect ownership: 85
+retransmissions were retained for transport with duplicate semantic and bridge
+effects suppressed, while only the two distinct inventory-status payload
+events queued two bridge requests. HG still returned `BNDP CE 16` after those
+two distinct requests; response association remains `awaiting_response`.
 
-Delayed pre-pump inventory emitted real `ClientGuiInventory` requests, and the
-profile's missing-GQ state resolved from server quickbar use-count context.
-However, CPU-heavy quickbar stream candidate probing delayed reliable ACK
-progress, retransmissions of the same client sequences repeatedly reran
-inventory bridge effects and queued the same synthetic request, and HG
-eventually sent `BNDP` with reason bytes `CE 16 00 00`. Production code now
-applies typed semantic, hint-analysis, and bridge-queue effects once per exact
-reliable-M client sequence/payload while allowing transport retransmission and
-ACK changes. The live seed alternated sequences 78 and 79, with the two exact
-current-player status payload dialects, and had reached bridge update 40.
-Focused coverage proves one queued synthetic request per exact pair, accepts a
-reused sequence with different payload bytes, and proves the 64-entry window
-evicts before sequence wrap. Strict replay
-`C:\nwnbridge\codex-proxy2-replay-client-reliable-effects-20260713-175105`
-processed 164 files with 304 strict allows, zero strict quarantines/files, zero
-semantic quarantine matches, and zero terminal live-object residuals. This is
-not yet live-confirmed; require the next Bard50 inventory probe to log duplicate
-effect suppression without repeated bridge updates or synthetic requests. The
-remaining production target is bounded quickbar candidate-analysis cost.
+Current production code routes structurally valid CNW-declared quickbars to the
+exact direct reader before source-form normalization in both gameplay boundary
+discovery and committed materialization. Zero-declared prefixed fragment forms
+still normalize first. This is retry ordering only: the exact 36-slot byte
+reader, MSB-first fragment cursor, typed writer, and EE validator remain
+mandatory. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-direct-quickbar-complete-20260713-2110`
+processed 164 packet files with 304 strict allows, zero quarantine decisions or
+files, one 36-slot quickbar profile, and zero terminal live-object residuals.
+
+A bounded post-change capture
+`C:\nwnbridge\codex-live-bard50-direct-routing-20260713-2115\harness-proxy-20260713-210146`
+reached module/area gameplay and delivered 73 exact live-object updates with
+zero quarantine files. It then held one proxy CPU core in the existing
+live-object combined-record candidate path before any quickbar arrived; the
+last diagnostic was an exact record-boundary rejection after HAK baseitems
+loading. Stop that run's client/proxy pair rather than treating it as a
+quickbar measurement. The next production target is bounding or reusing exact
+analysis in that live-object path, followed by another Bard50 inventory probe
+to measure quickbar latency and isolate the two-distinct-request `BNDP` cause.
 
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,

@@ -45,6 +45,25 @@ fn rewrite_payload_with_context_if_possible(
     materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
     mode: QuickbarRewriteMode,
 ) -> Option<quickbar::QuickbarRewriteSummary> {
+    // A structurally valid CNW declared offset is the normal Diamond/EE
+    // SetReadMessage transport shape. Try its exact 36-slot reader first. The
+    // transport normalizer used to prove that same reader shape as a guard and
+    // then the simple path parsed all 36 slots again, which made candidate-heavy
+    // live quickbars occupy the reliable-window thread for multiple seconds.
+    //
+    // This is only retry ordering: the direct path still requires the exact
+    // byte reader, shared MSB-first fragment cursor, typed writer, and EE
+    // validator. Source-only prefixed-fragment forms (including declared zero)
+    // remain structurally ineligible here and continue through normalization.
+    let direct_declared = quickbar::quickbar_has_structurally_plausible_cnw_declared(payload);
+    if direct_declared {
+        if let Some(summary) =
+            rewrite_direct_payload_with_context_if_possible(payload, materialization, mode)
+        {
+            return Some(summary);
+        }
+    }
+
     let normalized = match mode {
         QuickbarRewriteMode::Committed => {
             quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
@@ -62,6 +81,19 @@ fn rewrite_payload_with_context_if_possible(
     if let Some((_, summary)) = normalized {
         return Some(summary);
     }
+
+    if direct_declared {
+        return None;
+    }
+
+    rewrite_direct_payload_with_context_if_possible(payload, materialization, mode)
+}
+
+fn rewrite_direct_payload_with_context_if_possible(
+    payload: &mut Vec<u8>,
+    materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
+    mode: QuickbarRewriteMode,
+) -> Option<quickbar::QuickbarRewriteSummary> {
     match mode {
         QuickbarRewriteMode::Committed => {
             quickbar::rewrite_simple_quickbar_payload_with_context_if_possible(
@@ -75,6 +107,55 @@ fn rewrite_payload_with_context_if_possible(
                 materialization,
             )
         }
+    }
+}
+
+#[cfg(all(test, hgbridge_private_fixtures))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_declared_quickbar_takes_direct_exact_reader_path() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin"
+        )
+        .to_vec();
+        assert!(quickbar::quickbar_has_structurally_plausible_cnw_declared(
+            &payload
+        ));
+
+        let summary = rewrite_payload_with_context_if_possible(
+            &mut payload,
+            None,
+            QuickbarRewriteMode::StreamProbe,
+        )
+        .expect("valid declared live quickbar should use the exact direct reader");
+
+        assert_eq!(summary.slot_records_owned, 36);
+        assert!(summary.validated_slot_profile.is_some());
+        assert!(quickbar::ee_set_all_buttons_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn zero_declared_quickbar_still_uses_transport_normalization() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/quickbar/local_diamond_bw167demo_zero_declared_seq16_set_all_buttons.bin"
+        )
+        .to_vec();
+        assert!(!quickbar::quickbar_has_structurally_plausible_cnw_declared(
+            &payload
+        ));
+
+        let summary = rewrite_payload_with_context_if_possible(
+            &mut payload,
+            None,
+            QuickbarRewriteMode::StreamProbe,
+        )
+        .expect("zero-declared source form should remain owned by normalization");
+
+        assert_eq!(summary.slot_records_owned, 36);
+        assert!(summary.validated_slot_profile.is_some());
+        assert!(quickbar::ee_set_all_buttons_payload_shape_valid(&payload));
     }
 }
 
