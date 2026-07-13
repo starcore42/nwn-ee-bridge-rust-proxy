@@ -1485,6 +1485,7 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputBlockedCandidateMismatchUpdates = 0
     $quickbarHintInventoryEquipmentBridgeOutputStatus = ''
     $quickbarHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter = $false
+    $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion = ''
     $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmed = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionReadyObjects = 0
@@ -1926,6 +1927,10 @@ try {
         $inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_requires_client_gui_writer']
         if ($null -ne $inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp -and $null -ne $inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp.Value) {
             $quickbarHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter = [bool]$inventoryEquipmentBridgeOutputRequiresClientGuiWriterProp.Value
+        }
+        $inventoryEquipmentBridgeOutputClientGuiStatusRequestCompletionProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_client_gui_status_request_completion']
+        if ($null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRequestCompletionProp -and $null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRequestCompletionProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion = [string]$inventoryEquipmentBridgeOutputClientGuiStatusRequestCompletionProp.Value
         }
         $inventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmedProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_client_gui_status_refresh_confirmed']
         if ($null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmedProp -and $null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmedProp.Value) {
@@ -2534,6 +2539,7 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimPanel = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimPanel
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimPlayerInventoryGui = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimPlayerInventoryGui
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimRewrittenSelfObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimRewrittenSelfObjectId
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmed = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmed
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiWriterPlanAction = $quickbarHintInventoryEquipmentBridgeOutputClientGuiWriterPlanAction
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiWriterPlanEmissionEnabled = $quickbarHintInventoryEquipmentBridgeOutputClientGuiWriterPlanEmissionEnabled

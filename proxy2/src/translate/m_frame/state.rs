@@ -8,7 +8,9 @@ use std::{collections::VecDeque, path::PathBuf};
 
 use flate2::Decompress;
 
-use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources, semantic};
+use crate::translate::{
+    ContinuationOwner, VerifiedProof, area, client_gui_inventory, module_resources, semantic,
+};
 
 use super::{
     client_ack, deferred_module_resources, live_stream, quickbar_stream,
@@ -228,6 +230,34 @@ impl InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
+    #[default]
+    None,
+    AwaitingResponse,
+    QueuedStatusUnavailable,
+    QueuedUpdateMismatch,
+    NonCurrentPlayerRequest,
+    ClosedInventoryRequest,
+    AwaitingMaterializedItems,
+    MaterializedCurrentPlayerInventory,
+}
+
+impl InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::AwaitingResponse => "awaiting_response",
+            Self::QueuedStatusUnavailable => "queued_status_unavailable",
+            Self::QueuedUpdateMismatch => "queued_update_mismatch",
+            Self::NonCurrentPlayerRequest => "non_current_player_request",
+            Self::ClosedInventoryRequest => "closed_inventory_request",
+            Self::AwaitingMaterializedItems => "awaiting_materialized_items",
+            Self::MaterializedCurrentPlayerInventory => "materialized_current_player_inventory",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum InventoryEquipmentBridgeClientGuiStatusResponseAssociation {
     #[default]
     None,
@@ -414,10 +444,43 @@ impl InventoryEquipmentBridgeState {
     }
 
     pub(super) fn client_gui_status_refresh_confirmed(&self) -> bool {
-        self.best_client_gui_status_response
-            .is_some_and(|response| response.materialized_item_object_ids != 0)
-            && self.best_client_gui_status_response_association()
-                == InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate
+        self.client_gui_status_request_completion()
+            == InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
+    }
+
+    pub(super) fn client_gui_status_request_completion(
+        &self,
+    ) -> InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
+        if self.queued_client_gui_status_outputs == 0 {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::None;
+        }
+        let Some(queued_status) = self.last_queued_client_gui_status_output else {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::QueuedStatusUnavailable;
+        };
+        if queued_status.object_id != client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::NonCurrentPlayerRequest;
+        }
+        if !queued_status.player_inventory_gui {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ClosedInventoryRequest;
+        }
+        let Some(response) = self.best_client_gui_status_response else {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::AwaitingResponse;
+        };
+        if response.queued_update_index != queued_status.update_index {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::QueuedUpdateMismatch;
+        }
+        if response.materialized_item_object_ids == 0 {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::AwaitingMaterializedItems;
+        }
+
+        // EE `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` minor 1
+        // reads only the open BOOL and inventory-owner OBJECTID, then calls
+        // `CNWSPlayerInventoryGUI::SetOpen`. No item candidate is present in
+        // that request. Therefore the first nonempty typed live-GUI
+        // materialization in this single update-index window completes the
+        // current-player request. Candidate containment remains a stricter,
+        // independent prerequisite for replaying an earlier Inventory claim.
+        InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
     }
 
     pub(super) fn client_gui_status_response_outcome(

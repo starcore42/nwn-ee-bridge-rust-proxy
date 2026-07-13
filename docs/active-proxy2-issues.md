@@ -69,14 +69,26 @@ not as standalone workaround targets.
   materialization that raised ready item objects from 19 to 43. The run had
   zero quarantine files and no `BNDP`.
 
-  Remaining generalized response-association issue: the successful response
-  still reports `differs_from_queued_status_candidate` because diagnostic ready
-  candidate `0x800164E8` is not in the returned materialized set. That item
-  candidate is not encoded in the exact current-player status request. Trace
-  Diamond/EE status request ownership and server response completion, then
-  replace candidate-containment confirmation only if the bounded request
-  window is the original protocol rule; do not force a generic candidate or
-  replay an unrelated server Inventory claim.
+  ~~2026-07-14 current-player response completion~~: fixed in production code;
+  post-fix live confirmation remains pending. EE
+  `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` minor 1 reads exactly
+  the open BOOL followed by the inventory-owner OBJECTID and calls
+  `CNWSPlayerInventoryGUI::SetOpen`; no item candidate is present. Proxy2 now
+  completes a bounded open/current-player request when the matching update
+  window receives its first nonempty typed live-GUI materialization. It reports
+  that request-level outcome separately from diagnostic candidate association.
+  Candidate containment remains mandatory for replaying an unrelated retained
+  server Inventory claim, so the live `0x800164E8` mismatch is not converted
+  into item ownership or a replay authorization. Focused tests cover the exact
+  live mismatch shape. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-status-completion-summary-20260714-0904`
+  processed 164 packets with 304 strict allows, zero strict/semantic
+  quarantines or files, and zero terminal live-object residuals. Its baseline
+  has no proxy-owned status request and exported request completion `none`,
+  proving the new replay-summary field is optional-state safe. The current
+  06:03 gameplay capture is 2.6 hours old; this automation process had no
+  account-secret source, so the next credentialed HG run must confirm
+  `materialized_current_player_inventory` and refresh-confirmed state.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

@@ -817,6 +817,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             .map(|candidate| candidate.source.as_str())
             .unwrap_or("none");
     let client_gui_status_response_outcome = bridge.client_gui_status_response_outcome();
+    let client_gui_status_request_completion = bridge.client_gui_status_request_completion();
     let best_client_gui_status_response_association =
         bridge.best_client_gui_status_response_association();
     let client_gui_status_refresh_confirmed = bridge.client_gui_status_refresh_confirmed();
@@ -927,6 +928,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             ",\n",
             "  \"inventory_equipment_bridge_output_status\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_requires_client_gui_writer\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_request_completion\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_client_gui_status_refresh_confirmed\": {},\n",
             "  \"inventory_equipment_bridge_output_queued_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_packets\": {},\n",
@@ -1077,6 +1079,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         ),
         output_status.as_str(),
         requires_client_gui_writer,
+        client_gui_status_request_completion.as_str(),
         client_gui_status_refresh_confirmed,
         bridge.queued_outputs,
         bridge.confirmed_inventory_replay_outputs,
@@ -2656,6 +2659,9 @@ mod tests {
 
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_status\": \"client_gui_status_refresh_confirmed\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_request_completion\": \"materialized_current_player_inventory\""
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_client_gui_status_refresh_confirmed\": true"

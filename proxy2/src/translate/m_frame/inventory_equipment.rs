@@ -356,6 +356,15 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             queued_update_index,
             server_sequence,
             ack_sequence,
+            request_completion = state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            candidate_association = state
+                .inventory_equipment
+                .best_client_gui_status_response_association()
+                .as_str(),
+            materialized_item_object_ids_contain_queued_candidate,
             "inventory/equipment bridge completed proxy-owned ClientGuiInventory_Status response window"
         );
     }
@@ -1298,6 +1307,88 @@ mod tests {
             !state
                 .inventory_equipment
                 .client_gui_status_response_window_complete()
+        );
+    }
+
+    #[test]
+    fn current_player_status_response_completes_without_diagnostic_candidate_match() {
+        let queued_candidate = InventoryItemContextCandidate {
+            object_id: 0x8001_64E8,
+            proof: InventoryItemObjectProof::ActiveObject,
+            source: InventoryItemContextCandidateSource::DirectOnly,
+        };
+        let mut state = SessionState::default();
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(1);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 1,
+                emission_index: 1,
+                event_index: 3,
+                candidate: Some(queued_candidate),
+                ready_objects: 19,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: 81,
+                synthetic_sequence: 82,
+                ack_sequence: 35,
+            });
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 26,
+                live_gui_fragment_bits: 178,
+                materialized_item_object_ids: vec![0x8001_64CE, 0x8001_6514],
+                compact_item_emission_ready_objects: 43,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_64CE,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+            },
+        );
+
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            36,
+            80,
+        );
+
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response_association()
+                .as_str(),
+            "differs_from_queued_status_candidate"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "materialized_current_player_inventory"
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_refresh_confirmed()
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_window_complete()
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .pending_confirmed_inventory_replay
+                .is_none(),
+            "a request-level completion must not relax the candidate-gated Inventory replay"
         );
     }
 

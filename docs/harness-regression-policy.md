@@ -72,13 +72,18 @@ Current inventory-harness finding: bounded pending-claim reconsideration is
 live-confirmed by the 06:03 capture above. Its final hint reports three
 ClientGui handoff events (two blocked, one ready), one handoff state update, one
 queued status packet, two response-window live-object packets, and one
-26-record materialized response. The response outcome is `materialized_items`,
-but confirmation remains false because diagnostic ready candidate `0x800164E8`
-was not among the materialized ids. Since the exact request targets current
-player `0x7F000000` rather than that item candidate, the next slice must prove
-the original Diamond/EE request-window completion rule before changing
-association. Do not manufacture a candidate or relax the exact live-object
-validator.
+26-record materialized response. EE's exact minor-1 handler reads the open BOOL
+and current-player inventory OBJECTID only; the request cannot carry diagnostic
+ready candidate `0x800164E8`. Production therefore completes that exact update
+window on its first nonempty typed live-GUI materialization and reports
+`materialized_current_player_inventory` separately from candidate association.
+Candidate containment is still required before replaying any retained server
+Inventory claim. Focused tests and strict replay
+`C:\nwnbridge\codex-proxy2-replay-status-completion-summary-20260714-0904`
+passes with zero quarantines and exports completion `none` for its no-request
+baseline. The next credentialed HG run must live-confirm the new
+request-completion hint; the current automation environment exposed no account
+secret, so no password was guessed.
 
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
