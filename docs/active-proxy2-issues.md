@@ -17,6 +17,45 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
+  committed profile, preserved active-item signatures, durable GQ coverage,
+  current actionable missing-GQ slots, and the retained observed-actionable
+  union to one `profile_scouting_outcome`. The pending and idle harness hints
+  distinguish an uncommitted profile, no preserved items, complete GQ
+  coverage, missing GQ without a ready item, missing GQ after a real
+  ClientGuiInventory request, a currently actionable missing item, and an
+  actionable missing item observed earlier in the same generation.
+  This is generalized semantic instrumentation; it does not relax action
+  dispatch or packet validation.
+
+  Current-code account-4 captures
+  `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
+  `C:\nwnbridge\codex-live-account4-buffbot-scout-20260713-1200\harness-proxy-20260713-115241`,
+  and
+  `C:\nwnbridge\codex-live-account4-reincth-scout-20260713-1205\harness-proxy-20260713-115641`
+  all reached module/area/live-object gameplay with zero quarantine decisions
+  or files. `starcore-bard-pi` retained four item slots `[1,5,6,8]` and
+  `starcore-buffbot` retained one item slot `[35]`; both classified as
+  `all_preserved_items_have_use_count_state`. `starcore-reincth` classified
+  as `no_preserved_active_items`; its generic inventory candidate remained
+  suppressed as `candidate_not_preserved_active_item`. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-profile-scouting-20260713-1200`
+  processed 164 files with 304 strict allows, zero quarantines/files, and zero
+  terminal live-object residuals.
+
+  `starcore-bard50` then exposed the first durable missing-GQ profile in
+  `C:\nwnbridge\codex-live-account4-bard50-bnk-retry-20260713-1210\harness-proxy-20260713-120214`.
+  After one documented BNK2/no-BNK3 stall, the traced retry observed BNK3 after
+  124 ms and reached sustained zero-quarantine gameplay. Its preserved slots
+  `[1,7,8,9]` all remained missing durable GQ. The pre-pump inventory action
+  emitted real `ClientGuiInventory` sequences 79/80, but HG sent no inventory
+  response or materialized item state; retransmission logs retained the same
+  sequences and ACK 40. Current code therefore classifies this generalized
+  state as `missing_use_count_state_after_inventory_request`. Next, compare
+  the working account-1/account-3 and failing bard50 ClientGui request/server
+  response windows, including current-player object ownership and reliable-M
+  ACK progression, then implement the shared request/state rule that lets HG
+  materialize these four preserved items. Do not force a generic candidate.
 - 2026-07-13 typed character-vault scouting: `CharList_ListResponse` now
   retains every fixed 16-byte BIC resref in server wire order after exact
   read-buffer and locstring-fragment validation, and the production translator

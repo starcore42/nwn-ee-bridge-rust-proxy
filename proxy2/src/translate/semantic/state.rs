@@ -1144,6 +1144,66 @@ impl QuickbarItemRefreshOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemRefreshProfileScoutingOutcome {
+    AwaitingCommittedProfile,
+    NoPreservedActiveItems,
+    AllPreservedItemsHaveUseCountState,
+    MissingUseCountStateWithoutReadyItem,
+    MissingUseCountStateAfterInventoryRequest,
+    ActionableMissingUseCountState,
+    ObservedActionableMissingUseCountState,
+}
+
+impl QuickbarItemRefreshProfileScoutingOutcome {
+    fn from_profile_state(
+        committed_profile: bool,
+        preserved_active_item_count: usize,
+        use_count_coverage: QuickbarPreservedActiveItemUseCountCoverage,
+        actionable_missing_use_count_slot_mask: u64,
+        observed_actionable_missing_use_count_slot_mask: u64,
+        client_gui_inventory_observed: bool,
+    ) -> Self {
+        if !committed_profile {
+            return Self::AwaitingCommittedProfile;
+        }
+        if preserved_active_item_count == 0 {
+            return Self::NoPreservedActiveItems;
+        }
+        if actionable_missing_use_count_slot_mask != 0 {
+            return Self::ActionableMissingUseCountState;
+        }
+        if observed_actionable_missing_use_count_slot_mask != 0 {
+            return Self::ObservedActionableMissingUseCountState;
+        }
+        if use_count_coverage.missing_use_count_slot_count() == 0 {
+            return Self::AllPreservedItemsHaveUseCountState;
+        }
+        if client_gui_inventory_observed {
+            return Self::MissingUseCountStateAfterInventoryRequest;
+        }
+        Self::MissingUseCountStateWithoutReadyItem
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingCommittedProfile => "awaiting_committed_profile",
+            Self::NoPreservedActiveItems => "no_preserved_active_items",
+            Self::AllPreservedItemsHaveUseCountState => "all_preserved_items_have_use_count_state",
+            Self::MissingUseCountStateWithoutReadyItem => {
+                "missing_use_count_state_without_ready_item"
+            }
+            Self::MissingUseCountStateAfterInventoryRequest => {
+                "missing_use_count_state_after_inventory_request"
+            }
+            Self::ActionableMissingUseCountState => "actionable_missing_use_count_state",
+            Self::ObservedActionableMissingUseCountState => {
+                "observed_actionable_missing_use_count_state"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuickbarItemRefreshActionOutcome {
     AwaitingClientAction,
     ServerQuickbarResponseBeforeFirstClientAction,
@@ -2039,6 +2099,16 @@ impl QuickbarItemRefreshHarnessHint {
             quickbar_slot_mask_json(
                 self.observed_preserved_active_item_actionable_missing_use_count_slot_mask,
             );
+        let profile_scouting_outcome =
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                true,
+                preserved_active_item_signature_count,
+                use_count_coverage,
+                self.preserved_active_item_actionable_missing_use_count_slot_mask,
+                self.observed_preserved_active_item_actionable_missing_use_count_slot_mask,
+                self.inventory_equipment_handoff_client_gui_inventory_events != 0,
+            )
+            .as_str();
         let first_active_item = self.first_preserved_active_item_signature;
         let action_active_item = self.candidate_preserved_active_item_signature;
         let action_active_item_slot = self.candidate_preserved_active_item_slot;
@@ -2478,6 +2548,7 @@ impl QuickbarItemRefreshHarnessHint {
                 "  \"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots\": {},\n",
+                "  \"profile_scouting_outcome\": \"{profile_scouting_outcome}\",\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_first\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_second\": {},\n",
                 "  \"stream_probe_item_objects_preserved_by_feature25_legacy_tail\": {},\n",
@@ -3152,6 +3223,7 @@ impl QuickbarItemRefreshHarnessHint {
             self.event_breakdown.client_quickbar_other_set_button_events,
             self.event_breakdown.chat_events,
             self.event_breakdown.other_events,
+            profile_scouting_outcome = profile_scouting_outcome,
         )
     }
 }
@@ -6224,6 +6296,16 @@ impl UiState {
             quickbar_slot_mask_json(
                 self.post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask,
             );
+        let profile_scouting_outcome =
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                self.last_committed_quickbar_profile.is_some(),
+                stream_probe_preserved_active_item_signature_count,
+                stream_probe_preserved_active_item_use_count_coverage,
+                context.preserved_active_item_actionable_missing_use_count_slot_mask,
+                self.post_committed_quickbar_item_refresh_observed_actionable_missing_use_count_slot_mask,
+                self.inventory_equipment_handoff_client_gui_inventory_events != 0,
+            )
+            .as_str();
         let stream_probe_context = self
             .last_quickbar_stream_probe_materialization_context
             .unwrap_or_default();
@@ -6441,6 +6523,7 @@ impl UiState {
                 "  \"stream_probe_preserved_active_item_actionable_missing_use_count_slots\": {},\n",
                 "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_count\": {},\n",
                 "  \"stream_probe_preserved_active_item_observed_actionable_missing_use_count_slots\": {},\n",
+                "  \"profile_scouting_outcome\": \"{profile_scouting_outcome}\",\n",
                 "  \"stream_probe_first_preserved_active_item_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot_known\": {},\n",
                 "  \"stream_probe_first_preserved_active_item_slot\": {},\n",
@@ -6887,6 +6970,7 @@ impl UiState {
                 .chat_events,
             self.post_committed_quickbar_item_refresh_pending_event_breakdown
                 .other_events,
+            profile_scouting_outcome = profile_scouting_outcome,
         )
     }
 
@@ -7140,10 +7224,84 @@ mod tests {
         ObjectRegistry, PlayerListObjectIds, QuickbarActiveItemSignature,
         QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
         QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
-        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProofClass,
-        QuickbarItemRefreshUseCountRow, QuickbarPreservedActiveItemSignatures,
+        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProfileScoutingOutcome,
+        QuickbarItemRefreshProofClass, QuickbarItemRefreshUseCountRow,
+        QuickbarPreservedActiveItemSignatures, QuickbarPreservedActiveItemUseCountCoverage,
         QuickbarRewriteSummary, QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
     };
+
+    #[test]
+    fn quickbar_profile_scouting_outcome_classifies_generalized_coverage_state() {
+        let empty_coverage = QuickbarPreservedActiveItemUseCountCoverage::default();
+        assert_eq!(
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                false,
+                0,
+                empty_coverage,
+                0,
+                0,
+                false,
+            ),
+            QuickbarItemRefreshProfileScoutingOutcome::AwaitingCommittedProfile,
+        );
+        assert_eq!(
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                true,
+                0,
+                empty_coverage,
+                0,
+                0,
+                false,
+            ),
+            QuickbarItemRefreshProfileScoutingOutcome::NoPreservedActiveItems,
+        );
+
+        let mut covered = QuickbarPreservedActiveItemUseCountCoverage::default();
+        covered.observe(3, true);
+        assert_eq!(
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                true, 1, covered, 0, 0, false,
+            ),
+            QuickbarItemRefreshProfileScoutingOutcome::AllPreservedItemsHaveUseCountState,
+        );
+
+        let mut missing = QuickbarPreservedActiveItemUseCountCoverage::default();
+        missing.observe(3, false);
+        assert_eq!(
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                true, 1, missing, 0, 0, false,
+            ),
+            QuickbarItemRefreshProfileScoutingOutcome::MissingUseCountStateWithoutReadyItem,
+        );
+        assert_eq!(
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                true, 1, missing, 0, 0, true,
+            ),
+            QuickbarItemRefreshProfileScoutingOutcome::MissingUseCountStateAfterInventoryRequest,
+        );
+        assert_eq!(
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                true,
+                1,
+                missing,
+                1 << 3,
+                0,
+                true,
+            ),
+            QuickbarItemRefreshProfileScoutingOutcome::ActionableMissingUseCountState,
+        );
+        assert_eq!(
+            QuickbarItemRefreshProfileScoutingOutcome::from_profile_state(
+                true,
+                1,
+                covered,
+                0,
+                1 << 3,
+                true,
+            ),
+            QuickbarItemRefreshProfileScoutingOutcome::ObservedActionableMissingUseCountState,
+        );
+    }
 
     #[test]
     fn duplicate_same_type_add_is_idempotent_protocol_state() {
@@ -10475,6 +10633,9 @@ mod tests {
         assert!(json.contains("\"stream_probe_item_objects_preserved_by_active_state\": 12"));
         assert!(json.contains("\"stream_probe_preserved_active_item_signature_count\": 1"));
         assert!(json.contains("\"stream_probe_preserved_active_item_slots\": [2]"));
+        assert!(json.contains(
+            "\"profile_scouting_outcome\": \"all_preserved_items_have_use_count_state\""
+        ));
         assert!(json.contains("\"stream_probe_item_objects_preserved_by_feature25_first\": 13"));
         assert!(json.contains("\"stream_probe_item_objects_preserved_by_feature25_second\": 14"));
         assert!(
@@ -11456,6 +11617,10 @@ mod tests {
         assert!(stream_probe_no_commit.contains(
             "\"no_hint_reason\": \"stream_probe_quickbar_item_candidates_without_committed_profile\""
         ));
+        assert!(
+            stream_probe_no_commit
+                .contains("\"profile_scouting_outcome\": \"awaiting_committed_profile\"")
+        );
         assert!(stream_probe_no_commit.contains("\"stream_probe_quickbar_seen\": true"));
         assert!(stream_probe_no_commit.contains("\"stream_probe_quickbar_summaries\": 2"));
         assert!(stream_probe_no_commit.contains("\"stream_probe_item_buttons_seen\": 3"));
@@ -11577,6 +11742,15 @@ mod tests {
         assert!(no_post_context.contains("\"no_hint_reason\": \"no_post_committed_item_context\""));
         assert!(no_post_context.contains("\"committed_quickbar_seen\": true"));
         assert!(no_post_context.contains("\"post_committed_item_context_known\": false"));
+        assert!(no_post_context.contains(
+            "\"profile_scouting_outcome\": \"missing_use_count_state_without_ready_item\""
+        ));
+        ui.inventory_equipment_handoff_client_gui_inventory_events = 1;
+        let requested_inventory_without_ready_item = ui.quickbar_item_refresh_harness_idle_json();
+        assert!(requested_inventory_without_ready_item.contains(
+            "\"profile_scouting_outcome\": \"missing_use_count_state_after_inventory_request\""
+        ));
+        ui.inventory_equipment_handoff_client_gui_inventory_events = 0;
 
         ui.last_inventory_item_context_after_committed_quickbar =
             Some(InventoryItemContextSummary {
@@ -11748,6 +11922,9 @@ mod tests {
         ));
         assert!(resolved_by_prior_state.contains(
             "\"stream_probe_first_preserved_active_item_quickbar_use_count_state_active_property_index\": 2"
+        ));
+        assert!(resolved_by_prior_state.contains(
+            "\"profile_scouting_outcome\": \"all_preserved_items_have_use_count_state\""
         ));
     }
 

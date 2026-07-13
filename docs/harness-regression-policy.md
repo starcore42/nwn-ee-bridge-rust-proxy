@@ -33,18 +33,36 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-13 08:55 +10: the freshest
+Latest known live HG proxy status, as of 2026-07-13 12:05 +10: the freshest
 gameplay-reaching proxy harness is
-`C:\nwnbridge\codex-live-account3-cleric5-action-20260713-0910\harness-proxy-20260713-085210`.
-It used account 3 and the typed vault-discovered `starcore-cleric5` resref,
-reached `Module_Loaded`, strictly owned the password talk, reached
-`Area_ClientArea`, synthetic `Area_AreaLoaded`, and sustained exact
-`GameObjUpdate_LiveObject` gameplay through `2026-07-13T08:54:35+10:00` with
-zero quarantine decisions or files. Delayed pre-pump inventory emitted real
-`ClientGuiInventory` traffic. The exact 36-slot quickbar retained 12 item
-buttons at slots `[1,10,19,20,21,23,24,25,26,27,31,32]`; all 12 acquired
-matching durable GQ state, so the optional action remained correctly
-suppressed.
+`C:\nwnbridge\codex-live-account4-bard50-bnk-retry-20260713-1210\harness-proxy-20260713-120214`.
+It selected the typed vault-discovered `starcore-bard50` resref, reached
+`Module_Loaded`, `Area_ClientArea`, synthetic `Area_AreaLoaded`, and
+sustained exact `GameObjUpdate_LiveObject` gameplay with zero quarantine
+decisions or files. Delayed pre-pump inventory emitted real
+`ClientGuiInventory` sequences 79/80. The committed profile retained four
+active item slots `[1,7,8,9]`, all without matching durable GQ. HG did not
+answer the ClientGui request with inventory/materialized item state, so no
+authentic action candidate became ready. Current code reports
+`profile_scouting_outcome="missing_use_count_state_after_inventory_request"`.
+The next harness target is the ClientGui request/server-response ownership and
+reliable-M ACK difference between this profile and working inventory captures.
+
+The three preceding account-4 gameplay captures were
+`C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
+`C:\nwnbridge\codex-live-account4-buffbot-scout-20260713-1200\harness-proxy-20260713-115241`,
+and
+`C:\nwnbridge\codex-live-account4-reincth-scout-20260713-1205\harness-proxy-20260713-115641`.
+All reached sustained zero-quarantine gameplay. `starcore-bard-pi` retained
+four item slots `[1,5,6,8]`; `starcore-buffbot` retained one at slot `35`.
+Every preserved item acquired matching durable GQ state, so both classified as
+`all_preserved_items_have_use_count_state` and correctly sent no action.
+`starcore-reincth` had no preserved items and its unrelated ready inventory
+candidate remained suppressed as `candidate_not_preserved_active_item`.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-profile-scouting-20260713-1200` processed
+164 packet files with 304 strict allows, zero quarantine decisions/files, and
+zero terminal live-object residuals.
 
 The same run verified the new typed vault diagnostic: after exact
 `CharList_ListResponse` validation proxy2 logs all fixed-width BIC resrefs in
@@ -62,12 +80,8 @@ $hgPassword = '<load account password without printing it>'
 .\tools\test-hg-bridge.ps1 -SkipBuild -SkipAssets -SkipInjectTest -DiamondAccount 4 -AutoCharacter vaultprobe -Password $hgPassword -AutoSpeakPassword -ProxyExe C:\nwnbridge\cargo-target\debug\hgbridge_proxy2.exe -ProxyLogRoot C:\nwnbridge\codex-live-account4-vault-typed
 ```
 
-Strict replay
-`C:\nwnbridge\codex-proxy2-replay-charlist-vault-resrefs-20260713-0905`
-processed 164 packet files with 304 strict allows, zero quarantines/files, and
-zero terminal live-object residuals. Next, probe the typed account-4 profiles
-after HG's reconnect cooldown and select one whose preserved active item
-remains missing durable GQ after inventory materialization.
+After the bard50 ClientGui response blocker is understood, continue account-4
+scouting with `starcore-helper` and `amithraliatest`.
 
 The immediately preceding gameplay-reaching proxy harness is
 `C:\nwnbridge\codex-live-inventory-prepump-20260713-0242\harness-proxy-20260713-024110`.
@@ -1804,7 +1818,8 @@ work.
 | A successful forced-inventory run releases one confirmed Inventory replay, then quarantines a 417-byte live-object payload beginning `50 05 01 9B 01 00 00` (often under two dump names for one inflated unit) | Fixed 2026-07-10: the bare-inline `Militia Shield` name was followed by cost DWORD `0x00000032`, and its printable low byte was greedily consumed as a trailing `2`; the exact fragment cursor was already correct | The parser now tries bounded printable endpoints longest-first and accepts only a complete decompile-backed active-property suffix. The private fixture exact-translates with item-name widths 6/6/7 and U/5 at cursor 28. Fresh live capture `codex-live-visible-equipment-cost-boundary-20260710-231503` reached gameplay, dispatched one confirmed replay, and produced zero quarantine files. |
 | A live item-action probe commits a valid item quickbar, then the hint reports many `quickbar_events_before_first_client_action`, suppresses the action as `server_quickbar_response_before_first_client_action`, and repeats ClientGui status queue update indices within milliseconds | Fixed 2026-07-11: cached direct records were reparsed and split deflated records were observed again after typed replay | Coalesced direct/deflated caches now replay translated bytes with current transport fields but no semantic/bridge effects. Fresh live capture `codex-live-coalesced-side-effects-20260711-025757` exercised 47 typed replay hits, retained one semantic server Inventory claim, replaced the false 18 quickbar events with one genuine GQ row, and produced zero quarantine files. |
 | Live HG reaches gameplay, then the final hint stays `inventory_equipment_bridge_output_status="awaiting_bridge_state_update"` with 0 `ClientGuiInventory` events despite `-AutoOpenInventory` | The driver/client exited or missed the inventory-open timing before the GUI action was emitted | Count the artifact as gameplay freshness evidence only, not forced-inventory evidence. Rerun with manual inventory opening or an explicit post-area `-AutoOpenInventoryDelayMilliseconds` value, and require `ClientGuiInventory` log rows before using the run to validate ClientGui writer/response counters. The 2026-07-09 09:19 current-code run hit this timing miss after reaching gameplay. |
-| Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-12 01:05 attempt stalled after BNK2; the 01:07 traced retry observed BNK3 after 70 ms and reached sustained gameplay. |
+| Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-13 12:00 bard50 attempt stalled; the 12:02 traced retry observed BNK3 after 124 ms and reached sustained gameplay. |
+| A committed profile has preserved active items missing durable GQ, real delayed `ClientGuiInventory` frames reach proxy2, but HG sends no inventory/materialized item response and the same client sequences retransmit | The request is valid enough for strict client-family ownership, but the server-side inventory response/state handoff is missing for this character/session; reliable-M ACK or current-player object ownership may differ from working profiles | Require `profile_scouting_outcome="missing_use_count_state_after_inventory_request"`, compare the exact client request and server ACK/response window against a working forced-inventory capture, and trace the shared current-player/request state before changing the writer. Bard50 capture `codex-live-account4-bard50-bnk-retry-20260713-1210` retained slots `[1,7,8,9]`, sequences 79/80, ACK 40, and zero quarantines. |
 | `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |
 | Capture reaches `BNVR A` and one `P/01/03` response, but never sends client `P/11/01` | Driver fell back to native DirectConnect after missing or discarding the server-list path | Keep using the server-list DirectConnect path; if Diamond's app-state server-list slot is empty, retry with the remembered `SERVERLIST_PANEL` from the constructor hook before native fallback. |
 | `PRE_PLAYMOD` selection fires with `entries=0 count=0` | Auto-character path is too early or lacks refresh/retry | Add wait/refresh/retry instrumentation and rerun until the character list is populated or a new blocker is proven. |
