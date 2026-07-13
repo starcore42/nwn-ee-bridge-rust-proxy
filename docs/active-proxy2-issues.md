@@ -55,13 +55,26 @@ not as standalone workaround targets.
   `GuiInventory_Status` sequences repeatedly reran inventory bridge side
   effects and queued the same synthetic request while CPU-heavy quickbar stream
   candidate probing delayed ACK progress; HG eventually sent `BNDP` with reason
-  bytes `CE 16 00 00`. Next, make client reliable-frame semantic effects
-  idempotent for an already-observed sequence/payload and bound quickbar stream
-  candidate analysis latency. Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-stale-area-window-20260713-1520`
+  bytes `CE 16 00 00`.
+
+  Fixed in production code 2026-07-13: reliable client `M` semantic and bridge
+  effects are now owned once per exact original sequence/payload pair. ACK-only
+  changes retain transport retransmission behavior without rerunning the typed
+  reducer, hint analysis, or synthetic bridge queue. A reused sequence with
+  different exact payload bytes remains a new event, and the exact-byte owner
+  is bounded to 64 recent entries so sequence wrap cannot retain stale
+  ownership. The live seed alternated sequence 78 carrying the EE self-object
+  status form and sequence 79 carrying the Diamond current-player form; each
+  had been applied repeatedly through bridge update 40. Focused coverage now
+  proves one synthetic request per exact pair, ACK-insensitive replay
+  suppression, distinct-payload acceptance, and bounded eviction. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-reliable-effects-20260713-175105`
   processed 164 packet files with 304 strict allows, zero quarantine
-  decisions/files, and zero terminal live-object residuals. Do not force a
-  generic candidate.
+  decisions/files, zero semantic quarantine matches, and zero terminal
+  live-object residuals. Direct live recurrence is still required before
+  marking the fix live-confirmed. Next, bound quickbar stream candidate-analysis
+  latency independently of retransmission suppression. Do not force a generic
+  candidate.
 - 2026-07-13 typed character-vault scouting: `CharList_ListResponse` now
   retains every fixed 16-byte BIC resref in server wire order after exact
   read-buffer and locstring-fragment validation, and the production translator

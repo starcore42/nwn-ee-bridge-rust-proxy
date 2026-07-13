@@ -4,7 +4,7 @@
 //! substate below owns one transport concern, so future packet-family work has
 //! an obvious home instead of casually adding fields to `SessionState`.
 
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
 
 use flate2::Decompress;
 
@@ -83,6 +83,23 @@ pub(super) struct SequenceState {
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
     pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
     pub(super) pending_client_to_server_packets: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CompletedClientReliableSemanticEffect {
+    pub(super) sequence: u16,
+    pub(super) payload: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct ClientReliableSemanticEffectState {
+    /// Reliable `M` retransmissions remain transport-visible, but their typed
+    /// semantic and bridge effects must run once per exact sequence/payload.
+    /// Exact bytes avoid treating a reused sequence carrying new data as a
+    /// replay; the bounded window prevents old sequence-wrap entries from
+    /// suppressing later gameplay.
+    pub(super) completed: VecDeque<CompletedClientReliableSemanticEffect>,
+    pub(super) duplicate_effects_suppressed: u64,
 }
 
 #[derive(Debug, Default)]
@@ -509,6 +526,7 @@ pub struct SessionState {
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
+    pub(super) client_reliable_semantic_effects: ClientReliableSemanticEffectState,
     pub(super) client_ack: ClientAckSessionState,
     pub(super) login_waypoint: LoginWaypointState,
     pub(super) inventory_equipment: InventoryEquipmentBridgeState,
@@ -533,6 +551,7 @@ impl SessionState {
             quickbar: QuickbarStreamState::default(),
             live_object: LiveObjectStreamState::default(),
             sequence: SequenceState::default(),
+            client_reliable_semantic_effects: ClientReliableSemanticEffectState::default(),
             client_ack: ClientAckSessionState::default(),
             login_waypoint: LoginWaypointState::default(),
             inventory_equipment: InventoryEquipmentBridgeState::default(),

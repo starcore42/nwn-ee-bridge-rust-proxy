@@ -57,6 +57,7 @@ use sequence::{
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
 const MAX_INTERLEAVED_PACKETS: usize = 32;
+const MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS: usize = 64;
 const CNW_LENGTH_BYTES: usize = 4;
 
 pub use state::SessionState;
@@ -142,6 +143,7 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("client M frame failed reliable-window parse");
     };
+    let semantic_effect_identity = client_reliable_semantic_effect_identity(bytes, &view);
     let defer_module_loaded_until_released_packets_are_acked = is_client_module_loaded(view.high)
         && deferred_module_resources::client_ack_would_release_held_server_packets(
             &state.deferred_module_resources.pending,
@@ -214,7 +216,13 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     let packet = if duplicate_native_area_loaded_after_synthetic {
         translate_duplicate_native_area_loaded_after_synthetic(state, outbound, &shifted_view)?
     } else {
-        translate_client_to_server_packet(state, outbound, &shifted_view, view.sequence)?
+        translate_client_to_server_packet(
+            state,
+            outbound,
+            &shifted_view,
+            view.sequence,
+            semantic_effect_identity.as_ref(),
+        )?
     };
     if let Some(synthetic) = synthetic_area_loaded {
         let synthetic_view = MFrameView::parse(&synthetic)
@@ -224,6 +232,7 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
             synthetic,
             &synthetic_view,
             synthetic_view.sequence,
+            None,
         )?;
         let mut packets = Vec::new();
         if let Some(packet_bytes) = packet.packet {
@@ -271,6 +280,7 @@ fn translate_client_to_server_packet(
     bytes: Vec<u8>,
     view: &MFrameView,
     origin_client_sequence: u16,
+    semantic_effect_identity: Option<&state::CompletedClientReliableSemanticEffect>,
 ) -> anyhow::Result<client_filters::ClientFrameTranslation> {
     let translated = client_filters::translate_client_frame(bytes, view, &mut state.semantic)?;
     if translated.proxy_ack_client_sequence.is_some() && origin_client_sequence != 0 {
@@ -279,16 +289,76 @@ fn translate_client_to_server_packet(
     if translated.elide_client_sequence && origin_client_sequence != 0 {
         record_client_sequence_elision(state, origin_client_sequence);
     }
-    for observation in &translated.semantic_observations {
-        observe_verified_client_payload(state, observation.family, &observation.payload);
-    }
     let observe_packet = translated.packet.is_some()
         && !(translated.family == VerifiedFamily::ConsumedEmptyMFrame
             && !translated.semantic_observations.is_empty());
-    if observe_packet && let Some(packet) = translated.packet.as_ref() {
-        observe_verified_client_m_packet(state, translated.family, packet);
+    let has_semantic_effect = observe_packet || !translated.semantic_observations.is_empty();
+    let apply_semantic_effect = !has_semantic_effect
+        || semantic_effect_identity
+            .map(|identity| claim_client_reliable_semantic_effect_once(state, identity))
+            .unwrap_or(true);
+    if apply_semantic_effect {
+        for observation in &translated.semantic_observations {
+            observe_verified_client_payload(state, observation.family, &observation.payload);
+        }
+        if observe_packet && let Some(packet) = translated.packet.as_ref() {
+            observe_verified_client_m_packet(state, translated.family, packet);
+        }
     }
     Ok(translated)
+}
+
+fn client_reliable_semantic_effect_identity(
+    packet: &[u8],
+    view: &MFrameView,
+) -> Option<state::CompletedClientReliableSemanticEffect> {
+    if view.sequence == 0 {
+        return None;
+    }
+    let payload = parse_window::primary_payload(packet, view)?;
+    Some(state::CompletedClientReliableSemanticEffect {
+        sequence: view.sequence,
+        payload: payload.to_vec(),
+    })
+}
+
+fn claim_client_reliable_semantic_effect_once(
+    state: &mut SessionState,
+    identity: &state::CompletedClientReliableSemanticEffect,
+) -> bool {
+    if state
+        .client_reliable_semantic_effects
+        .completed
+        .iter()
+        .any(|completed| completed == identity)
+    {
+        state
+            .client_reliable_semantic_effects
+            .duplicate_effects_suppressed = state
+            .client_reliable_semantic_effects
+            .duplicate_effects_suppressed
+            .saturating_add(1);
+        tracing::info!(
+            sequence = identity.sequence,
+            payload_len = identity.payload.len(),
+            duplicate_effects_suppressed = state
+                .client_reliable_semantic_effects
+                .duplicate_effects_suppressed,
+            "client reliable M retransmission retained for transport with duplicate semantic and bridge effects suppressed"
+        );
+        return false;
+    }
+
+    if state.client_reliable_semantic_effects.completed.len()
+        >= MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS
+    {
+        state.client_reliable_semantic_effects.completed.pop_front();
+    }
+    state
+        .client_reliable_semantic_effects
+        .completed
+        .push_back(identity.clone());
+    true
 }
 
 fn record_client_sequence_elision(state: &mut SessionState, origin_client_sequence: u16) {
@@ -1874,6 +1944,129 @@ mod tests {
         packet[7] = 0x10;
         assert!(encode_legacy_m_crc(&mut packet));
         packet
+    }
+
+    fn client_reliable_m_frame(sequence: u16, ack_sequence: u16, payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0; crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, sequence));
+        assert!(write_be_u16(&mut packet, 5, ack_sequence));
+        packet[7] = 0x0A;
+        assert!(write_be_u16(&mut packet, 8, 1));
+        assert!(write_be_u16(&mut packet, 10, payload.len() as u16));
+        packet.extend_from_slice(payload);
+        assert!(encode_legacy_m_crc(&mut packet));
+        packet
+    }
+
+    #[test]
+    fn reliable_client_retransmission_applies_semantic_and_bridge_effects_once() {
+        let mut state = SessionState::default();
+        let candidate = crate::translate::semantic::InventoryItemContextCandidate {
+            object_id: 0x8001_5B01,
+            proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+        };
+        state
+            .semantic
+            .ui
+            .last_inventory_item_context_after_committed_quickbar =
+            Some(crate::translate::semantic::InventoryItemContextSummary {
+                active_item_objects: 1,
+                materialized_item_objects: 1,
+                direct_item_proof_objects: 1,
+                compact_item_emission_proof_objects: 1,
+                compact_item_emission_candidate: Some(candidate),
+                compact_item_emission_ready_objects: 1,
+                compact_item_emission_ready_candidate: Some(candidate),
+                compact_item_emission_direct_only_proof_objects: 1,
+                ..Default::default()
+            });
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+
+        translate_client_to_server(&client_reliable_m_frame(78, 31, &payload), &mut state)
+            .expect("first reliable ClientGuiInventory frame should translate");
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(
+            state.semantic.ui.inventory_equipment_handoff_events, 1,
+            "first sequence/payload must apply its semantic bridge handoff"
+        );
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs, 1,
+            "first bridge handoff should queue one synthetic status request"
+        );
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+
+        translate_client_to_server(&client_reliable_m_frame(78, 32, &payload), &mut state)
+            .expect("transport retransmission with a newer ACK should still translate");
+        assert_eq!(
+            state.semantic.ui.inventory_packets, 1,
+            "ACK changes do not make the same reliable sequence/payload a new semantic event"
+        );
+        assert_eq!(state.semantic.ui.inventory_equipment_handoff_events, 1);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs, 1,
+            "retransmission must not queue another synthetic status request"
+        );
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(
+            state
+                .client_reliable_semantic_effects
+                .duplicate_effects_suppressed,
+            1
+        );
+
+        let distinct_payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            false,
+        );
+        translate_client_to_server(
+            &client_reliable_m_frame(78, 32, &distinct_payload),
+            &mut state,
+        )
+        .expect("a reused sequence with a distinct exact payload should translate");
+        assert_eq!(state.semantic.ui.inventory_packets, 2);
+        assert_eq!(state.semantic.ui.inventory_equipment_handoff_events, 2);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            2
+        );
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 2);
+        assert_eq!(state.client_reliable_semantic_effects.completed.len(), 2);
+    }
+
+    #[test]
+    fn reliable_client_semantic_effect_window_is_bounded_for_sequence_wrap() {
+        let mut state = SessionState::default();
+        let first = state::CompletedClientReliableSemanticEffect {
+            sequence: 7,
+            payload: vec![0x70, 0x0D, 0x01, 0],
+        };
+        assert!(claim_client_reliable_semantic_effect_once(
+            &mut state, &first
+        ));
+
+        for index in 0..MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS {
+            let identity = state::CompletedClientReliableSemanticEffect {
+                sequence: 8u16.wrapping_add(index as u16),
+                payload: vec![index as u8],
+            };
+            assert!(claim_client_reliable_semantic_effect_once(
+                &mut state, &identity
+            ));
+        }
+
+        assert_eq!(
+            state.client_reliable_semantic_effects.completed.len(),
+            MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS
+        );
+        assert!(
+            claim_client_reliable_semantic_effect_once(&mut state, &first),
+            "an entry outside the bounded reliable window must not suppress sequence reuse"
+        );
     }
 
     #[test]
