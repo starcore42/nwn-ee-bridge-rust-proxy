@@ -5522,6 +5522,11 @@ pub(crate) struct UiState {
     pub(crate) inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events:
         u64,
     pending_server_inventory_handoff_claim: Option<InventoryEquipmentServerInventoryClaim>,
+    // The client GuiInventory parser has already proven the exact Diamond body
+    // and MSB-first fragment cursor before this claim reaches semantic state.
+    // Keep only the latest status intent so reliable retransmissions or a long
+    // pre-materialization window cannot grow unbounded pending work.
+    pending_client_gui_inventory_handoff_claim: Option<InventoryEquipmentClientGuiInventoryClaim>,
     pub(crate) last_inventory_equipment_handoff: Option<InventoryEquipmentHandoffSnapshot>,
     pub(crate) inventory_equipment_bridge_handoff_emissions: u64,
     pub(crate) last_inventory_equipment_bridge_handoff_emission:
@@ -5644,8 +5649,19 @@ impl UiState {
         }
 
         if !item_context.inventory_equipment_handoff_ready() {
-            if consumer == InventoryEquipmentHandoffConsumer::ServerInventory {
-                self.pending_server_inventory_handoff_claim = server_inventory_claim;
+            match consumer {
+                InventoryEquipmentHandoffConsumer::ServerInventory => {
+                    self.pending_server_inventory_handoff_claim = server_inventory_claim;
+                }
+                InventoryEquipmentHandoffConsumer::ClientGuiInventory => {
+                    if client_gui_inventory_claim.is_some_and(|claim| {
+                        claim.kind == InventoryEquipmentClientGuiInventoryClaimKind::Status
+                    }) {
+                        self.pending_client_gui_inventory_handoff_claim =
+                            client_gui_inventory_claim;
+                    }
+                }
+                InventoryEquipmentHandoffConsumer::Unknown => {}
             }
             self.inventory_equipment_handoff_blocked_without_ready_state_events = self
                 .inventory_equipment_handoff_blocked_without_ready_state_events
@@ -5668,6 +5684,8 @@ impl UiState {
 
         if consumer == InventoryEquipmentHandoffConsumer::ServerInventory {
             self.pending_server_inventory_handoff_claim = None;
+        } else if consumer == InventoryEquipmentHandoffConsumer::ClientGuiInventory {
+            self.pending_client_gui_inventory_handoff_claim = None;
         }
 
         self.inventory_equipment_handoff_ready_events = self
@@ -5721,6 +5739,24 @@ impl UiState {
             item_context,
             Some(claim),
             None,
+        )
+    }
+
+    pub(crate) fn consume_pending_client_gui_inventory_handoff_if_ready(
+        &mut self,
+        item_context: InventoryItemContextSummary,
+    ) -> bool {
+        if !item_context.inventory_equipment_handoff_ready() {
+            return false;
+        }
+        let Some(claim) = self.pending_client_gui_inventory_handoff_claim.take() else {
+            return false;
+        };
+        self.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            item_context,
+            None,
+            Some(claim),
         )
     }
 
@@ -10120,6 +10156,88 @@ mod tests {
         assert_eq!(
             ui.inventory_equipment_bridge_handoff_state_updates, 1,
             "pending server Inventory claim must be consumed only once"
+        );
+    }
+
+    #[test]
+    fn pending_client_gui_status_keeps_latest_exact_claim_until_ready_state() {
+        let blocked_before_item_state = InventoryItemContextSummary::default();
+        let ready = InventoryItemContextSummary {
+            direct_item_proof_objects: 1,
+            compact_item_emission_proof_objects: 1,
+            compact_item_emission_ready_objects: 1,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8001_5B01,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            ..Default::default()
+        };
+        let rewritten_self_status = InventoryEquipmentClientGuiInventoryClaim {
+            kind: InventoryEquipmentClientGuiInventoryClaimKind::Status,
+            object_id: Some(0x7F00_0000),
+            panel: None,
+            player_inventory_gui: None,
+            rewritten_self_object_id: true,
+        };
+        let latest_legacy_status = InventoryEquipmentClientGuiInventoryClaim {
+            player_inventory_gui: Some(true),
+            rewritten_self_object_id: false,
+            ..rewritten_self_status
+        };
+        let mut ui = UiState::default();
+
+        assert!(!ui.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            blocked_before_item_state,
+            None,
+            Some(rewritten_self_status),
+        ));
+        assert!(!ui.observe_inventory_equipment_handoff(
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            blocked_before_item_state,
+            None,
+            Some(latest_legacy_status),
+        ));
+        assert_eq!(
+            ui.pending_client_gui_inventory_handoff_claim,
+            Some(latest_legacy_status),
+            "the bounded slot should retain the latest distinct typed status intent"
+        );
+        assert_eq!(ui.inventory_equipment_bridge_handoff_emissions, 0);
+
+        assert!(ui.consume_pending_client_gui_inventory_handoff_if_ready(ready));
+        assert_eq!(ui.pending_client_gui_inventory_handoff_claim, None);
+        assert_eq!(ui.inventory_equipment_handoff_events, 3);
+        assert_eq!(
+            ui.inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events,
+            2
+        );
+        assert_eq!(
+            ui.inventory_equipment_handoff_client_gui_inventory_ready_events,
+            1
+        );
+        let snapshot = ui
+            .last_inventory_equipment_handoff
+            .expect("ready state should reconsider the pending ClientGui status");
+        assert_eq!(
+            snapshot.consumer,
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory
+        );
+        assert_eq!(
+            snapshot.client_gui_inventory_claim,
+            Some(latest_legacy_status)
+        );
+        assert_eq!(
+            ui.last_inventory_equipment_bridge_handoff_state_update
+                .expect("reconsidered status should drain into bridge state")
+                .client_gui_inventory_claim,
+            Some(latest_legacy_status)
+        );
+        assert!(!ui.consume_pending_client_gui_inventory_handoff_if_ready(ready));
+        assert_eq!(
+            ui.inventory_equipment_bridge_handoff_state_updates, 1,
+            "the pending status intent must be consumed only once"
         );
     }
 

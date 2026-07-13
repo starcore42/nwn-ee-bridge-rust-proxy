@@ -437,6 +437,9 @@ fn apply_event(
                 state.ui.last_committed_quickbar_best_item_context = best_item_context;
                 state.ui.last_committed_quickbar_best_item_context_source =
                     best_item_context_source;
+                if let Some(item_context) = best_item_context {
+                    consume_pending_inventory_handoff_if_ready(state, item_context, "quickbar");
+                }
                 state
                     .ui
                     .last_inventory_item_context_after_committed_quickbar = None;
@@ -1109,7 +1112,7 @@ fn remember_quickbar_item_context_if_relevant(
         return;
     }
 
-    consume_pending_server_inventory_handoff_if_ready(state, item_context, source);
+    consume_pending_inventory_handoff_if_ready(state, item_context, source);
 
     if state.ui.last_inventory_item_context_before_quickbar != Some(item_context) {
         state.ui.last_inventory_item_context_before_quickbar = Some(item_context);
@@ -1579,15 +1582,15 @@ fn remember_quickbar_item_context_if_relevant(
     }
 }
 
-fn consume_pending_server_inventory_handoff_if_ready(
+fn consume_pending_inventory_handoff_if_ready(
     state: &mut SemanticSessionState,
     item_context: InventoryItemContextSummary,
     source: &'static str,
 ) {
-    if state
+    let consumed_server_inventory = state
         .ui
-        .consume_pending_server_inventory_handoff_if_ready(item_context)
-    {
+        .consume_pending_server_inventory_handoff_if_ready(item_context);
+    if consumed_server_inventory {
         let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
         let last_bridge_state_update = state
             .ui
@@ -1609,6 +1612,35 @@ fn consume_pending_server_inventory_handoff_if_ready(
             compact_item_emission_deferred_feature25_only_objects =
                 item_context.compact_item_emission_deferred_feature25_only_objects,
             "semantic state consumed pending server Inventory handoff after item context became ready"
+        );
+        return;
+    }
+
+    if state
+        .ui
+        .consume_pending_client_gui_inventory_handoff_if_ready(item_context)
+    {
+        let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
+        let last_bridge_state_update = state
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update;
+        tracing::info!(
+            source,
+            inventory_equipment_bridge_handoff_ready = bridge_plan.ready_to_emit(),
+            inventory_equipment_bridge_handoff_event_index = bridge_plan.event_index,
+            inventory_equipment_bridge_handoff_state_updates =
+                state.ui.inventory_equipment_bridge_handoff_state_updates,
+            inventory_equipment_bridge_handoff_last_state_update_index = last_bridge_state_update
+                .map(|update| update.update_index)
+                .unwrap_or(0),
+            inventory_equipment_bridge_handoff_last_state_update_candidate_object_id =
+                last_bridge_state_update
+                    .map(|update| update.candidate.object_id)
+                    .unwrap_or(0),
+            compact_item_emission_ready_objects = item_context.compact_item_emission_ready_objects,
+            compact_item_emission_deferred_feature25_only_objects =
+                item_context.compact_item_emission_deferred_feature25_only_objects,
+            "semantic state reconsidered pending ClientGuiInventory status after item context became ready"
         );
     }
 }
@@ -2516,6 +2548,99 @@ mod fixture_free_tests {
             0,
             "handoff consumption must not materialize deferred Feature-25 refs"
         );
+    }
+
+    #[test]
+    fn exact_quickbar_ready_state_reconsiders_pending_client_gui_status() {
+        let status_claim = client_gui_inventory::ClientGuiInventoryClaimSummary {
+            packet_name: "GuiInventory_Status",
+            kind: client_gui_inventory::ClientGuiInventoryKind::Status,
+            object_id: Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID),
+            panel: None,
+            player_inventory_gui: Some(true),
+            rewritten_self_object_id: true,
+        };
+        let ready = InventoryItemContextSummary {
+            direct_item_proof_objects: 1,
+            compact_item_emission_proof_objects: 1,
+            compact_item_emission_ready_objects: 1,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id: 0x8001_5B01,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            ..Default::default()
+        };
+        let mut state = SemanticSessionState::default();
+
+        apply_event(
+            &mut state,
+            ProtocolEvent::Inventory(InventoryEvent {
+                observed: observed_high_level(
+                    Direction::ClientToServer,
+                    VerifiedFamily::ClientGuiInventory,
+                    &[0x70, 0x0D, 0x01],
+                ),
+                inventory_claim: None,
+                client_gui_inventory_claim: Some(status_claim),
+            }),
+            None,
+        );
+        assert_eq!(
+            state
+                .ui
+                .inventory_equipment_handoff_client_gui_inventory_blocked_without_ready_state_events,
+            1
+        );
+        assert_eq!(state.ui.inventory_equipment_bridge_handoff_state_updates, 0);
+
+        let quickbar_event = || {
+            ProtocolEvent::Quickbar(QuickbarEvent::Verified {
+                observed: observed_high_level(
+                    Direction::ServerToClient,
+                    VerifiedFamily::GuiQuickbar,
+                    &[0x70, 0x1E, 0x01],
+                ),
+                profile: Some(quickbar::QuickbarValidatedSlotProfile {
+                    slot_records: 36,
+                    item_slots: 1,
+                    first_item_slot: Some(7),
+                    ..Default::default()
+                }),
+                materialization_context: ready,
+            })
+        };
+        apply_event(&mut state, quickbar_event(), None);
+
+        assert_eq!(state.ui.inventory_equipment_handoff_events, 2);
+        assert_eq!(
+            state
+                .ui
+                .inventory_equipment_handoff_client_gui_inventory_ready_events,
+            1
+        );
+        let update = state
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update
+            .expect("exact quickbar transition should produce a bridge state update");
+        assert_eq!(
+            update.consumer,
+            InventoryEquipmentHandoffConsumer::ClientGuiInventory
+        );
+        assert_eq!(
+            update
+                .client_gui_inventory_claim
+                .expect("reconsidered update should retain the typed status claim")
+                .rewritten_self_object_id,
+            true
+        );
+
+        apply_event(&mut state, quickbar_event(), None);
+        assert_eq!(
+            state.ui.inventory_equipment_handoff_events, 2,
+            "later quickbar commits must not replay an already-consumed status intent"
+        );
+        assert_eq!(state.ui.inventory_equipment_bridge_handoff_state_updates, 1);
     }
 
     #[test]

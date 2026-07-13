@@ -45,15 +45,38 @@ not as standalone workaround targets.
   processed 164 packet files with 304 strict allows, zero strict or semantic
   quarantines/files, and zero terminal live-object residuals.
 
-  Remaining generalized inventory handoff issue: the run observed the two
-  distinct typed `GuiInventory_Status` payloads before quickbar materialization
-  made item state ready. Both typed events were recorded as
-  `blocked_without_ready_state`; later state became `ready_item_state`, but no
-  new GUI event retriggered the handoff and no proxy-owned inventory request was
-  queued. Next, retain a bounded typed pending GUI claim and reconsider it when
-  verified live-object/quickbar materialization transitions the shared item
-  state to ready. Require exact request ownership and response association; do
-  not force a generic candidate.
+  ~~2026-07-14 pending ClientGui status handoff~~: fixed and live-confirmed.
+  Semantic state now retains only the latest exact typed
+  `GuiInventory_Status` claim while item materialization is unavailable and
+  consumes it once when verified live-object or exact quickbar evidence makes
+  the shared item context ready. A pending server Inventory handoff retains
+  priority, and no generic item candidate is synthesized. This changes no
+  packet fields: the existing exact Diamond body reader, MSB-first status BOOL,
+  current-player rewrite, EE writer, and validator remain the wire contract.
+
+  Focused state/reducer tests prove latest-claim replacement, exact typed claim
+  retention, one-shot consumption, and quickbar-triggered reconsideration.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-pending-client-gui-20260714-055832`
+  processed 164 packet files with 304 strict allows, zero strict/semantic
+  quarantines or files, one committed quickbar profile, and zero terminal
+  live-object residuals. Fresh HG capture
+  `C:\nwnbridge\codex-live-pending-client-gui-20260714-0605\harness-proxy-20260714-060307`
+  reached native `Area_AreaLoaded` at `2026-07-14T06:04:25+10:00`. Its two
+  pre-materialization status events remained blocked; live-object readiness
+  reconsidered the latest claim as event 3, queued exactly one proxy-owned
+  current-player status request, and HG returned a 26-record live-GUI
+  materialization that raised ready item objects from 19 to 43. The run had
+  zero quarantine files and no `BNDP`.
+
+  Remaining generalized response-association issue: the successful response
+  still reports `differs_from_queued_status_candidate` because diagnostic ready
+  candidate `0x800164E8` is not in the returned materialized set. That item
+  candidate is not encoded in the exact current-player status request. Trace
+  Diamond/EE status request ownership and server response completion, then
+  replace candidate-containment confirmation only if the bounded request
+  window is the original protocol rule; do not force a generic candidate or
+  replay an unrelated server Inventory claim.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

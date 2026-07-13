@@ -33,16 +33,17 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-14 03:12 +10: fresh capture
-`C:\nwnbridge\codex-live-bard50-exact-prefix-20260714-0312\harness-proxy-20260714-031015`
+Latest known live HG proxy status, as of 2026-07-14 06:07 +10: fresh capture
+`C:\nwnbridge\codex-live-pending-client-gui-20260714-0605\harness-proxy-20260714-060307`
 selected typed `starcore-bard50`, reached `Module_Loaded`, exact
-`Area_ClientArea`, native `Area_AreaLoaded` at `03:11:19`, and sustained
-gameplay into the committed quickbar and inventory probe. It committed one
-exact 36-slot `GuiQuickbar_SetAllButtons` rewrite at `03:12:09`, retained 43
-ready item objects and 19 use-count rows, observed the two distinct typed
-`GuiInventory_Status` payloads, and wrote zero quarantine files. This capture
-is current gameplay evidence and live-confirms that the combined live-object
-candidate CPU blocker no longer prevents quickbar arrival.
+`Area_ClientArea`, native `Area_AreaLoaded` at `06:04:25`, and sustained
+gameplay through the inventory response probe. The two exact typed
+`GuiInventory_Status` events arrived before item state was ready and remained
+blocked. Verified live-object materialization then reconsidered the latest
+bounded claim once, queued exactly one proxy-owned current-player status
+request, and HG answered with 26 live-GUI item records, raising ready item
+objects from 19 to 43. The capture wrote zero quarantine files and observed no
+`BNDP`. This is current gameplay and pending-status live evidence.
 
 Current production code routes structurally valid CNW-declared quickbars to the
 exact direct reader before source-form normalization in both gameplay boundary
@@ -67,14 +68,17 @@ Strict replay `C:\nwnbridge\codex-proxy2-replay-exact-prefix-20260714-0321`
 processed 164 files with 304 strict allows, zero quarantine decisions/files,
 and zero terminal live-object residuals.
 
-Current inventory-harness finding: both distinct GUI status events occurred
-before verified item materialization became ready, so the bridge recorded two
-`blocked_without_ready_state` events and queued no proxy-owned inventory
-request. The final hint reached `inventory_equipment_handoff_outcome` =
-`ready_item_state`, but no later GUI event retriggered the handoff. The next
-capture should verify a bounded pending-claim implementation that reconsiders
-the exact typed GUI claim on the later item-state transition and then associates
-the first HG response with that request.
+Current inventory-harness finding: bounded pending-claim reconsideration is
+live-confirmed by the 06:03 capture above. Its final hint reports three
+ClientGui handoff events (two blocked, one ready), one handoff state update, one
+queued status packet, two response-window live-object packets, and one
+26-record materialized response. The response outcome is `materialized_items`,
+but confirmation remains false because diagnostic ready candidate `0x800164E8`
+was not among the materialized ids. Since the exact request targets current
+player `0x7F000000` rather than that item candidate, the next slice must prove
+the original Diamond/EE request-window completion rule before changing
+association. Do not manufacture a candidate or relax the exact live-object
+validator.
 
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
