@@ -961,7 +961,43 @@ fn rewrite_coalesced_record_for_ee(
     server_dispatch::wrap_legacy_live_object_continuation_if_needed(&mut inflated);
     let single_incomplete_stream_unit =
         server_dispatch::inflated_payload_is_single_incomplete_stream_unit(&inflated);
-    if single_incomplete_stream_unit || HighLevel::parse(&inflated).is_none() {
+    // A stale Diamond CNW read-window can make a complete Area_ClientArea
+    // object look like one pending gameplay-stream fragment. Give only that
+    // typed family an exact semantic proof attempt before the persistent-zlib
+    // continuation owner is allowed to consume it. Random P-like zlib tails
+    // still stay on the continuation path because the area translator must
+    // uniquely infer the fragment boundary and satisfy the EE LoadArea cursor.
+    let recovered_incomplete_area_rewrite = if single_incomplete_stream_unit
+        && inflated.starts_with(&[b'P', 0x04, 0x01])
+    {
+        let mut candidate = inflated.clone();
+        let rewrite = server_dispatch::rewrite_incomplete_area_client_area_for_ee(
+            &mut candidate,
+            Some(&state.module_resources),
+            Some(&state.semantic.objects),
+        );
+        if rewrite.as_ref().is_some_and(|rewrite| {
+            !rewrite.should_quarantine()
+                && rewrite.verified_family() == VerifiedFamily::AreaClientArea
+                && rewrite.area_rewrite.is_some()
+        }) {
+            tracing::info!(
+                offset,
+                inflated = inflated.len(),
+                used_server_stream,
+                "server coalesced incomplete stream unit recovered by exact Area_ClientArea proof"
+            );
+            inflated = candidate;
+            rewrite
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if recovered_incomplete_area_rewrite.is_none()
+        && (single_incomplete_stream_unit || HighLevel::parse(&inflated).is_none())
+    {
         if let Some(outcome) = rewrite_coalesced_stream_continuation_for_ee(
             record,
             offset,
@@ -1008,14 +1044,16 @@ fn rewrite_coalesced_record_for_ee(
         return Ok(outcome);
     }
 
-    let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
-        &mut inflated,
-        Some(&state.area_context.latest_area_placeables),
-        server_dispatch::SemanticScope::CoalescedSpan,
-        Some(&state.module_resources),
-        Some(&state.semantic.objects),
-        None,
-    );
+    let semantic_rewrite_summary = recovered_incomplete_area_rewrite.unwrap_or_else(|| {
+        server_dispatch::rewrite_inflated_payload_for_ee(
+            &mut inflated,
+            Some(&state.area_context.latest_area_placeables),
+            server_dispatch::SemanticScope::CoalescedSpan,
+            Some(&state.module_resources),
+            Some(&state.semantic.objects),
+            None,
+        )
+    });
     super::observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
     if semantic_rewrite_summary.should_quarantine() || !semantic_rewrite_summary.any_rewrite() {
         let reason = semantic_rewrite_summary

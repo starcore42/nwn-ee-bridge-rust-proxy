@@ -97,7 +97,7 @@ const MAX_REASONABLE_AREA_TILE_COUNT: u32 = 65_536;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const AREA_PRESENT_USER_BOOL_COUNT: usize = 1;
 const LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS: usize = 14;
-const MAX_DECLARED_ZERO_AREA_FRAGMENT_BYTES: usize = 16;
+const MAX_INFERRED_AREA_FRAGMENT_BYTES: usize = 16;
 const EE_AREA_BUILD36_3_TILESET_OPTIONS_BOOL_BIT_INDEX: usize =
     LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
 const EE_AREA_BUILD36_5_TILE_LOOP_BOOL_BIT_INDEX: usize =
@@ -156,6 +156,7 @@ pub enum AreaRewriteKind {
     LegacyDiamondNoAreaName,
     LegacyDiamondFragmentedAreaResrefRepair,
     LegacyDiamondDeclaredZeroReadWindow,
+    LegacyDiamondStaleDeclaredReadWindow,
     LegacyDiamondCompactAreaName,
     LegacyDiamondFragmentedCExoAreaName,
     LegacyDiamondModuleResourceAreaRepair,
@@ -984,6 +985,35 @@ pub(crate) fn rewrite_area_client_area_payload_with_module_context_fallback(
     )
 }
 
+pub(crate) fn rewrite_incomplete_area_client_area_payload_with_module_context_fallback(
+    payload: &mut Vec<u8>,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
+) -> Option<AreaRewriteSummary> {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != AREA_MAJOR
+        || payload[2] != AREA_CLIENT_AREA_MINOR
+    {
+        return None;
+    }
+
+    let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
+    let rewrite_kind = if declared == 0 {
+        AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow
+    } else {
+        AreaRewriteKind::LegacyDiamondStaleDeclaredReadWindow
+    };
+    rewrite_inferred_area_client_area_read_window(
+        payload,
+        module_context,
+        allow_shared_module_context_fallback,
+        AreaRewriteDiagnosticMode::Normal,
+        declared,
+        rewrite_kind,
+    )
+}
+
 pub(crate) fn claim_or_rewrite_payload_if_verified(payload: &[u8]) -> bool {
     if ee_area_client_area_payload_shape_valid(payload) {
         return true;
@@ -1016,22 +1046,45 @@ fn rewrite_area_client_area_payload_with_context_and_mode(
 
     let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     if declared == 0 {
-        if let Some(summary) = rewrite_declared_zero_area_client_area_payload(
+        if let Some(summary) = rewrite_inferred_area_client_area_read_window(
             payload,
             module_context,
             allow_shared_module_context_fallback,
             diagnostic_mode,
+            declared,
+            AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow,
         ) {
             return Some(summary);
         }
     }
 
-    rewrite_declared_area_client_area_payload_with_mode(
+    if let Some(summary) = rewrite_declared_area_client_area_payload_with_mode(
         payload,
         module_context,
         allow_shared_module_context_fallback,
         diagnostic_mode,
-    )
+    ) {
+        return Some(summary);
+    }
+
+    // Diamond's CNW read-window DWORD is independent of the reliable/zlib
+    // span. Live HG traffic can therefore deliver the complete area object
+    // while retaining an earlier, shorter nonzero window. Never trust the
+    // outer span length directly: infer only the bounded CNW fragment tail and
+    // require the same legacy field-order parse plus exact EE bit-cursor proof
+    // used by the declared-zero repair.
+    if declared != 0 {
+        return rewrite_inferred_area_client_area_read_window(
+            payload,
+            module_context,
+            allow_shared_module_context_fallback,
+            diagnostic_mode,
+            declared,
+            AreaRewriteKind::LegacyDiamondStaleDeclaredReadWindow,
+        );
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1525,64 +1578,64 @@ fn rewrite_declared_area_client_area_payload_with_mode(
     })
 }
 
-fn rewrite_declared_zero_area_client_area_payload(
+fn rewrite_inferred_area_client_area_read_window(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
     allow_shared_module_context_fallback: bool,
     diagnostic_mode: AreaRewriteDiagnosticMode,
+    original_declared: u32,
+    rewrite_kind: AreaRewriteKind,
 ) -> Option<AreaRewriteSummary> {
     if payload.len() <= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
         return None;
     }
 
-    let mut candidates = Vec::new();
-    let max_fragment_bytes =
-        MAX_DECLARED_ZERO_AREA_FRAGMENT_BYTES.min(payload.len() - HIGH_LEVEL_HEADER_BYTES);
-    for fragment_size in 1..=max_fragment_bytes {
-        let fragment_offset = payload.len().checked_sub(fragment_size)?;
-        if fragment_offset < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
-            continue;
-        }
-        let fragment = payload.get(fragment_offset..)?;
-        let Some(fragment_bits) = cnw_fragment_consumable_bits(fragment) else {
-            continue;
-        };
-        // Declared-zero Diamond packets are observed both with the minimal
-        // pre-tile tail and with additional decompile-owned post-tile list
-        // selector bits. Keep this as a bounded tail-size probe; the staged
-        // legacy source proof and exact EE LoadArea proof below remain the
-        // acceptance criteria.
-        if fragment_bits < LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS {
-            continue;
-        }
-
-        let mut staged = payload.clone();
-        write_u32_le(&mut staged, HIGH_LEVEL_HEADER_BYTES, fragment_offset as u32)?;
-        let candidate_mode = if diagnostic_mode == AreaRewriteDiagnosticMode::QuietProbe {
-            AreaRewriteDiagnosticMode::QuietProbe
-        } else {
-            AreaRewriteDiagnosticMode::DeclaredZeroProbe
-        };
-        let Some(mut summary) = rewrite_declared_area_client_area_payload_with_mode(
-            &mut staged,
+    // Select structurally self-contained packets without consulting module
+    // resources first. On a live module with hundreds of areas, resource
+    // resolution is intentionally expensive and must not run once per possible
+    // CNW tail. If the exact source/EE proofs select one boundary, replay only
+    // that boundary with the real context so optional resource-backed state is
+    // still preserved.
+    let context_free_candidates = collect_inferred_area_read_window_candidates(
+        payload,
+        None,
+        false,
+        AreaRewriteDiagnosticMode::QuietProbe,
+        original_declared,
+        rewrite_kind,
+    )?;
+    let mut candidates = if context_free_candidates.len() == 1 {
+        let fragment_offset = context_free_candidates[0].0;
+        collect_inferred_area_read_window_candidates_at_offset(
+            payload,
+            fragment_offset,
             module_context,
             allow_shared_module_context_fallback,
-            candidate_mode,
-        ) else {
-            continue;
-        };
-        summary.old_declared = 0;
-        summary
-            .rewrite_kinds
-            .push(AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow);
-        candidates.push((fragment_offset, staged, summary));
-    }
+            diagnostic_mode,
+            original_declared,
+            rewrite_kind,
+        )
+        .into_iter()
+        .collect()
+    } else {
+        collect_inferred_area_read_window_candidates(
+            payload,
+            module_context,
+            allow_shared_module_context_fallback,
+            diagnostic_mode,
+            original_declared,
+            rewrite_kind,
+        )?
+    };
 
     if candidates.len() != 1 {
         tracing::warn!(
             candidates = candidates.len(),
+            context_free_candidates = context_free_candidates.len(),
             payload_len = payload.len(),
-            "Area_ClientArea rewrite skipped: declared-zero read window did not resolve uniquely"
+            original_declared,
+            rewrite_kind = ?rewrite_kind,
+            "Area_ClientArea rewrite skipped: inferred read window did not resolve uniquely"
         );
         return None;
     }
@@ -1590,7 +1643,8 @@ fn rewrite_declared_zero_area_client_area_payload(
     let (inferred_declared, staged, summary) = candidates.remove(0);
     if diagnostic_mode.emit_success_logs() {
         tracing::info!(
-            rewrite_kind = ?AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow,
+            rewrite_kind = ?rewrite_kind,
+            original_declared,
             inferred_declared,
             new_declared = summary.new_declared,
             old_fragment_offset = summary.old_fragment_offset,
@@ -1601,11 +1655,79 @@ fn rewrite_declared_zero_area_client_area_payload(
             packet_height = summary.packet_height,
             inferred_height = summary.inferred_height,
             tile_count = summary.tile_count,
-            "Area_ClientArea declared-zero read window repaired from exact validated legacy fragment tail"
+            "Area_ClientArea read window repaired from exact validated legacy fragment tail"
         );
     }
     *payload = staged;
     Some(summary)
+}
+
+fn collect_inferred_area_read_window_candidates(
+    payload: &[u8],
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
+    diagnostic_mode: AreaRewriteDiagnosticMode,
+    original_declared: u32,
+    rewrite_kind: AreaRewriteKind,
+) -> Option<Vec<(usize, Vec<u8>, AreaRewriteSummary)>> {
+    let mut candidates = Vec::new();
+    let max_fragment_bytes =
+        MAX_INFERRED_AREA_FRAGMENT_BYTES.min(payload.len() - HIGH_LEVEL_HEADER_BYTES);
+    for fragment_size in 1..=max_fragment_bytes {
+        let fragment_offset = payload.len().checked_sub(fragment_size)?;
+        if let Some(candidate) = collect_inferred_area_read_window_candidates_at_offset(
+            payload,
+            fragment_offset,
+            module_context,
+            allow_shared_module_context_fallback,
+            diagnostic_mode,
+            original_declared,
+            rewrite_kind,
+        ) {
+            candidates.push(candidate);
+        }
+    }
+    Some(candidates)
+}
+
+fn collect_inferred_area_read_window_candidates_at_offset(
+    payload: &[u8],
+    fragment_offset: usize,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
+    diagnostic_mode: AreaRewriteDiagnosticMode,
+    original_declared: u32,
+    rewrite_kind: AreaRewriteKind,
+) -> Option<(usize, Vec<u8>, AreaRewriteSummary)> {
+    if fragment_offset < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
+        return None;
+    }
+    let fragment = payload.get(fragment_offset..)?;
+    let fragment_bits = cnw_fragment_consumable_bits(fragment)?;
+    // Diamond packets are observed both with the minimal pre-tile tail and
+    // with additional decompile-owned post-tile list selector bits. Keep this
+    // as a bounded tail-size probe; the staged legacy source proof and exact EE
+    // LoadArea proof below remain the acceptance criteria.
+    if fragment_bits < LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS {
+        return None;
+    }
+
+    let mut staged = payload.to_vec();
+    write_u32_le(&mut staged, HIGH_LEVEL_HEADER_BYTES, fragment_offset as u32)?;
+    let candidate_mode = if diagnostic_mode == AreaRewriteDiagnosticMode::QuietProbe {
+        AreaRewriteDiagnosticMode::QuietProbe
+    } else {
+        AreaRewriteDiagnosticMode::DeclaredZeroProbe
+    };
+    let mut summary = rewrite_declared_area_client_area_payload_with_mode(
+        &mut staged,
+        module_context,
+        allow_shared_module_context_fallback,
+        candidate_mode,
+    )?;
+    summary.old_declared = original_declared;
+    summary.rewrite_kinds.push(rewrite_kind);
+    Some((fragment_offset, staged, summary))
 }
 
 pub fn ee_area_client_area_payload_shape_valid(payload: &[u8]) -> bool {
@@ -7698,6 +7820,21 @@ mod public_static_direction_tests {
         (payload, fragment_offset)
     }
 
+    #[test]
+    fn ambiguous_stale_area_read_window_is_not_inferred() {
+        let (mut payload, fragment_offset) = fixed_name_square_dimension_payload();
+        let stale_declared = u32::try_from(fragment_offset - 32).expect("stale window fits u32");
+        write_u32_le(&mut payload, HIGH_LEVEL_HEADER_BYTES, stale_declared)
+            .expect("stale synthetic read window should fit");
+
+        assert!(rewrite_area_client_area_payload(&mut payload).is_none());
+        assert_eq!(
+            read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES),
+            Some(stale_declared),
+            "an ambiguous fragment boundary must leave the source untouched"
+        );
+    }
+
     fn angle_delta(actual: f32, expected: f32) -> f32 {
         let two_pi = std::f32::consts::PI * 2.0;
         (actual - expected + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
@@ -11959,6 +12096,31 @@ mod tests {
         assert_eq!(proof.sound_count, 1);
         assert_eq!(proof.light_count, 0);
         assert_eq!(proof.static_count, 3);
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn voyage_stale_nonzero_read_window_repairs_from_unique_exact_tail() {
+        let mut payload = VOYAGE_LEGACY_MISSING_WIDTH.to_vec();
+        let stale_declared = 220u32;
+        write_u32_le(&mut payload, HIGH_LEVEL_HEADER_BYTES, stale_declared)
+            .expect("stale Voyage read window should fit");
+
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("unique Voyage fragment tail should repair the stale read window");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("repaired Voyage area should satisfy the exact EE LoadArea cursor");
+
+        assert_eq!(summary.old_declared, stale_declared);
+        assert_eq!(summary.old_fragment_offset, 732);
+        assert!(summary.width_repaired);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondStaleDeclaredReadWindow)
+        );
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));

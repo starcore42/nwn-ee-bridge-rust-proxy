@@ -45,17 +45,23 @@ not as standalone workaround targets.
 
   `starcore-bard50` then exposed the first durable missing-GQ profile in
   `C:\nwnbridge\codex-live-account4-bard50-bnk-retry-20260713-1210\harness-proxy-20260713-120214`.
-  After one documented BNK2/no-BNK3 stall, the traced retry observed BNK3 after
-  124 ms and reached sustained zero-quarantine gameplay. Its preserved slots
-  `[1,7,8,9]` all remained missing durable GQ. The pre-pump inventory action
-  emitted real `ClientGuiInventory` sequences 79/80, but HG sent no inventory
-  response or materialized item state; retransmission logs retained the same
-  sequences and ACK 40. Current code therefore classifies this generalized
-  state as `missing_use_count_state_after_inventory_request`. Next, compare
-  the working account-1/account-3 and failing bard50 ClientGui request/server
-  response windows, including current-player object ownership and reliable-M
-  ACK progression, then implement the shared request/state rule that lets HG
-  materialize these four preserved items. Do not force a generic candidate.
+  The run stopped only 0.47 seconds after the delayed request, so its apparent
+  lack of an HG response was not evidence of a server-side rejection. Fresh
+  capture
+  `C:\nwnbridge\codex-live-bard50-stale-area-fast-20260713\harness-proxy-20260713-151017`
+  reached sustained zero-quarantine gameplay and resolved the missing-GQ hint
+  from server quickbar use-count state. It also showed the real remaining
+  generalized failure: repeated reliable-M retransmissions of the same client
+  `GuiInventory_Status` sequences repeatedly reran inventory bridge side
+  effects and queued the same synthetic request while CPU-heavy quickbar stream
+  candidate probing delayed ACK progress; HG eventually sent `BNDP` with reason
+  bytes `CE 16 00 00`. Next, make client reliable-frame semantic effects
+  idempotent for an already-observed sequence/payload and bound quickbar stream
+  candidate analysis latency. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-stale-area-window-20260713-1520`
+  processed 164 packet files with 304 strict allows, zero quarantine
+  decisions/files, and zero terminal live-object residuals. Do not force a
+  generic candidate.
 - 2026-07-13 typed character-vault scouting: `CharList_ListResponse` now
   retains every fixed 16-byte BIC resref in server wire order after exact
   read-buffer and locstring-fragment validation, and the production translator

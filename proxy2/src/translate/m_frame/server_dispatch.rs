@@ -4314,6 +4314,41 @@ fn translate_live_object_claimed_records(
     }
 }
 
+pub(super) fn rewrite_incomplete_area_client_area_for_ee(
+    payload: &mut Vec<u8>,
+    module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
+    object_registry: Option<&semantic::ObjectRegistry>,
+) -> Option<InflatedPayloadRewrite> {
+    if !is_area_client_area_high_level_payload(payload) {
+        return None;
+    }
+
+    let observed_module_context =
+        module_resource_runtime.and_then(|runtime| runtime.observed_module_context());
+    let allow_shared_module_context_fallback = module_resource_runtime.is_none();
+    let summary = area::rewrite_incomplete_area_client_area_payload_with_module_context_fallback(
+        payload,
+        observed_module_context.as_ref(),
+        allow_shared_module_context_fallback,
+    )?;
+    let mut rewrite = InflatedPayloadRewrite::default();
+    let claim = ServerTranslatorClaim {
+        area_rewrite: Some(summary),
+        ..ServerTranslatorClaim::default()
+    };
+    if !finalize_server_translator_claim(
+        payload,
+        &mut rewrite,
+        "Area_ClientArea",
+        VerifiedFamily::AreaClientArea,
+        claim,
+        object_registry,
+    ) {
+        return None;
+    }
+    Some(rewrite)
+}
+
 fn translate_area_client_area(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
