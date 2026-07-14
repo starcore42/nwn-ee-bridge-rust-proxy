@@ -163,6 +163,24 @@ files, and zero terminal live-object residuals. The latest live HG capture
 remains the gameplay-reaching, zero-quarantine 06:03 Bard50 artifact above;
 the raw-ACK-81/82 post-change confirmation is still the next credentialed run.
 
+Coalesced queued records now preserve that transport context when their stored
+sequence/ACK fields are zero. EE `FrameReceive` owns the primary reliable frame,
+while `UnpacketizeFullMessages` walks queued records in the shared 12-byte
+storage shape; all checked-in Diamond coalesced fixtures use zero queued
+sequence/ACK sentinels. Production now resolves those fields once and supplies
+the inherited primary sequence and EE-unshifted ACK to direct and deflated
+semantic side effects, login waypoint handling, module-resource transitions,
+and the ClientGui status response window. The primary raw peer ACK remains
+separate. No wire byte or CNW bit cursor changed. Focused zero-header and resource
+insertion tests passed; strict replay
+`C:\nwnbridge\codex-proxy2-replay-coalesced-context-20260715-0624` processed
+164 packet files with 304 strict allows, zero strict/semantic quarantines or
+files, one exact quickbar, and zero terminal live-object residuals. At this
+run's 05:48 +10 gate the latest 06:07 gameplay artifact was 23.687 hours old,
+reached gameplay, and remained zero-quarantine. It has since crossed 24 hours,
+so the next run must obtain a fresh credentialed Bard50 HG capture before
+ordinary code work and retain the raw-ACK-81/82 completion expectations above.
+
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
 `C:\nwnbridge\codex-live-account4-buffbot-scout-20260713-1200\harness-proxy-20260713-115241`,

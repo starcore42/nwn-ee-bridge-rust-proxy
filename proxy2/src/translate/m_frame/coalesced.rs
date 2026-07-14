@@ -48,6 +48,40 @@ pub(super) enum CoalescedRewrite {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CoalescedRecordTransportContext {
+    sequence: u16,
+    server_peer_ack_sequence: u16,
+    client_unshifted_ack_sequence: u16,
+}
+
+fn coalesced_record_transport_context(
+    record: &[u8],
+    fallback_sequence: u16,
+    server_peer_ack_sequence: u16,
+    fallback_client_unshifted_ack_sequence: u16,
+) -> CoalescedRecordTransportContext {
+    // EE `CNetLayerWindow::FrameReceive` owns the primary reliable frame;
+    // `UnpacketizeFullMessages` then walks queued records with the same 12-byte
+    // storage header. The checked-in Diamond coalesced fixtures leave the
+    // queued record sequence/ACK fields zero, so those fields inherit the
+    // primary window. Keep a nonzero stored value when present, but never let
+    // the zero storage sentinel erase the frame's transport provenance.
+    let sequence = match read_be_u16(record, 3) {
+        Some(0) | None => fallback_sequence,
+        Some(sequence) => sequence,
+    };
+    let client_unshifted_ack_sequence = match read_be_u16(record, 5) {
+        Some(0) | None => fallback_client_unshifted_ack_sequence,
+        Some(ack_sequence) => ack_sequence,
+    };
+    CoalescedRecordTransportContext {
+        sequence,
+        server_peer_ack_sequence,
+        client_unshifted_ack_sequence,
+    }
+}
+
 pub(super) fn rewrite_server_window_spans_if_needed(
     bytes: &[u8],
     view: &MFrameView,
@@ -855,15 +889,19 @@ fn rewrite_coalesced_record_for_ee(
         // reliable-window header fields, but their first byte is not required
         // to be a standalone `M`, so `MFrameView::parse(record)` is too narrow
         // here. Keep the semantic side effect in `login_waypoint.rs`; this
-        // layer supplies only the already-verified payload and record-local
-        // sequence/ACK fields.
-        let record_sequence = read_be_u16(record, 3).unwrap_or(sequence);
-        let record_ack_sequence = read_be_u16(record, 5).unwrap_or(ack_sequence);
+        // layer supplies only the already-verified payload and the resolved
+        // primary/queued-record transport context.
+        let transport = coalesced_record_transport_context(
+            record,
+            sequence,
+            server_peer_ack_sequence,
+            ack_sequence,
+        );
         login_waypoint::maybe_queue_empty_waypoint_response_payload(
             state,
             &payload,
-            record_sequence,
-            record_ack_sequence,
+            transport.sequence,
+            transport.client_unshifted_ack_sequence,
         )?;
         let live_object_inventory_materialization =
             super::observe_verified_server_payload_semantics(state, &verified_proof, &payload);
@@ -871,18 +909,17 @@ fn rewrite_coalesced_record_for_ee(
             state,
             &verified_proof,
             super::ServerSemanticFrameContext {
-                sequence: record_sequence,
-                server_peer_ack_sequence,
-                client_unshifted_ack_sequence: record_ack_sequence,
+                sequence: transport.sequence,
+                server_peer_ack_sequence: transport.server_peer_ack_sequence,
+                client_unshifted_ack_sequence: transport.client_unshifted_ack_sequence,
                 live_object_inventory_materialization,
             },
         );
         queue_module_resources_after_coalesced_module_info_if_ready(
             state,
             &verified_proof,
-            record,
-            sequence,
-            ack_sequence,
+            transport.sequence,
+            transport.client_unshifted_ack_sequence,
         )?;
 
         let mut out_record = record[..LEGACY_GAMEPLAY_PAYLOAD_OFFSET].to_vec();
@@ -1122,24 +1159,27 @@ fn rewrite_coalesced_record_for_ee(
     let verified_proof = semantic_rewrite_summary.verified_proof();
     let live_object_inventory_materialization =
         super::observe_verified_server_payload_semantics(state, &verified_proof, &inflated);
-    let record_sequence = read_be_u16(record, 3).unwrap_or(sequence);
-    let record_ack_sequence = read_be_u16(record, 5).unwrap_or(ack_sequence);
+    let transport = coalesced_record_transport_context(
+        record,
+        sequence,
+        server_peer_ack_sequence,
+        ack_sequence,
+    );
     super::apply_verified_server_semantic_side_effects(
         state,
         &verified_proof,
         super::ServerSemanticFrameContext {
-            sequence: record_sequence,
-            server_peer_ack_sequence,
-            client_unshifted_ack_sequence: record_ack_sequence,
+            sequence: transport.sequence,
+            server_peer_ack_sequence: transport.server_peer_ack_sequence,
+            client_unshifted_ack_sequence: transport.client_unshifted_ack_sequence,
             live_object_inventory_materialization,
         },
     );
     queue_module_resources_after_coalesced_module_info_if_ready(
         state,
         &verified_proof,
-        record,
-        sequence,
-        ack_sequence,
+        transport.sequence,
+        transport.client_unshifted_ack_sequence,
     )?;
     let must_convert_stream = used_server_stream || state.deflate.server_zlib_stream_proxy_owned;
     if used_server_stream {
@@ -1213,22 +1253,13 @@ fn rewrite_coalesced_record_for_ee(
 fn queue_module_resources_after_coalesced_module_info_if_ready(
     state: &mut SessionState,
     proof: &VerifiedProof,
-    record: &[u8],
-    fallback_sequence: u16,
-    fallback_ack_sequence: u16,
+    record_sequence: u16,
+    record_ack_sequence: u16,
 ) -> anyhow::Result<()> {
     if !proof_contains_module_info_family(proof) {
         return Ok(());
     }
 
-    let record_sequence = match read_be_u16(record, 3) {
-        Some(0) | None => fallback_sequence,
-        Some(sequence) => sequence,
-    };
-    let record_ack_sequence = match read_be_u16(record, 5) {
-        Some(0) | None => fallback_ack_sequence,
-        Some(ack_sequence) => ack_sequence,
-    };
     deferred_module_resources::queue_after_module_info_if_ready(
         &mut state.deferred_module_resources.pending,
         &mut state.synthetic_area.pending_server_to_client_packets,
@@ -2212,12 +2243,16 @@ mod tests {
         record[10..12].copy_from_slice(&3u16.to_be_bytes());
         record[12..15].copy_from_slice(&[b'P', 0x03, 0x01]);
 
+        let transport = coalesced_record_transport_context(&record, 61, 72, 70);
+        assert_eq!(transport.sequence, 7);
+        assert_eq!(transport.server_peer_ack_sequence, 72);
+        assert_eq!(transport.client_unshifted_ack_sequence, 72);
+
         queue_module_resources_after_coalesced_module_info_if_ready(
             &mut state,
             &VerifiedProof::family(VerifiedFamily::ModuleInfo),
-            &record,
-            7,
-            72,
+            transport.sequence,
+            transport.client_unshifted_ack_sequence,
         )
         .expect("coalesced Module_Info should queue module resources");
 
@@ -2237,7 +2272,7 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_module_info_zero_sequence_uses_window_sequence_for_resource_insertion() {
+    fn coalesced_zero_transport_fields_inherit_primary_window_for_resource_insertion() {
         let mut state = SessionState::default();
         assert!(
             state
@@ -2252,12 +2287,21 @@ mod tests {
         record[10..12].copy_from_slice(&3u16.to_be_bytes());
         record[12..15].copy_from_slice(&[b'P', 0x03, 0x01]);
 
+        let transport = coalesced_record_transport_context(&record, 7, 82, 80);
+        assert_eq!(
+            transport,
+            CoalescedRecordTransportContext {
+                sequence: 7,
+                server_peer_ack_sequence: 82,
+                client_unshifted_ack_sequence: 80,
+            }
+        );
+
         queue_module_resources_after_coalesced_module_info_if_ready(
             &mut state,
             &VerifiedProof::family(VerifiedFamily::ModuleInfo),
-            &record,
-            7,
-            72,
+            transport.sequence,
+            transport.client_unshifted_ack_sequence,
         )
         .expect("coalesced Module_Info should queue module resources with window sequence");
 
@@ -2270,7 +2314,7 @@ mod tests {
         let view = MFrameView::parse(&pending.packet).expect("pending packet should parse");
         assert!(view.crc_valid);
         assert_eq!(view.sequence, 7);
-        assert_eq!(view.ack_sequence, 72);
+        assert_eq!(view.ack_sequence, 80);
         assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
         assert_eq!(state.sequence.server_sequence_shifts[0].base, 7);
         assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);

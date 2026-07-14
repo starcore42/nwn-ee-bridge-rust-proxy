@@ -188,6 +188,26 @@ not as standalone workaround targets.
   `C:\nwnbridge\codex-live-pending-client-gui-20260714-0605\harness-proxy-20260714-060307\proxy.structured.log`,
   timestamp `2026-07-14T06:07:29+10:00`, 20.89 hours old at this run's gate.
   The same credentialed raw-ACK-81/82 Bard50 confirmation remains required.
+
+  Coalesced transport provenance was hardened on 2026-07-15. EE
+  `CNetLayerWindow::FrameReceive` owns the primary reliable frame and
+  `UnpacketizeFullMessages` walks queued records using the same 12-byte storage
+  header; the checked-in Diamond coalesced fixtures store zero in queued
+  sequence/ACK fields. Direct and deflated coalesced semantic paths previously
+  allowed those storage sentinels to become semantic sequence/EE-ACK zero even
+  though the raw peer ACK correctly remained on the primary window. A shared
+  resolver now inherits the primary sequence and EE-unshifted ACK for zero
+  fields and supplies that same context to login, module-resource, inventory
+  response, and other semantic side effects. Nonzero stored values remain
+  intact. No reliable-window bytes, ClientGuiInventory fields, CNW payload
+  bytes, BOOL order, or fragment cursor changed. Focused zero-header/insertion tests
+  passed. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-coalesced-context-20260715-0624`
+  processed 164 packet files with 304 strict allows, zero strict/semantic
+  quarantines or files, one exact quickbar, and zero terminal live-object
+  residuals. The 06:07 gameplay artifact was 23.687 hours old at this run's
+  gate and reached sustained zero-quarantine gameplay; it has since crossed 24
+  hours, so the next run must begin with a fresh credentialed HG capture.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable
