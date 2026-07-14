@@ -137,6 +137,22 @@ not as standalone workaround targets.
   and remained the latest zero-quarantine gameplay evidence. The next
   credentialed Bard50 run must live-confirm the exact per-packet ACK ownership
   and completion outcome before item-action work resumes.
+
+  Hardened again 2026-07-14 at the transport-to-semantic handoff. Response
+  admission no longer recovers the current packet's raw ACK from mutable
+  session-level "last observed" state. A typed server-frame context now carries
+  the raw legacy-peer ACK beside the EE-unshifted ACK through direct packets and
+  coalesced records; each buffered deflated-reassembly frame retains both ACK
+  spaces, and a completed response uses the final source frame's raw ACK. This
+  changes no ClientGuiInventory bytes or BOOL cursor. Focused coverage proves
+  explicit raw ACK 81 wins even when historical diagnostics have advanced to
+  ACK 90, and proves a reassembly frame can retain raw ACK 82 with EE-facing ACK
+  80. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-explicit-peer-ack-20260714-2115`
+  processed 164 packet files with 304 strict allows, zero strict/semantic
+  quarantines or files, one exact 36-slot quickbar profile, and zero terminal
+  live-object residuals. No account-secret environment source was present, so
+  the same credentialed Bard50 live confirmation remains required.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

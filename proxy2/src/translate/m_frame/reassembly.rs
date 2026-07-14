@@ -48,6 +48,7 @@ pub(super) struct BufferedFrame {
     pub(super) packet: Vec<u8>,
     pub(super) payload_length: usize,
     pub(super) sequence: u16,
+    pub(super) server_peer_ack_sequence: u16,
     pub(super) ack_sequence: u16,
     pub(super) compressed_chunk: Vec<u8>,
 }
@@ -124,6 +125,7 @@ pub(super) fn start_server_deflated_reassembly(
     bytes: &[u8],
     view: &MFrameView,
     state: &mut SessionState,
+    server_peer_ack_sequence: u16,
 ) -> anyhow::Result<Emit> {
     let deflated = view
         .deflated
@@ -144,7 +146,7 @@ pub(super) fn start_server_deflated_reassembly(
         return Ok(Emit::Drop);
     }
 
-    let frame = buffered_frame_from_view(bytes, view, true)?;
+    let frame = buffered_frame_from_view(bytes, view, server_peer_ack_sequence, true)?;
     let mut reassembly = ServerDeflatedReassembly {
         inflated_length: deflated.inflated_length,
         expected_frames,
@@ -185,6 +187,7 @@ pub(super) fn continue_server_deflated_reassembly(
     bytes: &[u8],
     view: &MFrameView,
     state: &mut SessionState,
+    server_peer_ack_sequence: u16,
 ) -> anyhow::Result<Emit> {
     let Some(snapshot) = state.deflate.server_reassembly.as_ref() else {
         tracing::warn!(
@@ -254,7 +257,7 @@ pub(super) fn continue_server_deflated_reassembly(
         return Ok(Emit::Consumed);
     }
 
-    let frame = buffered_frame_from_view(bytes, view, false)?;
+    let frame = buffered_frame_from_view(bytes, view, server_peer_ack_sequence, false)?;
     let insert_index = reassembly
         .frames
         .iter()
@@ -429,6 +432,7 @@ fn consume_interleaved_unclaimed_server_packet(bytes: &[u8]) -> anyhow::Result<V
 fn buffered_frame_from_view(
     bytes: &[u8],
     view: &MFrameView,
+    server_peer_ack_sequence: u16,
     first_frame: bool,
 ) -> anyhow::Result<BufferedFrame> {
     if view.payload_length > bytes.len().saturating_sub(LEGACY_GAMEPLAY_PAYLOAD_OFFSET) {
@@ -450,6 +454,7 @@ fn buffered_frame_from_view(
         packet: bytes.to_vec(),
         payload_length: view.payload_length,
         sequence: view.sequence,
+        server_peer_ack_sequence,
         ack_sequence: view.ack_sequence,
         compressed_chunk: bytes[compressed_start..payload_end].to_vec(),
     })
@@ -688,6 +693,7 @@ mod tests {
                     packet,
                     payload_length: *payload_length,
                     sequence,
+                    server_peer_ack_sequence: 75,
                     ack_sequence: 75,
                     compressed_chunk: Vec::new(),
                 }
@@ -703,6 +709,25 @@ mod tests {
             frames,
             interleaved_packets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn buffered_frame_retains_raw_peer_ack_alongside_unshifted_ack() {
+        let mut packet = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 4];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, 40));
+        assert!(write_be_u16(&mut packet, 5, 80));
+        packet[7] = 0x0D;
+        assert!(write_be_u16(&mut packet, 8, 1));
+        assert!(write_be_u16(&mut packet, 10, 4));
+        assert!(encode_legacy_m_crc(&mut packet));
+        let client_view = MFrameView::parse(&packet).expect("unshifted frame should parse");
+
+        let frame = buffered_frame_from_view(&packet, &client_view, 82, true)
+            .expect("reassembly frame should retain both ACK spaces");
+
+        assert_eq!(frame.server_peer_ack_sequence, 82);
+        assert_eq!(frame.ack_sequence, 80);
     }
 
     #[test]

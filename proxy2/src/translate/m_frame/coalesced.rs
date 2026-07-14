@@ -52,6 +52,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
     bytes: &[u8],
     view: &MFrameView,
     state: &mut SessionState,
+    server_peer_ack_sequence: u16,
 ) -> anyhow::Result<Option<CoalescedRewrite>> {
     if view.trailing_payload_length == 0 {
         return Ok(None);
@@ -82,6 +83,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         state,
         view.sequence,
         view.ack_sequence,
+        server_peer_ack_sequence,
         0,
     )?;
     changed |= primary.changed;
@@ -125,6 +127,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
             state,
             view.sequence,
             view.ack_sequence,
+            server_peer_ack_sequence,
             span.offset,
         )?;
         changed |= outcome.changed;
@@ -453,6 +456,7 @@ fn split_oversized_deflated_coalesced_record(
             packet,
             payload_length: view.payload_length,
             sequence: view.sequence,
+            server_peer_ack_sequence: view.ack_sequence,
             ack_sequence: view.ack_sequence,
             compressed_chunk,
         }],
@@ -737,6 +741,7 @@ fn rewrite_coalesced_record_for_ee(
     state: &mut SessionState,
     sequence: u16,
     ack_sequence: u16,
+    server_peer_ack_sequence: u16,
     offset: usize,
 ) -> anyhow::Result<CoalescedRecordRewrite> {
     if payload_length == 0 {
@@ -870,8 +875,11 @@ fn rewrite_coalesced_record_for_ee(
         super::apply_verified_server_semantic_side_effects(
             state,
             &verified_proof,
-            record_sequence,
-            record_ack_sequence,
+            super::ServerSemanticFrameContext {
+                sequence: record_sequence,
+                server_peer_ack_sequence,
+                client_unshifted_ack_sequence: record_ack_sequence,
+            },
         );
         queue_module_resources_after_coalesced_module_info_if_ready(
             state,
@@ -1128,8 +1136,11 @@ fn rewrite_coalesced_record_for_ee(
     super::apply_verified_server_semantic_side_effects(
         state,
         &verified_proof,
-        record_sequence,
-        record_ack_sequence,
+        super::ServerSemanticFrameContext {
+            sequence: record_sequence,
+            server_peer_ack_sequence,
+            client_unshifted_ack_sequence: record_ack_sequence,
+        },
     );
     queue_module_resources_after_coalesced_module_info_if_ready(
         state,
@@ -1595,6 +1606,7 @@ mod tests {
             &mut state,
             32,
             75,
+            75,
             203,
         )
         .expect("exact live Chat_Talk record should translate");
@@ -1697,6 +1709,7 @@ mod tests {
             &mut state,
             21,
             72,
+            72,
             0,
         )
         .expect("coalesced login waypoint should translate");
@@ -1739,6 +1752,7 @@ mod tests {
             3,
             &mut state,
             21,
+            72,
             72,
             202,
         )
@@ -2059,6 +2073,7 @@ mod tests {
             &mut state,
             view.sequence,
             view.ack_sequence,
+            view.ack_sequence,
             span.offset,
         )
         .expect("Chapter4 deflated Module_Info span should rewrite");
@@ -2113,9 +2128,10 @@ mod tests {
             "../../../fixtures/module_info/local_xp2_chapter3_module_info_coalesced_20260523.bin"
         );
         let view = MFrameView::parse(packet).expect("XP2 Chapter3 coalesced packet should parse");
-        let rewrite = rewrite_server_window_spans_if_needed(packet, &view, &mut state)
-            .expect("XP2 Chapter3 coalesced packet should rewrite")
-            .expect("XP2 Chapter3 coalesced packet should split for module resources");
+        let rewrite =
+            rewrite_server_window_spans_if_needed(packet, &view, &mut state, view.ack_sequence)
+                .expect("XP2 Chapter3 coalesced packet should rewrite")
+                .expect("XP2 Chapter3 coalesced packet should split for module resources");
 
         let CoalescedRewrite::SplitPreShifted { packets } = rewrite else {
             panic!("XP2 Chapter3 module-resource window should split into verified records");
@@ -2153,9 +2169,10 @@ mod tests {
         assert_eq!(view.sequence, 7);
         assert_eq!(view.ack_sequence, 72);
 
-        let rewrite = rewrite_server_window_spans_if_needed(packet, &view, &mut state)
-            .expect("ShadowGuard Module_Info coalesced packet should rewrite")
-            .expect("ShadowGuard Module_Info window should split for resource insertion");
+        let rewrite =
+            rewrite_server_window_spans_if_needed(packet, &view, &mut state, view.ack_sequence)
+                .expect("ShadowGuard Module_Info coalesced packet should rewrite")
+                .expect("ShadowGuard Module_Info window should split for resource insertion");
 
         let CoalescedRewrite::SplitPreShifted { packets } = rewrite else {
             panic!("ShadowGuard module-resource window should split into pre-shifted packets");

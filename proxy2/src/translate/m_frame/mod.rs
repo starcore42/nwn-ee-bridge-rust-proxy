@@ -60,6 +60,13 @@ const MAX_INTERLEAVED_PACKETS: usize = 32;
 const MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS: usize = 64;
 const CNW_LENGTH_BYTES: usize = 4;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ServerSemanticFrameContext {
+    pub(super) sequence: u16,
+    pub(super) server_peer_ack_sequence: u16,
+    pub(super) client_unshifted_ack_sequence: u16,
+}
+
 pub use state::SessionState;
 
 #[cfg(test)]
@@ -466,10 +473,11 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("server M frame failed reliable-window parse");
     };
+    let server_peer_ack_sequence = view.ack_sequence;
     // Preserve the peer-facing ACK before synthetic client-sequence intervals
     // are hidden from EE. Inventory response ownership opens only once the
     // legacy server has acknowledged the exact proxy-owned request sequence.
-    inventory_equipment::observe_server_ack_for_client_gui_status(state, view.ack_sequence);
+    inventory_equipment::observe_server_ack_for_client_gui_status(state, server_peer_ack_sequence);
     synthetic_area::maybe_queue_area_loaded_retransmit(
         &mut state.synthetic_area.in_flight_area_loaded,
         &mut state.synthetic_area.completed_area_loaded,
@@ -487,8 +495,12 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         &mut state.deferred_module_resources.pending,
     );
 
-    if let Some(rewrite) = coalesced::rewrite_server_window_spans_if_needed(&inbound, &view, state)?
-    {
+    if let Some(rewrite) = coalesced::rewrite_server_window_spans_if_needed(
+        &inbound,
+        &view,
+        state,
+        server_peer_ack_sequence,
+    )? {
         return match rewrite {
             coalesced::CoalescedRewrite::Single { proof, packet } => {
                 finalize_server_to_client_emit(
@@ -516,9 +528,19 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     }
 
     let emit = if state.deflate.server_reassembly.is_some() {
-        reassembly::continue_server_deflated_reassembly(&inbound, &view, state)?
+        reassembly::continue_server_deflated_reassembly(
+            &inbound,
+            &view,
+            state,
+            server_peer_ack_sequence,
+        )?
     } else if reassembly::should_start_server_deflated_reassembly(&view) {
-        reassembly::start_server_deflated_reassembly(&inbound, &view, state)?
+        reassembly::start_server_deflated_reassembly(
+            &inbound,
+            &view,
+            state,
+            server_peer_ack_sequence,
+        )?
     } else if let Some(verified) = server_dispatch::rewrite_direct_frame_if_needed(
         &inbound,
         &view,
@@ -527,7 +549,12 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         Some(&state.semantic.objects),
     )? {
         login_waypoint::maybe_queue_empty_waypoint_response(state, &inbound, &view)?;
-        observe_verified_server_m_packet(state, &verified.proof, &verified.packet);
+        observe_verified_server_m_packet(
+            state,
+            &verified.proof,
+            &verified.packet,
+            server_peer_ack_sequence,
+        );
         Emit::VerifiedProofPackets {
             proof: verified.proof,
             packets: vec![verified.packet],
@@ -556,7 +583,12 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             state.deflate.server_zlib_stream_proxy_owned,
         )? {
             Some(verified) => {
-                observe_verified_server_m_packet(state, &verified.proof, &verified.packet);
+                observe_verified_server_m_packet(
+                    state,
+                    &verified.proof,
+                    &verified.packet,
+                    server_peer_ack_sequence,
+                );
                 Emit::VerifiedProofPackets {
                     proof: verified.proof,
                     packets: vec![verified.packet],
@@ -583,6 +615,7 @@ fn observe_verified_server_m_packet(
     state: &mut SessionState,
     proof: &VerifiedProof,
     packet: &[u8],
+    server_peer_ack_sequence: u16,
 ) {
     let Some(view) = MFrameView::parse(packet) else {
         return;
@@ -597,40 +630,50 @@ fn observe_verified_server_m_packet(
         payload,
         Some(&state.area_context.latest_area_placeables),
     );
-    apply_verified_server_semantic_side_effects(state, proof, view.sequence, view.ack_sequence);
+    apply_verified_server_semantic_side_effects(
+        state,
+        proof,
+        ServerSemanticFrameContext {
+            sequence: view.sequence,
+            server_peer_ack_sequence,
+            client_unshifted_ack_sequence: view.ack_sequence,
+        },
+    );
 }
 
 pub(super) fn apply_verified_server_semantic_side_effects(
     state: &mut SessionState,
     proof: &VerifiedProof,
-    sequence: u16,
-    ack_sequence: u16,
+    frame: ServerSemanticFrameContext,
 ) {
     inventory_equipment::maybe_record_client_gui_status_live_object_response(
         state,
         proof,
-        sequence,
-        ack_sequence,
+        frame.sequence,
+        frame.server_peer_ack_sequence,
+        frame.client_unshifted_ack_sequence,
     );
-    if let Err(err) =
-        inventory_equipment::maybe_queue_confirmed_inventory_replay(state, sequence, ack_sequence)
-    {
+    if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
+        state,
+        frame.sequence,
+        frame.client_unshifted_ack_sequence,
+    ) {
         tracing::warn!(
             error = %err,
-            sequence,
-            ack_sequence,
+            sequence = frame.sequence,
+            ack_sequence = frame.client_unshifted_ack_sequence,
             "failed to queue confirmed ClientGui status Inventory replay"
         );
     }
     if let Err(err) = inventory_equipment::maybe_queue_inventory_equipment_bridge_output(
         state,
-        sequence,
-        ack_sequence,
+        frame.sequence,
+        frame.client_unshifted_ack_sequence,
     ) {
         tracing::warn!(
             error = %err,
-            sequence,
-            ack_sequence,
+            sequence = frame.sequence,
+            ack_sequence = frame.client_unshifted_ack_sequence,
             "failed to queue inventory/equipment bridge output"
         );
     }
@@ -4034,10 +4077,16 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         .last()
         .map(|frame| frame.ack_sequence)
         .unwrap_or(0);
+    let response_server_peer_ack_sequence = reassembly
+        .frames
+        .last()
+        .map(|frame| frame.server_peer_ack_sequence)
+        .unwrap_or(response_ack_sequence);
     inventory_equipment::maybe_record_client_gui_status_live_object_response(
         state,
         &verified_proof,
         reassembly.first_sequence,
+        response_server_peer_ack_sequence,
         response_ack_sequence,
     );
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {

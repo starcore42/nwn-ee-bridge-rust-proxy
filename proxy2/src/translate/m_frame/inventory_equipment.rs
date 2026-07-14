@@ -290,6 +290,7 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     state: &mut SessionState,
     proof: &VerifiedProof,
     server_sequence: u16,
+    server_peer_ack_sequence: u16,
     ack_sequence: u16,
 ) {
     if state.inventory_equipment.queued_client_gui_status_outputs == 0
@@ -307,14 +308,11 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     else {
         return;
     };
-    // `translate_server_to_client` records this frame's raw peer ACK before
-    // unshifting it for EE. Historical acknowledgement of the request is not
-    // sufficient here: a reordered/retransmitted frame whose own ACK still
-    // precedes the synthetic request cannot be its response materialization.
-    let server_peer_ack_sequence = state
-        .inventory_equipment
-        .last_observed_client_gui_status_server_peer_ack_sequence
-        .unwrap_or(ack_sequence);
+    // The transport caller supplies this frame's raw peer ACK explicitly,
+    // before sequence unshifting hides proxy-owned client intervals from EE.
+    // Historical acknowledgement is not sufficient: a reordered or
+    // retransmitted frame whose own ACK precedes the synthetic request cannot
+    // be its response materialization.
     let current_packet_acknowledges_request =
         sequence_at_or_after(server_peer_ack_sequence, queued_synthetic_sequence);
     if !state
@@ -333,10 +331,8 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .last_pre_ack_client_gui_status_live_object_server_sequence = Some(server_sequence);
         state
             .inventory_equipment
-            .last_pre_ack_client_gui_status_live_object_server_ack_sequence = state
-            .inventory_equipment
-            .last_observed_client_gui_status_server_peer_ack_sequence
-            .or(Some(ack_sequence));
+            .last_pre_ack_client_gui_status_live_object_server_ack_sequence =
+            Some(server_peer_ack_sequence);
         tracing::debug!(
             queued_update_index = state
                 .inventory_equipment
@@ -1194,6 +1190,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             48,
+            80,
             82,
         );
 
@@ -1316,6 +1313,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             60,
+            81,
             78,
         );
 
@@ -1377,6 +1375,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             61,
+            81,
             78,
         );
         assert_eq!(
@@ -1409,6 +1408,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             62,
+            81,
             79,
         );
         assert_eq!(
@@ -1479,6 +1479,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             34,
+            81,
             80,
         );
         assert_eq!(
@@ -1524,19 +1525,26 @@ mod tests {
             Some(82)
         );
 
-        // A later/reordered frame can carry an older raw ACK even though the
-        // session has already observed ACK 82. That frame cannot own the
-        // response to synthetic sequence 82.
-        observe_server_ack_for_client_gui_status(&mut state, 81);
+        // A later/reordered frame can carry raw ACK 81 even if session-level
+        // diagnostics have advanced beyond ACK 82. The explicit current-frame
+        // ACK must win over that mutable historical state.
+        observe_server_ack_for_client_gui_status(&mut state, 90);
         assert!(
             state
                 .inventory_equipment
                 .client_gui_status_request_acknowledged()
         );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_observed_client_gui_status_server_peer_ack_sequence,
+            Some(90)
+        );
         maybe_record_client_gui_status_live_object_response(
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             35,
+            81,
             80,
         );
         assert_eq!(
@@ -1564,6 +1572,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             36,
+            82,
             80,
         );
 
@@ -1717,6 +1726,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             60,
+            83,
             82,
         );
         assert_eq!(
@@ -1870,6 +1880,7 @@ mod tests {
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             90,
             81,
+            81,
         );
 
         state.semantic.ui.last_live_object_inventory_materialization = Some(
@@ -1890,6 +1901,7 @@ mod tests {
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             105,
+            81,
             81,
         );
 

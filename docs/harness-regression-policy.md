@@ -120,6 +120,21 @@ probe should retain the prior expectations and additionally confirm that no
 materialization whose own raw ACK precedes sequence 82 enters the response
 window.
 
+Current transport plumbing also makes the two ACK spaces explicit instead of
+letting response admission consult mutable session-level "last observed" state.
+Direct packets and coalesced records carry a typed raw-peer/EE-unshifted frame
+context into semantic side effects. Multi-frame deflated reassembly retains both
+ACK values on every buffered source frame and uses the final source frame's raw
+ACK for response ownership. This is state provenance only; the exact
+ClientGuiInventory BOOL/OBJECTID body and fragment cursor are unchanged.
+Focused tests prove explicit raw ACK 81 overrides stale historical ACK 90 and
+that reassembly preserves the live-shaped raw-82/EE-80 pair. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-explicit-peer-ack-20260714-2115` processed
+164 packet files with 304 strict allows, zero strict/semantic quarantines or
+files, one 36-slot quickbar, and zero terminal live-object residuals. The next
+credentialed Bard50 probe must still provide the direct live confirmation above;
+no account-secret environment source was available in this run.
+
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
 `C:\nwnbridge\codex-live-account4-buffbot-scout-20260713-1200\harness-proxy-20260713-115241`,
