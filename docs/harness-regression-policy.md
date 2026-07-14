@@ -33,17 +33,23 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-14 06:07 +10: fresh capture
-`C:\nwnbridge\codex-live-pending-client-gui-20260714-0605\harness-proxy-20260714-060307`
-selected typed `starcore-bard50`, reached `Module_Loaded`, exact
-`Area_ClientArea`, native `Area_AreaLoaded` at `06:04:25`, and sustained
-gameplay through the inventory response probe. The two exact typed
-`GuiInventory_Status` events arrived before item state was ready and remained
-blocked. Verified live-object materialization then reconsidered the latest
-bounded claim once, queued exactly one proxy-owned current-player status
-request, and HG answered with 26 live-GUI item records, raising ready item
-objects from 19 to 43. The capture wrote zero quarantine files and observed no
-`BNDP`. This is current gameplay and pending-status live evidence.
+Latest known live HG proxy status, as of 2026-07-15 08:53 +10: fresh account-5
+capture
+`C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`
+selected typed `starcore-druid60`, reached `Module_Loaded`, exact
+`Area_ClientArea`, native `Area_AreaLoaded`, and sustained gameplay through a
+complete inventory response probe. Proxy2 queued synthetic current-player
+status sequence 81, excluded three live-object packets whose own raw peer ACK
+was 80, observed server ACK 81, and admitted the typed 52-record
+materialization only when that frame itself carried raw ACK 81 (EE ACK 78).
+The request completed as `materialized_current_player_inventory`, refresh was
+confirmed, and a retained Inventory replay was released only with typed claim
+and queued-candidate containment. The capture's structured log ended at
+`2026-07-15T08:53:19+10:00`; it wrote zero quarantine files. This is current
+gameplay evidence and live-confirms the generalized frame-local response
+ownership. A credentialed account-4 Bard50 run remains useful for its earlier
+candidate-mismatch regression shape, but no account secret was available or
+guessed in this run.
 
 Current production code routes structurally valid CNW-declared quickbars to the
 exact direct reader before source-form normalization in both gameplay boundary
@@ -180,6 +186,21 @@ run's 05:48 +10 gate the latest 06:07 gameplay artifact was 23.687 hours old,
 reached gameplay, and remained zero-quarantine. It has since crossed 24 hours,
 so the next run must obtain a fresh credentialed Bard50 HG capture before
 ordinary code work and retain the raw-ACK-81/82 completion expectations above.
+
+The 2026-07-15 fresh account-5 capture above supersedes that freshness and
+completion requirement. Its exact ACK-80/81 window and 52-record response
+live-confirm the shared rule. Current production also avoids repeating the
+entire area semantic parser during gameplay boundary discovery when one
+complete declared `Area_ClientArea` owns all input and its remaining CNW
+fragment storage is bounded with the decompile-proven 3-bit MSB-first final
+valid-count header. The dispatcher still performs the full exact translation
+once; stale declarations and competing top-level boundaries retain the exact
+boundary probe. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-area-single-pass-20260715-0920` processed 164
+packet files with 304 strict allows, zero strict/semantic quarantines or files,
+and zero terminal residuals. For the 10,543-byte docks area, boundary handoff
+fell from about 10.17 seconds in the live pre-fix trace to 0.35 ms in replay;
+the full semantic rewrite still ran once.
 
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,

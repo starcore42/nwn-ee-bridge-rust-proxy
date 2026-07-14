@@ -639,6 +639,22 @@ fn focused_area_client_area_unit_end(bytes: &[u8], offset: usize) -> FocusedUnit
     candidate_ends.sort_unstable();
     candidate_ends.dedup();
 
+    // A complete declared Area_ClientArea can be expensive to parse (large HG
+    // areas carry hundreds of static rows). When there is no competing
+    // high-level boundary, the declared read window plus the exact bounded CNW
+    // fragment-storage header already proves that the remaining inflated span
+    // is one transport unit. Defer the full Diamond -> EE field/cursor proof to
+    // the semantic translator so it runs once with the real Module_Info
+    // context. Stale/zero declarations and streams with another plausible
+    // packet boundary retain the exhaustive exact-probe path below.
+    if candidate_ends.as_slice() == [bytes.len()] {
+        if let Some(payload) = bytes.get(offset..bytes.len()) {
+            if area::declared_area_client_area_has_bounded_fragment_storage(payload) {
+                return FocusedUnitEnd::Exact(bytes.len());
+            }
+        }
+    }
+
     for end in candidate_ends {
         let Some(payload) = bytes.get(offset..end) else {
             continue;
@@ -1947,6 +1963,32 @@ mod tests {
                 assert_eq!(message.payload.len(), 3);
             }
             _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn single_declared_area_defers_semantic_validation_to_dispatch() {
+        const AREA_OBJECT_ID_PAYLOAD_OFFSET: usize = 27;
+
+        let mut bytes = area_client_area_legacy_payload();
+        bytes[AREA_OBJECT_ID_PAYLOAD_OFFSET..AREA_OBJECT_ID_PAYLOAD_OFFSET + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+        assert!(
+            !area::claim_or_rewrite_payload_if_verified(&bytes),
+            "mutated body must fail the exact semantic area proof"
+        );
+
+        let split = split_inflated_gameplay(&bytes);
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x04);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload, bytes.as_slice());
+            }
+            _ => panic!("expected one transport-owned Area_ClientArea unit"),
         }
     }
 

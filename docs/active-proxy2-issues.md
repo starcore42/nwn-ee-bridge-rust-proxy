@@ -69,8 +69,8 @@ not as standalone workaround targets.
   materialization that raised ready item objects from 19 to 43. The run had
   zero quarantine files and no `BNDP`.
 
-  ~~2026-07-14 current-player response completion~~: fixed in production code;
-  post-fix live confirmation remains pending. EE
+  ~~2026-07-14 current-player response completion~~: fixed and live-confirmed.
+  EE
   `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` minor 1 reads exactly
   the open BOOL followed by the inventory-owner OBJECTID and calls
   `CNWSPlayerInventoryGUI::SetOpen`; no item candidate is present. Proxy2 now
@@ -208,6 +208,39 @@ not as standalone workaround targets.
   residuals. The 06:07 gameplay artifact was 23.687 hours old at this run's
   gate and reached sustained zero-quarantine gameplay; it has since crossed 24
   hours, so the next run must begin with a fresh credentialed HG capture.
+
+  Fresh account-5 capture
+  `C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947\proxy.structured.log`
+  reached `Module_Loaded`, exact `Area_ClientArea`, native `Area_AreaLoaded`,
+  and sustained gameplay; its final log timestamp was
+  `2026-07-15T08:53:19+10:00` and it wrote zero quarantine files. The live
+  request used synthetic sequence 81. Three live-object packets whose own raw
+  peer ACK was 80 were excluded, the server then acknowledged 81, and the
+  accepted server-sequence-65 materialization carried raw ACK 81 beside EE ACK
+  78. That exact frame supplied 52 typed live-GUI records, 355 fragment bits,
+  and 52 materialized item ids, completing as
+  `materialized_current_player_inventory` with refresh confirmed. A retained
+  Inventory replay was released only because both the queued candidate and the
+  claim object occurred in the typed materialization; candidate-mismatch
+  authorization stayed zero. This live-confirms the generalized per-frame ACK
+  and typed-summary ownership. The account-4 Bard50 mismatch shape remains a
+  useful character-specific regression probe, but is no longer required to
+  prove the shared response-completion rule.
+- ~~2026-07-15 duplicate `Area_ClientArea` semantic boundary parse~~: fixed.
+  A complete single declared area whose remaining CNW storage has a bounded
+  3-bit MSB-first final-valid-count tail is now transport-owned without running
+  the full area parser during boundary discovery. Stale declarations and
+  streams with a competing high-level boundary retain exact semantic probing;
+  the dispatcher still performs the full Diamond/EE reader, writer, and cursor
+  validation exactly once. In the fresh pre-fix HG trace, the 10,543-byte docks
+  area spent about 10.17 seconds between frame summary and dispatcher context
+  validation, then another 8.92 seconds in the real rewrite. Current-code
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-area-single-pass-20260715-0920`
+  reduced the first interval to 0.35 ms while retaining the full 8.31-second
+  rewrite. It processed 164 packet files with 304 strict allows, zero
+  strict/semantic quarantines or files, two distinct area context checks, and
+  zero terminal live-object residuals.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

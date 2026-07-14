@@ -1030,6 +1030,27 @@ pub(crate) fn claim_or_rewrite_payload_if_verified(payload: &[u8]) -> bool {
         && ee_area_client_area_payload_shape_valid(&probe)
 }
 
+/// Returns true when a declared `Area_ClientArea` read window leaves one
+/// bounded CNW fragment-storage tail with enough MSB-first bits for the
+/// Diamond pre-tile cursor.
+///
+/// This is deliberately only a transport-boundary proof. Diamond and EE both
+/// hand the declared byte window to `CNWMessage::SetReadMessage`, then consume
+/// the fragment tail starting with its three-bit final-byte-valid-count header.
+/// The semantic translator must still prove every area field, optional guard,
+/// static row, and final cursor before strict delivery.
+pub(crate) fn declared_area_client_area_has_bounded_fragment_storage(payload: &[u8]) -> bool {
+    let Some((_, _, fragment_offset, fragment_size)) = area_client_area_read_window(payload) else {
+        return false;
+    };
+    if fragment_size == 0 || fragment_size > MAX_INFERRED_AREA_FRAGMENT_BYTES {
+        return false;
+    }
+
+    cnw_fragment_consumable_bits(&payload[fragment_offset..])
+        .is_some_and(|bits| bits >= LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)
+}
+
 fn rewrite_area_client_area_payload_with_context_and_mode(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
