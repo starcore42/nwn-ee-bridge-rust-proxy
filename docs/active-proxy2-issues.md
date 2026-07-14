@@ -120,6 +120,23 @@ not as standalone workaround targets.
   confirm one excluded raw-ACK-81 packet, a materialized response whose own raw
   ACK is 82, `materialized_current_player_inventory`, and refresh-confirmed
   state.
+
+  Tightened once more 2026-07-14 at the response-ownership boundary. A
+  session-level observation of ACK 82 no longer permits a later reordered or
+  retransmitted materialization packet whose own raw ACK is still 81 to enter
+  the response window. Each typed live-object response must itself cover the
+  exact synthetic sequence under wrapping reliable order; the raw ACK kept on
+  the accepted snapshot is the same value used for that decision. This changes
+  no ClientGuiInventory fields or fragment bits. Focused status-window tests
+  cover historical ACK 82 followed by current-packet ACK 81, the real ACK
+  81/82 shape, and sequence wrap. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-current-packet-ack-20260714-1820`
+  processed 164 packet files with 304 strict allows, zero strict/semantic
+  quarantines or files, and zero terminal live-object residuals. The 06:03 HG
+  capture was about 11.6 hours old at this run's gate, reached native gameplay,
+  and remained the latest zero-quarantine gameplay evidence. The next
+  credentialed Bard50 run must live-confirm the exact per-packet ACK ownership
+  and completion outcome before item-action work resumes.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

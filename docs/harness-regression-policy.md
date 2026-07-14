@@ -106,6 +106,20 @@ response whose own raw ACK is 82, and
 `materialized_current_player_inventory`; the current automation environment
 again exposed no account secret, so no password was guessed.
 
+Current production also requires the materialization packet's own raw ACK to
+cover the exact synthetic status sequence. A historical ACK 82 elsewhere in
+the session cannot admit a reordered or retransmitted live-object packet whose
+current raw ACK is 81. The accepted snapshot and the admission decision use the
+same wrapping-order raw ACK; the proven ClientGuiInventory BOOL/OBJECTID body
+and fragment cursor are unchanged. Focused tests cover the live ACK 81/82
+window, a historical-82/current-81 reorder, and wrapping order. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-current-packet-ack-20260714-1820` processed
+164 packet files with 304 strict allows, zero strict/semantic quarantines or
+files, and zero terminal live-object residuals. The next credentialed Bard50
+probe should retain the prior expectations and additionally confirm that no
+materialization whose own raw ACK precedes sequence 82 enters the response
+window.
+
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
 `C:\nwnbridge\codex-live-account4-buffbot-scout-20260713-1200\harness-proxy-20260713-115241`,

@@ -300,9 +300,27 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     {
         return;
     }
+    let Some(queued_synthetic_sequence) = state
+        .inventory_equipment
+        .last_queued_client_gui_status_output
+        .map(|queued| queued.synthetic_sequence)
+    else {
+        return;
+    };
+    // `translate_server_to_client` records this frame's raw peer ACK before
+    // unshifting it for EE. Historical acknowledgement of the request is not
+    // sufficient here: a reordered/retransmitted frame whose own ACK still
+    // precedes the synthetic request cannot be its response materialization.
+    let server_peer_ack_sequence = state
+        .inventory_equipment
+        .last_observed_client_gui_status_server_peer_ack_sequence
+        .unwrap_or(ack_sequence);
+    let current_packet_acknowledges_request =
+        sequence_at_or_after(server_peer_ack_sequence, queued_synthetic_sequence);
     if !state
         .inventory_equipment
         .client_gui_status_request_acknowledged()
+        || !current_packet_acknowledges_request
     {
         state
             .inventory_equipment
@@ -401,14 +419,9 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .client_gui_status_response_materialized_item_packets
             .saturating_add(1);
     }
-    // `translate_server_to_client` records the raw peer ACK before unshifting
-    // proxy-owned client sequence intervals. The response itself keeps that
-    // exact transport boundary alongside the EE-facing ACK so a completed
-    // status window remains auditable after sequence translation.
-    let server_peer_ack_sequence = state
-        .inventory_equipment
-        .last_observed_client_gui_status_server_peer_ack_sequence
-        .unwrap_or(ack_sequence);
+    // Keep the exact current-packet transport boundary alongside the EE-facing
+    // ACK so a completed status window remains auditable after sequence
+    // translation.
     let response = InventoryEquipmentBridgeClientGuiStatusResponse {
         queued_update_index,
         server_sequence,
@@ -1511,6 +1524,42 @@ mod tests {
             Some(82)
         );
 
+        // A later/reordered frame can carry an older raw ACK even though the
+        // session has already observed ACK 82. That frame cannot own the
+        // response to synthetic sequence 82.
+        observe_server_ack_for_client_gui_status(&mut state, 81);
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_acknowledged()
+        );
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            35,
+            80,
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_pre_ack_live_object_packets_ignored,
+            2
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "awaiting_response"
+        );
+        observe_server_ack_for_client_gui_status(&mut state, 82);
+
         maybe_record_client_gui_status_live_object_response(
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
@@ -1785,6 +1834,22 @@ mod tests {
         state
             .inventory_equipment
             .last_queued_client_gui_status_update_index = Some(20);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 20,
+                emission_index: 20,
+                event_index: 20,
+                candidate: None,
+                ready_objects: 0,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: false,
+                trigger_client_sequence: 80,
+                synthetic_sequence: 81,
+                ack_sequence: 40,
+            });
         state.semantic.ui.last_live_object_inventory_materialization = Some(
             crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
                 live_gui_records: 9,
