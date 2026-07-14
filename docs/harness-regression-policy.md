@@ -75,15 +75,29 @@ queued status packet, two response-window live-object packets, and one
 26-record materialized response. EE's exact minor-1 handler reads the open BOOL
 and current-player inventory OBJECTID only; the request cannot carry diagnostic
 ready candidate `0x800164E8`. Production therefore completes that exact update
-window on its first nonempty typed live-GUI materialization and reports
+window only after the legacy server acknowledges its synthetic reliable request
+and a nonempty typed live-GUI materialization arrives; it reports
 `materialized_current_player_inventory` separately from candidate association.
 Candidate containment is still required before replaying any retained server
 Inventory claim. Focused tests and strict replay
 `C:\nwnbridge\codex-proxy2-replay-status-completion-summary-20260714-0904`
 passes with zero quarantines and exports completion `none` for its no-request
-baseline. The next credentialed HG run must live-confirm the new
-request-completion hint; the current automation environment exposed no account
-secret, so no password was guessed.
+baseline.
+
+The same capture proves the transport boundary for that request window. Proxy2
+sent synthetic client reliable sequence 82. A generic live-object packet then
+arrived with raw server ACK 81; the 26-record materialization arrived with raw
+ACK 82. Current production code preserves that peer-facing ACK before
+unshifting it to EE's sequence space, ignores live-object packets until the
+server ACK covers the exact synthetic request, and exports acknowledgement plus
+pre-ACK exclusion counters. Wrapping sequence arithmetic and one-shot ACK
+ownership have focused coverage. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-status-ack-gate-final-20260714-1205` processed 164
+packets with 304 strict allows, zero quarantines/files, and zero terminal
+live-object residuals. The next credentialed HG run must report one raw
+sequence-82 acknowledgement, one excluded pre-ACK live-object packet, and
+`materialized_current_player_inventory`; the current automation environment
+again exposed no account secret, so no password was guessed.
 
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,

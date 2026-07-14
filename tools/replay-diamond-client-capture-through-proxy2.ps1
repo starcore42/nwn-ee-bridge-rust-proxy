@@ -1486,6 +1486,10 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputStatus = ''
     $quickbarHintInventoryEquipmentBridgeOutputRequiresClientGuiWriter = $false
     $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion = ''
+    $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledged = $false
+    $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgements = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastAcknowledgedClientGuiStatusServerAckSequence = 0
+    $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusPreAckLiveObjectPacketsIgnored = 0
     $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmed = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionReadyObjects = 0
@@ -1932,6 +1936,13 @@ try {
         if ($null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRequestCompletionProp -and $null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRequestCompletionProp.Value) {
             $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion = [string]$inventoryEquipmentBridgeOutputClientGuiStatusRequestCompletionProp.Value
         }
+        $inventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgedProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_client_gui_status_request_acknowledged']
+        if ($null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgedProp -and $null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgedProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledged = [bool]$inventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgedProp.Value
+        }
+        $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgements = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_client_gui_status_request_acknowledgements'
+        $quickbarHintInventoryEquipmentBridgeOutputLastAcknowledgedClientGuiStatusServerAckSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_acknowledged_client_gui_status_server_ack_sequence'
+        $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusPreAckLiveObjectPacketsIgnored = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_client_gui_status_pre_ack_live_object_packets_ignored'
         $inventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmedProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_client_gui_status_refresh_confirmed']
         if ($null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmedProp -and $null -ne $inventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmedProp.Value) {
             $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmed = [bool]$inventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmedProp.Value
@@ -2540,6 +2551,10 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimPlayerInventoryGui = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimPlayerInventoryGui
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimRewrittenSelfObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimRewrittenSelfObjectId
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestCompletion
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledged = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledged
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgements = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRequestAcknowledgements
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastAcknowledgedClientGuiStatusServerAckSequence = $quickbarHintInventoryEquipmentBridgeOutputLastAcknowledgedClientGuiStatusServerAckSequence
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusPreAckLiveObjectPacketsIgnored = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusPreAckLiveObjectPacketsIgnored
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmed = $quickbarHintInventoryEquipmentBridgeOutputClientGuiStatusRefreshConfirmed
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiWriterPlanAction = $quickbarHintInventoryEquipmentBridgeOutputClientGuiWriterPlanAction
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputClientGuiWriterPlanEmissionEnabled = $quickbarHintInventoryEquipmentBridgeOutputClientGuiWriterPlanEmissionEnabled

@@ -16,7 +16,9 @@ use crate::translate::{
 };
 
 use super::{
-    sequence::{SequenceShift, shift_sequence_for_peer, trim_sequence_shifts},
+    sequence::{
+        SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
+    },
     state::{
         InventoryEquipmentBridgeClientGuiStatusResponse, InventoryEquipmentBridgeOutputDecision,
         InventoryEquipmentBridgeOutputDecisionKind,
@@ -32,6 +34,51 @@ const INVENTORY_EQUIPMENT_BRIDGE_REASON: &str =
 pub(super) const CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON: &str =
     "inventory/equipment materialized ClientGui status Inventory replay";
 const INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT: u16 = 1;
+
+pub(super) fn observe_server_ack_for_client_gui_status(
+    state: &mut SessionState,
+    server_ack_sequence: u16,
+) {
+    if server_ack_sequence == 0 {
+        return;
+    }
+    let Some(queued) = state
+        .inventory_equipment
+        .last_queued_client_gui_status_output
+    else {
+        return;
+    };
+    state
+        .inventory_equipment
+        .last_observed_client_gui_status_server_peer_ack_sequence = Some(server_ack_sequence);
+    if state
+        .inventory_equipment
+        .last_acknowledged_client_gui_status_update_index
+        == Some(queued.update_index)
+        || !sequence_at_or_after(server_ack_sequence, queued.synthetic_sequence)
+    {
+        return;
+    }
+
+    state
+        .inventory_equipment
+        .last_acknowledged_client_gui_status_update_index = Some(queued.update_index);
+    state
+        .inventory_equipment
+        .last_acknowledged_client_gui_status_server_ack_sequence = Some(server_ack_sequence);
+    state
+        .inventory_equipment
+        .client_gui_status_request_acknowledgements = state
+        .inventory_equipment
+        .client_gui_status_request_acknowledgements
+        .saturating_add(1);
+    tracing::info!(
+        queued_update_index = queued.update_index,
+        synthetic_sequence = queued.synthetic_sequence,
+        server_ack_sequence,
+        "inventory/equipment bridge observed legacy server ACK for proxy-owned ClientGuiInventory_Status request"
+    );
+}
 
 pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     state: &mut SessionState,
@@ -251,6 +298,40 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .inventory_equipment
             .client_gui_status_response_window_complete()
     {
+        return;
+    }
+    if !state
+        .inventory_equipment
+        .client_gui_status_request_acknowledged()
+    {
+        state
+            .inventory_equipment
+            .client_gui_status_pre_ack_live_object_packets_ignored = state
+            .inventory_equipment
+            .client_gui_status_pre_ack_live_object_packets_ignored
+            .saturating_add(1);
+        state
+            .inventory_equipment
+            .last_pre_ack_client_gui_status_live_object_server_sequence = Some(server_sequence);
+        state
+            .inventory_equipment
+            .last_pre_ack_client_gui_status_live_object_server_ack_sequence = state
+            .inventory_equipment
+            .last_observed_client_gui_status_server_peer_ack_sequence
+            .or(Some(ack_sequence));
+        tracing::debug!(
+            queued_update_index = state
+                .inventory_equipment
+                .last_queued_client_gui_status_update_index
+                .unwrap_or(0),
+            server_sequence,
+            client_unshifted_ack_sequence = ack_sequence,
+            server_peer_ack_sequence = state
+                .inventory_equipment
+                .last_pre_ack_client_gui_status_live_object_server_ack_sequence
+                .unwrap_or(0),
+            "inventory/equipment bridge ignored live-object packet before legacy server acknowledged proxy-owned ClientGuiInventory_Status"
+        );
         return;
     }
     let Some(summary) = state
@@ -831,6 +912,17 @@ mod tests {
         },
     };
 
+    fn mark_current_status_server_acknowledged(state: &mut SessionState, server_ack_sequence: u16) {
+        state
+            .inventory_equipment
+            .last_acknowledged_client_gui_status_update_index = state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index;
+        state
+            .inventory_equipment
+            .last_acknowledged_client_gui_status_server_ack_sequence = Some(server_ack_sequence);
+    }
+
     fn ready_server_inventory_update() -> InventoryEquipmentBridgeStateUpdate {
         InventoryEquipmentBridgeStateUpdate {
             update_index: 1,
@@ -1069,6 +1161,7 @@ mod tests {
                 }),
             },
         );
+        mark_current_status_server_acknowledged(&mut state, 80);
 
         maybe_record_client_gui_status_live_object_response(
             &mut state,
@@ -1190,6 +1283,7 @@ mod tests {
                 }),
             },
         );
+        mark_current_status_server_acknowledged(&mut state, 81);
 
         maybe_record_client_gui_status_live_object_response(
             &mut state,
@@ -1283,6 +1377,7 @@ mod tests {
             .as_mut()
             .expect("queued status should exist")
             .update_index = 2;
+        mark_current_status_server_acknowledged(&mut state, 81);
         maybe_record_client_gui_status_live_object_response(
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
@@ -1352,6 +1447,56 @@ mod tests {
             },
         );
 
+        observe_server_ack_for_client_gui_status(&mut state, 81);
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            34,
+            80,
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_pre_ack_live_object_packets_ignored,
+            1
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "awaiting_server_acknowledgement"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_pre_ack_client_gui_status_live_object_server_ack_sequence,
+            Some(81)
+        );
+        assert!(
+            !state
+                .inventory_equipment
+                .client_gui_status_request_acknowledged()
+        );
+        observe_server_ack_for_client_gui_status(&mut state, 82);
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_acknowledged()
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_server_ack_sequence,
+            Some(82)
+        );
+
         maybe_record_client_gui_status_live_object_response(
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
@@ -1389,6 +1534,58 @@ mod tests {
                 .pending_confirmed_inventory_replay
                 .is_none(),
             "a request-level completion must not relax the candidate-gated Inventory replay"
+        );
+    }
+
+    #[test]
+    fn client_gui_status_server_ack_gate_uses_wrapping_reliable_order() {
+        let mut state = SessionState::default();
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(9);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 9,
+                emission_index: 9,
+                event_index: 9,
+                candidate: None,
+                ready_objects: 0,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: u16::MAX,
+                synthetic_sequence: u16::MAX,
+                ack_sequence: 17,
+            });
+
+        observe_server_ack_for_client_gui_status(&mut state, u16::MAX - 1);
+        assert!(
+            !state
+                .inventory_equipment
+                .client_gui_status_request_acknowledged()
+        );
+
+        observe_server_ack_for_client_gui_status(&mut state, 1);
+        observe_server_ack_for_client_gui_status(&mut state, 2);
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_acknowledged()
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_acknowledgements,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_server_ack_sequence,
+            Some(1)
         );
     }
 
@@ -1445,6 +1642,7 @@ mod tests {
                 compact_item_emission_ready_candidate: Some(candidate),
             },
         );
+        mark_current_status_server_acknowledged(&mut state, 83);
 
         maybe_record_client_gui_status_live_object_response(
             &mut state,
@@ -1580,6 +1778,7 @@ mod tests {
                 }),
             },
         );
+        mark_current_status_server_acknowledged(&mut state, 81);
 
         maybe_record_client_gui_status_live_object_response(
             &mut state,

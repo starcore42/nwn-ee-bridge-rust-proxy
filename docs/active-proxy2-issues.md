@@ -74,9 +74,11 @@ not as standalone workaround targets.
   `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` minor 1 reads exactly
   the open BOOL followed by the inventory-owner OBJECTID and calls
   `CNWSPlayerInventoryGUI::SetOpen`; no item candidate is present. Proxy2 now
-  completes a bounded open/current-player request when the matching update
-  window receives its first nonempty typed live-GUI materialization. It reports
-  that request-level outcome separately from diagnostic candidate association.
+  completes a bounded open/current-player request when the legacy server has
+  first acknowledged the exact proxy-owned reliable sequence and the matching
+  update window then receives a nonempty typed live-GUI materialization. It
+  reports that request-level outcome separately from diagnostic candidate
+  association.
   Candidate containment remains mandatory for replaying an unrelated retained
   server Inventory claim, so the live `0x800164E8` mismatch is not converted
   into item ownership or a replay authorization. Focused tests cover the exact
@@ -85,10 +87,24 @@ not as standalone workaround targets.
   processed 164 packets with 304 strict allows, zero strict/semantic
   quarantines or files, and zero terminal live-object residuals. Its baseline
   has no proxy-owned status request and exported request completion `none`,
-  proving the new replay-summary field is optional-state safe. The current
-  06:03 gameplay capture is 2.6 hours old; this automation process had no
-  account-secret source, so the next credentialed HG run must confirm
-  `materialized_current_player_inventory` and refresh-confirmed state.
+  proving the new replay-summary field is optional-state safe.
+
+  Tightened 2026-07-14 from the same live capture's reliable-window evidence:
+  synthetic status sequence 82 was followed first by a generic live-object
+  packet with raw server ACK 81, then by the 26-record live-GUI materialization
+  with raw ACK 82. Proxy2 now observes the raw peer ACK before hiding synthetic
+  client-sequence intervals from EE. Pre-ACK live-object packets cannot enter
+  the response window; completion reports
+  `awaiting_server_acknowledgement` until wrapping reliable ordering covers the
+  exact synthetic sequence. Hint/replay fields expose the acknowledgement and
+  ignored pre-ACK packet count. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-status-ack-gate-final-20260714-1205`
+  processed 164 packets with 304 strict allows, zero strict/semantic
+  quarantines or files, and zero terminal live-object residuals. Its no-request
+  baseline exported zero acknowledgements. The 06:03 capture was about 5.6
+  hours old at this run's gate; no account-secret source was present, so the
+  next credentialed HG run must confirm raw ACK 82, one excluded pre-ACK packet,
+  `materialized_current_player_inventory`, and refresh-confirmed state.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

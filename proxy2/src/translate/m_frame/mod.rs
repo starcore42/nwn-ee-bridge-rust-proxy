@@ -466,6 +466,10 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("server M frame failed reliable-window parse");
     };
+    // Preserve the peer-facing ACK before synthetic client-sequence intervals
+    // are hidden from EE. Inventory response ownership opens only once the
+    // legacy server has acknowledged the exact proxy-owned request sequence.
+    inventory_equipment::observe_server_ack_for_client_gui_status(state, view.ack_sequence);
     synthetic_area::maybe_queue_area_loaded_retransmit(
         &mut state.synthetic_area.in_flight_area_loaded,
         &mut state.synthetic_area.completed_area_loaded,
@@ -929,6 +933,12 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_status\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_requires_client_gui_writer\": {},\n",
             "  \"inventory_equipment_bridge_output_client_gui_status_request_completion\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_request_acknowledged\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_request_acknowledgements\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_acknowledged_client_gui_status_server_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_pre_ack_live_object_packets_ignored\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_pre_ack_client_gui_status_live_object_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_pre_ack_client_gui_status_live_object_server_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_client_gui_status_refresh_confirmed\": {},\n",
             "  \"inventory_equipment_bridge_output_queued_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_confirmed_inventory_replay_packets\": {},\n",
@@ -1080,6 +1090,18 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         output_status.as_str(),
         requires_client_gui_writer,
         client_gui_status_request_completion.as_str(),
+        bridge.client_gui_status_request_acknowledged(),
+        bridge.client_gui_status_request_acknowledgements,
+        bridge
+            .last_acknowledged_client_gui_status_server_ack_sequence
+            .unwrap_or(0),
+        bridge.client_gui_status_pre_ack_live_object_packets_ignored,
+        bridge
+            .last_pre_ack_client_gui_status_live_object_server_sequence
+            .unwrap_or(0),
+        bridge
+            .last_pre_ack_client_gui_status_live_object_server_ack_sequence
+            .unwrap_or(0),
         client_gui_status_refresh_confirmed,
         bridge.queued_outputs,
         bridge.confirmed_inventory_replay_outputs,
@@ -2592,6 +2614,12 @@ mod tests {
                 synthetic_sequence: 81,
                 ack_sequence: 70,
             });
+        bridge.client_gui_status_request_acknowledgements = 1;
+        bridge.last_acknowledged_client_gui_status_update_index = Some(12);
+        bridge.last_acknowledged_client_gui_status_server_ack_sequence = Some(81);
+        bridge.client_gui_status_pre_ack_live_object_packets_ignored = 1;
+        bridge.last_pre_ack_client_gui_status_live_object_server_sequence = Some(47);
+        bridge.last_pre_ack_client_gui_status_live_object_server_ack_sequence = Some(80);
         bridge.client_gui_status_response_live_object_packets = 1;
         bridge.client_gui_status_response_live_gui_record_packets = 1;
         bridge.client_gui_status_response_materialized_item_packets = 1;
@@ -2662,6 +2690,15 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_client_gui_status_request_completion\": \"materialized_current_player_inventory\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_request_acknowledged\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_acknowledged_client_gui_status_server_ack_sequence\": 81"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_pre_ack_live_object_packets_ignored\": 1"
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_client_gui_status_refresh_confirmed\": true"

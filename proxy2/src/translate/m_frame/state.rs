@@ -233,6 +233,7 @@ impl InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
 pub(super) enum InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
     #[default]
     None,
+    AwaitingServerAcknowledgement,
     AwaitingResponse,
     QueuedStatusUnavailable,
     QueuedUpdateMismatch,
@@ -246,6 +247,7 @@ impl InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::AwaitingServerAcknowledgement => "awaiting_server_acknowledgement",
             Self::AwaitingResponse => "awaiting_response",
             Self::QueuedStatusUnavailable => "queued_status_unavailable",
             Self::QueuedUpdateMismatch => "queued_update_mismatch",
@@ -371,6 +373,8 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_queued_client_gui_status_update_index: Option<u64>,
     pub(super) queued_outputs: u64,
     pub(super) queued_client_gui_status_outputs: u64,
+    pub(super) client_gui_status_request_acknowledgements: u64,
+    pub(super) client_gui_status_pre_ack_live_object_packets_ignored: u64,
     pub(super) confirmed_inventory_replay_outputs: u64,
     pub(super) confirmed_inventory_replay_dispatches: u64,
     pub(super) client_gui_status_response_live_object_packets: u64,
@@ -386,6 +390,11 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_queued_output: Option<InventoryEquipmentBridgeQueuedOutput>,
     pub(super) last_queued_client_gui_status_output:
         Option<InventoryEquipmentBridgeQueuedClientGuiStatusOutput>,
+    pub(super) last_acknowledged_client_gui_status_update_index: Option<u64>,
+    pub(super) last_acknowledged_client_gui_status_server_ack_sequence: Option<u16>,
+    pub(super) last_observed_client_gui_status_server_peer_ack_sequence: Option<u16>,
+    pub(super) last_pre_ack_client_gui_status_live_object_server_sequence: Option<u16>,
+    pub(super) last_pre_ack_client_gui_status_live_object_server_ack_sequence: Option<u16>,
     pub(super) pending_confirmed_inventory_replay:
         Option<InventoryEquipmentBridgePendingConfirmedInventoryReplay>,
     pub(super) last_completed_client_gui_status_response_update_index: Option<u64>,
@@ -436,6 +445,12 @@ impl InventoryEquipmentBridgeState {
                 == self.last_queued_client_gui_status_update_index
     }
 
+    pub(super) fn client_gui_status_request_acknowledged(&self) -> bool {
+        self.last_queued_client_gui_status_update_index.is_some()
+            && self.last_acknowledged_client_gui_status_update_index
+                == self.last_queued_client_gui_status_update_index
+    }
+
     pub(super) fn record_confirmed_inventory_replay_dispatch(&mut self) {
         self.confirmed_inventory_replay_dispatches =
             self.confirmed_inventory_replay_dispatches.saturating_add(1);
@@ -463,6 +478,9 @@ impl InventoryEquipmentBridgeState {
         if !queued_status.player_inventory_gui {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ClosedInventoryRequest;
         }
+        if !self.client_gui_status_request_acknowledged() {
+            return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::AwaitingServerAcknowledgement;
+        }
         let Some(response) = self.best_client_gui_status_response else {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::AwaitingResponse;
         };
@@ -477,9 +495,10 @@ impl InventoryEquipmentBridgeState {
         // reads only the open BOOL and inventory-owner OBJECTID, then calls
         // `CNWSPlayerInventoryGUI::SetOpen`. No item candidate is present in
         // that request. Therefore the first nonempty typed live-GUI
-        // materialization in this single update-index window completes the
-        // current-player request. Candidate containment remains a stricter,
-        // independent prerequisite for replaying an earlier Inventory claim.
+        // materialization after the legacy server's reliable ACK covers the
+        // exact synthetic request completes this single update-index window.
+        // Candidate containment remains a stricter, independent prerequisite
+        // for replaying an earlier Inventory claim.
         InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
     }
 
