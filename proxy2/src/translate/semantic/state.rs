@@ -5534,6 +5534,7 @@ pub(crate) struct UiState {
     pub(crate) inventory_equipment_bridge_handoff_state_updates: u64,
     pub(crate) last_inventory_equipment_bridge_handoff_state_update:
         Option<InventoryEquipmentBridgeStateUpdate>,
+    pub(crate) live_object_inventory_materialization_observations: u64,
     pub(crate) last_live_object_inventory_materialization:
         Option<LiveObjectInventoryMaterializationSummary>,
     pub(crate) last_quickbar_family: Option<VerifiedFamily>,

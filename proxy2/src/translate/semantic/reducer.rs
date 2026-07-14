@@ -258,6 +258,10 @@ fn apply_event(
                 .ui
                 .observe_quickbar_item_use_count_updates(&event.quickbar_item_use_count_updates);
             let item_context = state.objects.inventory_item_context_summary();
+            state.ui.live_object_inventory_materialization_observations = state
+                .ui
+                .live_object_inventory_materialization_observations
+                .saturating_add(1);
             state.ui.last_live_object_inventory_materialization =
                 Some(LiveObjectInventoryMaterializationSummary {
                     live_gui_records: event.live_gui_records,

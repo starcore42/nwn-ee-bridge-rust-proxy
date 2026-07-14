@@ -65,6 +65,7 @@ pub(super) struct ServerSemanticFrameContext {
     pub(super) sequence: u16,
     pub(super) server_peer_ack_sequence: u16,
     pub(super) client_unshifted_ack_sequence: u16,
+    pub(super) observed_live_object_inventory_materialization: bool,
 }
 
 pub use state::SessionState;
@@ -623,13 +624,8 @@ fn observe_verified_server_m_packet(
     let Some(payload) = parse_window::primary_payload(packet, &view) else {
         return;
     };
-    crate::translate::semantic::observe_verified_payload_with_area_context(
-        &mut state.semantic,
-        crate::packet::Direction::ServerToClient,
-        proof,
-        payload,
-        Some(&state.area_context.latest_area_placeables),
-    );
+    let observed_live_object_inventory_materialization =
+        observe_verified_server_payload_semantics(state, proof, payload);
     apply_verified_server_semantic_side_effects(
         state,
         proof,
@@ -637,8 +633,32 @@ fn observe_verified_server_m_packet(
             sequence: view.sequence,
             server_peer_ack_sequence,
             client_unshifted_ack_sequence: view.ack_sequence,
+            observed_live_object_inventory_materialization,
         },
     );
+}
+
+pub(super) fn observe_verified_server_payload_semantics(
+    state: &mut SessionState,
+    proof: &VerifiedProof,
+    payload: &[u8],
+) -> bool {
+    let materialization_observations_before = state
+        .semantic
+        .ui
+        .live_object_inventory_materialization_observations;
+    crate::translate::semantic::observe_verified_payload_with_area_context(
+        &mut state.semantic,
+        crate::packet::Direction::ServerToClient,
+        proof,
+        payload,
+        Some(&state.area_context.latest_area_placeables),
+    );
+    state
+        .semantic
+        .ui
+        .live_object_inventory_materialization_observations
+        != materialization_observations_before
 }
 
 pub(super) fn apply_verified_server_semantic_side_effects(
@@ -652,6 +672,7 @@ pub(super) fn apply_verified_server_semantic_side_effects(
         frame.sequence,
         frame.server_peer_ack_sequence,
         frame.client_unshifted_ack_sequence,
+        frame.observed_live_object_inventory_materialization,
     );
     if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
         state,
@@ -4065,13 +4086,8 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         &reassembly,
         &verified_proof,
     );
-    crate::translate::semantic::observe_verified_payload_with_area_context(
-        &mut state.semantic,
-        crate::packet::Direction::ServerToClient,
-        &verified_proof,
-        &bytes,
-        Some(&state.area_context.latest_area_placeables),
-    );
+    let observed_live_object_inventory_materialization =
+        observe_verified_server_payload_semantics(state, &verified_proof, &bytes);
     let response_ack_sequence = reassembly
         .frames
         .last()
@@ -4088,6 +4104,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         reassembly.first_sequence,
         response_server_peer_ack_sequence,
         response_ack_sequence,
+        observed_live_object_inventory_materialization,
     );
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
         if let (Some(first_frame), Some(last_frame)) =

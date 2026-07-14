@@ -865,13 +865,8 @@ fn rewrite_coalesced_record_for_ee(
             record_sequence,
             record_ack_sequence,
         )?;
-        crate::translate::semantic::observe_verified_payload_with_area_context(
-            &mut state.semantic,
-            crate::packet::Direction::ServerToClient,
-            &verified_proof,
-            &payload,
-            Some(&state.area_context.latest_area_placeables),
-        );
+        let observed_live_object_inventory_materialization =
+            super::observe_verified_server_payload_semantics(state, &verified_proof, &payload);
         super::apply_verified_server_semantic_side_effects(
             state,
             &verified_proof,
@@ -879,6 +874,7 @@ fn rewrite_coalesced_record_for_ee(
                 sequence: record_sequence,
                 server_peer_ack_sequence,
                 client_unshifted_ack_sequence: record_ack_sequence,
+                observed_live_object_inventory_materialization,
             },
         );
         queue_module_resources_after_coalesced_module_info_if_ready(
@@ -1124,13 +1120,8 @@ fn rewrite_coalesced_record_for_ee(
 
     let verified_family = semantic_rewrite_summary.verified_family();
     let verified_proof = semantic_rewrite_summary.verified_proof();
-    crate::translate::semantic::observe_verified_payload_with_area_context(
-        &mut state.semantic,
-        crate::packet::Direction::ServerToClient,
-        &verified_proof,
-        &inflated,
-        Some(&state.area_context.latest_area_placeables),
-    );
+    let observed_live_object_inventory_materialization =
+        super::observe_verified_server_payload_semantics(state, &verified_proof, &inflated);
     let record_sequence = read_be_u16(record, 3).unwrap_or(sequence);
     let record_ack_sequence = read_be_u16(record, 5).unwrap_or(ack_sequence);
     super::apply_verified_server_semantic_side_effects(
@@ -1140,6 +1131,7 @@ fn rewrite_coalesced_record_for_ee(
             sequence: record_sequence,
             server_peer_ack_sequence,
             client_unshifted_ack_sequence: record_ack_sequence,
+            observed_live_object_inventory_materialization,
         },
     );
     queue_module_resources_after_coalesced_module_info_if_ready(

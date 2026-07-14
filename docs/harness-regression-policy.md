@@ -135,6 +135,20 @@ files, one 36-slot quickbar, and zero terminal live-object residuals. The next
 credentialed Bard50 probe must still provide the direct live confirmation above;
 no account-secret environment source was available in this run.
 
+The response window now makes semantic provenance frame-local as well. Direct,
+coalesced, and completed deflated server paths record whether reducing the
+exact current frame produced a live-object inventory-materialization
+observation. A proof that names LiveObject but has no matching current gameplay
+unit cannot pair the previous materialization summary with its own newer raw
+ACK. The exact ClientGuiInventory BOOL/OBJECTID body and MSB-first fragment
+cursor remain unchanged. Focused stale-summary coverage and strict replay
+`C:\nwnbridge\codex-proxy2-replay-frame-local-materialization-20260714-2359`
+passed; replay processed 164 packet files with 304 strict allows, zero
+strict/semantic quarantines or files, one exact 36-slot quickbar, and zero
+terminal live-object residuals. The next credentialed Bard50 run still must
+confirm that the raw-ACK-82 materialization is observed and completed from that
+same frame while the raw-ACK-81 packet remains excluded.
+
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
 `C:\nwnbridge\codex-live-account4-buffbot-scout-20260713-1200\harness-proxy-20260713-115241`,

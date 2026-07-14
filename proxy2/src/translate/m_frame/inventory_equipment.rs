@@ -292,9 +292,11 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     server_sequence: u16,
     server_peer_ack_sequence: u16,
     ack_sequence: u16,
+    observed_live_object_inventory_materialization: bool,
 ) {
     if state.inventory_equipment.queued_client_gui_status_outputs == 0
         || !proof.contains_family(VerifiedFamily::GameObjUpdateLiveObject)
+        || !observed_live_object_inventory_materialization
         || state
             .inventory_equipment
             .client_gui_status_response_window_complete()
@@ -348,6 +350,11 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
         );
         return;
     }
+    // Raw peer ACK provenance is frame-local. Keep the semantic half of the
+    // same contract frame-local too: only a live-object summary produced while
+    // reducing this exact server frame may enter the response window. A
+    // gameplay-stream proof with no matching current live-object unit must not
+    // reuse the session's previous materialization with a newer ACK.
     let Some(summary) = state
         .semantic
         .ui
@@ -1192,6 +1199,7 @@ mod tests {
             48,
             80,
             82,
+            true,
         );
 
         assert_eq!(
@@ -1315,6 +1323,7 @@ mod tests {
             60,
             81,
             78,
+            true,
         );
 
         let response = state
@@ -1377,6 +1386,7 @@ mod tests {
             61,
             81,
             78,
+            true,
         );
         assert_eq!(
             state
@@ -1410,6 +1420,7 @@ mod tests {
             62,
             81,
             79,
+            true,
         );
         assert_eq!(
             state
@@ -1429,6 +1440,75 @@ mod tests {
             !state
                 .inventory_equipment
                 .client_gui_status_response_window_complete()
+        );
+    }
+
+    #[test]
+    fn response_window_does_not_reuse_prior_materialization_without_current_frame_observation() {
+        let mut state = SessionState::default();
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(1);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 1,
+                emission_index: 1,
+                event_index: 3,
+                candidate: None,
+                ready_objects: 19,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                player_inventory_gui: true,
+                trigger_client_sequence: 81,
+                synthetic_sequence: 82,
+                ack_sequence: 35,
+            });
+        state.semantic.ui.last_live_object_inventory_materialization = Some(
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 26,
+                live_gui_fragment_bits: 178,
+                materialized_item_object_ids: vec![0x8001_64CE, 0x8001_6514],
+                compact_item_emission_ready_objects: 43,
+                compact_item_emission_ready_candidate: None,
+            },
+        );
+        state
+            .semantic
+            .ui
+            .live_object_inventory_materialization_observations = 1;
+        observe_server_ack_for_client_gui_status(&mut state, 82);
+
+        let proof = VerifiedProof::GameplayStream(vec![VerifiedFamily::GameObjUpdateLiveObject]);
+        let observed_current_materialization =
+            super::super::observe_verified_server_payload_semantics(&mut state, &proof, &[]);
+        assert!(
+            !observed_current_materialization,
+            "a proof entry without a current gameplay unit must not adopt the previous summary"
+        );
+        maybe_record_client_gui_status_live_object_response(
+            &mut state,
+            &proof,
+            36,
+            82,
+            80,
+            observed_current_materialization,
+        );
+
+        assert!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "awaiting_response"
         );
     }
 
@@ -1481,6 +1561,7 @@ mod tests {
             34,
             81,
             80,
+            true,
         );
         assert_eq!(
             state
@@ -1546,6 +1627,7 @@ mod tests {
             35,
             81,
             80,
+            true,
         );
         assert_eq!(
             state
@@ -1574,6 +1656,7 @@ mod tests {
             36,
             82,
             80,
+            true,
         );
 
         assert_eq!(
@@ -1728,6 +1811,7 @@ mod tests {
             60,
             83,
             82,
+            true,
         );
         assert_eq!(
             state.inventory_equipment.pending_confirmed_inventory_replay,
@@ -1881,6 +1965,7 @@ mod tests {
             90,
             81,
             81,
+            true,
         );
 
         state.semantic.ui.last_live_object_inventory_materialization = Some(
@@ -1903,6 +1988,7 @@ mod tests {
             105,
             81,
             81,
+            true,
         );
 
         let last = state

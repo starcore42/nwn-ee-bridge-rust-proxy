@@ -153,6 +153,23 @@ not as standalone workaround targets.
   quarantines or files, one exact 36-slot quickbar profile, and zero terminal
   live-object residuals. No account-secret environment source was present, so
   the same credentialed Bard50 live confirmation remains required.
+
+  Tightened at the semantic half of the same frame boundary on 2026-07-15.
+  Raw peer ACK provenance was already frame-local, but response association
+  still read the session's last live-object materialization summary. Direct,
+  coalesced, and completed deflated server paths now mark whether reducing the
+  exact current frame produced a live-object inventory-materialization
+  observation. Only that current-frame observation can enter or complete the
+  ClientGui status response window; a gameplay-stream proof with no matching
+  current live-object unit cannot reuse an older 26-item summary under a newer
+  ACK. This changes no ClientGuiInventory fields, MSB-first BOOL order, object
+  ID, fragment bits, or writer bytes. Focused coverage models the stale-summary
+  proof mismatch. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-frame-local-materialization-20260714-2359`
+  processed 164 packet files with 304 strict allows, zero strict/semantic
+  quarantines or files, one exact 36-slot quickbar, and zero terminal
+  live-object residuals. The same credentialed Bard50 live confirmation remains
+  required.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable
