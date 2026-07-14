@@ -401,9 +401,18 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .client_gui_status_response_materialized_item_packets
             .saturating_add(1);
     }
+    // `translate_server_to_client` records the raw peer ACK before unshifting
+    // proxy-owned client sequence intervals. The response itself keeps that
+    // exact transport boundary alongside the EE-facing ACK so a completed
+    // status window remains auditable after sequence translation.
+    let server_peer_ack_sequence = state
+        .inventory_equipment
+        .last_observed_client_gui_status_server_peer_ack_sequence
+        .unwrap_or(ack_sequence);
     let response = InventoryEquipmentBridgeClientGuiStatusResponse {
         queued_update_index,
         server_sequence,
+        server_peer_ack_sequence,
         ack_sequence,
         live_gui_records: summary.live_gui_records,
         live_gui_fragment_bits: summary.live_gui_fragment_bits,
@@ -436,6 +445,7 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
         tracing::info!(
             queued_update_index,
             server_sequence,
+            server_peer_ack_sequence,
             ack_sequence,
             request_completion = state
                 .inventory_equipment
@@ -452,6 +462,7 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
     tracing::info!(
         queued_update_index,
         server_sequence,
+        server_peer_ack_sequence,
         ack_sequence,
         live_gui_records = summary.live_gui_records,
         live_gui_fragment_bits = summary.live_gui_fragment_bits,
@@ -921,6 +932,9 @@ mod tests {
         state
             .inventory_equipment
             .last_acknowledged_client_gui_status_server_ack_sequence = Some(server_ack_sequence);
+        state
+            .inventory_equipment
+            .last_observed_client_gui_status_server_peer_ack_sequence = Some(server_ack_sequence);
     }
 
     fn ready_server_inventory_update() -> InventoryEquipmentBridgeStateUpdate {
@@ -1518,6 +1532,12 @@ mod tests {
                 .as_str(),
             "materialized_current_player_inventory"
         );
+        let response = state
+            .inventory_equipment
+            .best_client_gui_status_response
+            .expect("materialized response should be retained");
+        assert_eq!(response.server_peer_ack_sequence, 82);
+        assert_eq!(response.ack_sequence, 80);
         assert!(
             state
                 .inventory_equipment

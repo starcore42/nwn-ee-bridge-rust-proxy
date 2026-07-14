@@ -101,10 +101,25 @@ not as standalone workaround targets.
   `C:\nwnbridge\codex-proxy2-replay-status-ack-gate-final-20260714-1205`
   processed 164 packets with 304 strict allows, zero strict/semantic
   quarantines or files, and zero terminal live-object residuals. Its no-request
-  baseline exported zero acknowledgements. The 06:03 capture was about 5.6
-  hours old at this run's gate; no account-secret source was present, so the
-  next credentialed HG run must confirm raw ACK 82, one excluded pre-ACK packet,
-  `materialized_current_player_inventory`, and refresh-confirmed state.
+  baseline exported zero acknowledgements.
+
+  Tightened again 2026-07-14 without changing wire bytes: every typed response
+  snapshot now retains the raw peer-facing ACK that belonged to that exact M
+  frame, alongside the EE-unshifted ACK. Equal-strength response selection uses
+  wrapping reliable ordering instead of numeric `u16` tuple order. The hint,
+  structured log, and replay summary expose the raw ACK for both last and best
+  responses. Focused live-shaped coverage proves the materialization snapshot
+  keeps raw ACK 82 while its EE-facing ACK is 80; wrap coverage proves a later
+  sequence 1 supersedes 65535. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-response-peer-ack-20260714-1515`
+  processed 164 packets with 304 strict allows, zero strict quarantines/files,
+  and zero terminal live-object residuals; its no-request baseline exported
+  both response peer-ACK fields as zero. The 06:03 gameplay capture remained
+  about 8.6 hours old at this run's gate and had zero quarantines. No
+  account-secret source was present, so the next credentialed HG run must
+  confirm one excluded raw-ACK-81 packet, a materialized response whose own raw
+  ACK is 82, `materialized_current_player_inventory`, and refresh-confirmed
+  state.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

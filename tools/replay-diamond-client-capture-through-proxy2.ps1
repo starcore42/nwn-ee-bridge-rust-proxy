@@ -1559,6 +1559,7 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseKnown = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseQueuedUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerSequence = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerPeerAckSequence = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseAckSequence = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiRecords = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiFragmentBits = 0
@@ -1577,6 +1578,7 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnown = $false
     $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence = 0
+    $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerPeerAckSequence = 0
     $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence = 0
     $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords = 0
     $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits = 0
@@ -2133,6 +2135,7 @@ try {
         }
         $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseQueuedUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_client_gui_status_response_queued_update_index'
         $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_client_gui_status_response_server_sequence'
+        $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerPeerAckSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_client_gui_status_response_server_peer_ack_sequence'
         $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseAckSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_client_gui_status_response_ack_sequence'
         $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiRecords = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records'
         $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiFragmentBits = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits'
@@ -2169,6 +2172,7 @@ try {
         }
         $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_queued_update_index'
         $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_server_sequence'
+        $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerPeerAckSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_server_peer_ack_sequence'
         $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_ack_sequence'
         $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records'
         $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_fragment_bits'
@@ -2602,6 +2606,7 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseKnown = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseKnown
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseQueuedUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseQueuedUpdateIndex
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerSequence = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerSequence
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerPeerAckSequence = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseServerPeerAckSequence
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseAckSequence = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseAckSequence
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiRecords = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiRecords
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiFragmentBits = $quickbarHintInventoryEquipmentBridgeOutputLastClientGuiStatusResponseLiveGuiFragmentBits
@@ -2620,6 +2625,7 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnown = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseKnown
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseQueuedUpdateIndex
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerSequence
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerPeerAckSequence = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseServerPeerAckSequence
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseAckSequence
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiRecords
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits = $quickbarHintInventoryEquipmentBridgeOutputBestClientGuiStatusResponseLiveGuiFragmentBits

@@ -1041,6 +1041,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_known\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_queued_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_server_peer_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": {},\n",
@@ -1064,6 +1065,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_known\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_queued_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_server_peer_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_fragment_bits\": {},\n",
@@ -1210,6 +1212,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_client_gui_status_response_known,
         last_client_gui_status_response.queued_update_index,
         last_client_gui_status_response.server_sequence,
+        last_client_gui_status_response.server_peer_ack_sequence,
         last_client_gui_status_response.ack_sequence,
         last_client_gui_status_response.live_gui_records,
         last_client_gui_status_response.live_gui_fragment_bits,
@@ -1233,6 +1236,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         best_client_gui_status_response_known,
         best_client_gui_status_response.queued_update_index,
         best_client_gui_status_response.server_sequence,
+        best_client_gui_status_response.server_peer_ack_sequence,
         best_client_gui_status_response.ack_sequence,
         best_client_gui_status_response.live_gui_records,
         best_client_gui_status_response.live_gui_fragment_bits,
@@ -2509,6 +2513,7 @@ mod tests {
         let earlier_live_object_only = state::InventoryEquipmentBridgeClientGuiStatusResponse {
             queued_update_index: 1,
             server_sequence: 58,
+            server_peer_ack_sequence: 80,
             ack_sequence: 80,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
@@ -2524,6 +2529,7 @@ mod tests {
         let later_live_object_only = state::InventoryEquipmentBridgeClientGuiStatusResponse {
             queued_update_index: 17,
             server_sequence: 58,
+            server_peer_ack_sequence: 81,
             ack_sequence: 81,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
@@ -2550,6 +2556,19 @@ mod tests {
         assert!(!earlier_live_object_only.is_stronger_than(later_live_object_only));
         assert!(earlier_materialized.is_stronger_than(later_live_object_only));
         assert!(!later_live_object_only.is_stronger_than(earlier_materialized));
+
+        let before_wrap = state::InventoryEquipmentBridgeClientGuiStatusResponse {
+            server_sequence: u16::MAX,
+            server_peer_ack_sequence: u16::MAX,
+            ..later_live_object_only
+        };
+        let after_wrap = state::InventoryEquipmentBridgeClientGuiStatusResponse {
+            server_sequence: 1,
+            server_peer_ack_sequence: 1,
+            ..before_wrap
+        };
+        assert!(after_wrap.is_stronger_than(before_wrap));
+        assert!(!before_wrap.is_stronger_than(after_wrap));
 
         let mut bridge = state::InventoryEquipmentBridgeState {
             queued_client_gui_status_outputs: 17,
@@ -2627,6 +2646,7 @@ mod tests {
             Some(state::InventoryEquipmentBridgeClientGuiStatusResponse {
                 queued_update_index: 12,
                 server_sequence: 48,
+                server_peer_ack_sequence: 82,
                 ack_sequence: 82,
                 live_gui_records: 51,
                 live_gui_fragment_bits: 348,
@@ -2696,6 +2716,12 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_acknowledged_client_gui_status_server_ack_sequence\": 81"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_server_peer_ack_sequence\": 82"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_server_peer_ack_sequence\": 82"
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_client_gui_status_pre_ack_live_object_packets_ignored\": 1"

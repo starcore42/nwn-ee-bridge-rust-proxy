@@ -90,12 +90,19 @@ arrived with raw server ACK 81; the 26-record materialization arrived with raw
 ACK 82. Current production code preserves that peer-facing ACK before
 unshifting it to EE's sequence space, ignores live-object packets until the
 server ACK covers the exact synthetic request, and exports acknowledgement plus
-pre-ACK exclusion counters. Wrapping sequence arithmetic and one-shot ACK
-ownership have focused coverage. Strict replay
+pre-ACK exclusion counters. Each typed response snapshot also retains its own
+raw peer-facing ACK beside the EE-unshifted ACK, and equal-strength response
+selection uses wrapping reliable order. Wrapping sequence arithmetic, one-shot
+ACK ownership, raw-ACK response serialization, and the live-shaped raw-82 / EE-80
+pair have focused coverage. Strict replay
 `C:\nwnbridge\codex-proxy2-replay-status-ack-gate-final-20260714-1205` processed 164
 packets with 304 strict allows, zero quarantines/files, and zero terminal
-live-object residuals. The next credentialed HG run must report one raw
-sequence-82 acknowledgement, one excluded pre-ACK live-object packet, and
+live-object residuals. Current-code replay
+`C:\nwnbridge\codex-proxy2-replay-response-peer-ack-20260714-1515` repeated those
+counts and exported zero for both new raw-response ACK fields in its no-request
+baseline. The next credentialed HG run must report one raw sequence-82
+acknowledgement, one excluded raw-ACK-81 live-object packet, a materialized
+response whose own raw ACK is 82, and
 `materialized_current_player_inventory`; the current automation environment
 again exposed no account secret, so no password was guessed.
 

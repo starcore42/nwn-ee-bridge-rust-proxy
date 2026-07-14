@@ -155,6 +155,9 @@ pub(super) struct InventoryEquipmentBridgePendingConfirmedInventoryReplay {
 pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
     pub(super) queued_update_index: u64,
     pub(super) server_sequence: u16,
+    /// Peer-facing ACK from the legacy server before proxy-owned client
+    /// sequence intervals are hidden from EE.
+    pub(super) server_peer_ack_sequence: u16,
     pub(super) ack_sequence: u16,
     pub(super) live_gui_records: u32,
     pub(super) live_gui_fragment_bits: u32,
@@ -183,27 +186,42 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
     pub(super) fn is_stronger_than(self, other: Self) -> bool {
         let self_strength = self.strength();
         let other_strength = other.strength();
-        self_strength > other_strength
-            || (self_strength == other_strength
-                && (
-                    self.materialized_item_object_ids,
-                    self.materialized_item_object_ids_contain_queued_candidate,
-                    self.live_gui_records,
-                    self.live_gui_fragment_bits,
-                    self.queued_update_index,
-                    self.ack_sequence,
-                    self.server_sequence,
-                    self.compact_item_emission_ready_objects,
-                ) > (
-                    other.materialized_item_object_ids,
-                    other.materialized_item_object_ids_contain_queued_candidate,
-                    other.live_gui_records,
-                    other.live_gui_fragment_bits,
-                    other.queued_update_index,
-                    other.ack_sequence,
-                    other.server_sequence,
-                    other.compact_item_emission_ready_objects,
-                ))
+        if self_strength != other_strength {
+            return self_strength > other_strength;
+        }
+
+        let self_evidence = (
+            self.materialized_item_object_ids,
+            self.materialized_item_object_ids_contain_queued_candidate,
+            self.live_gui_records,
+            self.live_gui_fragment_bits,
+            self.queued_update_index,
+            self.compact_item_emission_ready_objects,
+        );
+        let other_evidence = (
+            other.materialized_item_object_ids,
+            other.materialized_item_object_ids_contain_queued_candidate,
+            other.live_gui_records,
+            other.live_gui_fragment_bits,
+            other.queued_update_index,
+            other.compact_item_emission_ready_objects,
+        );
+        if self_evidence != other_evidence {
+            return self_evidence > other_evidence;
+        }
+
+        // Reliable M sequences are wrapping u16 values. Numeric tuple ordering
+        // would retain 0xFFFF as "newer" after the stream wrapped to 1. The
+        // peer-facing ACK is the authoritative request boundary; the server
+        // sequence breaks ties between equal response evidence at that ACK.
+        if self.server_peer_ack_sequence != other.server_peer_ack_sequence {
+            return super::sequence::sequence_at_or_after(
+                self.server_peer_ack_sequence,
+                other.server_peer_ack_sequence,
+            );
+        }
+        self.server_sequence != other.server_sequence
+            && super::sequence::sequence_at_or_after(self.server_sequence, other.server_sequence)
     }
 }
 
