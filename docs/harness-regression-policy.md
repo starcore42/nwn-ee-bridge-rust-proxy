@@ -149,6 +149,20 @@ terminal live-object residuals. The next credentialed Bard50 run still must
 confirm that the raw-ACK-82 materialization is observed and completed from that
 same frame while the raw-ACK-81 packet remains excluded.
 
+The server-frame handoff now carries the exact typed live-object materialization
+summary beside its raw peer ACK. Direct, coalesced, and completed deflated paths
+no longer pass only a boolean and then reread mutable session history during
+response association. The gameplay splitter's conservative live-object
+ownership disproved a proposed multi-top-level-live-object collection, so that
+unsupported rule was removed. No ClientGuiInventory BOOL, OBJECTID, fragment
+bit, cursor, or writer byte changed. Eleven focused status tests passed,
+including stale-summary rejection. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-typed-frame-materialization-20260715-0345`
+processed 164 packet files with 304 strict allows, zero strict quarantines or
+files, and zero terminal live-object residuals. The latest live HG capture
+remains the gameplay-reaching, zero-quarantine 06:03 Bard50 artifact above;
+the raw-ACK-81/82 post-change confirmation is still the next credentialed run.
+
 The three preceding account-4 gameplay captures were
 `C:\nwnbridge\codex-live-account4-bard-pi-action-20260713-1145\harness-proxy-20260713-114158`,
 `C:\nwnbridge\codex-live-account4-buffbot-scout-20260713-1200\harness-proxy-20260713-115241`,

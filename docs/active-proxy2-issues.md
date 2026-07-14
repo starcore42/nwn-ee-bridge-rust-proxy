@@ -170,6 +170,24 @@ not as standalone workaround targets.
   quarantines or files, one exact 36-slot quickbar, and zero terminal
   live-object residuals. The same credentialed Bard50 live confirmation remains
   required.
+
+  Strengthened again on 2026-07-15 by carrying the typed materialization
+  summary itself through direct, coalesced, and completed deflated server-frame
+  contexts. The prior frame-local boolean still required response association
+  to reread mutable session history; the raw ACK and semantic summary are now
+  one immutable handoff. The gameplay splitter's conservative live-object
+  ownership directly disproved a proposed multi-top-level-live-object model, so
+  no unsupported collection rule was retained. The exact ClientGuiInventory
+  BOOL/OBJECTID body, MSB-first fragment cursor, and writers remain unchanged.
+  Eleven focused status tests passed, including stale-summary rejection. Strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-typed-frame-materialization-20260715-0345`
+  processed 164 packet files with 304 strict allows, zero strict quarantines or
+  files, and zero terminal live-object residuals. The current gameplay evidence
+  remains
+  `C:\nwnbridge\codex-live-pending-client-gui-20260714-0605\harness-proxy-20260714-060307\proxy.structured.log`,
+  timestamp `2026-07-14T06:07:29+10:00`, 20.89 hours old at this run's gate.
+  The same credentialed raw-ACK-81/82 Bard50 confirmation remains required.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

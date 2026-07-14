@@ -22,6 +22,7 @@ use crate::{
     packet::m::{HighLevel, MFrameView},
     translate::{
         ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area, client_gui_inventory,
+        semantic,
     },
 };
 
@@ -60,12 +61,13 @@ const MAX_INTERLEAVED_PACKETS: usize = 32;
 const MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS: usize = 64;
 const CNW_LENGTH_BYTES: usize = 4;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ServerSemanticFrameContext {
     pub(super) sequence: u16,
     pub(super) server_peer_ack_sequence: u16,
     pub(super) client_unshifted_ack_sequence: u16,
-    pub(super) observed_live_object_inventory_materialization: bool,
+    pub(super) live_object_inventory_materialization:
+        Option<semantic::LiveObjectInventoryMaterializationSummary>,
 }
 
 pub use state::SessionState;
@@ -624,7 +626,7 @@ fn observe_verified_server_m_packet(
     let Some(payload) = parse_window::primary_payload(packet, &view) else {
         return;
     };
-    let observed_live_object_inventory_materialization =
+    let live_object_inventory_materialization =
         observe_verified_server_payload_semantics(state, proof, payload);
     apply_verified_server_semantic_side_effects(
         state,
@@ -633,7 +635,7 @@ fn observe_verified_server_m_packet(
             sequence: view.sequence,
             server_peer_ack_sequence,
             client_unshifted_ack_sequence: view.ack_sequence,
-            observed_live_object_inventory_materialization,
+            live_object_inventory_materialization,
         },
     );
 }
@@ -642,23 +644,15 @@ pub(super) fn observe_verified_server_payload_semantics(
     state: &mut SessionState,
     proof: &VerifiedProof,
     payload: &[u8],
-) -> bool {
-    let materialization_observations_before = state
-        .semantic
-        .ui
-        .live_object_inventory_materialization_observations;
-    crate::translate::semantic::observe_verified_payload_with_area_context(
+) -> Option<semantic::LiveObjectInventoryMaterializationSummary> {
+    crate::translate::semantic::observe_verified_payload_with_area_context_report(
         &mut state.semantic,
         crate::packet::Direction::ServerToClient,
         proof,
         payload,
         Some(&state.area_context.latest_area_placeables),
-    );
-    state
-        .semantic
-        .ui
-        .live_object_inventory_materialization_observations
-        != materialization_observations_before
+    )
+    .live_object_inventory_materialization
 }
 
 pub(super) fn apply_verified_server_semantic_side_effects(
@@ -666,13 +660,13 @@ pub(super) fn apply_verified_server_semantic_side_effects(
     proof: &VerifiedProof,
     frame: ServerSemanticFrameContext,
 ) {
-    inventory_equipment::maybe_record_client_gui_status_live_object_response(
+    inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
         state,
         proof,
         frame.sequence,
         frame.server_peer_ack_sequence,
         frame.client_unshifted_ack_sequence,
-        frame.observed_live_object_inventory_materialization,
+        frame.live_object_inventory_materialization.as_ref(),
     );
     if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
         state,
@@ -4086,7 +4080,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         &reassembly,
         &verified_proof,
     );
-    let observed_live_object_inventory_materialization =
+    let live_object_inventory_materialization =
         observe_verified_server_payload_semantics(state, &verified_proof, &bytes);
     let response_ack_sequence = reassembly
         .frames
@@ -4098,13 +4092,13 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         .last()
         .map(|frame| frame.server_peer_ack_sequence)
         .unwrap_or(response_ack_sequence);
-    inventory_equipment::maybe_record_client_gui_status_live_object_response(
+    inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
         state,
         &verified_proof,
         reassembly.first_sequence,
         response_server_peer_ack_sequence,
         response_ack_sequence,
-        observed_live_object_inventory_materialization,
+        live_object_inventory_materialization.as_ref(),
     );
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
         if let (Some(first_frame), Some(last_frame)) =

@@ -286,17 +286,19 @@ pub(super) fn maybe_record_non_server_inventory_equipment_bridge_output_decision
     }
 }
 
-pub(super) fn maybe_record_client_gui_status_live_object_response(
+pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
     state: &mut SessionState,
     proof: &VerifiedProof,
     server_sequence: u16,
     server_peer_ack_sequence: u16,
     ack_sequence: u16,
-    observed_live_object_inventory_materialization: bool,
+    frame_materialization: Option<
+        &crate::translate::semantic::LiveObjectInventoryMaterializationSummary,
+    >,
 ) {
     if state.inventory_equipment.queued_client_gui_status_outputs == 0
         || !proof.contains_family(VerifiedFamily::GameObjUpdateLiveObject)
-        || !observed_live_object_inventory_materialization
+        || frame_materialization.is_none()
         || state
             .inventory_equipment
             .client_gui_status_response_window_complete()
@@ -350,27 +352,22 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
         );
         return;
     }
-    // Raw peer ACK provenance is frame-local. Keep the semantic half of the
-    // same contract frame-local too: only a live-object summary produced while
-    // reducing this exact server frame may enter the response window. A
-    // gameplay-stream proof with no matching current live-object unit must not
-    // reuse the session's previous materialization with a newer ACK.
-    let Some(summary) = state
-        .semantic
-        .ui
-        .last_live_object_inventory_materialization
-        .clone()
-    else {
+    let queued_candidate = state
+        .inventory_equipment
+        .last_queued_client_gui_status_output
+        .and_then(|queued| queued.candidate);
+    // Raw peer ACK provenance is frame-local. Carry the typed semantic summary
+    // produced while reducing this exact server frame as part of the same
+    // context, rather than proving only a boolean and then reading mutable
+    // session history. A later frame cannot substitute its summary under this
+    // frame's ACK.
+    let Some(summary) = frame_materialization.cloned() else {
         return;
     };
     let queued_update_index = state
         .inventory_equipment
         .last_queued_client_gui_status_update_index
         .unwrap_or(0);
-    let queued_candidate = state
-        .inventory_equipment
-        .last_queued_client_gui_status_output
-        .and_then(|queued| queued.candidate);
     let materialized_item_object_ids = summary.materialized_item_object_ids.len();
     let materialized_item_object_id_first = summary
         .materialized_item_object_ids
@@ -494,6 +491,34 @@ pub(super) fn maybe_record_client_gui_status_live_object_response(
             .map(|candidate| format!("0x{:08X}", candidate.object_id))
             .unwrap_or_else(|| "none".to_string()),
         "inventory/equipment bridge observed server live-object response after proxy-owned ClientGuiInventory_Status"
+    );
+}
+
+#[cfg(test)]
+fn maybe_record_client_gui_status_live_object_response(
+    state: &mut SessionState,
+    proof: &VerifiedProof,
+    server_sequence: u16,
+    server_peer_ack_sequence: u16,
+    ack_sequence: u16,
+    observed_live_object_inventory_materialization: bool,
+) {
+    let frame_materialization = observed_live_object_inventory_materialization
+        .then(|| {
+            state
+                .semantic
+                .ui
+                .last_live_object_inventory_materialization
+                .clone()
+        })
+        .flatten();
+    maybe_record_client_gui_status_live_object_frame_response(
+        state,
+        proof,
+        server_sequence,
+        server_peer_ack_sequence,
+        ack_sequence,
+        frame_materialization.as_ref(),
     );
 }
 
@@ -1192,14 +1217,19 @@ mod tests {
             },
         );
         mark_current_status_server_acknowledged(&mut state, 80);
+        let frame_materialization = state
+            .semantic
+            .ui
+            .last_live_object_inventory_materialization
+            .clone();
 
-        maybe_record_client_gui_status_live_object_response(
+        maybe_record_client_gui_status_live_object_frame_response(
             &mut state,
             &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
             48,
             80,
             82,
-            true,
+            frame_materialization.as_ref(),
         );
 
         assert_eq!(
@@ -1482,19 +1512,19 @@ mod tests {
         observe_server_ack_for_client_gui_status(&mut state, 82);
 
         let proof = VerifiedProof::GameplayStream(vec![VerifiedFamily::GameObjUpdateLiveObject]);
-        let observed_current_materialization =
+        let current_materialization =
             super::super::observe_verified_server_payload_semantics(&mut state, &proof, &[]);
         assert!(
-            !observed_current_materialization,
+            current_materialization.is_none(),
             "a proof entry without a current gameplay unit must not adopt the previous summary"
         );
-        maybe_record_client_gui_status_live_object_response(
+        maybe_record_client_gui_status_live_object_frame_response(
             &mut state,
             &proof,
             36,
             82,
             80,
-            observed_current_materialization,
+            current_materialization.as_ref(),
         );
 
         assert!(

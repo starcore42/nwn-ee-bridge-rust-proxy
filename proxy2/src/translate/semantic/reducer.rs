@@ -40,6 +40,12 @@ use super::state::QuickbarStreamProbeSummary;
 #[cfg(test)]
 use super::{InventoryItemObjectProof, InventoryItemObjectStatus};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct VerifiedPayloadSemanticObservations {
+    pub(crate) live_object_inventory_materialization:
+        Option<LiveObjectInventoryMaterializationSummary>,
+}
+
 pub(crate) fn observe_verified_payload(
     state: &mut SemanticSessionState,
     direction: Direction,
@@ -56,16 +62,39 @@ pub(crate) fn observe_verified_payload_with_area_context(
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
 ) {
+    let _ = observe_verified_payload_with_area_context_report(
+        state,
+        direction,
+        proof,
+        payload,
+        area_context,
+    );
+}
+
+pub(crate) fn observe_verified_payload_with_area_context_report(
+    state: &mut SemanticSessionState,
+    direction: Direction,
+    proof: &VerifiedProof,
+    payload: &[u8],
+    area_context: Option<&area::AreaPlaceableContext>,
+) -> VerifiedPayloadSemanticObservations {
     match proof {
-        VerifiedProof::Family(family) => {
-            observe_family_payload(state, direction, *family, payload, area_context)
-        }
+        VerifiedProof::Family(family) => VerifiedPayloadSemanticObservations {
+            live_object_inventory_materialization: observe_family_payload(
+                state,
+                direction,
+                *family,
+                payload,
+                area_context,
+            ),
+        },
         VerifiedProof::GameplayStream(families) => {
-            observe_gameplay_stream_payload(state, direction, families, payload, area_context);
+            observe_gameplay_stream_payload(state, direction, families, payload, area_context)
         }
         VerifiedProof::CoalescedWindow(_) => {
             let observed = observed_high_level(direction, VerifiedFamily::CoalescedWindow, payload);
-            apply_event(state, ProtocolEvent::Other(observed), area_context);
+            let _ = apply_event(state, ProtocolEvent::Other(observed), area_context);
+            VerifiedPayloadSemanticObservations::default()
         }
     }
 }
@@ -76,7 +105,8 @@ fn observe_gameplay_stream_payload(
     families: &[VerifiedFamily],
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
-) {
+) -> VerifiedPayloadSemanticObservations {
+    let mut observations = VerifiedPayloadSemanticObservations::default();
     let split = gameplay_stream::split_inflated_gameplay(payload);
     let mut family_iter = families.iter().copied();
     for unit in split.units {
@@ -84,14 +114,19 @@ fn observe_gameplay_stream_payload(
             let family = family_iter
                 .next()
                 .unwrap_or(VerifiedFamily::SemanticDeflated);
-            observe_family_payload(state, direction, family, message.payload, area_context);
+            let materialization =
+                observe_family_payload(state, direction, family, message.payload, area_context);
+            if observations.live_object_inventory_materialization.is_none() {
+                observations.live_object_inventory_materialization = materialization;
+            }
         }
     }
 
     for family in family_iter {
         let observed = observed_high_level(direction, family, payload);
-        apply_event(state, ProtocolEvent::Other(observed), area_context);
+        let _ = apply_event(state, ProtocolEvent::Other(observed), area_context);
     }
+    observations
 }
 
 fn observe_family_payload(
@@ -100,7 +135,7 @@ fn observe_family_payload(
     family: VerifiedFamily,
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
-) {
+) -> Option<LiveObjectInventoryMaterializationSummary> {
     let observed = observed_high_level(direction, family, payload);
     let event = match family {
         VerifiedFamily::ModuleInfo => ProtocolEvent::ModuleInfo(ModuleInfoEvent { observed }),
@@ -202,15 +237,16 @@ fn observe_family_payload(
         | VerifiedFamily::SemanticDeflated => ProtocolEvent::Other(observed),
         _ => ProtocolEvent::Other(observed),
     };
-    apply_event(state, event, area_context);
+    apply_event(state, event, area_context)
 }
 
 fn apply_event(
     state: &mut SemanticSessionState,
     event: ProtocolEvent,
     area_context: Option<&area::AreaPlaceableContext>,
-) {
+) -> Option<LiveObjectInventoryMaterializationSummary> {
     let pending_item_refresh_before_event = state.ui.post_committed_quickbar_item_refresh_pending;
+    let mut live_object_inventory_materialization = None;
     match &event {
         ProtocolEvent::ModuleInfo(event) => {
             state.resources.module_info_seen = true;
@@ -262,16 +298,17 @@ fn apply_event(
                 .ui
                 .live_object_inventory_materialization_observations
                 .saturating_add(1);
-            state.ui.last_live_object_inventory_materialization =
-                Some(LiveObjectInventoryMaterializationSummary {
-                    live_gui_records: event.live_gui_records,
-                    live_gui_fragment_bits: event.live_gui_fragment_bits,
-                    materialized_item_object_ids: event.materialized_item_object_ids.clone(),
-                    compact_item_emission_ready_objects: item_context
-                        .compact_item_emission_ready_objects,
-                    compact_item_emission_ready_candidate: item_context
-                        .compact_item_emission_ready_candidate,
-                });
+            let summary = LiveObjectInventoryMaterializationSummary {
+                live_gui_records: event.live_gui_records,
+                live_gui_fragment_bits: event.live_gui_fragment_bits,
+                materialized_item_object_ids: event.materialized_item_object_ids.clone(),
+                compact_item_emission_ready_objects: item_context
+                    .compact_item_emission_ready_objects,
+                compact_item_emission_ready_candidate: item_context
+                    .compact_item_emission_ready_candidate,
+            };
+            state.ui.last_live_object_inventory_materialization = Some(summary.clone());
+            live_object_inventory_materialization = Some(summary);
             remember_quickbar_item_context_if_relevant(state, "live-object");
         }
         ProtocolEvent::PlayerList(event) => {
@@ -830,7 +867,7 @@ fn apply_event(
                     family = event.observed.family.as_str(),
                     "semantic state observed proxy-owned inventory output without re-consuming inventory/equipment handoff"
                 );
-                return;
+                return None;
             }
             let consumer =
                 InventoryEquipmentHandoffConsumer::from_verified_family(event.observed.family);
@@ -974,6 +1011,7 @@ fn apply_event(
         );
     }
     state.remember_event(event);
+    live_object_inventory_materialization
 }
 
 fn best_committed_quickbar_item_context(

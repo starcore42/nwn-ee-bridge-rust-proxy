@@ -18,7 +18,10 @@ pub(crate) use event::{
     LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
     PlayerListEvent, ProtocolEvent, QuickbarEvent, ServerStatusEvent,
 };
-pub(crate) use reducer::{observe_verified_payload, observe_verified_payload_with_area_context};
+pub(crate) use reducer::{
+    observe_verified_payload, observe_verified_payload_with_area_context,
+    observe_verified_payload_with_area_context_report,
+};
 pub(crate) use state::{
     AreaState, AreaStaticPlaceableConflictRecordObservation,
     AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
