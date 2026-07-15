@@ -276,17 +276,30 @@ not as standalone workaround targets.
   packet remains quarantined. Production diagnostics retain that source and
   rewritten cursor evidence under
   `door-placeable-tail9-terminal-residual-fragment-bits`; a sanitized structural
-  regression proves the transaction remains uncommitted. Next: trace the
-  Diamond and EE CExoString/name branch at each nonterminal named tail9 row and
-  determine whether those rows own bounded six-bit spans before implementing
-  any multi-record removal. Final exact EE byte/bit claim remains mandatory.
+  regression proves the transaction remains uncommitted.
+
+  The client decompile trace now corrects an earlier validator assumption:
+  Diamond door/placeable readers `sub_44E2C0` / `sub_44EB40` consume five state
+  BOOLs and the mask-`0x80000` name selector, while EE dispatcher
+  `sub_1407B8380` routes object type `0x09` to `sub_140797780`, which consumes
+  six state BOOLs and then the same name selector plus locstring/direct
+  CExoString branch. EE type `0x0A` instead reaches `sub_14076FA20`, which has
+  no corresponding name read. The production exact reader now models that
+  type-specific direct-CExoString placeable branch and still rejects the nested
+  locstring branch rather than guessing its cursor. The sequence-95 structural
+  regression still reports the same 70/94 cursor and 24-bit residual, proving
+  this new validator capability does not authorize the packed live row.
+
+  Next: trace `sub_1409735F0` and the Diamond equivalent through the nested
+  locstring branch, then assign the capture-backed six packed control bits to
+  each exact nonterminal `U/09` boundary. Because EE can consume placeable
+  names, test faithful field preservation before extending the older
+  name-removal workaround. Final exact EE byte/bit claim remains mandatory.
   Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-tail9-residual-20260715-1545`
+  `C:\nwnbridge\codex-proxy2-replay-ee-placeable-name-20260715-1820`
   processed 164 packet files with 304 strict allows, zero strict or semantic
   quarantines/files, one committed 36-slot quickbar, two area context checks,
-  and zero terminal live-object residuals. The first launch used an unavailable
-  default UDP port and processed no packets; the successful run used isolated
-  ports 55221/55233.
+  and zero terminal live-object residuals on isolated ports 56221/56233.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

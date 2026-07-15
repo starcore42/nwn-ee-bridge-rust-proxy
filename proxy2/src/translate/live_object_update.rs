@@ -6528,6 +6528,7 @@ mod diagnostic_tests {
                 neutral_ee_state_suffix: false,
             }),
             state_bit_cursor: Some(state_bit_cursor),
+            placeable_name: None,
             next_bit_cursor: state_bit_cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1,
         }
     }

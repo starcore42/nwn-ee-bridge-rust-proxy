@@ -33,7 +33,16 @@ pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) scale_state: Option<VerifiedEeDoorPlaceableScaleState>,
     pub(super) state: Option<VerifiedEeDoorPlaceableState>,
     pub(super) state_bit_cursor: Option<usize>,
+    pub(super) placeable_name: Option<VerifiedEePlaceableName>,
     pub(super) next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedEePlaceableName {
+    pub(super) read_offset: usize,
+    pub(super) read_end: usize,
+    pub(super) selector_bit_cursor: usize,
+    pub(super) byte_length: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -432,16 +441,22 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     }
 
     let mask = read_u32_le(bytes, offset + 6)?;
-    // EE generic door/placeable updates are verified against the actual EE
-    // reader/writer shape. `sub_14079C050` consumes position, orientation,
-    // scale/state, and state here; unlike Diamond's generic update path, it has
-    // no bit-13 / 0x0008_0000 name branch. A translated EE packet carrying that
-    // legacy bit is therefore invalid even if its byte layout looks plausible.
-    let allowed_mask = LEGACY_UPDATE_POSITION_MASK
+    // EE dispatch `sub_1407B8380` runs the shared `sub_14079C050` reader and
+    // then dispatches object type 0x09 to the placeable-specific
+    // `sub_140797780`. That reader consumes six state BOOLs and tests mask bit
+    // 19 (`0x0008_0000`) before reading a selector BOOL and either a localized
+    // string or `ReadCExoString(32)`. Object type 0x0A instead dispatches to
+    // `sub_14076FA20`, which has no corresponding name read. Keep the name bit
+    // type-specific so a semantically plausible door row cannot shift the
+    // shared fragment cursor.
+    let mut allowed_mask = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
         | LEGACY_UPDATE_STATE_MASK
         | LEGACY_UPDATE_APPEARANCE_MASK;
+    if object_type == PLACEABLE_OBJECT_TYPE {
+        allowed_mask |= LEGACY_UPDATE_NAME_MASK;
+    }
     if mask == 0 || (mask & !allowed_mask) != 0 {
         return None;
     }
@@ -456,6 +471,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let mut scale_state = None;
     let mut state = None;
     let mut state_bit_cursor = None;
+    let mut placeable_name = None;
 
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
         // Diamond `sub_467AE0` and EE `sub_14079C050` both read the shared
@@ -651,6 +667,35 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         }
     }
 
+    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        if object_type != PLACEABLE_OBJECT_TYPE {
+            return None;
+        }
+        let selector_bit_cursor = fragment_cursor;
+        let localized = fragment_bits.get(fragment_cursor).copied()?;
+        fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+        if localized {
+            // EE `sub_140797780` calls `sub_1409735F0` for this branch. Its
+            // nested locstring field order is intentionally not guessed here;
+            // the exact validator claims the direct CExoString branch until a
+            // bounded typed locstring parser is added.
+            return None;
+        }
+        let name_read_offset = read_cursor;
+        let name_read_end = inline_cexo_string_end(bytes, name_read_offset)?;
+        let byte_length = name_read_end.checked_sub(name_read_offset + 4)?;
+        if name_read_end > record_end {
+            return None;
+        }
+        read_cursor = name_read_end;
+        placeable_name = Some(VerifiedEePlaceableName {
+            read_offset: name_read_offset,
+            read_end: name_read_end,
+            selector_bit_cursor,
+            byte_length,
+        });
+    }
+
     if read_cursor != record_end {
         if debug_live_claim {
             eprintln!(
@@ -670,6 +715,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         scale_state,
         state,
         state_bit_cursor,
+        placeable_name,
         next_bit_cursor: fragment_cursor,
     })
 }
@@ -791,6 +837,61 @@ pub(super) fn is_plausible_legacy_object_scale(scale: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ee_placeable_update_parser_claims_direct_name_branch() {
+        let object_id = 0x1234_ABCD_u32;
+        let name = b"Storage Drum";
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+        let bits = [false]; // direct CExoString selector in `sub_140797780`.
+
+        let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
+            .expect("EE placeable direct-name update should exact-claim");
+        let placeable_name = claim.placeable_name.expect("typed placeable name");
+
+        assert_eq!(placeable_name.read_offset, LEGACY_UPDATE_HEADER_BYTES);
+        assert_eq!(placeable_name.read_end, live.len());
+        assert_eq!(placeable_name.selector_bit_cursor, 0);
+        assert_eq!(placeable_name.byte_length, name.len());
+        assert_eq!(claim.next_bit_cursor, 1);
+    }
+
+    #[test]
+    fn ee_door_update_parser_rejects_placeable_only_name_branch() {
+        let object_id = 0x1234_ABCD_u32;
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', DOOR_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
+        live.extend_from_slice(&0_u32.to_le_bytes());
+
+        assert!(
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[false], 0,)
+                .is_none(),
+            "EE object type 0x0A dispatches to sub_14076FA20, which does not consume mask 0x80000"
+        );
+    }
+
+    #[test]
+    fn ee_placeable_update_parser_does_not_guess_nested_locstring_shape() {
+        let object_id = 0x1234_ABCD_u32;
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
+        live.extend_from_slice(&0_u32.to_le_bytes());
+
+        assert!(
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[true], 0,)
+                .is_none(),
+            "localized names require the still-unimplemented sub_1409735F0 field walk"
+        );
+    }
 
     #[test]
     fn door_placeable_update_parser_retains_custom_appearance_resref() {

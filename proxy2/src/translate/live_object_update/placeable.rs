@@ -14,11 +14,13 @@ pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
     // `0x445160` orientation-BOOL path; the typed update writer converts that
     // WORD to EE's scalar branch. Dropping this bit makes static signs/boards
     // keep stale/default orientation.
-    // Diamond's generic update writer has a legacy 0x0008_0000 name/locstring
-    // branch (`nwserver` around 0x446061), but EE's generic update reader/writer
-    // pair (`sub_14079C050` / `WriteGameObjUpdate_UpdateObject`) has no bit-13
-    // consumer in this packet family. Keep that legacy field as input-only until
-    // a separate EE semantic packet is proven from the decompile.
+    // EE's shared `sub_14079C050` reader has no name branch, but dispatcher
+    // `sub_1407B8380` sends object type 0x09 to placeable-specific
+    // `sub_140797780`, which tests mask 0x0008_0000 and reads the same
+    // selector + locstring/CExoString family as Diamond `sub_44EB40`. The exact
+    // EE reader model therefore accepts bounded direct-name placeable updates.
+    // Translation still drops this source bit until the capture-backed packed
+    // CExoString control fragments are fully owned across nonterminal records.
     // Local CEP v2.2 and XP2 captures also show low 0x40/0x80 placeable update
     // bits with a bounded name/control tail after the shared generic prefix.
     // Neither EE's shared reader (`sub_14079C050`) nor its placeable-specific
