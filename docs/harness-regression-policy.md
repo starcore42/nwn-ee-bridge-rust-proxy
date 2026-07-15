@@ -49,15 +49,16 @@ source-to-EE field walk; no proof yet authorizes those remaining bits.
 The strict proxy correctly quarantined two copies plus one rejected diagnostic
 candidate. The structured log ended at `2026-07-15T14:54:03+10:00`; gameplay
 was reached, but `UseObject` did not complete before the run was stopped.
-Diagnose this failure by confirming the six record boundaries and the typed
-terminal residual evidence; do not trim or passthrough the fragment tail. The
-Diamond/EE name helper trace is now complete: the outer placeable-name BOOL is
-followed, for locstrings, by one inner BOOL selecting bounded CExoString versus
-`BYTE(1,1)` plus DWORD strref. Production exact validation owns those three
-name forms and their MSB-first cursors. The next fix must trace the terminal
-source selector and the remaining 17 bits against the Diamond/EE field walk,
-then require a final exact EE claim before rerunning the live door `UseObject`
-probe.
+Production diagnostics now confirm the terminal source reader begins at bit 58
+of 84, reads five state BOOLs plus name selectors `1,0` at cursors 65/66 and an
+inline locstring CExoString, then stops exactly at bit 67. Its 17-bit residual
+starts `0010000000100011` plus one bit. The EE-shaped write inserts the proven
+sixth state BOOL, stops at bit 73 of 90, and retains the identical residual.
+Do not trim or passthrough that fragment tail: it begins after the complete
+Diamond terminal reader. The next fix must build a source/emitted bit ledger
+across the preceding second `A/09` and terminal `U/09`, identify the earlier
+writer that owns `00100000001000110`, require a final exact EE claim, and then
+rerun the live door `UseObject` probe.
 
 The earlier zero-quarantine account-5 capture
 `C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`
@@ -67,11 +68,11 @@ peer ACK 81, completed as `materialized_current_player_inventory`, and ended at
 `2026-07-15T08:53:19+10:00` with zero quarantine files.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-nonterminal-tail9-final-20260716-002115`
+`C:\nwnbridge\codex-proxy2-replay-tail9-evidence-20260716-0310`
 processed the 164-packet Diamond gameplay set with 304 strict allows, zero
 strict or semantic quarantines/files, one exact 36-slot quickbar, two area
 context checks, and zero terminal live-object residuals. It used isolated
-replay ports 59221/59233.
+replay ports 60221/60233.
 
 Area translation performance is now anchored by the same strict 164-packet
 Diamond replay used for the current two-area regression. Profiling proved that

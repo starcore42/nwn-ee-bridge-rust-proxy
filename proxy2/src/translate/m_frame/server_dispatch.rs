@@ -3085,12 +3085,33 @@ fn trace_live_object_update_rewrite_failure(
             tail9_source_bit_cursor = tail9_residual
                 .map(|evidence| evidence.source_bit_cursor)
                 .unwrap_or_default(),
+            tail9_source_reader_bit_cursor = tail9_residual
+                .map(|evidence| evidence.source_reader_bit_cursor)
+                .unwrap_or_default(),
+            tail9_source_reader_bits_consumed = tail9_residual
+                .map(|evidence| evidence.source_reader_bits_consumed)
+                .unwrap_or_default(),
+            tail9_source_name_selector_bit_cursor = ?tail9_residual
+                .and_then(|evidence| evidence.source_name_selector_bit_cursor),
+            tail9_source_name_selector = ?tail9_residual
+                .and_then(|evidence| evidence.source_name_selector),
+            tail9_source_name_locstring_selector_bit_cursor = ?tail9_residual
+                .and_then(|evidence| evidence.source_name_locstring_selector_bit_cursor),
+            tail9_source_name_locstring_selector = ?tail9_residual
+                .and_then(|evidence| evidence.source_name_locstring_selector),
+            tail9_source_name_kind = tail9_residual
+                .and_then(|evidence| evidence.source_name_kind)
+                .unwrap_or("none"),
+            tail9_source_reader_residual = ?tail9_residual
+                .map(|evidence| evidence.source_reader_residual),
             tail9_rewritten_fragment_bit_count = tail9_residual
                 .map(|evidence| evidence.rewritten_fragment_bit_count)
                 .unwrap_or_default(),
             tail9_residual_fragment_bits = tail9_residual
                 .map(|evidence| evidence.residual_fragment_bits)
                 .unwrap_or_default(),
+            tail9_rewritten_residual = ?tail9_residual
+                .map(|evidence| evidence.rewritten_residual),
             tail9_proven_terminal_packed_name_bits = tail9_residual
                 .map(|evidence| evidence.proven_terminal_packed_name_bits)
                 .unwrap_or_default(),

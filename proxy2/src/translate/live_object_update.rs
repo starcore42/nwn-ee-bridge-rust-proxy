@@ -19096,9 +19096,18 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub raw_mask: u32,
     pub translated_mask: u32,
     pub source_bit_cursor: usize,
+    pub source_reader_bit_cursor: usize,
+    pub source_reader_bits_consumed: usize,
+    pub source_name_selector_bit_cursor: Option<usize>,
+    pub source_name_selector: Option<bool>,
+    pub source_name_locstring_selector_bit_cursor: Option<usize>,
+    pub source_name_locstring_selector: Option<bool>,
+    pub source_name_kind: Option<&'static str>,
+    pub source_reader_residual: LiveObjectUpdateRewriteBitSliceEvidence,
     pub rewritten_bit_cursor: usize,
     pub rewritten_fragment_bit_count: usize,
     pub residual_fragment_bits: usize,
+    pub rewritten_residual: LiveObjectUpdateRewriteBitSliceEvidence,
     pub proven_terminal_packed_name_bits: usize,
 }
 
@@ -38440,7 +38449,7 @@ fn format_bit_values_preview(bits: &[bool]) -> String {
     )
 }
 
-fn live_object_rewrite_bit_slice_evidence(
+pub(super) fn live_object_rewrite_bit_slice_evidence(
     bit_start: usize,
     bit_end: usize,
     values: &[bool],

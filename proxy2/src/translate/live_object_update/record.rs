@@ -2264,23 +2264,49 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         raw_mask,
         translated_mask,
     )?;
-    if object_type == PLACEABLE_OBJECT_TYPE {
-        let selector_bit_cursor =
-            bit_cursor.checked_add(low_prefix_door_placeable_update_source_fragment_bits(
-                claim.fragment_source_mask & !LEGACY_UPDATE_NAME_MASK,
-            ))?;
-        if let Some(name) = reader::parse_legacy_tail9_placeable_name_for_ee(
+    let source_name_selector_bit_cursor =
+        bit_cursor.checked_add(low_prefix_door_placeable_update_source_fragment_bits(
+            claim.fragment_source_mask & !LEGACY_UPDATE_NAME_MASK,
+        ))?;
+    let source_name = if object_type == PLACEABLE_OBJECT_TYPE {
+        let source_name = reader::parse_legacy_tail9_placeable_name_for_ee(
             live_bytes,
             claim.tail_offset.saturating_add(9),
             record_end,
             fragment_bits,
-            selector_bit_cursor,
-        ) {
+            source_name_selector_bit_cursor,
+        );
+        if let Some(name) = source_name {
             claim.translated_mask |= LEGACY_UPDATE_NAME_MASK;
             claim.name_inner_fragment_bits = name.selector_fragment_bits.saturating_sub(1);
             claim.preserved_placeable_name_kind = Some(name.kind);
         }
-    }
+        source_name
+    } else {
+        None
+    };
+
+    let source_reader_bits_consumed = claim.source_reader_bits_consumed();
+    let source_reader_bit_cursor = bit_cursor.checked_add(source_reader_bits_consumed)?;
+    let source_reader_residual = super::live_object_rewrite_bit_slice_evidence(
+        source_reader_bit_cursor,
+        fragment_bits.len(),
+        fragment_bits.get(source_reader_bit_cursor..).unwrap_or(&[]),
+    );
+    let source_name_kind = source_name.map(|name| match name.kind {
+        reader::VerifiedEePlaceableNameKind::DirectCExoString { .. } => "direct-cexostring",
+        reader::VerifiedEePlaceableNameKind::LocStringInlineCExoString { .. } => {
+            "locstring-inline-cexostring"
+        }
+        reader::VerifiedEePlaceableNameKind::LocStringTlkRef { .. } => "locstring-tlk-ref",
+    });
+    let source_name_selector =
+        source_name.and_then(|_| fragment_bits.get(source_name_selector_bit_cursor).copied());
+    let source_name_locstring_selector_bit_cursor = source_name
+        .filter(|name| name.selector_fragment_bits > 1)
+        .map(|_| source_name_selector_bit_cursor.saturating_add(1));
+    let source_name_locstring_selector = source_name_locstring_selector_bit_cursor
+        .and_then(|cursor| fragment_bits.get(cursor).copied());
 
     // Mirror only the decompile-owned MSB-first source/emitted field walk. The
     // result is diagnostic evidence, never an authorization to erase the
@@ -2298,6 +2324,11 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         &mut rewritten_bit_cursor,
     )?;
     let residual_fragment_bits = rewritten_bits.len().saturating_sub(rewritten_bit_cursor);
+    let rewritten_residual = super::live_object_rewrite_bit_slice_evidence(
+        rewritten_bit_cursor,
+        rewritten_bits.len(),
+        rewritten_bits.get(rewritten_bit_cursor..).unwrap_or(&[]),
+    );
     let proven_terminal_packed_name_bits = if residual_fragment_bits
         == LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS
         && reader::legacy_name_tail_ready(
@@ -2317,9 +2348,18 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         raw_mask,
         translated_mask: claim.translated_mask,
         source_bit_cursor: bit_cursor,
+        source_reader_bit_cursor,
+        source_reader_bits_consumed,
+        source_name_selector_bit_cursor: source_name.map(|_| source_name_selector_bit_cursor),
+        source_name_selector,
+        source_name_locstring_selector_bit_cursor,
+        source_name_locstring_selector,
+        source_name_kind,
+        source_reader_residual,
         rewritten_bit_cursor,
         rewritten_fragment_bit_count: rewritten_bits.len(),
         residual_fragment_bits,
+        rewritten_residual,
         proven_terminal_packed_name_bits,
     })
 }

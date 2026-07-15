@@ -291,20 +291,26 @@ not as standalone workaround targets.
   Invalid client-TLK selector bytes reject. Name preservation is restricted to
   the proven nonterminal direct-name handoff; applying it to terminal compact
   rows caused three older strict-replay frames to reject and was removed. The
-  sequence-95 structural regression now reaches source cursor 58 and rewritten
-  cursor 73 in a 90-bit stream, leaving 17 bits. The translated terminal mask is
-  `0x00080017`, but the packet still rejects transactionally because no
-  decompile or capture proof authorizes those remaining bits.
+  sequence-95 structural regression now reaches source cursor 58 in an 84-bit
+  staged source. Production diagnostics retain the exact terminal Diamond read:
+  five state BOOLs, outer/inner name selectors `1,0` at cursors 65/66, an inline
+  locstring CExoString, and reader end cursor 67. The residual source window is
+  therefore exactly 17 bits at `67..84`, beginning `0010000000100011` with one
+  additional bit. The hypothetical EE write inserts its sixth state BOOL and
+  ends at cursor 73 in 90 bits, leaving the identical 17-bit residual. The
+  translated terminal mask is `0x00080017`, but the packet still rejects
+  transactionally: the Diamond terminal reader has already stopped, so no
+  decompile or capture proof authorizes trimming those bits.
 
-  Next: trace the terminal source selector and the remaining 17 bits against
-  the per-record Diamond/EE field walk. Do not trim them; implement only the
-  spans proven to belong to the terminal name/state branches, require a final
-  exact EE byte/bit claim, then rerun the live door `UseObject` probe.
-  Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-nonterminal-tail9-final-20260716-002115`
+  Next: build a source/emitted bit ledger across the preceding second `A/09`
+  and terminal `U/09`, and identify which earlier writer owns
+  `00100000001000110`. Do not trim or passthrough the terminal residual; change
+  only a decompile-proven earlier handoff, require a final exact EE byte/bit
+  claim, then rerun the live door `UseObject` probe. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-tail9-evidence-20260716-0310`
   processed 164 packet files with 304 strict allows, zero strict or semantic
   quarantines/files, one committed 36-slot quickbar, two area context checks,
-  and zero terminal live-object residuals on isolated ports 59221/59233.
+  and zero terminal live-object residuals on isolated ports 60221/60233.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable
