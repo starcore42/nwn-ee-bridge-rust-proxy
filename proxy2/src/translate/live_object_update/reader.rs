@@ -53,6 +53,12 @@ pub(super) enum VerifiedEePlaceableNameKind {
     LocStringTlkRef { client_tlk: u8, strref: u32 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VerifiedLegacyTail9PlaceableName {
+    pub(super) kind: VerifiedEePlaceableNameKind,
+    pub(super) selector_fragment_bits: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct VerifiedEeDoorPlaceablePosition {
     pub(super) read_offset: usize,
@@ -780,6 +786,66 @@ fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     // decompiled reader consumes raw bytes, so embedded NUL padding is legal
     // and must not force a shifted short-name interpretation.
     Some(offset + 4 + length)
+}
+
+pub(super) fn parse_legacy_tail9_placeable_name_for_ee(
+    bytes: &[u8],
+    name_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    selector_bit_cursor: usize,
+) -> Option<VerifiedLegacyTail9PlaceableName> {
+    if name_offset >= record_end || record_end > bytes.len() {
+        return None;
+    }
+
+    // Diamond `sub_44EB40` and EE `sub_140797780` use the same outer name
+    // selector. The localized branch then enters Diamond `sub_53E700` / EE
+    // `sub_1409735F0`, whose inner selector chooses inline CExoString versus
+    // the one-byte client-TLK selector plus DWORD strref. Require the byte-side
+    // branch to end at this exact tail9 record boundary before it can be
+    // preserved in the EE mask.
+    let localized = fragment_bits.get(selector_bit_cursor).copied()?;
+    if !localized {
+        let name_end = inline_cexo_string_end(bytes, name_offset)?;
+        if name_end != record_end {
+            return None;
+        }
+        return Some(VerifiedLegacyTail9PlaceableName {
+            kind: VerifiedEePlaceableNameKind::DirectCExoString {
+                byte_length: name_end.checked_sub(name_offset + 4)?,
+            },
+            selector_fragment_bits: 1,
+        });
+    }
+
+    let client_tlk_ref = fragment_bits
+        .get(selector_bit_cursor.checked_add(1)?)
+        .copied()?;
+    if client_tlk_ref {
+        let name_end = locstring::tlk_locstring_ref_end(bytes, name_offset)?;
+        if name_end != record_end {
+            return None;
+        }
+        Some(VerifiedLegacyTail9PlaceableName {
+            kind: VerifiedEePlaceableNameKind::LocStringTlkRef {
+                client_tlk: *bytes.get(name_offset)?,
+                strref: read_u32_le(bytes, name_offset + 1)?,
+            },
+            selector_fragment_bits: 2,
+        })
+    } else {
+        let name_end = inline_cexo_string_end(bytes, name_offset)?;
+        if name_end != record_end {
+            return None;
+        }
+        Some(VerifiedLegacyTail9PlaceableName {
+            kind: VerifiedEePlaceableNameKind::LocStringInlineCExoString {
+                byte_length: name_end.checked_sub(name_offset + 4)?,
+            },
+            selector_fragment_bits: 2,
+        })
+    }
 }
 
 pub(super) fn legacy_packed_name_tail_ready(

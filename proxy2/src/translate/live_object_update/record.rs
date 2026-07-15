@@ -72,6 +72,8 @@ struct CompactDoorPlaceableTail9UpdateClaim {
     tail: reader::LegacyNamedUpdateTail,
     following_payload_ready: bool,
     extra_legacy_name_fragment_bits: usize,
+    name_inner_fragment_bits: usize,
+    preserved_placeable_name_kind: Option<reader::VerifiedEePlaceableNameKind>,
     translated_mask: u32,
     fragment_source_mask: u32,
     orientation_rewrite: OrientationFragmentRewrite,
@@ -83,8 +85,13 @@ impl CompactDoorPlaceableTail9UpdateClaim {
     }
 
     fn source_bits_consumed(self) -> usize {
-        low_prefix_door_placeable_update_source_fragment_bits(self.fragment_source_mask)
+        self.source_reader_bits_consumed()
             .saturating_add(self.extra_legacy_name_fragment_bits)
+    }
+
+    fn source_reader_bits_consumed(self) -> usize {
+        low_prefix_door_placeable_update_source_fragment_bits(self.fragment_source_mask)
+            .saturating_add(self.name_inner_fragment_bits)
     }
 }
 
@@ -501,8 +508,56 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             // before the compact inline-name repair is considered.
             tail_ready = true;
             tail_needs_empty_name = claim.tail_needs_empty_name();
-            let base_source_bits =
-                low_prefix_door_placeable_update_source_fragment_bits(claim.fragment_source_mask);
+            let followed_by_placeable_add = *record_end < live_bytes.len()
+                && live_bytes.get(*record_end).copied() == Some(b'A')
+                && live_bytes.get((*record_end).saturating_add(1)).copied()
+                    == Some(PLACEABLE_OBJECT_TYPE);
+            if object_type == PLACEABLE_OBJECT_TYPE && followed_by_placeable_add {
+                let selector_bit_cursor = (*bit_cursor).checked_add(
+                    low_prefix_door_placeable_update_source_fragment_bits(
+                        claim.fragment_source_mask & !LEGACY_UPDATE_NAME_MASK,
+                    ),
+                )?;
+                if let Some(name) = reader::parse_legacy_tail9_placeable_name_for_ee(
+                    live_bytes,
+                    claim.tail_offset.saturating_add(9),
+                    *record_end,
+                    bits,
+                    selector_bit_cursor,
+                ) && matches!(
+                    name.kind,
+                    reader::VerifiedEePlaceableNameKind::DirectCExoString { .. }
+                ) {
+                    claim.translated_mask |= LEGACY_UPDATE_NAME_MASK;
+                    claim.name_inner_fragment_bits = name.selector_fragment_bits.saturating_sub(1);
+                    claim.preserved_placeable_name_kind = Some(name.kind);
+                }
+            }
+            let base_source_bits = claim.source_reader_bits_consumed();
+            if *record_end < live_bytes.len()
+                && object_type == PLACEABLE_OBJECT_TYPE
+                && matches!(
+                    claim.preserved_placeable_name_kind,
+                    Some(reader::VerifiedEePlaceableNameKind::DirectCExoString { .. })
+                )
+                && followed_by_placeable_add
+                && reader::legacy_name_tail_ready(
+                    live_bytes,
+                    claim.tail_offset.saturating_add(9),
+                    *record_end,
+                )
+                && bits.len().saturating_sub(*bit_cursor)
+                    >= base_source_bits.saturating_add(LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS)
+            {
+                // The live HG alternating A/U stream proves that a nonterminal
+                // named compact U/09 owns six packed name-control bits before
+                // the next record's selector. Leaving them in place makes the
+                // following direct-name A/09 start six bits early. This remains
+                // transactional: the whole rewritten stream must still exact-
+                // claim through the EE byte reader and MSB-first fragment walk.
+                claim.extra_legacy_name_fragment_bits = LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS;
+                tail9_legacy_name_fragment_bits_to_remove = LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS;
+            }
             if *record_end == live_bytes.len()
                 && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
                 && bits.len().saturating_sub(*bit_cursor)
@@ -1302,6 +1357,9 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             fragment_source_mask,
             translated_mask,
             orientation_fragment_rewrite,
+            compact_tail9_claim
+                .map(|claim| claim.name_inner_fragment_bits)
+                .unwrap_or(0),
             &mut rewritten_bits,
             &mut rewritten_bit_cursor,
         ) else {
@@ -2173,6 +2231,8 @@ fn parse_compact_door_placeable_tail9_update_claim(
         tail,
         following_payload_ready,
         extra_legacy_name_fragment_bits: 0,
+        name_inner_fragment_bits: 0,
+        preserved_placeable_name_kind: None,
         translated_mask: claim_translated_mask,
         fragment_source_mask,
         orientation_rewrite,
@@ -2196,7 +2256,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
     let object_type = live_bytes.get(record_offset + 1).copied()?;
     let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
     let translated_mask = translate_legacy_live_object_update_mask(object_type, raw_mask);
-    let claim = parse_compact_door_placeable_tail9_update_claim(
+    let mut claim = parse_compact_door_placeable_tail9_update_claim(
         live_bytes,
         record_offset,
         record_end,
@@ -2204,6 +2264,23 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         raw_mask,
         translated_mask,
     )?;
+    if object_type == PLACEABLE_OBJECT_TYPE {
+        let selector_bit_cursor =
+            bit_cursor.checked_add(low_prefix_door_placeable_update_source_fragment_bits(
+                claim.fragment_source_mask & !LEGACY_UPDATE_NAME_MASK,
+            ))?;
+        if let Some(name) = reader::parse_legacy_tail9_placeable_name_for_ee(
+            live_bytes,
+            claim.tail_offset.saturating_add(9),
+            record_end,
+            fragment_bits,
+            selector_bit_cursor,
+        ) {
+            claim.translated_mask |= LEGACY_UPDATE_NAME_MASK;
+            claim.name_inner_fragment_bits = name.selector_fragment_bits.saturating_sub(1);
+            claim.preserved_placeable_name_kind = Some(name.kind);
+        }
+    }
 
     // Mirror only the decompile-owned MSB-first source/emitted field walk. The
     // result is diagnostic evidence, never an authorization to erase the
@@ -2216,6 +2293,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         claim.fragment_source_mask,
         claim.translated_mask,
         claim.orientation_rewrite,
+        claim.name_inner_fragment_bits,
         &mut rewritten_bits,
         &mut rewritten_bit_cursor,
     )?;
@@ -2731,6 +2809,7 @@ fn rewrite_legacy_live_object_update_bits(
     source_mask: u32,
     translated_mask: u32,
     orientation_rewrite: OrientationFragmentRewrite,
+    name_inner_fragment_bits: usize,
     bits: &mut Vec<bool>,
     bit_cursor: &mut usize,
 ) -> Option<FragmentRewrite> {
@@ -2881,14 +2960,18 @@ fn rewrite_legacy_live_object_update_bits(
     let translated_has_name = (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0;
     match (source_has_name, translated_has_name) {
         (true, true) => {
-            if bits.len().saturating_sub(cursor) < 1 {
+            let selector_bits = 1usize.saturating_add(name_inner_fragment_bits);
+            if bits.len().saturating_sub(cursor) < selector_bits {
                 return None;
             }
-            cursor += 1;
+            cursor += selector_bits;
         }
         (true, false) => {
-            bits::erase_msb_bits(bits, cursor, 1)?;
-            rewrite.bits_removed = rewrite.bits_removed.saturating_add(1);
+            let selector_bits = 1usize.saturating_add(name_inner_fragment_bits);
+            bits::erase_msb_bits(bits, cursor, selector_bits)?;
+            rewrite.bits_removed = rewrite
+                .bits_removed
+                .saturating_add(u32::try_from(selector_bits).unwrap_or(u32::MAX));
         }
         (false, true) => {
             if object_type == TRIGGER_OBJECT_TYPE {
@@ -3425,6 +3508,66 @@ mod tests {
     }
 
     #[test]
+    fn nonterminal_named_placeable_tail9_owns_packed_control_span_and_preserves_name() {
+        let name = b"Storage Drum";
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_1002u32.to_le_bytes());
+        live.extend_from_slice(&0xFFFF_FFF7u32.to_le_bytes());
+        live.extend_from_slice(&[0x43, 0x19, 0x1A, 0x1D, 0x11, 0x0F]);
+        live.extend_from_slice(&0x03E7u16.to_le_bytes());
+        live.push(0);
+        live.extend_from_slice(&1.0f32.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+        let mut record_end = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+
+        let mut bits = vec![
+            true, false, // shared packed position low bits.
+            false, true, false, true, false, // five Diamond placeable state BOOLs.
+            false, // direct CExoString outer selector.
+            true, false, true, false, true, false, // packed legacy name controls.
+        ];
+        bits.extend_from_slice(&[false; 11]); // following A/09 source selectors.
+        let mut bit_cursor = 0usize;
+        let mut bit_cursor_reliable = true;
+
+        let rewrite = rewrite_update_record_for_ee(
+            &mut live,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            &mut bit_cursor_reliable,
+            0,
+        )
+        .expect("bounded nonterminal named tail9 should rewrite");
+
+        assert!(bit_cursor_reliable);
+        assert_eq!(rewrite.bits_inserted, 6);
+        assert_eq!(rewrite.bits_removed, 6);
+        assert_eq!(bit_cursor, 14);
+        let bit_claim = rewrite.bit_claim.expect("typed tail9 source claim");
+        assert_eq!(bit_claim.source_bits_consumed, 14);
+        assert_eq!(read_u32_le(&live, 6), Some(0x0008_0017));
+        assert_eq!(
+            live.get(record_end..record_end + 2),
+            Some([b'A', PLACEABLE_OBJECT_TYPE].as_slice()),
+            "byte-side next-record boundary must move with the tail rewrite"
+        );
+
+        let claim =
+            reader::parse_verified_ee_door_placeable_update_record(&live, 0, record_end, &bits, 0)
+                .expect("rewritten placeable name must exact-claim through the EE reader");
+        assert_eq!(claim.next_bit_cursor, bit_cursor);
+        assert!(matches!(
+            claim.placeable_name.map(|name| name.kind),
+            Some(reader::VerifiedEePlaceableNameKind::DirectCExoString { byte_length })
+                if byte_length == name.len()
+        ));
+    }
+
+    #[test]
     fn source_state_diagnostic_keeps_compact_state_cursor_when_scalar_bits_are_inserted() {
         let source_mask =
             LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
@@ -3591,6 +3734,7 @@ mod tests {
                 mask,
                 mask,
                 orientation_rewrite,
+                0,
                 &mut rewritten_bits,
                 &mut cursor,
             )

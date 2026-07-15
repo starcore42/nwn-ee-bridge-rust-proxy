@@ -2065,14 +2065,15 @@ mod fixture_free_tests {
             .terminal_door_placeable_tail9_residual
             .expect("terminal tail9 failure should expose exact fragment evidence");
         assert_eq!(evidence.raw_mask, 0xFFFF_FFF7);
-        assert_eq!(evidence.translated_mask, 0x0000_0017);
+        assert_eq!(evidence.translated_mask, 0x0008_0017);
         assert_eq!(
             evidence.rewritten_fragment_bit_count - evidence.rewritten_bit_cursor,
             evidence.residual_fragment_bits
         );
-        assert_eq!(evidence.rewritten_bit_cursor, 70);
-        assert_eq!(evidence.rewritten_fragment_bit_count, 94);
-        assert_eq!(evidence.residual_fragment_bits, 24);
+        assert_eq!(evidence.source_bit_cursor, 58);
+        assert_eq!(evidence.rewritten_bit_cursor, 73);
+        assert_eq!(evidence.rewritten_fragment_bit_count, 90);
+        assert_eq!(evidence.residual_fragment_bits, 17);
         assert_eq!(evidence.proven_terminal_packed_name_bits, 0);
         assert_eq!(
             payload, original,

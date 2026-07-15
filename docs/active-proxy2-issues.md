@@ -267,16 +267,14 @@ not as standalone workaround targets.
   updates use capture-backed all-bits mask `0xFFFFFFF7` and compact tail9
   fields; the two placeable rows also carry inline names.
 
-  Running the typed update walk before standalone add-map expansion now owns
-  the first five records without changing the mandatory final EE validator.
-  The final `U/09` starts at fragment cursor 57; the known Diamond source walk
-  consumes 8 bits and the EE writer emits 13, reaching cursor 70 in a 94-bit
-  rewritten stream and leaving 24 bits. This is neither zero nor the exactly
-  six terminal packed-name bits supported by the existing bounded rule, so the
-  packet remains quarantined. Production diagnostics retain that source and
-  rewritten cursor evidence under
-  `door-placeable-tail9-terminal-residual-fragment-bits`; a sanitized structural
-  regression proves the transaction remains uncommitted.
+  Running the typed update walk before standalone add-map expansion owns the
+  first five records without changing the mandatory final EE validator. The
+  live stream proves that the nonterminal named `U/09` immediately before an
+  `A/09` owns six packed control bits in addition to its Diamond reader bits.
+  Production now removes exactly that span only after the source name exact-
+  parses as a direct CExoString at the byte boundary; it preserves the name and
+  its outer selector in the EE mask. The resulting record consumes and emits
+  14 bits, and the following `A/09` begins at its exact source selector.
 
   The client decompile trace now corrects an earlier validator assumption:
   Diamond door/placeable readers `sub_44E2C0` / `sub_44EB40` consume five state
@@ -290,19 +288,23 @@ not as standalone workaround targets.
   `sub_53E700`, which consumes one inner BOOL: false reads the same bounded
   CExoString, while true reads `BYTE(1,1)` plus a DWORD strref. Typed claims
   retain both MSB-first selector cursors and the exact byte-side name kind.
-  Invalid client-TLK selector bytes reject. The sequence-95 structural
-  regression still reports the same 70/94 cursor and 24-bit residual, proving
-  this validator capability does not authorize the packed live row.
+  Invalid client-TLK selector bytes reject. Name preservation is restricted to
+  the proven nonterminal direct-name handoff; applying it to terminal compact
+  rows caused three older strict-replay frames to reject and was removed. The
+  sequence-95 structural regression now reaches source cursor 58 and rewritten
+  cursor 73 in a 90-bit stream, leaving 17 bits. The translated terminal mask is
+  `0x00080017`, but the packet still rejects transactionally because no
+  decompile or capture proof authorizes those remaining bits.
 
-  Next: assign the capture-backed six packed control bits to each exact
-  nonterminal `U/09` boundary, then use the typed name kind to test faithful
-  placeable-name preservation before extending or replacing the older
-  name-removal workaround. Final exact EE byte/bit claim remains mandatory.
+  Next: trace the terminal source selector and the remaining 17 bits against
+  the per-record Diamond/EE field walk. Do not trim them; implement only the
+  spans proven to belong to the terminal name/state branches, require a final
+  exact EE byte/bit claim, then rerun the live door `UseObject` probe.
   Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-placeable-locstring-20260715-210432`
+  `C:\nwnbridge\codex-proxy2-replay-nonterminal-tail9-final-20260716-002115`
   processed 164 packet files with 304 strict allows, zero strict or semantic
   quarantines/files, one committed 36-slot quickbar, two area context checks,
-  and zero terminal live-object residuals on isolated ports 57221/57233.
+  and zero terminal live-object residuals on isolated ports 59221/59233.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

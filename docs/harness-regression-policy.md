@@ -41,9 +41,11 @@ selected typed `starcore-druid60`, reached `Module_Loaded`, exact
 36-slot quickbar, and real `Input_WalkToWaypoint` traffic while approaching the
 requested door. This live-confirms the indexed module-resource path on HG. The
 door action then exposed server sequence 95 as a 246-byte alternating
-`A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream. Its final named compact
-`U/09` leaves 24 MSB-first fragment bits after the known source-to-EE field
-walk, rather than the exactly six packed-name bits currently proven removable.
+`A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream. Current production owns
+the six packed control bits at an exact nonterminal direct-name `U/09 -> A/09`
+handoff and preserves that name through the typed EE reader. Its final named
+compact `U/09` now leaves 17 MSB-first fragment bits after the known
+source-to-EE field walk; no proof yet authorizes those remaining bits.
 The strict proxy correctly quarantined two copies plus one rejected diagnostic
 candidate. The structured log ended at `2026-07-15T14:54:03+10:00`; gameplay
 was reached, but `UseObject` did not complete before the run was stopped.
@@ -52,10 +54,10 @@ terminal residual evidence; do not trim or passthrough the fragment tail. The
 Diamond/EE name helper trace is now complete: the outer placeable-name BOOL is
 followed, for locstrings, by one inner BOOL selecting bounded CExoString versus
 `BYTE(1,1)` plus DWORD strref. Production exact validation owns those three
-name forms and their MSB-first cursors. The next fix must assign each exact
-nonterminal named tail9 record's capture-backed packed control span, preserve
-the typed name where the source cursor proves it, and then require a final
-exact EE claim.
+name forms and their MSB-first cursors. The next fix must trace the terminal
+source selector and the remaining 17 bits against the Diamond/EE field walk,
+then require a final exact EE claim before rerunning the live door `UseObject`
+probe.
 
 The earlier zero-quarantine account-5 capture
 `C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`
@@ -65,10 +67,11 @@ peer ACK 81, completed as `materialized_current_player_inventory`, and ended at
 `2026-07-15T08:53:19+10:00` with zero quarantine files.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-placeable-locstring-20260715-210432` processed the
-164-packet Diamond gameplay set with 304 strict allows, zero strict or semantic
-quarantines/files, one exact 36-slot quickbar, two area context checks, and zero
-terminal live-object residuals. It used isolated replay ports 57221/57233.
+`C:\nwnbridge\codex-proxy2-replay-nonterminal-tail9-final-20260716-002115`
+processed the 164-packet Diamond gameplay set with 304 strict allows, zero
+strict or semantic quarantines/files, one exact 36-slot quickbar, two area
+context checks, and zero terminal live-object residuals. It used isolated
+replay ports 59221/59233.
 
 Area translation performance is now anchored by the same strict 164-packet
 Diamond replay used for the current two-area regression. Profiling proved that
