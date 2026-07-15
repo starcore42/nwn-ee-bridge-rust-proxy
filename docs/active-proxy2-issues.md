@@ -285,21 +285,24 @@ not as standalone workaround targets.
   six state BOOLs and then the same name selector plus locstring/direct
   CExoString branch. EE type `0x0A` instead reaches `sub_14076FA20`, which has
   no corresponding name read. The production exact reader now models that
-  type-specific direct-CExoString placeable branch and still rejects the nested
-  locstring branch rather than guessing its cursor. The sequence-95 structural
+  type-specific placeable branch through all three reader shapes. Outer false
+  reads `CExoString(32)`. Outer true calls EE `sub_1409735F0` / Diamond
+  `sub_53E700`, which consumes one inner BOOL: false reads the same bounded
+  CExoString, while true reads `BYTE(1,1)` plus a DWORD strref. Typed claims
+  retain both MSB-first selector cursors and the exact byte-side name kind.
+  Invalid client-TLK selector bytes reject. The sequence-95 structural
   regression still reports the same 70/94 cursor and 24-bit residual, proving
-  this new validator capability does not authorize the packed live row.
+  this validator capability does not authorize the packed live row.
 
-  Next: trace `sub_1409735F0` and the Diamond equivalent through the nested
-  locstring branch, then assign the capture-backed six packed control bits to
-  each exact nonterminal `U/09` boundary. Because EE can consume placeable
-  names, test faithful field preservation before extending the older
+  Next: assign the capture-backed six packed control bits to each exact
+  nonterminal `U/09` boundary, then use the typed name kind to test faithful
+  placeable-name preservation before extending or replacing the older
   name-removal workaround. Final exact EE byte/bit claim remains mandatory.
   Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-ee-placeable-name-20260715-1820`
+  `C:\nwnbridge\codex-proxy2-replay-placeable-locstring-20260715-210432`
   processed 164 packet files with 304 strict allows, zero strict or semantic
   quarantines/files, one committed 36-slot quickbar, two area context checks,
-  and zero terminal live-object residuals on isolated ports 56221/56233.
+  and zero terminal live-object residuals on isolated ports 57221/57233.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

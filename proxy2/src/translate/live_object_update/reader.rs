@@ -12,7 +12,7 @@ use super::{
     LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
     LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, MAX_LIVE_OBJECT_NAME_BYTES,
-    PLACEABLE_OBJECT_TYPE, read_f32_le, read_u16_le, read_u32_le,
+    PLACEABLE_OBJECT_TYPE, locstring, read_f32_le, read_u16_le, read_u32_le,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +42,15 @@ pub(super) struct VerifiedEePlaceableName {
     pub(super) read_offset: usize,
     pub(super) read_end: usize,
     pub(super) selector_bit_cursor: usize,
-    pub(super) byte_length: usize,
+    pub(super) locstring_selector_bit_cursor: Option<usize>,
+    pub(super) kind: VerifiedEePlaceableNameKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VerifiedEePlaceableNameKind {
+    DirectCExoString { byte_length: usize },
+    LocStringInlineCExoString { byte_length: usize },
+    LocStringTlkRef { client_tlk: u8, strref: u32 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -674,16 +682,45 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         let selector_bit_cursor = fragment_cursor;
         let localized = fragment_bits.get(fragment_cursor).copied()?;
         fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
-        if localized {
-            // EE `sub_140797780` calls `sub_1409735F0` for this branch. Its
-            // nested locstring field order is intentionally not guessed here;
-            // the exact validator claims the direct CExoString branch until a
-            // bounded typed locstring parser is added.
-            return None;
-        }
         let name_read_offset = read_cursor;
-        let name_read_end = inline_cexo_string_end(bytes, name_read_offset)?;
-        let byte_length = name_read_end.checked_sub(name_read_offset + 4)?;
+        let (name_read_end, locstring_selector_bit_cursor, kind) = if localized {
+            // EE `sub_140797780` calls `sub_1409735F0` after the outer selector.
+            // The helper reads exactly one inner BOOL. Its false branch calls
+            // `ReadCExoString(32)`; its true branch calls `ReadBYTE(1, 1)` and
+            // then `ReadDWORD(32)`. Diamond `sub_44EB40` -> `sub_53E700` has the
+            // same outer/inner BOOL order and the same byte-side branches. Keep
+            // this cursor explicit: treating the inner selector as a string bit
+            // would shift every following live-object record.
+            let inner_selector_bit_cursor = fragment_cursor;
+            let client_tlk_ref = fragment_bits.get(fragment_cursor).copied()?;
+            fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+            if client_tlk_ref {
+                let name_read_end = locstring::tlk_locstring_ref_end(bytes, name_read_offset)?;
+                let client_tlk = *bytes.get(name_read_offset)?;
+                let strref = read_u32_le(bytes, name_read_offset + 1)?;
+                (
+                    name_read_end,
+                    Some(inner_selector_bit_cursor),
+                    VerifiedEePlaceableNameKind::LocStringTlkRef { client_tlk, strref },
+                )
+            } else {
+                let name_read_end = inline_cexo_string_end(bytes, name_read_offset)?;
+                let byte_length = name_read_end.checked_sub(name_read_offset + 4)?;
+                (
+                    name_read_end,
+                    Some(inner_selector_bit_cursor),
+                    VerifiedEePlaceableNameKind::LocStringInlineCExoString { byte_length },
+                )
+            }
+        } else {
+            let name_read_end = inline_cexo_string_end(bytes, name_read_offset)?;
+            let byte_length = name_read_end.checked_sub(name_read_offset + 4)?;
+            (
+                name_read_end,
+                None,
+                VerifiedEePlaceableNameKind::DirectCExoString { byte_length },
+            )
+        };
         if name_read_end > record_end {
             return None;
         }
@@ -692,7 +729,8 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
             read_offset: name_read_offset,
             read_end: name_read_end,
             selector_bit_cursor,
-            byte_length,
+            locstring_selector_bit_cursor,
+            kind,
         });
     }
 
@@ -857,8 +895,73 @@ mod tests {
         assert_eq!(placeable_name.read_offset, LEGACY_UPDATE_HEADER_BYTES);
         assert_eq!(placeable_name.read_end, live.len());
         assert_eq!(placeable_name.selector_bit_cursor, 0);
-        assert_eq!(placeable_name.byte_length, name.len());
+        assert_eq!(placeable_name.locstring_selector_bit_cursor, None);
+        assert_eq!(
+            placeable_name.kind,
+            VerifiedEePlaceableNameKind::DirectCExoString {
+                byte_length: name.len()
+            }
+        );
         assert_eq!(claim.next_bit_cursor, 1);
+    }
+
+    #[test]
+    fn ee_placeable_update_parser_claims_locstring_inline_name_branch() {
+        let object_id = 0x1234_ABCD_u32;
+        let name = b"Storage Drum";
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+        let bits = [true, false]; // outer locstring, inner inline CExoString.
+
+        let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
+            .expect("EE placeable locstring-inline name should exact-claim");
+        let placeable_name = claim.placeable_name.expect("typed placeable name");
+
+        assert_eq!(placeable_name.read_offset, LEGACY_UPDATE_HEADER_BYTES);
+        assert_eq!(placeable_name.read_end, live.len());
+        assert_eq!(placeable_name.selector_bit_cursor, 0);
+        assert_eq!(placeable_name.locstring_selector_bit_cursor, Some(1));
+        assert_eq!(
+            placeable_name.kind,
+            VerifiedEePlaceableNameKind::LocStringInlineCExoString {
+                byte_length: name.len()
+            }
+        );
+        assert_eq!(claim.next_bit_cursor, 2);
+    }
+
+    #[test]
+    fn ee_placeable_update_parser_claims_locstring_tlk_ref_name_branch() {
+        let object_id = 0x1234_ABCD_u32;
+        let strref = 0x0100_75D6_u32;
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
+        live.push(1); // ReadBYTE(1, 1) client TLK selector.
+        live.extend_from_slice(&strref.to_le_bytes());
+        let bits = [true, true]; // outer locstring, inner client-TLK ref.
+
+        let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
+            .expect("EE placeable locstring TLK ref should exact-claim");
+        let placeable_name = claim.placeable_name.expect("typed placeable name");
+
+        assert_eq!(placeable_name.read_offset, LEGACY_UPDATE_HEADER_BYTES);
+        assert_eq!(placeable_name.read_end, live.len());
+        assert_eq!(placeable_name.selector_bit_cursor, 0);
+        assert_eq!(placeable_name.locstring_selector_bit_cursor, Some(1));
+        assert_eq!(
+            placeable_name.kind,
+            VerifiedEePlaceableNameKind::LocStringTlkRef {
+                client_tlk: 1,
+                strref
+            }
+        );
+        assert_eq!(claim.next_bit_cursor, 2);
     }
 
     #[test]
@@ -878,18 +981,19 @@ mod tests {
     }
 
     #[test]
-    fn ee_placeable_update_parser_does_not_guess_nested_locstring_shape() {
+    fn ee_placeable_update_parser_rejects_invalid_locstring_tlk_selector() {
         let object_id = 0x1234_ABCD_u32;
         let mut live = Vec::new();
         live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
         live.extend_from_slice(&object_id.to_le_bytes());
         live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
-        live.extend_from_slice(&0_u32.to_le_bytes());
+        live.push(2); // ReadBYTE(1, 1) can only produce 0 or 1.
+        live.extend_from_slice(&0x0100_75D6_u32.to_le_bytes());
 
         assert!(
-            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[true], 0,)
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[true, true], 0,)
                 .is_none(),
-            "localized names require the still-unimplemented sub_1409735F0 field walk"
+            "the nested TLK branch must retain the decompiled one-bit client selector"
         );
     }
 

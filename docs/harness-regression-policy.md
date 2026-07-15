@@ -49,9 +49,13 @@ candidate. The structured log ended at `2026-07-15T14:54:03+10:00`; gameplay
 was reached, but `UseObject` did not complete before the run was stopped.
 Diagnose this failure by confirming the six record boundaries and the typed
 terminal residual evidence; do not trim or passthrough the fragment tail. The
-next fix must trace whether each nonterminal named tail9 record owns a packed
-name fragment span in the Diamond/EE readers and then require a final exact EE
-claim.
+Diamond/EE name helper trace is now complete: the outer placeable-name BOOL is
+followed, for locstrings, by one inner BOOL selecting bounded CExoString versus
+`BYTE(1,1)` plus DWORD strref. Production exact validation owns those three
+name forms and their MSB-first cursors. The next fix must assign each exact
+nonterminal named tail9 record's capture-backed packed control span, preserve
+the typed name where the source cursor proves it, and then require a final
+exact EE claim.
 
 The earlier zero-quarantine account-5 capture
 `C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`
@@ -61,11 +65,10 @@ peer ACK 81, completed as `materialized_current_player_inventory`, and ended at
 `2026-07-15T08:53:19+10:00` with zero quarantine files.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-tail9-residual-20260715-1545` processed the
+`C:\nwnbridge\codex-proxy2-replay-placeable-locstring-20260715-210432` processed the
 164-packet Diamond gameplay set with 304 strict allows, zero strict or semantic
 quarantines/files, one exact 36-slot quickbar, two area context checks, and zero
-terminal live-object residuals. It used isolated replay ports 55221/55233 after
-the default local listen port was unavailable before packet processing.
+terminal live-object residuals. It used isolated replay ports 57221/57233.
 
 Area translation performance is now anchored by the same strict 164-packet
 Diamond replay used for the current two-area regression. Profiling proved that
