@@ -19109,6 +19109,26 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub residual_fragment_bits: usize,
     pub rewritten_residual: LiveObjectUpdateRewriteBitSliceEvidence,
     pub proven_terminal_packed_name_bits: usize,
+    pub precursor_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
+    pub source_suffix_candidate_count: usize,
+    pub source_suffix_candidates: [Option<
+        LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence,
+    >; LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT],
+}
+
+pub const LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence {
+    pub source_bit_cursor: usize,
+    pub source_reader_bit_cursor: usize,
+    pub source_reader_bits_consumed: usize,
+    pub source_name_selector_bit_cursor: Option<usize>,
+    pub source_name_selector: Option<bool>,
+    pub source_name_locstring_selector_bit_cursor: Option<usize>,
+    pub source_name_locstring_selector: Option<bool>,
+    pub source_name_kind: Option<&'static str>,
+    pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27041,7 +27061,12 @@ fn rewrite_update_records_payload_with_area_context_inner(
             record_end,
             &fragment_bits,
             bit_cursor,
-        );
+        )
+        .map(|mut evidence| {
+            evidence.precursor_tail =
+                rewrite_bit_ledger.contiguous_tail_evidence(&fragment_bits, bit_cursor);
+            evidence
+        });
         let Some(record_rewrite) = record::rewrite_update_record_for_ee_with_area_context(
             &mut live_bytes,
             &mut record_end,

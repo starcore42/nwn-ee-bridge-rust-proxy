@@ -49,16 +49,24 @@ source-to-EE field walk; no proof yet authorizes those remaining bits.
 The strict proxy correctly quarantined two copies plus one rejected diagnostic
 candidate. The structured log ended at `2026-07-15T14:54:03+10:00`; gameplay
 was reached, but `UseObject` did not complete before the run was stopped.
-Production diagnostics now confirm the terminal source reader begins at bit 58
-of 84, reads five state BOOLs plus name selectors `1,0` at cursors 65/66 and an
-inline locstring CExoString, then stops exactly at bit 67. Its 17-bit residual
-starts `0010000000100011` plus one bit. The EE-shaped write inserts the proven
-sixth state BOOL, stops at bit 73 of 90, and retains the identical residual.
-Do not trim or passthrough that fragment tail: it begins after the complete
-Diamond terminal reader. The next fix must build a source/emitted bit ledger
-across the preceding second `A/09` and terminal `U/09`, identify the earlier
-writer that owns `00100000001000110`, require a final exact EE claim, and then
-rerun the live door `UseObject` probe.
+Production diagnostics now confirm the currently selected terminal source
+reader begins at bit 58 of 84, reads five state BOOLs plus name selectors `1,0`
+at cursors 65/66 and an inline locstring CExoString, then stops at bit 67. The
+committed five-row rewrite ledger ends the preceding second `A/09` at source
+`40..50` / emitted `47..58`; that add owns exactly ten Diamond BOOLs and emits
+eleven EE BOOLs. Two bounded suffix readings reach the fragment end: the
+locstring-selected terminal candidate is `001000110` at `75..84`, leaving a
+17-bit gap after the add, while direct-name `01000110` at `76..84` leaves 18.
+The Diamond server placeable snapshot writer confirms the add cannot own either
+gap. Do not trim, passthrough, or cursor-search this fragment tail. The next fix
+must trace the stock update serializer and HG fragment assembly handoff,
+identify the gap owner and terminal name branch, require a final exact EE claim,
+and then rerun the live door `UseObject` probe.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-tail9-ledger-20260716-0619` processed all
+164 packet files with 304 strict allows, zero strict/semantic quarantines or
+files, one committed quickbar profile, both area-context checks, and zero
+terminal live-object residuals on isolated ports 60421/60433.
 
 The earlier zero-quarantine account-5 capture
 `C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`

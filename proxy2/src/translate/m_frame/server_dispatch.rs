@@ -3115,6 +3115,13 @@ fn trace_live_object_update_rewrite_failure(
             tail9_proven_terminal_packed_name_bits = tail9_residual
                 .map(|evidence| evidence.proven_terminal_packed_name_bits)
                 .unwrap_or_default(),
+            tail9_precursor_tail = ?tail9_residual
+                .and_then(|evidence| evidence.precursor_tail),
+            tail9_source_suffix_candidate_count = tail9_residual
+                .map(|evidence| evidence.source_suffix_candidate_count)
+                .unwrap_or_default(),
+            tail9_source_suffix_candidates = ?tail9_residual
+                .map(|evidence| evidence.source_suffix_candidates),
             gap_origin,
             "server live-object update rewrite retained cursor failure without item evidence"
         );

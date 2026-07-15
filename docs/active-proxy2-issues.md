@@ -302,15 +302,33 @@ not as standalone workaround targets.
   transactionally: the Diamond terminal reader has already stopped, so no
   decompile or capture proof authorizes trimming those bits.
 
-  Next: build a source/emitted bit ledger across the preceding second `A/09`
-  and terminal `U/09`, and identify which earlier writer owns
-  `00100000001000110`. Do not trim or passthrough the terminal residual; change
-  only a decompile-proven earlier handoff, require a final exact EE byte/bit
-  claim, then rerun the live door `UseObject` probe. Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-tail9-evidence-20260716-0310`
+  Production failure evidence now attaches the committed five-row rewrite
+  ledger and enumerates every bounded terminal source reader that ends exactly
+  at the fragment boundary. The ledger ends the preceding second `A/09` at
+  source `40..50` / emitted `47..58`; its ten Diamond BOOLs become eleven EE
+  BOOLs by one insertion. Across all five rows the source ends at 50, emitted
+  ends at 58, and the cumulative delta is +8. The remaining suffix has two
+  byte-compatible terminal readings: `75..84` is a nine-bit locstring-selected
+  row (`001000110`, selectors `1,0`), while `76..84` is an eight-bit direct-name
+  row (`01000110`, selector `0`). The locstring interpretation therefore leaves
+  an exact 17-bit source/emitted gap between the add and terminal update; the
+  direct-name interpretation leaves 18. Neither candidate changes the cursor.
+
+  Diamond server snapshot writer `0x4401F0`'s placeable branch and helper
+  `0x436B10` independently rule the preceding add out as that gap owner: the
+  direct-name branch writes exactly ten BOOLs (name, post-name state, optional
+  object, six more state flags, and the final appearance guard), matching
+  client reader `sub_44E4A0`. The helper's two WORDs and optional payload are
+  byte fields, not extra fragment BOOLs. Next: trace stock update serializer
+  `0x445160` and the HG read-buffer/fragment assembly handoff that precedes this
+  terminal row to identify the 17-bit owner and disambiguate its name branch.
+  Do not trim, passthrough, or cursor-search the terminal residual; change only
+  a decompile-proven source handoff, require a final exact EE byte/bit claim,
+  then rerun the live door `UseObject` probe. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-tail9-ledger-20260716-0619`
   processed 164 packet files with 304 strict allows, zero strict or semantic
   quarantines/files, one committed 36-slot quickbar, two area context checks,
-  and zero terminal live-object residuals on isolated ports 60221/60233.
+  and zero terminal live-object residuals on isolated ports 60421/60433.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

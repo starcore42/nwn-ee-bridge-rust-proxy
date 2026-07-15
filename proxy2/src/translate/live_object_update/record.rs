@@ -27,6 +27,8 @@ use crate::translate::area::{AreaPlaceableContextRowKind, format_area_placeable_
 
 const MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES: usize = 64;
 const LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS: usize = 6;
+const LEGACY_TAIL9_MAX_SOURCE_READER_BITS: usize =
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 2;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RecordRewrite {
@@ -2293,13 +2295,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         fragment_bits.len(),
         fragment_bits.get(source_reader_bit_cursor..).unwrap_or(&[]),
     );
-    let source_name_kind = source_name.map(|name| match name.kind {
-        reader::VerifiedEePlaceableNameKind::DirectCExoString { .. } => "direct-cexostring",
-        reader::VerifiedEePlaceableNameKind::LocStringInlineCExoString { .. } => {
-            "locstring-inline-cexostring"
-        }
-        reader::VerifiedEePlaceableNameKind::LocStringTlkRef { .. } => "locstring-tlk-ref",
-    });
+    let source_name_kind = source_name.map(|name| placeable_name_kind_label(name.kind));
     let source_name_selector =
         source_name.and_then(|_| fragment_bits.get(source_name_selector_bit_cursor).copied());
     let source_name_locstring_selector_bit_cursor = source_name
@@ -2343,6 +2339,17 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
     if residual_fragment_bits == proven_terminal_packed_name_bits {
         return None;
     }
+    let (source_suffix_candidate_count, source_suffix_candidates) =
+        terminal_tail9_source_suffix_candidates(
+            live_bytes,
+            record_offset,
+            record_end,
+            object_type,
+            raw_mask,
+            translated_mask,
+            fragment_bits,
+            source_reader_bit_cursor,
+        );
 
     Some(super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
         raw_mask,
@@ -2361,7 +2368,126 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         residual_fragment_bits,
         rewritten_residual,
         proven_terminal_packed_name_bits,
+        precursor_tail: None,
+        source_suffix_candidate_count,
+        source_suffix_candidates,
     })
+}
+
+fn terminal_tail9_source_suffix_candidates(
+    live_bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    object_type: u8,
+    raw_mask: u32,
+    translated_mask: u32,
+    fragment_bits: &[bool],
+    source_reader_bit_cursor: usize,
+) -> (
+    usize,
+    [Option<super::LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence>;
+        super::LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT],
+) {
+    let mut candidates = [None; super::LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT];
+    let mut candidate_count = 0usize;
+
+    // Search only the residual after the currently selected Diamond reader.
+    // This is diagnostic: suffix-shaped alternatives never move the production
+    // cursor and can authorize no deletion. Requiring an exact fragment-end
+    // handoff keeps the result bounded to complete source-reader candidates.
+    let candidate_search_start = source_reader_bit_cursor.saturating_add(1).max(
+        fragment_bits
+            .len()
+            .saturating_sub(LEGACY_TAIL9_MAX_SOURCE_READER_BITS),
+    );
+    for candidate_bit_cursor in candidate_search_start..fragment_bits.len() {
+        let Some(mut candidate_claim) = parse_compact_door_placeable_tail9_update_claim(
+            live_bytes,
+            record_offset,
+            record_end,
+            object_type,
+            raw_mask,
+            translated_mask,
+        ) else {
+            break;
+        };
+        let Some(source_name_selector_bit_cursor) = candidate_bit_cursor.checked_add(
+            low_prefix_door_placeable_update_source_fragment_bits(
+                candidate_claim.fragment_source_mask & !LEGACY_UPDATE_NAME_MASK,
+            ),
+        ) else {
+            continue;
+        };
+        let source_name = if object_type == PLACEABLE_OBJECT_TYPE {
+            reader::parse_legacy_tail9_placeable_name_for_ee(
+                live_bytes,
+                candidate_claim.tail_offset.saturating_add(9),
+                record_end,
+                fragment_bits,
+                source_name_selector_bit_cursor,
+            )
+        } else {
+            None
+        };
+        if object_type == PLACEABLE_OBJECT_TYPE && source_name.is_none() {
+            continue;
+        }
+        if let Some(name) = source_name {
+            candidate_claim.translated_mask |= LEGACY_UPDATE_NAME_MASK;
+            candidate_claim.name_inner_fragment_bits =
+                name.selector_fragment_bits.saturating_sub(1);
+            candidate_claim.preserved_placeable_name_kind = Some(name.kind);
+        }
+        let source_reader_bits_consumed = candidate_claim.source_reader_bits_consumed();
+        let Some(source_reader_end) = candidate_bit_cursor.checked_add(source_reader_bits_consumed)
+        else {
+            continue;
+        };
+        if source_reader_end != fragment_bits.len() {
+            continue;
+        }
+
+        let source_name_selector =
+            source_name.and_then(|_| fragment_bits.get(source_name_selector_bit_cursor).copied());
+        let source_name_locstring_selector_bit_cursor = source_name
+            .filter(|name| name.selector_fragment_bits > 1)
+            .map(|_| source_name_selector_bit_cursor.saturating_add(1));
+        let source_name_locstring_selector = source_name_locstring_selector_bit_cursor
+            .and_then(|cursor| fragment_bits.get(cursor).copied());
+        let candidate = super::LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence {
+            source_bit_cursor: candidate_bit_cursor,
+            source_reader_bit_cursor: source_reader_end,
+            source_reader_bits_consumed,
+            source_name_selector_bit_cursor: source_name.map(|_| source_name_selector_bit_cursor),
+            source_name_selector,
+            source_name_locstring_selector_bit_cursor,
+            source_name_locstring_selector,
+            source_name_kind: source_name.map(|name| placeable_name_kind_label(name.kind)),
+            source_bits: super::live_object_rewrite_bit_slice_evidence(
+                candidate_bit_cursor,
+                source_reader_end,
+                fragment_bits
+                    .get(candidate_bit_cursor..source_reader_end)
+                    .unwrap_or(&[]),
+            ),
+        };
+        if let Some(slot) = candidates.get_mut(candidate_count) {
+            *slot = Some(candidate);
+        }
+        candidate_count = candidate_count.saturating_add(1);
+    }
+
+    (candidate_count, candidates)
+}
+
+fn placeable_name_kind_label(kind: reader::VerifiedEePlaceableNameKind) -> &'static str {
+    match kind {
+        reader::VerifiedEePlaceableNameKind::DirectCExoString { .. } => "direct-cexostring",
+        reader::VerifiedEePlaceableNameKind::LocStringInlineCExoString { .. } => {
+            "locstring-inline-cexostring"
+        }
+        reader::VerifiedEePlaceableNameKind::LocStringTlkRef { .. } => "locstring-tlk-ref",
+    }
 }
 
 fn placeable_update_state_bits_at(

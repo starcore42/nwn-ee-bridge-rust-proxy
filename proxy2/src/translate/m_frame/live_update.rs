@@ -2116,6 +2116,77 @@ mod fixture_free_tests {
             evidence.source_reader_residual.bits
         );
         assert_eq!(evidence.proven_terminal_packed_name_bits, 0);
+        let precursor = evidence
+            .precursor_tail
+            .expect("terminal evidence should retain the committed rewrite ledger");
+        assert_eq!(precursor.entry_count, 5);
+        assert_eq!(precursor.source_bit_end, 50);
+        assert_eq!(precursor.emitted_bit_end, 58);
+        assert_eq!(precursor.emitted_source_delta, 8);
+        let preceding_add = precursor
+            .entries
+            .iter()
+            .flatten()
+            .last()
+            .expect("second A/09 should be the preceding ledger owner");
+        assert_eq!((preceding_add.offset, preceding_add.record_end), (125, 182));
+        assert_eq!((preceding_add.opcode, preceding_add.marker), (b'A', 9));
+        assert_eq!(
+            (preceding_add.source_bit_start, preceding_add.source_bit_end),
+            (40, 50)
+        );
+        assert_eq!(
+            (
+                preceding_add.emitted_bit_start,
+                preceding_add.emitted_bit_end
+            ),
+            (47, 58)
+        );
+        assert_eq!(preceding_add.bits_inserted, 1);
+        assert_eq!(preceding_add.bits_removed, 0);
+        assert_eq!(preceding_add.family, "add-compact-rewrite");
+
+        assert_eq!(evidence.source_suffix_candidate_count, 2);
+        let mut suffix_candidates = evidence.source_suffix_candidates.iter().flatten();
+        let locstring_candidate = suffix_candidates
+            .next()
+            .expect("nine-bit locstring-selected terminal suffix");
+        assert_eq!(locstring_candidate.source_bit_cursor, 75);
+        assert_eq!(locstring_candidate.source_reader_bit_cursor, 84);
+        assert_eq!(locstring_candidate.source_reader_bits_consumed, 9);
+        assert_eq!(locstring_candidate.source_name_selector, Some(true));
+        assert_eq!(
+            locstring_candidate.source_name_locstring_selector,
+            Some(false)
+        );
+        assert_eq!(
+            locstring_candidate.source_name_kind,
+            Some("locstring-inline-cexostring")
+        );
+        assert_eq!(locstring_candidate.source_bits.bit_count, 9);
+        assert_eq!(
+            locstring_candidate.source_bits.bits[..9],
+            [
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+                Some(false),
+            ]
+        );
+        let direct_candidate = suffix_candidates
+            .next()
+            .expect("eight-bit direct-name terminal suffix");
+        assert_eq!(direct_candidate.source_bit_cursor, 76);
+        assert_eq!(direct_candidate.source_reader_bit_cursor, 84);
+        assert_eq!(direct_candidate.source_reader_bits_consumed, 8);
+        assert_eq!(direct_candidate.source_name_selector, Some(false));
+        assert_eq!(direct_candidate.source_name_kind, Some("direct-cexostring"));
+        assert!(suffix_candidates.next().is_none());
         assert_eq!(
             payload, original,
             "failed typed rewrite must be transactional"
