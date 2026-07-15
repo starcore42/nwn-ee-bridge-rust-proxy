@@ -52,6 +52,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Write,
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -5593,6 +5594,13 @@ struct ModuleAreaResourceTable {
 }
 
 #[derive(Debug, Clone)]
+struct ModuleAreaResourceIndex {
+    module_name: Option<String>,
+    module_resref: Option<String>,
+    area_order: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 struct ErfResourceEntry {
     resref: String,
     restype: u16,
@@ -6002,6 +6010,18 @@ fn module_area_resource_info_for_named_static_placeables_with_shared_context_fal
         if !seen_paths.insert(candidate_key.clone()) || !candidate.is_file() {
             continue;
         }
+        // The IFO area order is the module's resource index. Read only the ERF
+        // key rows and IFO resource before expanding any ARE/GIT payloads.
+        // Named static-placeable proof ultimately requires an exact ARE resref,
+        // so a module whose index does not contain that resref cannot match.
+        // This preserves all later identity, ambiguity, tile, and row checks
+        // while avoiding a full parse of every unrelated local module.
+        let Some(index) = read_module_area_resource_index(&candidate) else {
+            continue;
+        };
+        if !module_area_resource_index_contains_resref(&index, area_resref) {
+            continue;
+        }
         let Some(table) = read_module_area_resource_table(&candidate) else {
             continue;
         };
@@ -6105,6 +6125,29 @@ fn module_table_identity_matches_observed_context(
         .module_resref
         .as_deref()
         .is_some_and(|resref| same_resource_text(resref, &context.module_resref))
+}
+
+fn module_resource_index_identity_matches_observed_context(
+    index: &ModuleAreaResourceIndex,
+    context: &crate::translate::module::ObservedModuleContext,
+) -> bool {
+    index.module_name.as_deref().is_some_and(|name| {
+        same_resource_text(name, &context.localized_name)
+            || resource_text_prefix_matches(name, &context.localized_name)
+    }) || index
+        .module_resref
+        .as_deref()
+        .is_some_and(|resref| same_resource_text(resref, &context.module_resref))
+}
+
+fn module_area_resource_index_contains_resref(
+    index: &ModuleAreaResourceIndex,
+    area_resref: &str,
+) -> bool {
+    index
+        .area_order
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(area_resref))
 }
 
 fn area_resource_matches_observed_compact_name(
@@ -6301,16 +6344,22 @@ fn observed_module_file_path_for_area_resref(
         if !seen.insert(path_key(&candidate)) || !candidate.is_file() {
             continue;
         }
+        let Some(index) = read_module_area_resource_index(&candidate) else {
+            continue;
+        };
+        let identity_matches =
+            module_resource_index_identity_matches_observed_context(&index, context)
+                || module_file_path_matches_observed_context(&candidate, context);
+        if !identity_matches || !module_area_resource_index_contains_resref(&index, area_resref) {
+            continue;
+        }
         let Some(table) = read_module_area_resource_table(&candidate) else {
             continue;
         };
-        let identity_matches = module_table_identity_matches_observed_context(&table, context)
-            || module_file_path_matches_observed_context(&candidate, context);
-        if !identity_matches
-            || !table
-                .areas
-                .iter()
-                .any(|area| area.resref.eq_ignore_ascii_case(area_resref))
+        if !table
+            .areas
+            .iter()
+            .any(|area| area.resref.eq_ignore_ascii_case(area_resref))
         {
             continue;
         }
@@ -6658,6 +6707,72 @@ fn observed_module_file_candidates(
     }
 
     candidates
+}
+
+fn read_module_area_resource_index(path: &Path) -> Option<ModuleAreaResourceIndex> {
+    let metadata = fs::metadata(path).ok()?;
+    let file_len = metadata.len();
+    if file_len > MAX_MODULE_FILE_BYTES || file_len < 32 {
+        return None;
+    }
+
+    let mut file = fs::File::open(path).ok()?;
+    let mut header = [0u8; 32];
+    file.read_exact(&mut header).ok()?;
+    if !matches!(&header[0..4], b"MOD " | b"NWM " | b"ERF " | b"HAK ") || &header[4..8] != b"V1.0" {
+        return None;
+    }
+
+    let entry_count = usize::try_from(read_u32_le(&header, 16)?).ok()?;
+    if entry_count == 0 || entry_count > usize::try_from(MAX_ERF_KEY_COUNT).ok()? {
+        return None;
+    }
+    let key_list_offset = u64::from(read_u32_le(&header, 24)?);
+    let resource_list_offset = u64::from(read_u32_le(&header, 28)?);
+    let key_list_bytes = entry_count.checked_mul(24)?;
+    let key_list_end = key_list_offset.checked_add(u64::try_from(key_list_bytes).ok()?)?;
+    if key_list_end > file_len || resource_list_offset >= file_len {
+        return None;
+    }
+
+    file.seek(SeekFrom::Start(key_list_offset)).ok()?;
+    let mut keys = vec![0u8; key_list_bytes];
+    file.read_exact(&mut keys).ok()?;
+    let ifo_resource_id = keys.chunks_exact(24).find_map(|key| {
+        let restype = u16::from_le_bytes([*key.get(20)?, *key.get(21)?]);
+        (restype == RESTYPE_IFO).then(|| usize::try_from(read_u32_le(key, 16)?).ok())?
+    })?;
+    if ifo_resource_id >= entry_count {
+        return None;
+    }
+
+    let resource_entry_offset =
+        resource_list_offset.checked_add(u64::try_from(ifo_resource_id.checked_mul(8)?).ok()?)?;
+    if resource_entry_offset.checked_add(8)? > file_len {
+        return None;
+    }
+    file.seek(SeekFrom::Start(resource_entry_offset)).ok()?;
+    let mut resource_entry = [0u8; 8];
+    file.read_exact(&mut resource_entry).ok()?;
+    let ifo_offset = u64::from(read_u32_le(&resource_entry, 0)?);
+    let ifo_size = usize::try_from(read_u32_le(&resource_entry, 4)?).ok()?;
+    if ifo_offset.checked_add(u64::try_from(ifo_size).ok()?)? > file_len {
+        return None;
+    }
+
+    file.seek(SeekFrom::Start(ifo_offset)).ok()?;
+    let mut ifo_bytes = vec![0u8; ifo_size];
+    file.read_exact(&mut ifo_bytes).ok()?;
+    let (module_name, module_resref, area_order) = parse_ifo_module_area_list(&ifo_bytes)?;
+    if area_order.is_empty() {
+        return None;
+    }
+
+    Some(ModuleAreaResourceIndex {
+        module_name,
+        module_resref,
+        area_order,
+    })
 }
 
 fn read_module_area_resource_table(path: &Path) -> Option<ModuleAreaResourceTable> {
@@ -11773,15 +11888,30 @@ mod tests {
                 !placeable.trap_flag,
                 "static area placeable row {index} unexpectedly comes from a trapped GIT placeable"
             );
-            let state = row
-                .module_state
-                .expect("module-backed static placeable row should retain its GIT state context");
-            assert_eq!(state.static_object, placeable.static_object);
-            assert_eq!(state.useable, placeable.useable);
-            assert_eq!(state.trap_flag, placeable.trap_flag);
-            assert_eq!(state.trap_disarmable, placeable.trap_disarmable);
-            assert_eq!(state.lockable, placeable.lockable);
-            assert_eq!(state.locked, placeable.locked);
+            if matches!(
+                row.object_id_confidence,
+                AreaPlaceableContextObjectIdConfidence::AreaObjectAlias
+                    | AreaPlaceableContextObjectIdConfidence::AreaObjectAliasDuplicate
+            ) {
+                assert_eq!(
+                    row.module_state, None,
+                    "area-object alias row {index} must not retain GIT state authority"
+                );
+                assert_eq!(
+                    row.module_template_resref, None,
+                    "area-object alias row {index} must not retain a GIT template identity"
+                );
+            } else {
+                let state = row.module_state.expect(
+                    "non-alias module-backed static placeable row should retain its GIT state context",
+                );
+                assert_eq!(state.static_object, placeable.static_object);
+                assert_eq!(state.useable, placeable.useable);
+                assert_eq!(state.trap_flag, placeable.trap_flag);
+                assert_eq!(state.trap_disarmable, placeable.trap_disarmable);
+                assert_eq!(state.lockable, placeable.lockable);
+                assert_eq!(state.locked, placeable.locked);
+            }
             remaining.retain(|candidate_index| *candidate_index != placeable_index);
         }
     }
@@ -13368,6 +13498,29 @@ mod tests {
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn module_resource_index_matches_full_table_identity_and_area_order() {
+        let module_path = Path::new(r"C:\NWN\NWN Diamond\nwm\Chapter1.nwm");
+        assert!(module_path.is_file());
+
+        let index = read_module_area_resource_index(module_path)
+            .expect("bounded ERF/IFO index should parse Chapter1");
+        let table = read_module_area_resource_table(module_path)
+            .expect("full Chapter1 resource table should parse");
+
+        assert_eq!(index.module_name, table.module_name);
+        assert_eq!(index.module_resref, table.module_resref);
+        assert_eq!(index.area_order, table.area_order);
+        let first_area = table
+            .area_order
+            .first()
+            .expect("Chapter1 should declare at least one area");
+        assert!(module_area_resource_index_contains_resref(
+            &index, first_area
+        ));
     }
 
     #[cfg(hgbridge_private_fixtures)]

@@ -241,6 +241,23 @@ not as standalone workaround targets.
   rewrite. It processed 164 packet files with 304 strict allows, zero
   strict/semantic quarantines or files, two distinct area context checks, and
   zero terminal live-object residuals.
+
+  The remaining rewrite cost was then isolated to module-resource lookup, not
+  packet parsing or bit writing. Stage profiling in
+  `C:\nwnbridge\codex-proxy2-replay-area-profile-20260715-1157` measured
+  14.26 seconds for `voyage` and 8.55 seconds for `docksofascension` while the
+  translator repeatedly expanded every local module's ARE/GIT tables. The
+  production lookup now reads the bounded ERF key table and IFO area-order
+  index first, rejects modules that cannot own the exact area resref, and only
+  then performs the existing full resource-table, identity, ambiguity, tile,
+  static-row, reader/writer, and final-cursor checks. No area packet fields,
+  BOOL order, fragment bits, or cursor handoffs changed. Current-code strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-area-index-final-20260715-1230`
+  reduced those context-to-rewrite intervals to 0.489 and 0.113 seconds. It
+  processed 164 packet files with 304 strict allows, zero strict/semantic
+  quarantines or files, 10 area rewrite summaries, two distinct area context
+  checks, one exact 36-slot quickbar, and zero terminal live-object residuals.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

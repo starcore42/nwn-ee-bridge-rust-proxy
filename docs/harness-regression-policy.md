@@ -51,6 +51,19 @@ ownership. A credentialed account-4 Bard50 run remains useful for its earlier
 candidate-mismatch regression shape, but no account secret was available or
 guessed in this run.
 
+Area translation performance is now anchored by the same strict 164-packet
+Diamond replay used for the current two-area regression. Profiling proved that
+the remaining 14.26-second `voyage` and 8.55-second `docksofascension` delays
+were repeated full ARE/GIT expansion during module-resource discovery. The
+production lookup now uses the bounded ERF key table and IFO area-order list as
+an exact-resref prefilter before retaining the full identity, ambiguity, tile,
+static-row, packet-reader/writer, and cursor validations. Current-code replay
+`C:\nwnbridge\codex-proxy2-replay-area-index-final-20260715-1230` reduced the
+context-to-rewrite intervals to 0.489 and 0.113 seconds, with 304 strict allows,
+zero quarantines or files, 10 area rewrite summaries, two area context checks,
+one 36-slot quickbar, and zero terminal live-object residuals. Packet bytes and
+bit order are unchanged.
+
 Current production code routes structurally valid CNW-declared quickbars to the
 exact direct reader before source-form normalization in both gameplay boundary
 discovery and committed materialization. Zero-declared prefixed fragment forms
