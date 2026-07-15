@@ -258,6 +258,35 @@ not as standalone workaround targets.
   processed 164 packet files with 304 strict allows, zero strict/semantic
   quarantines or files, 10 area rewrite summaries, two distinct area context
   checks, one exact 36-slot quickbar, and zero terminal live-object residuals.
+- 2026-07-15 alternating named door/placeable live-object fragment ownership:
+  current-code account-5 capture
+  `C:\nwnbridge\codex-live-area-index-door-20260715-1455\harness-proxy-20260715-145143`
+  reached gameplay and emitted real `Input_WalkToWaypoint` traffic while the
+  harness approached a door. Server sequence 95 then carried six exact byte
+  boundaries in alternating `A/0A,U/0A,A/09,U/09,A/09,U/09` order. The three
+  updates use capture-backed all-bits mask `0xFFFFFFF7` and compact tail9
+  fields; the two placeable rows also carry inline names.
+
+  Running the typed update walk before standalone add-map expansion now owns
+  the first five records without changing the mandatory final EE validator.
+  The final `U/09` starts at fragment cursor 57; the known Diamond source walk
+  consumes 8 bits and the EE writer emits 13, reaching cursor 70 in a 94-bit
+  rewritten stream and leaving 24 bits. This is neither zero nor the exactly
+  six terminal packed-name bits supported by the existing bounded rule, so the
+  packet remains quarantined. Production diagnostics retain that source and
+  rewritten cursor evidence under
+  `door-placeable-tail9-terminal-residual-fragment-bits`; a sanitized structural
+  regression proves the transaction remains uncommitted. Next: trace the
+  Diamond and EE CExoString/name branch at each nonterminal named tail9 row and
+  determine whether those rows own bounded six-bit spans before implementing
+  any multi-record removal. Final exact EE byte/bit claim remains mandatory.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-tail9-residual-20260715-1545`
+  processed 164 packet files with 304 strict allows, zero strict or semantic
+  quarantines/files, one committed 36-slot quickbar, two area context checks,
+  and zero terminal live-object residuals. The first launch used an unavailable
+  default UDP port and processed no packets; the successful run used isolated
+  ports 55221/55233.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

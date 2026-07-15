@@ -3068,6 +3068,7 @@ fn trace_live_object_update_rewrite_failure(
         .map(|origin| origin.as_str())
         .unwrap_or("none");
     let Some(evidence) = failure.item_update_cursor_evidence else {
+        let tail9_residual = failure.terminal_door_placeable_tail9_residual;
         tracing::debug!(
             source,
             reason = failure.reason,
@@ -3075,6 +3076,24 @@ fn trace_live_object_update_rewrite_failure(
             offset = failure.offset,
             record_end = failure.record_end,
             bit_cursor = failure.bit_cursor,
+            tail9_raw_mask = tail9_residual
+                .map(|evidence| evidence.raw_mask)
+                .unwrap_or_default(),
+            tail9_translated_mask = tail9_residual
+                .map(|evidence| evidence.translated_mask)
+                .unwrap_or_default(),
+            tail9_source_bit_cursor = tail9_residual
+                .map(|evidence| evidence.source_bit_cursor)
+                .unwrap_or_default(),
+            tail9_rewritten_fragment_bit_count = tail9_residual
+                .map(|evidence| evidence.rewritten_fragment_bit_count)
+                .unwrap_or_default(),
+            tail9_residual_fragment_bits = tail9_residual
+                .map(|evidence| evidence.residual_fragment_bits)
+                .unwrap_or_default(),
+            tail9_proven_terminal_packed_name_bits = tail9_residual
+                .map(|evidence| evidence.proven_terminal_packed_name_bits)
+                .unwrap_or_default(),
             gap_origin,
             "server live-object update rewrite retained cursor failure without item evidence"
         );

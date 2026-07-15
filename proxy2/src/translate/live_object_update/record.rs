@@ -2179,6 +2179,73 @@ fn parse_compact_door_placeable_tail9_update_claim(
     })
 }
 
+pub(super) fn terminal_door_placeable_tail9_residual_evidence(
+    live_bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence> {
+    if record_end != live_bytes.len()
+        || live_bytes.get(record_offset).copied() != Some(b'U')
+        || record_offset + LEGACY_UPDATE_HEADER_BYTES > record_end
+    {
+        return None;
+    }
+
+    let object_type = live_bytes.get(record_offset + 1).copied()?;
+    let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
+    let translated_mask = translate_legacy_live_object_update_mask(object_type, raw_mask);
+    let claim = parse_compact_door_placeable_tail9_update_claim(
+        live_bytes,
+        record_offset,
+        record_end,
+        object_type,
+        raw_mask,
+        translated_mask,
+    )?;
+
+    // Mirror only the decompile-owned MSB-first source/emitted field walk. The
+    // result is diagnostic evidence, never an authorization to erase the
+    // residual. In particular, the existing six-bit packed-name exception is
+    // still accepted only when the bounded terminal name tail proves it.
+    let mut rewritten_bits = fragment_bits.to_vec();
+    let mut rewritten_bit_cursor = bit_cursor;
+    rewrite_legacy_live_object_update_bits(
+        object_type,
+        claim.fragment_source_mask,
+        claim.translated_mask,
+        claim.orientation_rewrite,
+        &mut rewritten_bits,
+        &mut rewritten_bit_cursor,
+    )?;
+    let residual_fragment_bits = rewritten_bits.len().saturating_sub(rewritten_bit_cursor);
+    let proven_terminal_packed_name_bits = if residual_fragment_bits
+        == LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS
+        && reader::legacy_name_tail_ready(
+            live_bytes,
+            claim.tail_offset.saturating_add(9),
+            record_end,
+        ) {
+        LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS
+    } else {
+        0
+    };
+    if residual_fragment_bits == proven_terminal_packed_name_bits {
+        return None;
+    }
+
+    Some(super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
+        raw_mask,
+        translated_mask: claim.translated_mask,
+        source_bit_cursor: bit_cursor,
+        rewritten_bit_cursor,
+        rewritten_fragment_bit_count: rewritten_bits.len(),
+        residual_fragment_bits,
+        proven_terminal_packed_name_bits,
+    })
+}
+
 fn placeable_update_state_bits_at(
     bits: &[bool],
     bit_cursor: usize,

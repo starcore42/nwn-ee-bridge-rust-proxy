@@ -33,23 +33,39 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-15 08:53 +10: fresh account-5
-capture
-`C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`
+Latest known live HG proxy status, as of 2026-07-15 14:54 +10: current-code
+account-5 capture
+`C:\nwnbridge\codex-live-area-index-door-20260715-1455\harness-proxy-20260715-145143`
 selected typed `starcore-druid60`, reached `Module_Loaded`, exact
-`Area_ClientArea`, native `Area_AreaLoaded`, and sustained gameplay through a
-complete inventory response probe. Proxy2 queued synthetic current-player
-status sequence 81, excluded three live-object packets whose own raw peer ACK
-was 80, observed server ACK 81, and admitted the typed 52-record
-materialization only when that frame itself carried raw ACK 81 (EE ACK 78).
-The request completed as `materialized_current_player_inventory`, refresh was
-confirmed, and a retained Inventory replay was released only with typed claim
-and queued-candidate containment. The capture's structured log ended at
-`2026-07-15T08:53:19+10:00`; it wrote zero quarantine files. This is current
-gameplay evidence and live-confirms the generalized frame-local response
-ownership. A credentialed account-4 Bard50 run remains useful for its earlier
-candidate-mismatch regression shape, but no account secret was available or
-guessed in this run.
+`Area_ClientArea`, proxy-owned `Area_AreaLoaded`, sustained gameplay, an exact
+36-slot quickbar, and real `Input_WalkToWaypoint` traffic while approaching the
+requested door. This live-confirms the indexed module-resource path on HG. The
+door action then exposed server sequence 95 as a 246-byte alternating
+`A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream. Its final named compact
+`U/09` leaves 24 MSB-first fragment bits after the known source-to-EE field
+walk, rather than the exactly six packed-name bits currently proven removable.
+The strict proxy correctly quarantined two copies plus one rejected diagnostic
+candidate. The structured log ended at `2026-07-15T14:54:03+10:00`; gameplay
+was reached, but `UseObject` did not complete before the run was stopped.
+Diagnose this failure by confirming the six record boundaries and the typed
+terminal residual evidence; do not trim or passthrough the fragment tail. The
+next fix must trace whether each nonterminal named tail9 record owns a packed
+name fragment span in the Diamond/EE readers and then require a final exact EE
+claim.
+
+The earlier zero-quarantine account-5 capture
+`C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`
+remains the current inventory-response reference: it reached native
+`Area_AreaLoaded`, admitted the frame-local 52-record materialization at raw
+peer ACK 81, completed as `materialized_current_player_inventory`, and ended at
+`2026-07-15T08:53:19+10:00` with zero quarantine files.
+
+Current-code strict replay
+`C:\nwnbridge\codex-proxy2-replay-tail9-residual-20260715-1545` processed the
+164-packet Diamond gameplay set with 304 strict allows, zero strict or semantic
+quarantines/files, one exact 36-slot quickbar, two area context checks, and zero
+terminal live-object residuals. It used isolated replay ports 55221/55233 after
+the default local listen port was unavailable before packet processing.
 
 Area translation performance is now anchored by the same strict 164-packet
 Diamond replay used for the current two-area regression. Profiling proved that

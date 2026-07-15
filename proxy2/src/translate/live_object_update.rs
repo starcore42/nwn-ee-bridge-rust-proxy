@@ -2604,6 +2604,7 @@ mod diagnostic_tests {
             offset: 51,
             record_end: 104,
             bit_cursor: 28,
+            terminal_door_placeable_tail9_residual: None,
             item_update_neighbor_gap_origin: Some(
                 LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
             ),
@@ -19083,8 +19084,21 @@ pub struct LiveObjectUpdateRewriteFailure {
     pub offset: usize,
     pub record_end: usize,
     pub bit_cursor: usize,
+    pub terminal_door_placeable_tail9_residual:
+        Option<LiveObjectUpdateDoorPlaceableTail9ResidualEvidence>,
     pub item_update_neighbor_gap_origin: Option<LiveObjectUpdateItemCursorGapOrigin>,
     pub item_update_cursor_evidence: Option<LiveObjectUpdateItemCursorFailureEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
+    pub raw_mask: u32,
+    pub translated_mask: u32,
+    pub source_bit_cursor: usize,
+    pub rewritten_bit_cursor: usize,
+    pub rewritten_fragment_bit_count: usize,
+    pub residual_fragment_bits: usize,
+    pub proven_terminal_packed_name_bits: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19596,6 +19610,7 @@ pub struct LiveObjectUpdateSourceWindowNeighborEvidence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectUpdateRewriteFailureKind {
+    DoorPlaceableTail9TerminalResidualFragmentBits,
     ItemUpdateCursorWithoutLedger,
     ItemUpdateCursorBeforeLedgerRow,
     ItemUpdateCursorInsideLedgerRow,
@@ -19608,6 +19623,9 @@ pub enum LiveObjectUpdateRewriteFailureKind {
 impl LiveObjectUpdateRewriteFailureKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::DoorPlaceableTail9TerminalResidualFragmentBits => {
+                "door-placeable-tail9-terminal-residual-fragment-bits"
+            }
             Self::ItemUpdateCursorWithoutLedger => "item-update-cursor-failed-without-ledger",
             Self::ItemUpdateCursorBeforeLedgerRow => "item-update-cursor-failed-before-ledger-row",
             Self::ItemUpdateCursorInsideLedgerRow => "item-update-cursor-failed-inside-ledger-row",
@@ -27007,6 +27025,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
         summary.update_records_examined = summary.update_records_examined.saturating_add(1);
         let bit_cursor_was_reliable = bit_cursor_reliable;
         let update_start_bit_cursor = bit_cursor;
+        let terminal_tail9_residual = record::terminal_door_placeable_tail9_residual_evidence(
+            &live_bytes,
+            offset,
+            record_end,
+            &fragment_bits,
+            bit_cursor,
+        );
         let Some(record_rewrite) = record::rewrite_update_record_for_ee_with_area_context(
             &mut live_bytes,
             &mut record_end,
@@ -27023,6 +27048,20 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     live_bytes.get(offset + 1).copied().unwrap_or_default(),
                     read_u32_le(&live_bytes, offset + 6).map(|mask| format!("0x{mask:08X}"))
                 );
+            }
+            if let Some(evidence) = terminal_tail9_residual {
+                let kind = LiveObjectUpdateRewriteFailureKind::
+                    DoorPlaceableTail9TerminalResidualFragmentBits;
+                *rewrite_failure = Some(LiveObjectUpdateRewriteFailure {
+                    reason: kind.as_str(),
+                    kind,
+                    offset,
+                    record_end,
+                    bit_cursor: evidence.rewritten_bit_cursor,
+                    terminal_door_placeable_tail9_residual: Some(evidence),
+                    item_update_neighbor_gap_origin: None,
+                    item_update_cursor_evidence: None,
+                });
             }
             if object_type == ITEM_OBJECT_TYPE && bit_cursor_was_reliable && !bit_cursor_reliable {
                 let focus_failure = item::translated_ee_item_update_cursor_failure(
@@ -38531,6 +38570,7 @@ impl LiveObjectItemUpdateCursorFailure {
             offset: self.offset,
             record_end: self.record_end,
             bit_cursor: self.bit_cursor,
+            terminal_door_placeable_tail9_residual: None,
             item_update_neighbor_gap_origin: self
                 .unowned_neighbor
                 .map(|neighbor| neighbor.gap_origin),
@@ -41325,6 +41365,11 @@ fn format_live_object_update_rewrite_failure_evidence(
     let _ = writeln!(&mut out, "offset={}", failure.offset);
     let _ = writeln!(&mut out, "record_end={}", failure.record_end);
     let _ = writeln!(&mut out, "bit_cursor={}", failure.bit_cursor);
+    let _ = writeln!(
+        &mut out,
+        "terminal_door_placeable_tail9_residual={:#?}",
+        failure.terminal_door_placeable_tail9_residual
+    );
     let _ = writeln!(&mut out, "gap_origin={gap_origin}");
 
     if let Some(evidence) = failure.item_update_cursor_evidence {

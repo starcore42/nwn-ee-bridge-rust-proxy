@@ -1872,6 +1872,24 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
         return Some(summary);
     }
 
+    // Diamond `CNWSMessage::SendServerToPlayerGameObjUpdate` may interleave a
+    // legacy `A/0A, U/0A, A/09, U/09, ...` stream in one CNW read window.
+    // The update-family pass owns the exact source `U` field order and shared
+    // MSB-first fragment cursor, and can use a following same-object update to
+    // bound the preceding add while inserting EE's visual-transform identity.
+    // Run that typed pass before the standalone add-map pass: inserting every
+    // add map first can move the read boundaries while the legacy `U` masks
+    // are still present, leaving neither focused pass able to commit its safe
+    // intermediate form. The final exact EE claim below remains mandatory.
+    summary.record_update_summary(rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    ));
+    if exact_after_changed(&candidate, summary) {
+        *payload = candidate;
+        return Some(summary);
+    }
+
     summary.record_add(
         live_object::rewrite_creature_add_visual_transform_maps_if_possible(
             &mut candidate,
@@ -1939,6 +1957,137 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
 
 fn exact_after_changed(candidate: &[u8], summary: ExactLiveObjectRewriteSummary) -> bool {
     summary.changed() && claim_payload_if_verified(candidate).is_some()
+}
+
+#[cfg(test)]
+mod fixture_free_tests {
+    use super::*;
+
+    fn alternating_legacy_door_placeable_payload() -> Vec<u8> {
+        let door_id = 0x8000_1001u32;
+        let first_placeable_id = 0x8000_1002u32;
+        let second_placeable_id = 0x8000_1003u32;
+        let first_name = b"Storage Drum";
+        let second_name = b"Generic Placeable Interaction Gate";
+        assert_eq!(first_name.len(), 12);
+        assert_eq!(second_name.len(), 34);
+
+        let mut live = Vec::new();
+
+        // Diamond door add: A/type/id, empty name branch, fixed tail. EE's
+        // reader inserts the eight-byte object visual-transform identity
+        // before the final model token WORD.
+        live.extend_from_slice(&[b'A', 10]);
+        live.extend_from_slice(&door_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&0x0000_14E5u32.to_le_bytes());
+        live.extend_from_slice(&0x0033u16.to_le_bytes());
+
+        // Diamond door U/0A all-bits mask. Both readers consume appearance
+        // before scale/state; the EE writer narrows this source mask to 0x17
+        // and inserts the sixth door/placeable state BOOL.
+        live.extend_from_slice(&[b'U', 10]);
+        live.extend_from_slice(&door_id.to_le_bytes());
+        live.extend_from_slice(&0xFFFF_FFF7u32.to_le_bytes());
+        live.extend_from_slice(&[
+            0x0C, 0x17, 0x66, 0x1C, 0x0F, 0x0F, 0x00, 0x2E, 0x02, 0x00, 0x00, 0x80, 0x3F, 0x33,
+            0x00, 0xE5, 0x14, 0x00, 0x00,
+        ]);
+
+        for (object_id, name, appearance, update_body) in [
+            (
+                first_placeable_id,
+                first_name.as_slice(),
+                0x01CFu16,
+                [
+                    0x43, 0x19, 0x1A, 0x1D, 0x11, 0x0F, 0x00, 0xE7, 0x03, 0x00, 0x00, 0x80, 0x3F,
+                    0x00, 0x00,
+                ],
+            ),
+            (
+                second_placeable_id,
+                second_name.as_slice(),
+                0x0090u16,
+                [
+                    0x5A, 0x14, 0xFC, 0x1B, 0x0F, 0x0F, 0x00, 0xF6, 0x01, 0x00, 0x00, 0x80, 0x3F,
+                    0x00, 0x00,
+                ],
+            ),
+        ] {
+            live.extend_from_slice(&[b'A', 9]);
+            live.extend_from_slice(&object_id.to_le_bytes());
+            live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            live.extend_from_slice(name);
+            live.push(0x05);
+            live.extend_from_slice(&appearance.to_le_bytes());
+            live.extend_from_slice(&0u16.to_le_bytes());
+
+            live.extend_from_slice(&[b'U', 9]);
+            live.extend_from_slice(&object_id.to_le_bytes());
+            live.extend_from_slice(&0xFFFF_FFF7u32.to_le_bytes());
+            live.extend_from_slice(&update_body);
+            live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            live.extend_from_slice(name);
+        }
+
+        let mut payload = vec![b'P', 0x05, 0x01];
+        let declared = u32::try_from(7usize + live.len()).expect("fixture declared length");
+        payload.extend_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(&live);
+        // CNW fragments are MSB-first: the high three bits carry the final
+        // valid-bit count, then the alternating add/update BOOLs continue in
+        // source reader order across all six records.
+        payload.extend_from_slice(&[0x9A, 0x60, 0x23, 0xAB, 0x88, 0x08, 0xD5, 0xC4, 0x04, 0x62]);
+        payload
+    }
+
+    #[test]
+    fn alternating_legacy_door_placeable_pairs_report_exact_terminal_residual() {
+        let mut payload = alternating_legacy_door_placeable_payload();
+        let original = payload.clone();
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "Diamond add/update stream must not already pass the EE reader"
+        );
+
+        let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
+        assert!(attempt.summary.is_none());
+        let failure = attempt
+            .failure
+            .expect("typed update walk should retain the terminal cursor blocker");
+        assert_eq!(
+            failure.kind,
+            live_object_update::LiveObjectUpdateRewriteFailureKind::
+                DoorPlaceableTail9TerminalResidualFragmentBits
+        );
+        let evidence = failure
+            .terminal_door_placeable_tail9_residual
+            .expect("terminal tail9 failure should expose exact fragment evidence");
+        assert_eq!(evidence.raw_mask, 0xFFFF_FFF7);
+        assert_eq!(evidence.translated_mask, 0x0000_0017);
+        assert_eq!(
+            evidence.rewritten_fragment_bit_count - evidence.rewritten_bit_cursor,
+            evidence.residual_fragment_bits
+        );
+        assert_eq!(evidence.rewritten_bit_cursor, 70);
+        assert_eq!(evidence.rewritten_fragment_bit_count, 94);
+        assert_eq!(evidence.residual_fragment_bits, 24);
+        assert_eq!(evidence.proven_terminal_packed_name_bits, 0);
+        assert_eq!(
+            payload, original,
+            "failed typed rewrite must be transactional"
+        );
+
+        assert!(
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "unowned terminal bits must keep the strict dispatcher quarantined"
+        );
+        assert_eq!(
+            payload, original,
+            "exact orchestration must not commit a partial alternating rewrite"
+        );
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]
