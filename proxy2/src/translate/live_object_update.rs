@@ -66,6 +66,7 @@ mod placeable;
 mod reader;
 mod record;
 mod tail_repair;
+mod terminal_trace;
 #[cfg(all(test, hgbridge_private_fixtures))]
 mod tests;
 mod trigger;
@@ -73,6 +74,8 @@ mod visual_effect_rows;
 pub(crate) mod visual_transform;
 mod world_status;
 mod writer;
+
+pub(crate) use terminal_trace::format_live_object_update_terminal_tail9_handoff_capture;
 
 pub(crate) fn looks_like_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
     world_status::is_work_remaining_record_at(bytes, offset)
@@ -2755,6 +2758,15 @@ mod diagnostic_tests {
             failure,
         )
         .expect("item U/6 handoff failure should emit a source-capture artifact");
+        assert!(
+            format_live_object_update_terminal_tail9_handoff_capture(
+                "live-object-update-records",
+                &payload,
+                failure,
+            )
+            .is_none(),
+            "non-terminal item failures must not emit a terminal tail9 artifact"
+        );
 
         assert!(report.contains("source=live-object-update-records"));
         assert!(
@@ -41551,6 +41563,15 @@ pub fn dump_live_object_update_rewrite_failure_evidence(
         };
         dir.push(format!("{base_name}.handoff.tsv"));
         let _ = std::fs::write(dir, handoff_capture);
+    }
+    if let Some(terminal_capture) =
+        format_live_object_update_terminal_tail9_handoff_capture(source, payload, failure)
+    {
+        let Some(mut dir) = crate::translate::diagnostics::probe_dump_dir() else {
+            return;
+        };
+        dir.push(format!("{base_name}.terminal.tsv"));
+        let _ = std::fs::write(dir, terminal_capture);
     }
 }
 

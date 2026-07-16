@@ -267,8 +267,8 @@ not as standalone workaround targets.
   but `UseObject` did not complete. Two 246-byte copies and one 270-byte
   diagnostic candidate remain correctly quarantined.
 
-  Fresh current-code gate capture, checked at `2026-07-17T04:14+10:00`
-  (about 5h55m old),
+  Fresh current-code gate capture, checked at `2026-07-17T07:12+10:00`
+  (about 8h53m old),
   `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
   ended at `2026-07-16T22:18:53.6452776+10:00` after reaching gameplay through
   two area handoffs and 28 exact live-object claims, with zero quarantine files
@@ -332,12 +332,36 @@ not as standalone workaround targets.
   writer trace or a controlled Diamond writer probe at `0x445160`, `0x507FC0`,
   and `0x508B80`; identify the exact owner of `63..76`, require a final exact EE
   claim, and rerun the live door `UseObject` probe.
+
+  Controlled stock-writer evidence is now reproducible with the opt-in
+  Diamond server harness switch `-TraceServerWriter`, which is disabled by
+  default and exact-byte guards the checked `nwserver.exe` entries before
+  patching. It brackets typed writer `0x445160`, logs every `WriteBOOL` at
+  `0x507FC0` with caller plus pre/post MSB cursor, and reports the exact
+  last-update-to-finalizer delta at `0x508B80`. Local Diamond-to-Diamond run
+  `C:\nwnbridge\codex-local-diamond-writer-delta-20260717-0734` entered the
+  module and captured 48 client packets; server trace
+  `C:\NWN\NWN Diamond\logs\hg_diamond_probe_server_20260717-073411_modbw167demo_port64724.log`
+  covered six stock `0xFFFFFFF7` door/placeable updates. Its terminal
+  placeable writer ended at read-buffer byte 353 / fragment cursor 143, while
+  `GetWriteMessage` began at byte 356 / the same cursor 143, proving
+  `tail_byte_delta=3` but `tail_fragment_delta=0`. Earlier helpers in the same
+  message did own inter-update BOOLs, so the typed caller/cursor trace corrects
+  the broader assumption that every handoff is bit-empty; the terminal stock
+  handoff remains exactly bit-empty and still cannot own HG's `63..76` suffix.
+  Proxy failure dumps now also write a bounded, explicitly non-claiming
+  `.terminal.tsv` beside the existing evidence artifacts so the selected stock
+  reader, unresolved suffix, preceding-row replay, and end-aligned alternatives
+  can be compared directly with this source trace. Next: obtain an HG custom
+  writer trace or reproduce its exact writer/list handoff under the controlled
+  probe; do not trim the duplicate-looking suffix before that owner is proven.
+
   Current-code strict replay
-  `C:\nwnbridge\codex-proxy2-replay-tail9-handoff-correlation-20260717-0438`
+  `C:\nwnbridge\codex-proxy2-replay-terminal-trace-20260717-0752`
   processed 164 packet files with 304 strict allows, zero strict/semantic
-  quarantines or files, one exact 36-slot quickbar, both area-context checks,
-  ten area rewrites, and zero terminal live-object residuals on isolated ports
-  63621/63633. Several older private capture regressions that encoded
+  quarantines or files, 97 exact live-object claims, 19 live-object rewrites,
+  and zero terminal live-object residuals on isolated ports 64821/64833; stderr
+  was empty. Several older private capture regressions that encoded
   the disproved sixth placeable bit as an exact owner now remain conservatively
   unclaimed. Do not restore that owner to satisfy them; reduce each failing
   capture to its actual source writer/handoff before changing production.

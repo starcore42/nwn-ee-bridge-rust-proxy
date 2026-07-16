@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-17 04:14 +10 (about 5h55m
+Latest known live HG proxy status, checked 2026-07-17 07:12 +10 (about 8h53m
 old): current-code
 account-5 capture
 `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
@@ -81,12 +81,38 @@ predecessor handoff or an HG custom writer (or instrument `0x445160`,
 `0x507FC0`, and `0x508B80`), then require an exact final EE claim and rerun the
 live door `UseObject` probe.
 
+The controlled stock-writer instrumentation is now available behind the
+opt-in `-TraceServerWriter` server-harness switch (environment contract
+`HG_DIAMOND_PROBE_SERVER_WRITER_TRACE=1`). The probe first requires the exact
+checked Diamond `nwserver.exe` entry bytes, then brackets typed update writer
+`0x445160`, records every `WriteBOOL` call at `0x507FC0` with its caller and
+pre/post MSB cursor, and records the last-update-to-`GetWriteMessage` delta at
+`0x508B80`. Normal probe runs do not patch these functions. Use either:
+
+```powershell
+.\tools\test-diamond-server.ps1 -SkipBuild -TraceServerWriter -Launch -Module bw167demo -Port <port>
+.\tools\test-local-diamond-baseline.ps1 -SkipBuild -TraceServerWriter -ServerPort <port>
+```
+
+Controlled Diamond-to-Diamond run
+`C:\nwnbridge\codex-local-diamond-writer-delta-20260717-0734` entered the
+module and captured 48 client packets. Its server artifact
+`C:\NWN\NWN Diamond\logs\hg_diamond_probe_server_20260717-073411_modbw167demo_port64724.log`
+traced six stock `0xFFFFFFF7` door/placeable updates in one message. The final
+placeable update ended with read-buffer byte count 353 and fragment cursor
+143; the finalizer began at byte count 356 and the same fragment cursor 143
+(`tail_byte_delta=3`, `tail_fragment_delta=0`). Intermediate row helpers did
+write BOOLs between earlier updates, so the new caller/cursor trace is needed
+instead of assuming every inter-row span is empty. The exact terminal stock
+handoff nevertheless adds no fragment bits and therefore does not own HG
+sequence 95's declared `63..76` suffix.
+
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-tail9-handoff-correlation-20260717-0438`
+`C:\nwnbridge\codex-proxy2-replay-terminal-trace-20260717-0752`
 processed all 164 packet files with 304 strict allows, zero strict/semantic
-quarantines or files, one exact 36-slot quickbar, both area-context checks, ten
-area rewrites, and zero terminal live-object residuals on isolated ports
-63621/63633. Some older private
+quarantines or files, 97 exact live-object claims, 19 live-object rewrites, and
+zero terminal live-object residuals on isolated ports 64821/64833. Its stderr
+was empty. Some older private
 capture-only exact-claim tests now reject under the corrected five-bit
 placeable reader; keep those streams quarantined until their real source
 writer/handoff owns the residual bits.
@@ -2043,7 +2069,7 @@ work.
 | Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-13 12:00 bard50 attempt stalled; the 12:02 traced retry observed BNK3 after 124 ms and reached sustained gameplay. |
 | A delayed `ClientGuiInventory` request reaches proxy2, then the same reliable-M client sequences retransmit and each replay increments bridge update indices or queues the same synthetic status request | Fixed in production code 2026-07-13: semantic inventory/quickbar effects were rerun for an exact reliable sequence/payload while expensive quickbar stream candidate probing delayed ACK progress | Exact sequence/payload pairs now apply typed semantic/bridge effects once while retransmissions and ACK changes remain transport-visible; the cache is bounded for sequence wrap. Require a live recurrence to confirm suppression, then continue bounding independent candidate-analysis latency. Bard50 capture `codex-live-bard50-stale-area-fast-20260713` resolved the missing-GQ context, showed repeats through bridge update 40, and ended with HG `BNDP`; focused tests and strict replay `codex-proxy2-replay-client-reliable-effects-20260713-175105` pass. |
 | `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |
-| Gameplay reaches movement, then sequence 95 quarantines an alternating `A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream and `UseObject` never completes | The terminal stock `U/09` reader ends at fragment cursor 63 while 13 additional bits are declared valid; they repeat a neighboring add-row span but have no proven stock owner, indicating an earlier cursor handoff error or an HG custom fragment extension | Keep the packet quarantined. Inspect the end-aligned Diamond-reader and immutable ledger evidence, trace the predecessor/HG writer or instrument the controlled Diamond serializer/finalizer, and rerun the same door interaction only after one exact owner explains `63..76`; never trim from the duplicate pattern alone. |
+| Gameplay reaches movement, then sequence 95 quarantines an alternating `A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream and `UseObject` never completes | The terminal stock `U/09` reader ends at fragment cursor 63 while 13 additional bits are declared valid; they repeat a neighboring add-row span but have no proven stock owner, indicating an earlier cursor handoff error or an HG custom fragment extension | Keep the packet quarantined. Compare its `.terminal.tsv` with a controlled stock trace from `-TraceServerWriter`, then trace/reproduce the HG writer or list handoff. Rerun the same door interaction only after one exact owner explains `63..76`; never trim from the duplicate pattern alone. |
 | Capture reaches `BNVR A` and one `P/01/03` response, but never sends client `P/11/01` | Driver fell back to native DirectConnect after missing or discarding the server-list path | Keep using the server-list DirectConnect path; if Diamond's app-state server-list slot is empty, retry with the remembered `SERVERLIST_PANEL` from the constructor hook before native fallback. |
 | `PRE_PLAYMOD` selection fires with `entries=0 count=0` | Auto-character path is too early or lacks refresh/retry | Add wait/refresh/retry instrumentation and rerun until the character list is populated or a new blocker is proven. |
 | Player-password prompt or native connect overlay appears | Harness regressed to the wrong login path or password handling | Keep the old driver connect path; do not pass native `+password`; seed the player password internally with default `A`. |

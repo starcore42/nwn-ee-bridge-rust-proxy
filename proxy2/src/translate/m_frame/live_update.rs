@@ -2426,6 +2426,67 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn alternating_tail9_terminal_capture_is_bounded_and_non_claiming() {
+        let mut payload = alternating_legacy_door_placeable_payload();
+        let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
+        assert!(attempt.summary.is_none());
+        let failure = attempt
+            .failure
+            .expect("alternating terminal stream should retain typed failure evidence");
+        let capture = live_object_update::format_live_object_update_terminal_tail9_handoff_capture(
+            "live-object-update-records",
+            &payload,
+            failure,
+        )
+        .expect("terminal tail9 failure should emit a machine-readable artifact");
+
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t1\n"));
+        assert!(capture.contains(
+            "ownership\tstatus\tunproven-source-owner\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
+        ));
+        assert!(capture.contains(
+            "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"
+        ));
+        assert!(capture.contains(
+            "terminal_handoff\tanchored_cursor\t63\tfragment_bits\t76\tunresolved\t63..76:"
+        ));
+        let replay = capture
+            .lines()
+            .find(|line| {
+                line.starts_with("terminal_replay_candidate\t")
+                    && line.contains("prior_source\t40..50")
+                    && line.contains("replayed\t65..75:")
+            })
+            .expect("artifact should retain the exact preceding A/09 replay candidate");
+        assert!(replay.contains("same_object\ttrue"));
+        assert!(replay.contains("immediately_precedes\ttrue"));
+        assert!(replay.contains("unresolved_prefix\t63..65:"));
+        assert!(replay.contains("unresolved_suffix\t75..76:"));
+        assert!(replay.ends_with("claimable\tfalse"));
+        assert!(capture.lines().any(|line| {
+            line.starts_with("end_aligned_candidate\t")
+                && line.contains("start\t63\tend\t76\tconsumed\t13")
+                && line.ends_with("claimable\tfalse")
+        }));
+        assert!(capture.contains(
+            "contiguous_tail\tentries\t5\tretained\t5\tsource_span\t3..50\temitted_span\t3..57"
+        ));
+        assert!(
+            !capture.contains("claimable\ttrue"),
+            "candidate evidence must never promote source ownership"
+        );
+        assert!(
+            capture.lines().count()
+                <= 11
+                    + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT
+                    + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
+                    + live_object_update::LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT
+                    + live_object_update::LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT,
+            "artifact row count must stay bounded by retained typed-evidence limits"
+        );
+    }
+
+    #[test]
     fn alternating_tail9_handoff_correlation_rejects_a_one_bit_near_match() {
         let mut payload = alternating_legacy_door_placeable_payload();
         let declared = usize::try_from(u32::from_le_bytes(
@@ -2462,6 +2523,25 @@ mod fixture_free_tests {
             }),
             "a one-bit mismatch must not be reported as an exact prior-row replay"
         );
+        let capture = live_object_update::format_live_object_update_terminal_tail9_handoff_capture(
+            "live-object-update-records",
+            &payload,
+            failure,
+        )
+        .expect("near-match terminal failure should still emit bounded evidence");
+        assert!(capture.contains("ownership\tstatus\tunproven-source-owner\tclaimable\tfalse"));
+        assert!(
+            capture
+                .lines()
+                .filter(|line| {
+                    line.starts_with("terminal_replay_candidate\t")
+                        && line.contains("prior_source\t40..50")
+                        && line.contains("replayed\t65..75:")
+                })
+                .next()
+                .is_none()
+        );
+        assert!(!capture.contains("claimable\ttrue"));
         assert_eq!(
             payload, original,
             "diagnostic near-match analysis must not mutate the staged packet"
