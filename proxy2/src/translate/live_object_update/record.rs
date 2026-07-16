@@ -2347,6 +2347,65 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
     if residual_fragment_bits == proven_terminal_packed_name_bits {
         return None;
     }
+    // Compare the capture-backed compact-tail9 interpretation above with the
+    // stock Diamond client reader at the same immutable source cursor.
+    // Diamond `sub_467AE0` owns the generic position/orientation/appearance/
+    // scale order, then `sub_44E2C0` / `sub_44EB40` consume five state BOOLs
+    // and the outer/inner name selectors. Unknown HG mask bits are retained as
+    // evidence by the candidate wrapper. Even an exact stock read can only
+    // describe a competing source interpretation; it cannot move the
+    // production cursor or authorize deletion.
+    let stock_diamond_source =
+        reader::parse_verified_diamond_door_placeable_update_source_candidate(
+            live_bytes,
+            record_offset,
+            record_end,
+            source_fragment_bits,
+            source_bit_cursor,
+        )
+        .map(|source| {
+            let stock_claim = source.claim;
+            let source_name = stock_claim.placeable_name;
+            let source_name_selector_bit_cursor = source_name.map(|name| name.selector_bit_cursor);
+            let source_name_selector = source_name_selector_bit_cursor
+                .and_then(|cursor| source_fragment_bits.get(cursor).copied());
+            let source_name_locstring_selector_bit_cursor =
+                source_name.and_then(|name| name.locstring_selector_bit_cursor);
+            let source_name_locstring_selector = source_name_locstring_selector_bit_cursor
+                .and_then(|cursor| source_fragment_bits.get(cursor).copied());
+            let source_reader_bit_cursor = stock_claim.next_bit_cursor;
+            super::LiveObjectUpdateDoorPlaceableStockSourceEvidence {
+                raw_mask: source.raw_mask,
+                effective_mask: source.effective_mask,
+                ignored_mask: source.ignored_mask,
+                read_end: stock_claim.read_end,
+                source_bit_cursor,
+                source_reader_bit_cursor,
+                source_reader_bits_consumed: source_reader_bit_cursor
+                    .saturating_sub(source_bit_cursor),
+                source_orientation_vector: if (source.effective_mask
+                    & LEGACY_UPDATE_ORIENTATION_MASK)
+                    != 0
+                {
+                    Some(stock_claim.vector_orientation.is_some())
+                } else {
+                    None
+                },
+                source_state_bit_cursor: stock_claim.state_bit_cursor,
+                source_name_selector_bit_cursor,
+                source_name_selector,
+                source_name_locstring_selector_bit_cursor,
+                source_name_locstring_selector,
+                source_name_kind: source_name.map(|name| placeable_name_kind_label(name.kind)),
+                source_reader_residual: super::live_object_rewrite_bit_slice_evidence(
+                    source_reader_bit_cursor,
+                    source_fragment_bits.len(),
+                    source_fragment_bits
+                        .get(source_reader_bit_cursor..)
+                        .unwrap_or(&[]),
+                ),
+            }
+        });
     let (source_suffix_candidate_count, source_suffix_candidates) =
         terminal_tail9_source_suffix_candidates(
             live_bytes,
@@ -2380,6 +2439,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         rewritten_residual,
         proven_terminal_packed_name_bits,
         precursor_tail: None,
+        stock_diamond_source,
         source_suffix_candidate_count,
         source_suffix_candidates,
     })

@@ -15,6 +15,19 @@ use super::{
     PLACEABLE_OBJECT_TYPE, locstring, read_f32_le, read_u16_le, read_u32_le,
 };
 
+const DOOR_PLACEABLE_UPDATE_READER_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
+    | LEGACY_UPDATE_ORIENTATION_MASK
+    | LEGACY_UPDATE_SCALE_STATE_MASK
+    | LEGACY_UPDATE_STATE_MASK
+    | LEGACY_UPDATE_APPEARANCE_MASK
+    | LEGACY_UPDATE_NAME_MASK;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoorPlaceableUpdateReadDialect {
+    DiamondSourceCandidate,
+    Ee,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LegacyNamedUpdateTail {
     pub(super) facing: u16,
@@ -35,6 +48,14 @@ pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) state_bit_cursor: Option<usize>,
     pub(super) placeable_name: Option<VerifiedEePlaceableName>,
     pub(super) next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedDiamondDoorPlaceableUpdateSourceCandidate {
+    pub(super) raw_mask: u32,
+    pub(super) effective_mask: u32,
+    pub(super) ignored_mask: u32,
+    pub(super) claim: VerifiedEeDoorPlaceableUpdateRecord,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -433,6 +454,50 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<VerifiedEeDoorPlaceableUpdateRecord> {
+    parse_verified_door_placeable_update_record(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        DoorPlaceableUpdateReadDialect::Ee,
+    )
+}
+
+pub(super) fn parse_verified_diamond_door_placeable_update_source_candidate(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<VerifiedDiamondDoorPlaceableUpdateSourceCandidate> {
+    let raw_mask = read_u32_le(bytes, offset.checked_add(6)?)?;
+    let effective_mask = raw_mask & DOOR_PLACEABLE_UPDATE_READER_MASK;
+    let ignored_mask = raw_mask & !DOOR_PLACEABLE_UPDATE_READER_MASK;
+    let claim = parse_verified_door_placeable_update_record(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        DoorPlaceableUpdateReadDialect::DiamondSourceCandidate,
+    )?;
+    Some(VerifiedDiamondDoorPlaceableUpdateSourceCandidate {
+        raw_mask,
+        effective_mask,
+        ignored_mask,
+        claim,
+    })
+}
+
+fn parse_verified_door_placeable_update_record(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    dialect: DoorPlaceableUpdateReadDialect,
+) -> Option<VerifiedEeDoorPlaceableUpdateRecord> {
     let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
     if bit_cursor > fragment_bits.len() {
         if debug_live_claim {
@@ -454,7 +519,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         return None;
     }
 
-    let mask = read_u32_le(bytes, offset + 6)?;
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
     // EE dispatch `sub_1407B8380` runs the shared `sub_14079C050` reader, then
     // routes type 0x09 to placeable reader `sub_1407A8460` and type 0x0A to
     // door reader `sub_140797780`. Both object readers test mask bit 19
@@ -462,15 +527,26 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     // either `sub_1409735F0` (localized) or `ReadCExoString(32)` (direct).
     // Their state blocks differ: the placeable reader consumes five BOOLs,
     // while the door reader consumes a sixth BOOL after the shared five.
-    let allowed_mask = LEGACY_UPDATE_POSITION_MASK
-        | LEGACY_UPDATE_ORIENTATION_MASK
-        | LEGACY_UPDATE_SCALE_STATE_MASK
-        | LEGACY_UPDATE_STATE_MASK
-        | LEGACY_UPDATE_APPEARANCE_MASK
-        | LEGACY_UPDATE_NAME_MASK;
-    if mask == 0 || (mask & !allowed_mask) != 0 {
-        return None;
-    }
+    let mask = match dialect {
+        DoorPlaceableUpdateReadDialect::Ee => {
+            if raw_mask == 0 || (raw_mask & !DOOR_PLACEABLE_UPDATE_READER_MASK) != 0 {
+                return None;
+            }
+            raw_mask
+        }
+        DoorPlaceableUpdateReadDialect::DiamondSourceCandidate => {
+            // Diamond `sub_467AE0`, `sub_44E2C0`, and `sub_44EB40` branch on
+            // these reader-owned fields even when an HG/custom source mask has
+            // unrelated legacy bits set. Preserve those ignored bits on the
+            // candidate wrapper: this exact reader walk is evidence only and
+            // cannot authorize a rewrite or fragment trim.
+            let effective_mask = raw_mask & DOOR_PLACEABLE_UPDATE_READER_MASK;
+            if effective_mask == 0 {
+                return None;
+            }
+            effective_mask
+        }
+    };
 
     let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
     let mut fragment_cursor = bit_cursor;
@@ -656,21 +732,22 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
             fragment_cursor,
             LEGACY_UPDATE_STATE_FRAGMENT_BITS,
         )?;
-        let neutral_ee_state_suffix = if object_type == DOOR_OBJECT_TYPE {
-            // EE door reader `sub_140797780` consumes a sixth state BOOL after
-            // the five BOOLs shared with Diamond `sub_44E2C0`. The translator
-            // inserts `false`, so an exact bridge door packet must carry that
-            // neutral branch. EE placeable `sub_1407A8460`, like Diamond
-            // `sub_44EB40`, stops after the five shared BOOLs.
-            let neutral_ee_state_suffix = fragment_bits.get(fragment_cursor).copied()?;
-            if neutral_ee_state_suffix {
-                return None;
-            }
-            fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
-            neutral_ee_state_suffix
-        } else {
-            false
-        };
+        let neutral_ee_state_suffix =
+            if dialect == DoorPlaceableUpdateReadDialect::Ee && object_type == DOOR_OBJECT_TYPE {
+                // EE door reader `sub_140797780` consumes a sixth state BOOL after
+                // the five BOOLs shared with Diamond `sub_44E2C0`. The translator
+                // inserts `false`, so an exact bridge door packet must carry that
+                // neutral branch. EE placeable `sub_1407A8460`, like Diamond
+                // `sub_44EB40`, stops after the five shared BOOLs.
+                let neutral_ee_state_suffix = fragment_bits.get(fragment_cursor).copied()?;
+                if neutral_ee_state_suffix {
+                    return None;
+                }
+                fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+                neutral_ee_state_suffix
+            } else {
+                false
+            };
         state = Some(VerifiedEeDoorPlaceableState {
             bit_cursor: state_cursor,
             visual_selector,
@@ -1047,6 +1124,55 @@ mod tests {
             claim.placeable_name.map(|name| name.kind),
             Some(VerifiedEePlaceableNameKind::DirectCExoString { byte_length: 0 })
         ));
+    }
+
+    #[test]
+    fn diamond_source_candidate_keeps_five_door_state_bits_and_records_ignored_mask() {
+        let object_id = 0x1234_ABCD_u32;
+        let raw_mask = LEGACY_UPDATE_STATE_MASK | 0x0000_0040;
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', DOOR_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&raw_mask.to_le_bytes());
+        let diamond_bits = [true, false, true, false, true];
+
+        let source = parse_verified_diamond_door_placeable_update_source_candidate(
+            &live,
+            0,
+            live.len(),
+            &diamond_bits,
+            0,
+        )
+        .expect("Diamond door source reader should consume five state BOOLs");
+        assert_eq!(source.raw_mask, raw_mask);
+        assert_eq!(source.effective_mask, LEGACY_UPDATE_STATE_MASK);
+        assert_eq!(source.ignored_mask, 0x0000_0040);
+        assert_eq!(source.claim.next_bit_cursor, diamond_bits.len());
+        assert_eq!(
+            source
+                .claim
+                .state
+                .map(|state| state.neutral_ee_state_suffix),
+            Some(false)
+        );
+        assert!(
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &diamond_bits, 0,)
+                .is_none(),
+            "EE exact validation must reject ignored source-mask bits"
+        );
+
+        live[6..10].copy_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+        assert!(
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &diamond_bits, 0,)
+                .is_none(),
+            "EE door reader still requires its sixth state BOOL"
+        );
+        let mut ee_bits = diamond_bits.to_vec();
+        ee_bits.push(false);
+        let ee_claim =
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &ee_bits, 0)
+                .expect("EE door reader should accept five shared BOOLs plus neutral suffix");
+        assert_eq!(ee_claim.next_bit_cursor, ee_bits.len());
     }
 
     #[test]

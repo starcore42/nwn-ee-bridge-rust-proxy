@@ -33,35 +33,43 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-16 10:08 +10: current-code
+Latest known live HG proxy status, checked 2026-07-16 22:18 +10: current-code
 account-5 capture
-`C:\nwnbridge\codex-live-area-index-door-20260715-1455\harness-proxy-20260715-145143`
-selected typed `starcore-druid60`, reached `Module_Loaded`, exact
-`Area_ClientArea`, proxy-owned `Area_AreaLoaded`, sustained gameplay, an exact
-36-slot quickbar, and real `Input_WalkToWaypoint` traffic. The structured log
-`proxy.structured.log` ended at `2026-07-15T14:54:03.2911325+10:00`, making it
-about 19 hours 14 minutes old at this run's gate and therefore current gameplay
-evidence. `UseObject` did not complete.
+`C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
+selected typed `starcore-druid60`, reached `Module_Loaded`, completed two area
+handoffs with native/proxy `Area_AreaLoaded` evidence, and sustained exact
+live-object gameplay through 28 claimed payloads. The structured log
+`C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658\proxy.structured.log`
+ended at `2026-07-16T22:18:53.6452776+10:00`; the run wrote zero quarantine files
+and no `BNDP`. It carried no interaction flags, so it did not issue
+`Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
+interaction capture remains the regression evidence for that active packet.
 
 Server sequence 95 remains the active connection/gameplay failure: two
 246-byte strict copies and one 270-byte diagnostic candidate were quarantined.
 A corrected Diamond/EE decompile audit proves EE placeables consume five state
 BOOLs, EE doors consume six, and both support the same mask-`0x00080000` name
 grammar. Production now inserts the neutral sixth bit only for doors and
-accepts exact named updates for either type. Its terminal diagnostics retain
-immutable source and emitted cursors separately: five precursor rows end at
-source 50 / emitted 57; the terminal source spans `50..76`, the selected reader
-ends at source 59, and end-aligned locstring/direct candidates at 67/68 leave
-8/9-bit gaps. No decompile proof authorizes trimming those gaps. Trace stock
-update serializer `0x445160` and the HG fragment-assembly handoff, then require
-an exact final EE claim and rerun the live door `UseObject` probe.
+accepts exact named updates for either type. Terminal diagnostics now compare
+two non-mutating source interpretations at immutable source cursor 50 in the
+76-bit fragment. The compact-tail9 reader ends at 59 and leaves 17 bits. The
+exact stock Diamond candidate filters raw mask `0xFFFFFFF7` to reader-owned
+`0x00080037` (recording ignored `0xFFF7FFC0`), then consumes position `50..52`,
+scalar orientation `52..57`, five state BOOLs `57..62`, and a false direct-name
+selector at 62; it ends at 63 and leaves 13 bits. End-aligned locstring/direct
+alternatives still begin at 67/68, leaving 8/9-bit gaps after the compact reader
+or 4/5-bit gaps after the stock reader. Neither interpretation owns the complete
+source fragment, so neither can move the production cursor, authorize trimming,
+or authorize a rewrite. Trace stock update serializer `0x445160` and the HG
+fragment-assembly handoff, then require an exact final EE claim and rerun the
+live door `UseObject` probe.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-placeable-state-width-20260716-1116`
+`C:\nwnbridge\codex-proxy2-replay-stock-source-evidence-20260716-2250`
 processed all
 164 packet files with 304 strict allows, zero strict/semantic quarantines or
 files, one committed quickbar profile, both area-context checks, and zero
-terminal live-object residuals on isolated ports 61421/61433. Some older private
+terminal live-object residuals on isolated ports 62421/62433. Some older private
 capture-only exact-claim tests now reject under the corrected five-bit
 placeable reader; keep those streams quarantined until their real source
 writer/handoff owns the residual bits.

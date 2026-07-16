@@ -16,7 +16,7 @@ pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
     // keep stale/default orientation.
     // EE's shared `sub_14079C050` reader has no name branch, but dispatcher
     // `sub_1407B8380` sends object type 0x09 to placeable-specific
-    // `sub_140797780`, which tests mask 0x0008_0000 and reads the same
+    // `sub_1407A8460`, which tests mask 0x0008_0000 and reads the same
     // selector + locstring/CExoString family as Diamond `sub_44EB40`. The exact
     // EE reader model therefore accepts bounded direct-name placeable updates.
     // Translation still drops this source bit until the capture-backed packed
@@ -24,7 +24,7 @@ pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
     // Local CEP v2.2 and XP2 captures also show low 0x40/0x80 placeable update
     // bits with a bounded name/control tail after the shared generic prefix.
     // Neither EE's shared reader (`sub_14079C050`) nor its placeable-specific
-    // reader (`sub_140797780`) consumes those low bits; Diamond's matching
+    // reader (`sub_1407A8460`) consumes those low bits; Diamond's matching
     // client-reader pair (`sub_467AE0` / `sub_44EB40`) likewise only consumes
     // 0x10 and 0x80000 in the placeable-specific leg. The typed record rewriter
     // owns and drops that tail before this translated mask is emitted.

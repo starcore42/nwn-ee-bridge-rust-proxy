@@ -2149,6 +2149,27 @@ mod fixture_free_tests {
         assert_eq!(preceding_add.bits_removed, 0);
         assert_eq!(preceding_add.family, "add-compact-rewrite");
 
+        let stock_source = evidence
+            .stock_diamond_source
+            .expect("the same bytes should retain the competing stock Diamond reader walk");
+        assert_eq!(stock_source.raw_mask, 0xFFFF_FFF7);
+        assert_eq!(stock_source.effective_mask, 0x0008_0037);
+        assert_eq!(stock_source.ignored_mask, 0xFFF7_FFC0);
+        assert_eq!(stock_source.read_end, 245);
+        assert_eq!(stock_source.source_bit_cursor, 50);
+        assert_eq!(stock_source.source_reader_bit_cursor, 63);
+        assert_eq!(stock_source.source_reader_bits_consumed, 13);
+        assert_eq!(stock_source.source_orientation_vector, Some(false));
+        assert_eq!(stock_source.source_state_bit_cursor, Some(57));
+        assert_eq!(stock_source.source_name_selector_bit_cursor, Some(62));
+        assert_eq!(stock_source.source_name_selector, Some(false));
+        assert_eq!(stock_source.source_name_locstring_selector_bit_cursor, None);
+        assert_eq!(stock_source.source_name_locstring_selector, None);
+        assert_eq!(stock_source.source_name_kind, Some("direct-cexostring"));
+        assert_eq!(stock_source.source_reader_residual.bit_start, 63);
+        assert_eq!(stock_source.source_reader_residual.bit_end, 76);
+        assert_eq!(stock_source.source_reader_residual.bit_count, 13);
+
         assert_eq!(evidence.source_suffix_candidate_count, 2);
         let mut suffix_candidates = evidence.source_suffix_candidates.iter().flatten();
         let locstring_candidate = suffix_candidates

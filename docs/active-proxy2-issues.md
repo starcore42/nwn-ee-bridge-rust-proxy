@@ -267,6 +267,14 @@ not as standalone workaround targets.
   but `UseObject` did not complete. Two 246-byte copies and one 270-byte
   diagnostic candidate remain correctly quarantined.
 
+  Fresh current-code gate capture
+  `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
+  ended at `2026-07-16T22:18:53.6452776+10:00` after reaching gameplay through
+  two area handoffs and 28 exact live-object claims, with zero quarantine files
+  and no `BNDP`. It carried no interaction flags, so it did not reproduce
+  sequence 95 or `UseObject`; the older interaction capture remains the
+  regression seed.
+
   A fresh Diamond/EE client decompile audit corrected the packet model. EE
   dispatcher type `0x09` calls placeable reader `sub_1407A8460`, which consumes
   five state BOOLs; type `0x0A` calls door reader `sub_140797780`, which consumes
@@ -278,22 +286,23 @@ not as standalone workaround targets.
   Production exact parsing, rewriting, and validators now follow this
   type-specific bit order and accept exact named doors and placeables.
 
-  Sequence-95 diagnostics now keep immutable source coordinates separate from
-  emitted coordinates. The five committed precursor rows end at source bit 50
-  and emitted bit 57. The terminal placeable source begins at 50 in a 76-bit
-  fragment; the selected stock reader ends at 59, leaving source `59..76`.
-  End-aligned name candidates occupy `67..76` (locstring) or `68..76` (direct),
-  leaving unexplained gaps `59..67` or `59..68`. Even the fullest stock scalar
-  placeable update can own at most 15 of the 26 terminal source bits, leaving at
-  least 11 without a decompile-backed owner. The Diamond snapshot add writer
-  cannot own that gap, and CNWMessage uses one continuous fragment cursor.
-  Therefore no trimming, passthrough, or cursor search is authorized.
+  Production diagnostics now compare two non-mutating source interpretations at
+  immutable source cursor 50 in the 76-bit fragment. The compact-tail9 reader
+  ends at 59 and leaves 17 bits. The exact stock Diamond candidate filters raw
+  mask `0xFFFFFFF7` to reader-owned `0x00080037` (recording ignored
+  `0xFFF7FFC0`), then consumes position `50..52`, scalar orientation `52..57`,
+  five state BOOLs `57..62`, and a false direct-name selector at 62; it ends at
+  63 and leaves 13 bits. End-aligned locstring/direct alternatives still begin
+  at 67/68, leaving 8/9-bit gaps after the compact reader or 4/5-bit gaps after
+  the stock reader. Neither interpretation owns the complete source fragment,
+  so neither can move the production cursor, authorize trimming, or authorize a
+  rewrite.
 
   Next: trace stock update serializer `0x445160` and the HG read-buffer/fragment
   assembly handoff before the terminal row, identify the missing source owner,
   require a final exact EE claim, and rerun the live door `UseObject` probe.
   Current-code strict replay
-  `C:\nwnbridge\codex-proxy2-replay-placeable-state-width-20260716-1116`
+  `C:\nwnbridge\codex-proxy2-replay-stock-source-evidence-20260716-2250`
   processed
   164 packet files with 304 strict allows, zero strict/semantic quarantines or
   files, one exact 36-slot quickbar, two area-context checks, and zero terminal

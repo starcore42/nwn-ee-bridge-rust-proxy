@@ -3126,6 +3126,8 @@ fn trace_live_object_update_rewrite_failure(
                 .unwrap_or_default(),
             tail9_precursor_tail = ?tail9_residual
                 .and_then(|evidence| evidence.precursor_tail),
+            tail9_stock_diamond_source = ?tail9_residual
+                .and_then(|evidence| evidence.stock_diamond_source),
             tail9_source_suffix_candidate_count = tail9_residual
                 .map(|evidence| evidence.source_suffix_candidate_count)
                 .unwrap_or_default(),
