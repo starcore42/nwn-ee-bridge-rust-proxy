@@ -3082,6 +3082,9 @@ fn trace_live_object_update_rewrite_failure(
             tail9_translated_mask = tail9_residual
                 .map(|evidence| evidence.translated_mask)
                 .unwrap_or_default(),
+            tail9_source_fragment_bit_count = tail9_residual
+                .map(|evidence| evidence.source_fragment_bit_count)
+                .unwrap_or_default(),
             tail9_source_bit_cursor = tail9_residual
                 .map(|evidence| evidence.source_bit_cursor)
                 .unwrap_or_default(),
@@ -3104,6 +3107,12 @@ fn trace_live_object_update_rewrite_failure(
                 .unwrap_or("none"),
             tail9_source_reader_residual = ?tail9_residual
                 .map(|evidence| evidence.source_reader_residual),
+            tail9_emitted_bit_cursor = tail9_residual
+                .map(|evidence| evidence.emitted_bit_cursor)
+                .unwrap_or_default(),
+            tail9_emitted_fragment_bit_count = tail9_residual
+                .map(|evidence| evidence.emitted_fragment_bit_count)
+                .unwrap_or_default(),
             tail9_rewritten_fragment_bit_count = tail9_residual
                 .map(|evidence| evidence.rewritten_fragment_bit_count)
                 .unwrap_or_default(),

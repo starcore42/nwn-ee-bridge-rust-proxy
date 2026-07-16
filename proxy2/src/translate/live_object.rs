@@ -8618,7 +8618,7 @@ mod tests {
             include_bytes!("../../fixtures/live_object/pending_live_object_seq31_chunks9.bin")
                 .to_vec();
 
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
+        crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
             &mut payload,
         )
         .expect("pending stream update pre-pass rewrite");
@@ -8885,26 +8885,19 @@ mod hg_mixed_door_placeable_translation_tests {
     }
 
     #[test]
-    fn hg_post_door_placeable_transition_compact_payload_leaves_terminal_name_residual_unclaimed() {
+    fn hg_post_door_placeable_transition_compact_payload_rewrites_to_exact_ee_claim() {
         let mut payload = include_bytes!(
             "../../fixtures/live_object/hg_post_door_placeable_transition_compact_after_update.bin"
         )
         .to_vec();
 
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let visual_summary =
-            rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None).expect(
-                "compact transition placeable add should receive an EE visual-transform map",
-            );
-        assert_eq!(visual_summary.maps_inserted, 1);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        assert!(
-            live_update::claim_payload_if_verified(&payload).is_none(),
-            "post-door compact placeable add/update payload still carries unowned terminal U/9 inline-name fragment bits"
-        );
+        // The EE placeable reader consumes five state BOOLs, not the six once
+        // assumed by the exact validator. With the decompiled count restored,
+        // the compact add/update pair has no terminal state/name residual and
+        // the normal bounded adapter can finish the EE visual-map expansion.
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(claim.add_records, 1);
+        assert_eq!(claim.update_records, 1);
     }
 
     #[test]

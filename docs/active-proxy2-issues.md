@@ -258,77 +258,49 @@ not as standalone workaround targets.
   processed 164 packet files with 304 strict allows, zero strict/semantic
   quarantines or files, 10 area rewrite summaries, two distinct area context
   checks, one exact 36-slot quickbar, and zero terminal live-object residuals.
-- 2026-07-15 alternating named door/placeable live-object fragment ownership:
+- 2026-07-16 alternating door/placeable live-object fragment ownership:
   current-code account-5 capture
   `C:\nwnbridge\codex-live-area-index-door-20260715-1455\harness-proxy-20260715-145143`
-  reached gameplay and emitted real `Input_WalkToWaypoint` traffic while the
-  harness approached a door. Server sequence 95 then carried six exact byte
-  boundaries in alternating `A/0A,U/0A,A/09,U/09,A/09,U/09` order. The three
-  updates use capture-backed all-bits mask `0xFFFFFFF7` and compact tail9
-  fields; the two placeable rows also carry inline names.
+  reached gameplay, emitted real `Input_WalkToWaypoint`, and exposed server
+  sequence 95 as alternating `A/0A,U/0A,A/09,U/09,A/09,U/09` records. The
+  structured log ended at `2026-07-15T14:54:03+10:00`; gameplay was reached,
+  but `UseObject` did not complete. Two 246-byte copies and one 270-byte
+  diagnostic candidate remain correctly quarantined.
 
-  Running the typed update walk before standalone add-map expansion owns the
-  first five records without changing the mandatory final EE validator. The
-  live stream proves that the nonterminal named `U/09` immediately before an
-  `A/09` owns six packed control bits in addition to its Diamond reader bits.
-  Production now removes exactly that span only after the source name exact-
-  parses as a direct CExoString at the byte boundary; it preserves the name and
-  its outer selector in the EE mask. The resulting record consumes and emits
-  14 bits, and the following `A/09` begins at its exact source selector.
+  A fresh Diamond/EE client decompile audit corrected the packet model. EE
+  dispatcher type `0x09` calls placeable reader `sub_1407A8460`, which consumes
+  five state BOOLs; type `0x0A` calls door reader `sub_140797780`, which consumes
+  six. Diamond door `sub_44E2C0` and placeable `sub_44EB40` each consume five,
+  so only door updates insert one neutral EE state BOOL. Both EE readers support
+  mask `0x00080000` with the same outer name selector: false reads direct
+  `CExoString(32)`; true calls the locstring helper, whose inner false branch
+  reads `CExoString(32)` and inner true branch reads `BYTE(1)` plus `DWORD(32)`.
+  Production exact parsing, rewriting, and validators now follow this
+  type-specific bit order and accept exact named doors and placeables.
 
-  The client decompile trace now corrects an earlier validator assumption:
-  Diamond door/placeable readers `sub_44E2C0` / `sub_44EB40` consume five state
-  BOOLs and the mask-`0x80000` name selector, while EE dispatcher
-  `sub_1407B8380` routes object type `0x09` to `sub_140797780`, which consumes
-  six state BOOLs and then the same name selector plus locstring/direct
-  CExoString branch. EE type `0x0A` instead reaches `sub_14076FA20`, which has
-  no corresponding name read. The production exact reader now models that
-  type-specific placeable branch through all three reader shapes. Outer false
-  reads `CExoString(32)`. Outer true calls EE `sub_1409735F0` / Diamond
-  `sub_53E700`, which consumes one inner BOOL: false reads the same bounded
-  CExoString, while true reads `BYTE(1,1)` plus a DWORD strref. Typed claims
-  retain both MSB-first selector cursors and the exact byte-side name kind.
-  Invalid client-TLK selector bytes reject. Name preservation is restricted to
-  the proven nonterminal direct-name handoff; applying it to terminal compact
-  rows caused three older strict-replay frames to reject and was removed. The
-  sequence-95 structural regression now reaches source cursor 58 in an 84-bit
-  staged source. Production diagnostics retain the exact terminal Diamond read:
-  five state BOOLs, outer/inner name selectors `1,0` at cursors 65/66, an inline
-  locstring CExoString, and reader end cursor 67. The residual source window is
-  therefore exactly 17 bits at `67..84`, beginning `0010000000100011` with one
-  additional bit. The hypothetical EE write inserts its sixth state BOOL and
-  ends at cursor 73 in 90 bits, leaving the identical 17-bit residual. The
-  translated terminal mask is `0x00080017`, but the packet still rejects
-  transactionally: the Diamond terminal reader has already stopped, so no
-  decompile or capture proof authorizes trimming those bits.
+  Sequence-95 diagnostics now keep immutable source coordinates separate from
+  emitted coordinates. The five committed precursor rows end at source bit 50
+  and emitted bit 57. The terminal placeable source begins at 50 in a 76-bit
+  fragment; the selected stock reader ends at 59, leaving source `59..76`.
+  End-aligned name candidates occupy `67..76` (locstring) or `68..76` (direct),
+  leaving unexplained gaps `59..67` or `59..68`. Even the fullest stock scalar
+  placeable update can own at most 15 of the 26 terminal source bits, leaving at
+  least 11 without a decompile-backed owner. The Diamond snapshot add writer
+  cannot own that gap, and CNWMessage uses one continuous fragment cursor.
+  Therefore no trimming, passthrough, or cursor search is authorized.
 
-  Production failure evidence now attaches the committed five-row rewrite
-  ledger and enumerates every bounded terminal source reader that ends exactly
-  at the fragment boundary. The ledger ends the preceding second `A/09` at
-  source `40..50` / emitted `47..58`; its ten Diamond BOOLs become eleven EE
-  BOOLs by one insertion. Across all five rows the source ends at 50, emitted
-  ends at 58, and the cumulative delta is +8. The remaining suffix has two
-  byte-compatible terminal readings: `75..84` is a nine-bit locstring-selected
-  row (`001000110`, selectors `1,0`), while `76..84` is an eight-bit direct-name
-  row (`01000110`, selector `0`). The locstring interpretation therefore leaves
-  an exact 17-bit source/emitted gap between the add and terminal update; the
-  direct-name interpretation leaves 18. Neither candidate changes the cursor.
-
-  Diamond server snapshot writer `0x4401F0`'s placeable branch and helper
-  `0x436B10` independently rule the preceding add out as that gap owner: the
-  direct-name branch writes exactly ten BOOLs (name, post-name state, optional
-  object, six more state flags, and the final appearance guard), matching
-  client reader `sub_44E4A0`. The helper's two WORDs and optional payload are
-  byte fields, not extra fragment BOOLs. Next: trace stock update serializer
-  `0x445160` and the HG read-buffer/fragment assembly handoff that precedes this
-  terminal row to identify the 17-bit owner and disambiguate its name branch.
-  Do not trim, passthrough, or cursor-search the terminal residual; change only
-  a decompile-proven source handoff, require a final exact EE byte/bit claim,
-  then rerun the live door `UseObject` probe. Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-tail9-ledger-20260716-0619`
-  processed 164 packet files with 304 strict allows, zero strict or semantic
-  quarantines/files, one committed 36-slot quickbar, two area context checks,
-  and zero terminal live-object residuals on isolated ports 60421/60433.
+  Next: trace stock update serializer `0x445160` and the HG read-buffer/fragment
+  assembly handoff before the terminal row, identify the missing source owner,
+  require a final exact EE claim, and rerun the live door `UseObject` probe.
+  Current-code strict replay
+  `C:\nwnbridge\codex-proxy2-replay-placeable-state-width-20260716-1116`
+  processed
+  164 packet files with 304 strict allows, zero strict/semantic quarantines or
+  files, one exact 36-slot quickbar, two area-context checks, and zero terminal
+  live-object residuals. Several older private capture regressions that encoded
+  the disproved sixth placeable bit as an exact owner now remain conservatively
+  unclaimed. Do not restore that owner to satisfy them; reduce each failing
+  capture to its actual source writer/handoff before changing production.
 - 2026-07-13 typed quickbar profile suitability: proxy2 now reduces the
   committed profile, preserved active-item signatures, durable GQ coverage,
   current actionable missing-GQ slots, and the retained observed-actionable

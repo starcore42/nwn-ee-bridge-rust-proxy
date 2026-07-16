@@ -2070,19 +2070,20 @@ mod fixture_free_tests {
             evidence.rewritten_fragment_bit_count - evidence.rewritten_bit_cursor,
             evidence.residual_fragment_bits
         );
-        assert_eq!(evidence.source_bit_cursor, 58);
-        assert_eq!(evidence.source_reader_bit_cursor, 67);
+        assert_eq!(evidence.source_fragment_bit_count, 76);
+        assert_eq!(evidence.source_bit_cursor, 50);
+        assert_eq!(evidence.source_reader_bit_cursor, 59);
         assert_eq!(evidence.source_reader_bits_consumed, 9);
-        assert_eq!(evidence.source_name_selector_bit_cursor, Some(65));
+        assert_eq!(evidence.source_name_selector_bit_cursor, Some(57));
         assert_eq!(evidence.source_name_selector, Some(true));
-        assert_eq!(evidence.source_name_locstring_selector_bit_cursor, Some(66));
+        assert_eq!(evidence.source_name_locstring_selector_bit_cursor, Some(58));
         assert_eq!(evidence.source_name_locstring_selector, Some(false));
         assert_eq!(
             evidence.source_name_kind,
             Some("locstring-inline-cexostring")
         );
-        assert_eq!(evidence.source_reader_residual.bit_start, 67);
-        assert_eq!(evidence.source_reader_residual.bit_end, 84);
+        assert_eq!(evidence.source_reader_residual.bit_start, 59);
+        assert_eq!(evidence.source_reader_residual.bit_end, 76);
         assert_eq!(evidence.source_reader_residual.bit_count, 17);
         assert_eq!(evidence.source_reader_residual.bits_retained, 16);
         assert_eq!(
@@ -2106,11 +2107,13 @@ mod fixture_free_tests {
                 Some(true),
             ]
         );
-        assert_eq!(evidence.rewritten_bit_cursor, 73);
-        assert_eq!(evidence.rewritten_fragment_bit_count, 90);
+        assert_eq!(evidence.emitted_bit_cursor, 57);
+        assert_eq!(evidence.emitted_fragment_bit_count, 83);
+        assert_eq!(evidence.rewritten_bit_cursor, 71);
+        assert_eq!(evidence.rewritten_fragment_bit_count, 88);
         assert_eq!(evidence.residual_fragment_bits, 17);
-        assert_eq!(evidence.rewritten_residual.bit_start, 73);
-        assert_eq!(evidence.rewritten_residual.bit_end, 90);
+        assert_eq!(evidence.rewritten_residual.bit_start, 71);
+        assert_eq!(evidence.rewritten_residual.bit_end, 88);
         assert_eq!(
             evidence.rewritten_residual.bits,
             evidence.source_reader_residual.bits
@@ -2121,8 +2124,8 @@ mod fixture_free_tests {
             .expect("terminal evidence should retain the committed rewrite ledger");
         assert_eq!(precursor.entry_count, 5);
         assert_eq!(precursor.source_bit_end, 50);
-        assert_eq!(precursor.emitted_bit_end, 58);
-        assert_eq!(precursor.emitted_source_delta, 8);
+        assert_eq!(precursor.emitted_bit_end, 57);
+        assert_eq!(precursor.emitted_source_delta, 7);
         let preceding_add = precursor
             .entries
             .iter()
@@ -2140,7 +2143,7 @@ mod fixture_free_tests {
                 preceding_add.emitted_bit_start,
                 preceding_add.emitted_bit_end
             ),
-            (47, 58)
+            (46, 57)
         );
         assert_eq!(preceding_add.bits_inserted, 1);
         assert_eq!(preceding_add.bits_removed, 0);
@@ -2151,8 +2154,8 @@ mod fixture_free_tests {
         let locstring_candidate = suffix_candidates
             .next()
             .expect("nine-bit locstring-selected terminal suffix");
-        assert_eq!(locstring_candidate.source_bit_cursor, 75);
-        assert_eq!(locstring_candidate.source_reader_bit_cursor, 84);
+        assert_eq!(locstring_candidate.source_bit_cursor, 67);
+        assert_eq!(locstring_candidate.source_reader_bit_cursor, 76);
         assert_eq!(locstring_candidate.source_reader_bits_consumed, 9);
         assert_eq!(locstring_candidate.source_name_selector, Some(true));
         assert_eq!(
@@ -2164,6 +2167,18 @@ mod fixture_free_tests {
             Some("locstring-inline-cexostring")
         );
         assert_eq!(locstring_candidate.source_bits.bit_count, 9);
+        assert_eq!(
+            (
+                locstring_candidate
+                    .source_gap_from_selected_reader
+                    .bit_start,
+                locstring_candidate.source_gap_from_selected_reader.bit_end,
+                locstring_candidate
+                    .source_gap_from_selected_reader
+                    .bit_count,
+            ),
+            (59, 67, 8)
+        );
         assert_eq!(
             locstring_candidate.source_bits.bits[..9],
             [
@@ -2181,11 +2196,19 @@ mod fixture_free_tests {
         let direct_candidate = suffix_candidates
             .next()
             .expect("eight-bit direct-name terminal suffix");
-        assert_eq!(direct_candidate.source_bit_cursor, 76);
-        assert_eq!(direct_candidate.source_reader_bit_cursor, 84);
+        assert_eq!(direct_candidate.source_bit_cursor, 68);
+        assert_eq!(direct_candidate.source_reader_bit_cursor, 76);
         assert_eq!(direct_candidate.source_reader_bits_consumed, 8);
         assert_eq!(direct_candidate.source_name_selector, Some(false));
         assert_eq!(direct_candidate.source_name_kind, Some("direct-cexostring"));
+        assert_eq!(
+            (
+                direct_candidate.source_gap_from_selected_reader.bit_start,
+                direct_candidate.source_gap_from_selected_reader.bit_end,
+                direct_candidate.source_gap_from_selected_reader.bit_count,
+            ),
+            (59, 68, 9)
+        );
         assert!(suffix_candidates.next().is_none());
         assert_eq!(
             payload, original,

@@ -483,7 +483,7 @@ fn translated_door_update_record_is_exactly_claimed() {
 }
 
 #[test]
-fn legacy_name_bit_is_not_valid_in_ee_door_placeable_update_claims() {
+fn ee_door_name_selector_is_valid_in_exact_update_claims() {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'U', 0x0A, 0xD1, 0x34, 0x00, 0x80, 0x17, 0x00, 0x08, 0x00]);
     live.extend_from_slice(&[0x8E, 0x12, 0xD4, 0x10, 0xEE, 0x0E]);
@@ -503,7 +503,7 @@ fn legacy_name_bit_is_not_valid_in_ee_door_placeable_update_claims() {
     fragment_bits.extend_from_slice(&[
         false, false, false, false, false, // five legacy door state bits.
         false, // EE-only neutral door state branch.
-        false, // Legacy name bit payload that EE generic updates must not claim.
+        false, // EE direct-CExoString name selector in `sub_140797780`.
     ]);
     let mut payload = vec![b'P', 0x05, 0x01];
     let declared = (7 + live.len()) as u32;
@@ -514,7 +514,9 @@ fn legacy_name_bit_is_not_valid_in_ee_door_placeable_update_claims() {
         super::CNW_FRAGMENT_HEADER_BITS,
     ));
 
-    assert!(super::claim_payload_if_verified(&payload).is_none());
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("EE door mask 0x80000 owns the shared direct-name selector");
+    assert_eq!(claim.update_records, 1);
 }
 
 #[test]
@@ -921,7 +923,7 @@ fn low_bits_placeable_update_drops_bounded_tail_before_ee_claim() {
         .expect("low-bit placeable update rewrite");
     assert_eq!(rewrite.update_records_rewritten, 1);
     assert_eq!(rewrite.bytes_removed, 19);
-    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.bits_inserted, 0);
     let translated_mask = super::read_u32_le(&payload, 7 + 6).expect("translated placeable mask");
     assert_eq!(translated_mask, 0x37);
     assert!(
@@ -934,19 +936,6 @@ fn low_bits_placeable_update_drops_bounded_tail_before_ee_claim() {
     let claim = super::claim_payload_if_verified(&payload)
         .expect("low-bit placeable update should become an exact EE update");
     assert_eq!(claim.update_records, 1);
-    let fragment_bits = super::bits::decode_msb_valid_bits(
-        &payload[claim.declared..],
-        super::CNW_FRAGMENT_HEADER_BITS,
-    )
-    .expect("rewritten placeable fragment bits");
-    let ee_placeable_extra_state_bit = super::CNW_FRAGMENT_HEADER_BITS
-        + super::LEGACY_UPDATE_POSITION_FRAGMENT_BITS
-        + super::EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
-        + super::LEGACY_UPDATE_STATE_FRAGMENT_BITS;
-    assert!(
-        !fragment_bits[ee_placeable_extra_state_bit],
-        "EE placeable-specific state reader consumes a neutral trailing BOOL"
-    );
 }
 
 #[test]
@@ -981,7 +970,7 @@ fn low_bits_placeable_update_drops_cexo_tail_before_ee_claim() {
         .expect("low-bit placeable CExoString tail rewrite");
     assert_eq!(rewrite.update_records_rewritten, 1);
     assert_eq!(rewrite.bytes_removed, 8);
-    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.bits_inserted, 0);
     assert_eq!(super::read_u32_le(&payload, 7 + 6), Some(0x37));
     let claim = super::claim_payload_if_verified(&payload)
         .expect("CExoString-tail placeable update should become exact EE");
@@ -1019,7 +1008,7 @@ fn low_bits_placeable_update_drops_word_zero_control_tail_before_ee_claim() {
         .expect("low-bit placeable WORD/zero control-tail rewrite");
     assert_eq!(rewrite.update_records_rewritten, 1);
     assert_eq!(rewrite.bytes_removed, 4);
-    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.bits_inserted, 0);
     assert_eq!(super::read_u32_le(&payload, 7 + 6), Some(0x37));
     let claim = super::claim_payload_if_verified(&payload)
         .expect("WORD/zero-tail placeable update should become exact EE");
@@ -1055,7 +1044,7 @@ fn low_bits_placeable_update_drops_absent_appearance_bit_when_prefix_is_exact() 
         .expect("low-bit placeable absent-appearance rewrite");
     assert_eq!(rewrite.update_records_rewritten, 1);
     assert_eq!(rewrite.bytes_removed, 0);
-    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.bits_inserted, 0);
     assert_eq!(
         super::read_u32_le(&payload, 7 + 6),
         Some(0x17),
@@ -1091,7 +1080,7 @@ fn no_fragment_low_bits_placeable_update_inserts_neutral_source_bits() {
         .expect("no-fragment low-bit placeable update rewrite");
     assert_eq!(rewrite.update_records_rewritten, 1);
     assert_eq!(rewrite.bytes_removed, 6);
-    assert_eq!(rewrite.bits_inserted, 13);
+    assert_eq!(rewrite.bits_inserted, 12);
     assert_eq!(
         super::read_u32_le(&payload, 7 + 6),
         Some(0x17),
@@ -1106,7 +1095,7 @@ fn no_fragment_low_bits_placeable_update_inserts_neutral_source_bits() {
         super::CNW_FRAGMENT_HEADER_BITS,
     )
     .expect("rewritten placeable fragment bits");
-    assert_eq!(fragment_bits.len(), super::CNW_FRAGMENT_HEADER_BITS + 13);
+    assert_eq!(fragment_bits.len(), super::CNW_FRAGMENT_HEADER_BITS + 12);
     assert!(
         fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..]
             .iter()
@@ -2063,6 +2052,31 @@ fn local_diamond_auto_inventory_u5_4408_gui_rows_stream_stays_unclaimed_after_gu
     );
 }
 
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn hg_live_account1_u5_4408_inventory_stream_rewrites_to_exact_shape() {
+    // Live HG account-1 capture from 2026-07-12. The stream starts with a
+    // five-row `U/5 0x00004408` creature status update at fragment cursor 3,
+    // followed by the current-player Inventory/GUI state block. Keep this
+    // private because the full live packet is not a public artifact.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_live_account1_u5_4408_inventory_20260712_legacy.bin"
+    )
+    .to_vec();
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("live HG 0x4408 inventory stream should rewrite transactionally");
+    assert!(
+        rewrite.update_records_rewritten >= 1 || rewrite.bytes_inserted > 0,
+        "0x4408 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten live HG 0x4408 inventory stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+}
+
 #[test]
 fn local_to_heir_u5_4408_inventory_2a00_word_list_stays_quarantined_after_terminal_bit_audit() {
     // Local To Heir harness capture from 2026-05-19 after Area_ClientArea was
@@ -2921,6 +2935,39 @@ fn hg_live_seq42_auto_inventory_gui_stream_matches_dumped_ee_shape() {
         "live HG seq42 should remain a combined live-object burst"
     );
     assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn hg_live_inventory_town_watch_stream_rewrites_to_exact_ee_shape() {
+    // Live HG 2026-07-10 after a ClientGui inventory refresh. The stream owns
+    // the current-player inventory header, a Town Watch creature add, and one
+    // full P/5 appearance with three nested visible-equipment item rows.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_live_inventory_town_watch_20260710_legacy.bin"
+    )
+    .to_vec();
+
+    let declared = usize::try_from(u32::from_le_bytes(payload[3..7].try_into().unwrap())).unwrap();
+    let live = &payload[7..declared];
+    assert_eq!(live.get(51..53), Some([b'P', 0x05].as_slice()));
+    assert_eq!(live.get(333..335), Some([b'U', 0x05].as_slice()));
+    assert_eq!(
+        super::appearance::try_get_legacy_creature_appearance_record_end(live, 51, live.len()),
+        Some(333),
+        "the byte-only Diamond reader shape must own all eight counted visible-equipment rows"
+    );
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Diamond Town Watch inventory stream must require typed EE rewrites"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.creature_appearance_records, 1);
+    assert!(claim.records_examined >= 3);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
 }
 
 #[cfg(hgbridge_private_fixtures)]

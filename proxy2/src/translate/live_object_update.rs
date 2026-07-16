@@ -5063,7 +5063,6 @@ mod diagnostic_tests {
             true,  // update locked.
             true,  // update lockable.
             false, // update visual payload.
-            false, // EE-only door/placeable state guard.
         ]);
         let payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("live-object payload");
@@ -5155,7 +5154,6 @@ mod diagnostic_tests {
             false, true, // position fragment bits.
             false, true, false, true, false, // scalar orientation 0x70A.
             false, true, false, true, false, // lockable=true, locked=false.
-            false, // EE-only door/placeable state guard.
         ]);
         let payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact scalar U/09");
@@ -5196,7 +5194,6 @@ mod diagnostic_tests {
                 + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                 + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
                 + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                + 1
         );
     }
 
@@ -5506,7 +5503,6 @@ mod diagnostic_tests {
             false, true, // position fragment bits.
             false, true, false, true, false, // scalar orientation 0x70A.
             false, true, false, true, false, // lockable=true, locked=false.
-            false, // EE-only door/placeable state guard.
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
@@ -5612,7 +5608,6 @@ mod diagnostic_tests {
             false, true, // position Z residual bits.
             false, true, false, true, false, // scalar orientation 0x70A.
             false, true, false, true, false, // lockable=true, locked=false.
-            false, // EE-only door/placeable state guard.
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
@@ -5745,7 +5740,6 @@ mod diagnostic_tests {
             false, true, // position fragment bits.
             false, true, false, true, false, // scalar orientation 0x70A.
             false, true, false, true, false, // lockable=true, locked=false.
-            false, // EE-only door/placeable state guard.
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
@@ -5841,10 +5835,9 @@ mod diagnostic_tests {
                 ..CNW_FRAGMENT_HEADER_BITS
                     + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                     + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
-                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                    + 1],
-            &[false, true, true, false, false, false],
-            "the parser-owned state block and neutral EE guard keep their exact width"
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS],
+            &[false, true, true, false, false],
+            "the parser-owned placeable state block keeps its exact five-bit width"
         );
     }
 
@@ -5864,7 +5857,6 @@ mod diagnostic_tests {
             false, true, // position fragment bits.
             true, // vector-orientation selector; no scalar low bits follow.
             false, true, false, true, false, // lockable=true, locked=false.
-            false, // EE-only door/placeable state guard.
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact vector U/09");
@@ -5974,10 +5966,9 @@ mod diagnostic_tests {
                 ..CNW_FRAGMENT_HEADER_BITS
                     + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                     + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
-                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                    + 1],
-            &[false, true, false, true, false, false],
-            "the state block and neutral EE guard keep their exact width"
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS],
+            &[false, true, false, true, false],
+            "the placeable state block keeps its exact five-bit width"
         );
     }
 
@@ -6264,7 +6255,6 @@ mod diagnostic_tests {
             false, // locked.
             true,  // lockable.
             false, // visual payload.
-            false, // EE-only door/placeable state guard.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("appearance+scale/state U/09 payload");
@@ -6529,7 +6519,7 @@ mod diagnostic_tests {
             }),
             state_bit_cursor: Some(state_bit_cursor),
             placeable_name: None,
-            next_bit_cursor: state_bit_cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1,
+            next_bit_cursor: state_bit_cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS,
         }
     }
 
@@ -6575,7 +6565,7 @@ mod diagnostic_tests {
                 neutral_ee_state_suffix: false,
             }),
             state_bit_cursor: Some(state_bit_cursor),
-            next_bit_cursor: state_bit_cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1,
+            next_bit_cursor: state_bit_cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS,
             ..exact_placeable_update_claim_for_preservation_tests()
         }
     }
@@ -6674,7 +6664,6 @@ mod diagnostic_tests {
             true,  // locked drifted away from the module row.
             false, // lockable drifted away from the module row.
             false, // visual payload.
-            false, // EE-only neutral door/placeable state suffix.
         ]);
         let drifted_claim = verified_placeable_update_exact_claim(
             &live,
@@ -6729,7 +6718,6 @@ mod diagnostic_tests {
             false, // locked matches module row.
             true,  // lockable matches module row.
             false, // visual payload.
-            false, // EE-only neutral door/placeable state suffix.
         ]);
         let repaired_claim = verified_placeable_update_exact_claim(
             &live,
@@ -7079,7 +7067,6 @@ mod diagnostic_tests {
             true,  // locked in the live update.
             false, // lockable in the live update.
             false, // visual payload.
-            false, // EE-only door/placeable state guard.
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact custom U/09");
@@ -7165,7 +7152,6 @@ mod diagnostic_tests {
             true,  // locked.
             false, // lockable.
             true,  // visual payload.
-            false, // EE-only door/placeable state guard.
         ]);
         let payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact vector U/09");
@@ -7187,7 +7173,6 @@ mod diagnostic_tests {
                 + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                 + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
                 + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                + 1
         );
     }
 
@@ -7205,7 +7190,6 @@ mod diagnostic_tests {
             true,  // locked in the live update.
             false, // lockable in the live update.
             false, // visual payload.
-            false, // EE-only door/placeable state guard.
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
@@ -8809,7 +8793,7 @@ mod diagnostic_tests {
         live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
 
         let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
-        fragment_bits.extend([false, false, true, false, false, false]);
+        fragment_bits.extend([false, false, true, false, false]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
         let original = payload.clone();
@@ -8852,8 +8836,8 @@ mod diagnostic_tests {
         live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
 
         let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
-        fragment_bits.extend([false, false, true, false, false, false]);
-        fragment_bits.extend([false, false, true, false, false, false]);
+        fragment_bits.extend([false, false, true, false, false]);
+        fragment_bits.extend([false, false, true, false, false]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 pair");
         let area_context = crate::translate::area::AreaPlaceableContext {
@@ -9012,7 +8996,6 @@ mod diagnostic_tests {
             true,  // locked conflicts with the selected module row.
             false, // lockable conflicts with the selected module row.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("position+appearance+state U/09 payload");
@@ -9114,7 +9097,7 @@ mod diagnostic_tests {
 
         let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
         fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
-        fragment_bits.extend([false, false, true, false, false, false]);
+        fragment_bits.extend([false, false, true, false, false]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("ambiguous position+appearance+state U/09 payload");
         let original = payload.clone();
@@ -9182,7 +9165,6 @@ mod diagnostic_tests {
             true,  // locked conflicts with both equivalent module rows.
             false, // lockable conflicts with both equivalent module rows.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("duplicate-output position+appearance+state U/09 payload");
@@ -9277,7 +9259,6 @@ mod diagnostic_tests {
             true,  // locked conflicts with the compatible module row.
             false, // lockable conflicts with the compatible module row.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("position+appearance+state U/09 payload");
@@ -9724,7 +9705,7 @@ mod diagnostic_tests {
                 false, // EE-only light/visual guard before the transform map.
             ]);
         }
-        fragment_bits.extend([false, false, true, false, false, false]);
+        fragment_bits.extend([false, false, true, false, false]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("identity-blocked custom A/U plus unique U payload");
 
@@ -9870,7 +9851,7 @@ mod diagnostic_tests {
                 false, // EE-only light/visual guard before the transform map.
             ]);
         }
-        fragment_bits.extend([false, false, true, false, false, false]);
+        fragment_bits.extend([false, false, true, false, false]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("identity-blocked A/09 pair plus unique U/09 payload");
 
@@ -11322,7 +11303,6 @@ mod diagnostic_tests {
             false, // locked already matches.
             false, // lockable conflicts with the selected module row.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("exact custom A/09 plus rewriting U/09 payload");
@@ -12051,7 +12031,6 @@ mod diagnostic_tests {
             true,  // locked conflicts with both duplicate module rows.
             false, // lockable conflicts with both duplicate module rows.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("exact A/09 followed by duplicate-output U/09 carrier");
@@ -14946,7 +14925,6 @@ mod diagnostic_tests {
             false, // locked already matches.
             false, // lockable conflicts with the following-position module row.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("exact conflicting surrounding-position payload");
@@ -15345,7 +15323,6 @@ mod diagnostic_tests {
             false, // locked already matches.
             false, // lockable conflicts with the selected module row.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         fragment_bits.push(false); // D/09 placeable delete owns one BOOL.
         fragment_bits.extend([
@@ -15639,7 +15616,6 @@ mod diagnostic_tests {
             false, // locked already matches.
             false, // lockable conflicts with the selected module row.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("exact A/09, ambiguous following U/09, and rewriting U/09 payload");
@@ -17041,7 +17017,6 @@ mod diagnostic_tests {
             false, // locked already matches.
             false, // lockable conflicts with the selected module row.
             false, // visual payload.
-            false, // EE-only terminal state BOOL.
         ]);
         let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
             .expect("exact A/09, D/09, and position+state U/09 payload");
@@ -19095,6 +19070,7 @@ pub struct LiveObjectUpdateRewriteFailure {
 pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub raw_mask: u32,
     pub translated_mask: u32,
+    pub source_fragment_bit_count: usize,
     pub source_bit_cursor: usize,
     pub source_reader_bit_cursor: usize,
     pub source_reader_bits_consumed: usize,
@@ -19104,6 +19080,8 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub source_name_locstring_selector: Option<bool>,
     pub source_name_kind: Option<&'static str>,
     pub source_reader_residual: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub emitted_bit_cursor: usize,
+    pub emitted_fragment_bit_count: usize,
     pub rewritten_bit_cursor: usize,
     pub rewritten_fragment_bit_count: usize,
     pub residual_fragment_bits: usize,
@@ -19128,6 +19106,7 @@ pub struct LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence {
     pub source_name_locstring_selector_bit_cursor: Option<usize>,
     pub source_name_locstring_selector: Option<bool>,
     pub source_name_kind: Option<&'static str>,
+    pub source_gap_from_selected_reader: LiveObjectUpdateRewriteBitSliceEvidence,
     pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
@@ -27055,10 +27034,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
         summary.update_records_examined = summary.update_records_examined.saturating_add(1);
         let bit_cursor_was_reliable = bit_cursor_reliable;
         let update_start_bit_cursor = bit_cursor;
+        let source_bit_cursor = rewrite_bit_ledger.source_cursor_for_emitted_cursor(bit_cursor);
         let terminal_tail9_residual = record::terminal_door_placeable_tail9_residual_evidence(
             &live_bytes,
             offset,
             record_end,
+            rewrite_bit_ledger.source_bits(&fragment_bits),
+            source_bit_cursor,
             &fragment_bits,
             bit_cursor,
         )
@@ -38245,6 +38227,14 @@ impl LiveObjectRewriteBitLedger {
             fragment_bits.len()
         } else {
             self.source_bits.len()
+        }
+    }
+
+    fn source_bits<'a>(&'a self, fragment_bits: &'a [bool]) -> &'a [bool] {
+        if self.source_bits.is_empty() {
+            fragment_bits
+        } else {
+            &self.source_bits
         }
     }
 

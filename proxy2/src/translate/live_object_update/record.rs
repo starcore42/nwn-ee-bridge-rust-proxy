@@ -1635,9 +1635,9 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
         || rewrite.bits_inserted != 0
         || rewrite.bits_removed != 0
         || rewrite.bits_changed;
-    // A state-only door/placeable update owns exactly the five Diamond state
-    // BOOLs and EE's inserted neutral sixth BOOL; no terminal reader owns a
-    // seventh bit. Broader legacy door/placeable repairs keep the existing
+    // A state-only update owns five BOOLs for a placeable and those same five
+    // plus EE's inserted neutral sixth BOOL for a door; no terminal reader owns
+    // anything beyond that exact type-specific count. Broader repairs keep the
     // top-level trim gate only after their typed byte/bit paths above have
     // proven the record-specific cursor.
     rewrite.terminal_fragment_trim_allowed = rewrite.rewritten
@@ -2245,8 +2245,10 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
     live_bytes: &[u8],
     record_offset: usize,
     record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: usize,
+    source_fragment_bits: &[bool],
+    source_bit_cursor: usize,
+    emitted_fragment_bits: &[bool],
+    emitted_bit_cursor: usize,
 ) -> Option<super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence> {
     if record_end != live_bytes.len()
         || live_bytes.get(record_offset).copied() != Some(b'U')
@@ -2267,7 +2269,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         translated_mask,
     )?;
     let source_name_selector_bit_cursor =
-        bit_cursor.checked_add(low_prefix_door_placeable_update_source_fragment_bits(
+        source_bit_cursor.checked_add(low_prefix_door_placeable_update_source_fragment_bits(
             claim.fragment_source_mask & !LEGACY_UPDATE_NAME_MASK,
         ))?;
     let source_name = if object_type == PLACEABLE_OBJECT_TYPE {
@@ -2275,7 +2277,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
             live_bytes,
             claim.tail_offset.saturating_add(9),
             record_end,
-            fragment_bits,
+            source_fragment_bits,
             source_name_selector_bit_cursor,
         );
         if let Some(name) = source_name {
@@ -2289,27 +2291,33 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
     };
 
     let source_reader_bits_consumed = claim.source_reader_bits_consumed();
-    let source_reader_bit_cursor = bit_cursor.checked_add(source_reader_bits_consumed)?;
+    let source_reader_bit_cursor = source_bit_cursor.checked_add(source_reader_bits_consumed)?;
     let source_reader_residual = super::live_object_rewrite_bit_slice_evidence(
         source_reader_bit_cursor,
-        fragment_bits.len(),
-        fragment_bits.get(source_reader_bit_cursor..).unwrap_or(&[]),
+        source_fragment_bits.len(),
+        source_fragment_bits
+            .get(source_reader_bit_cursor..)
+            .unwrap_or(&[]),
     );
     let source_name_kind = source_name.map(|name| placeable_name_kind_label(name.kind));
-    let source_name_selector =
-        source_name.and_then(|_| fragment_bits.get(source_name_selector_bit_cursor).copied());
+    let source_name_selector = source_name.and_then(|_| {
+        source_fragment_bits
+            .get(source_name_selector_bit_cursor)
+            .copied()
+    });
     let source_name_locstring_selector_bit_cursor = source_name
         .filter(|name| name.selector_fragment_bits > 1)
         .map(|_| source_name_selector_bit_cursor.saturating_add(1));
     let source_name_locstring_selector = source_name_locstring_selector_bit_cursor
-        .and_then(|cursor| fragment_bits.get(cursor).copied());
+        .and_then(|cursor| source_fragment_bits.get(cursor).copied());
 
-    // Mirror only the decompile-owned MSB-first source/emitted field walk. The
-    // result is diagnostic evidence, never an authorization to erase the
-    // residual. In particular, the existing six-bit packed-name exception is
-    // still accepted only when the bounded terminal name tail proves it.
-    let mut rewritten_bits = fragment_bits.to_vec();
-    let mut rewritten_bit_cursor = bit_cursor;
+    // Mirror only the decompile-owned MSB-first field walk against the current
+    // emitted stream. Source evidence above always comes from the immutable
+    // pre-rewrite ledger, so inserted bits in preceding records cannot be
+    // mislabeled as source. This result is diagnostic evidence, never an
+    // authorization to erase the residual.
+    let mut rewritten_bits = emitted_fragment_bits.to_vec();
+    let mut rewritten_bit_cursor = emitted_bit_cursor;
     rewrite_legacy_live_object_update_bits(
         object_type,
         claim.fragment_source_mask,
@@ -2347,14 +2355,15 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
             object_type,
             raw_mask,
             translated_mask,
-            fragment_bits,
+            source_fragment_bits,
             source_reader_bit_cursor,
         );
 
     Some(super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
         raw_mask,
         translated_mask: claim.translated_mask,
-        source_bit_cursor: bit_cursor,
+        source_fragment_bit_count: source_fragment_bits.len(),
+        source_bit_cursor,
         source_reader_bit_cursor,
         source_reader_bits_consumed,
         source_name_selector_bit_cursor: source_name.map(|_| source_name_selector_bit_cursor),
@@ -2363,6 +2372,8 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         source_name_locstring_selector,
         source_name_kind,
         source_reader_residual,
+        emitted_bit_cursor,
+        emitted_fragment_bit_count: emitted_fragment_bits.len(),
         rewritten_bit_cursor,
         rewritten_fragment_bit_count: rewritten_bits.len(),
         residual_fragment_bits,
@@ -2463,6 +2474,13 @@ fn terminal_tail9_source_suffix_candidates(
             source_name_locstring_selector_bit_cursor,
             source_name_locstring_selector,
             source_name_kind: source_name.map(|name| placeable_name_kind_label(name.kind)),
+            source_gap_from_selected_reader: super::live_object_rewrite_bit_slice_evidence(
+                source_reader_bit_cursor,
+                candidate_bit_cursor,
+                fragment_bits
+                    .get(source_reader_bit_cursor..candidate_bit_cursor)
+                    .unwrap_or(&[]),
+            ),
             source_bits: super::live_object_rewrite_bit_slice_evidence(
                 candidate_bit_cursor,
                 source_reader_end,
@@ -3106,7 +3124,10 @@ fn rewrite_legacy_live_object_update_bits(
                 return None;
             }
             cursor += LEGACY_UPDATE_STATE_FRAGMENT_BITS;
-            if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+            if object_type == DOOR_OBJECT_TYPE {
+                // Diamond door `sub_44E2C0` supplies five state BOOLs, while EE
+                // door `sub_140797780` consumes a sixth. Placeable readers
+                // `sub_44EB40` / `sub_1407A8460` both consume exactly five.
                 bits::insert_msb_bit(bits, cursor, false)?;
                 cursor += 1;
                 rewrite.bits_inserted = rewrite.bits_inserted.saturating_add(1);
@@ -3311,8 +3332,7 @@ mod tests {
         let mut bits = vec![
             false, true, // position fragment bits.
             true, // vector-orientation selector; no scalar residual bits follow.
-            false, true, true, false, true,  // state bits: locked=true, lockable=false.
-            false, // EE's neutral door/placeable state suffix.
+            false, true, true, false, true, // state bits: locked=true, lockable=false.
             true, false, // unrelated following bits.
         ];
 
@@ -3329,7 +3349,6 @@ mod tests {
             LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                 + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
                 + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                + 1
         );
 
         let context = AreaPlaceableContext {
@@ -3374,9 +3393,9 @@ mod tests {
         assert_eq!(
             bits,
             vec![
-                false, true, true, false, true, false, true, true, false, true, false
+                false, true, true, false, true, false, true, true, true, false
             ],
-            "the vector selector, visual payload, neutral suffix, and following bits remain owned by their original fields"
+            "the vector selector, visual payload, and following bits remain owned by their original fields"
         );
     }
 
@@ -3393,7 +3412,6 @@ mod tests {
             true,  // locked.
             false, // lockable.
             true,  // visual payload.
-            false, // EE-only neutral door/placeable state suffix.
         ];
         let source_claim = reader::parse_verified_ee_door_placeable_update_record(
             &live,
@@ -3404,7 +3422,7 @@ mod tests {
         )
         .expect("source state-only U/09 should exact-claim");
         let mut stale_bits = source_bits.clone();
-        stale_bits[5] = true;
+        stale_bits[4] = false;
         let original_stale_bits = stale_bits.clone();
 
         let rewrite = rewrite_verified_placeable_update_state_bits(
@@ -3424,7 +3442,7 @@ mod tests {
 
         assert!(
             rewrite.is_none(),
-            "state rewrites must be rejected if the post-mutation EE claim no longer owns the neutral suffix"
+            "state rewrites must be rejected if the fresh EE claim differs from the staged source claim"
         );
         assert_eq!(
             stale_bits, original_stale_bits,
@@ -3710,9 +3728,9 @@ mod tests {
         .expect("bounded nonterminal named tail9 should rewrite");
 
         assert!(bit_cursor_reliable);
-        assert_eq!(rewrite.bits_inserted, 6);
+        assert_eq!(rewrite.bits_inserted, 5);
         assert_eq!(rewrite.bits_removed, 6);
-        assert_eq!(bit_cursor, 14);
+        assert_eq!(bit_cursor, 13);
         let bit_claim = rewrite.bit_claim.expect("typed tail9 source claim");
         assert_eq!(bit_claim.source_bits_consumed, 14);
         assert_eq!(read_u32_le(&live, 6), Some(0x0008_0017));
@@ -3856,9 +3874,8 @@ mod tests {
                 ],
                 LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                     + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
-                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                    + 1,
-                EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS as u32 + 1,
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+                EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS as u32,
             ),
             (
                 "force scalar",
@@ -3870,9 +3887,8 @@ mod tests {
                 ],
                 LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                     + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
-                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                    + 1,
-                1,
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+                0,
             ),
             (
                 "force vector",
@@ -3884,9 +3900,8 @@ mod tests {
                 ],
                 LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                     + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
-                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                    + 1,
-                1,
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+                0,
             ),
         ] {
             let expected_state =

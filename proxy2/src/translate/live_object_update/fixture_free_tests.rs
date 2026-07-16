@@ -951,19 +951,24 @@ fn scalar_door_placeable_update_bits() -> Vec<bool> {
     ]
 }
 
-fn exact_scalar_door_placeable_update_bits() -> Vec<bool> {
+fn exact_scalar_door_placeable_update_bits(object_type: u8) -> Vec<bool> {
     let mut bits = scalar_door_placeable_update_bits();
-    bits.push(false); // EE-only neutral door/placeable state BOOL.
+    if object_type == super::DOOR_OBJECT_TYPE {
+        bits.push(false); // EE door-only neutral sixth state BOOL.
+    }
     bits
 }
 
-fn exact_vector_door_placeable_update_bits() -> Vec<bool> {
-    vec![
+fn exact_vector_door_placeable_update_bits(object_type: u8) -> Vec<bool> {
+    let mut bits = vec![
         true, false, // position residual bits
         true,  // vector orientation selector; vector branch has no scalar low bits
-        true, false, true, false, true,  // Diamond door/placeable state bits
-        false, // EE-only neutral door/placeable state BOOL
-    ]
+        true, false, true, false, true, // Diamond door/placeable state bits
+    ];
+    if object_type == super::DOOR_OBJECT_TYPE {
+        bits.push(false); // EE door-only neutral sixth state BOOL.
+    }
+    bits
 }
 
 #[test]
@@ -1042,8 +1047,10 @@ fn work_remaining_does_not_rescue_shifted_door_placeable_37_rows() {
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let mut shifted_live = scale_first_door_placeable_full_update_live_bytes(object_type);
         shifted_live.extend_from_slice(&[b'W', 0x0C, 0x0E]);
-        let mut shifted_payload =
-            live_object_payload_with_bits(&shifted_live, exact_scalar_door_placeable_update_bits());
+        let mut shifted_payload = live_object_payload_with_bits(
+            &shifted_live,
+            exact_scalar_door_placeable_update_bits(object_type),
+        );
         let original_shifted = shifted_payload.clone();
 
         assert!(
@@ -1094,8 +1101,10 @@ fn work_remaining_preserves_exact_vector_door_placeable_37_rows() {
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let mut live = ee_door_placeable_full_vector_update_live_bytes(object_type);
         live.extend_from_slice(&[b'W', 0x0C, 0x20]);
-        let payload =
-            live_object_payload_with_bits(&live, exact_vector_door_placeable_update_bits());
+        let payload = live_object_payload_with_bits(
+            &live,
+            exact_vector_door_placeable_update_bits(object_type),
+        );
 
         let claim = super::claim_payload_if_verified(&payload)
             .expect("exact vector U/9 or U/10 followed by W should claim");
@@ -1250,7 +1259,9 @@ fn later_placeable_rows_do_not_rescue_shifted_full_item_update_cursor() {
 
     let mut exact_bits = item_update_full_mask_scalar_direct_name_bits();
     exact_bits.extend_from_slice(&[true, false, true, false]); // compact A/9 source bits.
-    exact_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    exact_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+        super::PLACEABLE_OBJECT_TYPE,
+    ));
     let mut exact_payload = live_object_payload_with_bits(&exact_live, exact_bits);
     let exact_rewrite = super::rewrite_update_records_payload_if_possible(&mut exact_payload)
         .expect("full item update followed by valid placeable rows should rewrite");
@@ -1274,7 +1285,9 @@ fn later_placeable_rows_do_not_rescue_shifted_full_item_update_cursor() {
         false, // direct CExoString item name.
     ];
     shifted_bits.extend_from_slice(&[true, false, true, false]); // compact A/9 source bits.
-    shifted_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    shifted_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+        super::PLACEABLE_OBJECT_TYPE,
+    ));
     let mut shifted_payload = live_object_payload_with_bits(&shifted_live, shifted_bits);
     let original_shifted = shifted_payload.clone();
 
@@ -1901,7 +1914,9 @@ fn pre_w_full_update_run_does_not_resync_shifted_low_tail() {
             object_id,
         ));
         pre_w_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
-        pre_w_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+        pre_w_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+            super::PLACEABLE_OBJECT_TYPE,
+        ));
     }
 
     let mut pre_w_payload = live_object_payload_with_bits(&pre_w_live, pre_w_bits.clone());
@@ -2000,7 +2015,9 @@ fn leading_creature_and_door_run_does_not_resync_shifted_low_tail() {
     ));
 
     let mut leading_bits = vec![true, false, true, false, false, true, true];
-    leading_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    leading_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+        super::DOOR_OBJECT_TYPE,
+    ));
     let mut leading_payload = live_object_payload_with_bits(&leading_live, leading_bits.clone());
     let leading_rewrite = super::rewrite_update_records_payload_if_possible(&mut leading_payload)
         .expect("leading creature/door run should own its exact cursor");
@@ -2034,7 +2051,9 @@ fn leading_creature_and_door_run_does_not_resync_shifted_low_tail() {
             object_id,
         ));
         pre_w_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
-        pre_w_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+        pre_w_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+            super::PLACEABLE_OBJECT_TYPE,
+        ));
     }
 
     let storage_object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1A00u32 + index).collect();
@@ -2819,12 +2838,37 @@ fn ee_door_state_update_requires_neutral_sixth_bool_and_no_extra_bits() {
 }
 
 #[test]
+fn ee_placeable_state_update_owns_exactly_five_bools() {
+    // EE placeable `sub_1407A8460` and Diamond `sub_44EB40` both consume five
+    // state BOOLs. A sixth bit is the next field or record; it is never an
+    // object-specific placeable suffix.
+    let live = door_placeable_state_update_live_bytes(super::PLACEABLE_OBJECT_TYPE);
+    let exact_bits = vec![true, false, true, false, true];
+    let mut payload = live_object_payload_with_bits(&live, exact_bits);
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_some(),
+        "five placeable state BOOLs are already the exact EE shape"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "an already-exact placeable state row needs no compatibility rewrite"
+    );
+    assert_eq!(payload, original);
+
+    let extra = live_object_payload_with_bits(&live, vec![true, false, true, false, true, false]);
+    assert!(
+        super::claim_payload_if_verified(&extra).is_none(),
+        "a terminal sixth placeable state bit must remain unowned"
+    );
+}
+
+#[test]
 fn legacy_door_placeable_state_update_rewrite_rejects_terminal_extra_fragment_bit() {
-    // Diamond door/placeable state updates own exactly five state BOOLs in
-    // `sub_44E2C0`/the matching placeable reader. EE consumes those same five
-    // plus one neutral object-specific BOOL. No terminal reader owns a seventh
-    // bit, so the top-level live-object trim gate must not hide it after the
-    // state rewrite inserts EE's neutral branch.
+    // Door owns five Diamond BOOLs plus EE's neutral sixth; placeable owns five
+    // in both clients. The top-level trim gate must not hide a bit beyond the
+    // exact type-specific state count.
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let live = door_placeable_state_update_live_bytes(object_type);
         let mut payload =
@@ -2854,8 +2898,7 @@ fn ee_door_placeable_update_rejects_low_tail_mask_bits() {
     // byte shape with those low bits still set is not exact.
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let live = door_placeable_low_tail_update_live_bytes(object_type, &[]);
-        let mut bits = scalar_door_placeable_update_bits();
-        bits.push(false); // EE-only neutral state BOOL.
+        let bits = exact_scalar_door_placeable_update_bits(object_type);
         let payload = live_object_payload_with_bits(&live, bits);
 
         assert!(
@@ -2873,8 +2916,10 @@ fn ee_door_placeable_update_37_requires_appearance_before_scale_state() {
     // validation alone is not enough proof of the reader cursor.
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let live = ee_door_placeable_full_update_live_bytes(object_type);
-        let payload =
-            live_object_payload_with_bits(&live, exact_scalar_door_placeable_update_bits());
+        let payload = live_object_payload_with_bits(
+            &live,
+            exact_scalar_door_placeable_update_bits(object_type),
+        );
         let claim = super::claim_payload_if_verified(&payload)
             .expect("EE-ordered door/placeable 0x37 update should exact-claim");
 
@@ -2887,8 +2932,10 @@ fn ee_door_placeable_update_37_requires_appearance_before_scale_state() {
             live.len(),
             "the swapped field order is a same-length cursor hazard"
         );
-        let mut shifted_payload =
-            live_object_payload_with_bits(&shifted, exact_scalar_door_placeable_update_bits());
+        let mut shifted_payload = live_object_payload_with_bits(
+            &shifted,
+            exact_scalar_door_placeable_update_bits(object_type),
+        );
         let original = shifted_payload.clone();
 
         assert!(
@@ -2912,8 +2959,8 @@ fn stale_absent_appearance_gap_repair_rejects_terminal_extra_fragment_bit() {
     // appearance cursor only after proving that Diamond/EE scale-state lands
     // after the gap. That does not make a later terminal fragment bit owned by
     // the door/placeable family; the decompiled readers still consume only
-    // position, scalar orientation, five legacy state BOOLs, and EE's neutral
-    // sixth state BOOL.
+    // position, scalar orientation, and five shared state BOOLs; only a door
+    // additionally owns EE's neutral sixth state BOOL.
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let live = stale_absent_appearance_gap_door_placeable_update_live_bytes(object_type);
         let mut exact_payload =
@@ -2922,7 +2969,10 @@ fn stale_absent_appearance_gap_repair_rejects_terminal_extra_fragment_bit() {
             .expect("bounded stale absent-appearance gap should rewrite");
         assert_eq!(rewrite.update_records_rewritten, 1);
         assert_eq!(rewrite.bytes_removed, 2);
-        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(
+            rewrite.bits_inserted,
+            u32::from(object_type == super::DOOR_OBJECT_TYPE)
+        );
         let claim = super::claim_payload_if_verified(&exact_payload)
             .expect("rewritten stale absent-appearance gap should exact-claim");
         assert_eq!(claim.update_records, 1);
@@ -2951,7 +3001,8 @@ fn legacy_low_tail_door_placeable_updates_drop_only_bounded_control_suffix() {
     // Diamond `sub_467AE0` feeds the same shared generic update prefix for
     // doors/placeables, while the object-specific readers do not consume the
     // low 0x40/0x80 bits. The bridge may drop only the bounded WORD + mode
-    // suffix after the prefix and append EE's neutral sixth state BOOL.
+    // suffix after the prefix and append EE's neutral sixth state BOOL only for
+    // a door.
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let live = door_placeable_low_tail_update_live_bytes(object_type, &[0x34, 0x12, 0, 0]);
         let mut payload = live_object_payload_with_bits(&live, scalar_door_placeable_update_bits());
@@ -2966,7 +3017,10 @@ fn legacy_low_tail_door_placeable_updates_drop_only_bounded_control_suffix() {
         assert_eq!(rewrite.update_records_rewritten, 1);
         assert_eq!(rewrite.masks_translated, 1);
         assert_eq!(rewrite.bytes_removed, 4);
-        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(
+            rewrite.bits_inserted,
+            u32::from(object_type == super::DOOR_OBJECT_TYPE)
+        );
 
         let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
             .expect("rewritten declared length") as usize;
@@ -3006,12 +3060,14 @@ fn legacy_low_tail_door_placeable_updates_drop_only_bounded_control_suffix() {
                 + super::LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                 + super::EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
                 + super::LEGACY_UPDATE_STATE_FRAGMENT_BITS
-                + 1
+                + usize::from(object_type == super::DOOR_OBJECT_TYPE)
         );
-        assert!(
-            !fragment_bits[fragment_bits.len() - 1],
-            "EE's extra door/placeable state BOOL must be neutral false"
-        );
+        if object_type == super::DOOR_OBJECT_TYPE {
+            assert!(
+                !fragment_bits[fragment_bits.len() - 1],
+                "EE's extra door state BOOL must be neutral false"
+            );
+        }
     }
 }
 
@@ -3095,8 +3151,8 @@ fn compact_placeable_token_add_can_own_selector_bits_before_low_tail_update() {
     let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
         .expect("token add should prove the six-bit compact source before the low-tail update");
     assert_eq!(
-        rewrite.bits_inserted, 8,
-        "two low-tail updates insert one EE state bit each, while the six-bit compact add nets six EE bits"
+        rewrite.bits_inserted, 6,
+        "placeable updates preserve Diamond's five state bits, while the compact add nets six EE bits"
     );
 
     let claim = super::claim_payload_if_verified(&payload)
@@ -3195,7 +3251,10 @@ fn legacy_named_low_tail_door_placeable_rewrite_rejects_terminal_extra_fragment_
         assert_eq!(rewrite.update_records_rewritten, 1);
         assert_eq!(rewrite.masks_translated, 1);
         assert_eq!(rewrite.bytes_removed, 7);
-        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(
+            rewrite.bits_inserted,
+            u32::from(object_type == super::DOOR_OBJECT_TYPE)
+        );
         assert_eq!(rewrite.bits_removed, 1);
         assert!(
             super::claim_payload_if_verified(&payload).is_some(),
@@ -4449,8 +4508,8 @@ fn ee_inline_placeable_add_legacy_width_bits_insert_guard_before_following_updat
     let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
         .expect("legacy-width placeable add bits should be widened before the following update");
     assert!(
-        rewrite.bits_inserted >= 2,
-        "one add guard bit and one update state bit should be inserted"
+        rewrite.bits_inserted >= 1,
+        "the placeable add guard should be inserted without widening U/09 state"
     );
 
     let claim = super::claim_payload_if_verified(&payload)
@@ -4472,7 +4531,7 @@ fn ee_inline_placeable_add_legacy_width_bits_insert_guard_before_following_updat
     );
     assert_eq!(
         &owned[11..],
-        exact_scalar_door_placeable_update_bits().as_slice(),
+        exact_scalar_door_placeable_update_bits(super::PLACEABLE_OBJECT_TYPE).as_slice(),
         "following U/9 must retain its own exact cursor bits"
     );
 }
@@ -4495,7 +4554,7 @@ fn ee_empty_placeable_add_does_not_borrow_following_update_bits() {
         .expect("compact-source add bits should be repaired before the following update");
     assert_eq!(rewrite.update_records_rewritten, 1);
     assert!(
-        rewrite.bits_inserted >= 8,
+        rewrite.bits_inserted >= 7,
         "compact add repair plus 0x17 update repair should grow the bitstream"
     );
 
@@ -4592,7 +4651,9 @@ fn compact_placeable_token_add_accepts_following_exact_37_update() {
     ));
 
     let mut bits = vec![true, false, true, false];
-    bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+        super::PLACEABLE_OBJECT_TYPE,
+    ));
     let mut payload = live_object_payload_with_bits(&live, bits);
 
     let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
@@ -4624,7 +4685,9 @@ fn compact_placeable_token_add_rejects_stream_start_bit_shift_before_exact_37_up
     ));
 
     let mut exact_bits = vec![true, false, true, false];
-    exact_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    exact_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+        super::PLACEABLE_OBJECT_TYPE,
+    ));
     let mut exact_payload = live_object_payload_with_bits(&live, exact_bits.clone());
     super::rewrite_update_records_payload_if_possible(&mut exact_payload)
         .expect("unshifted compact add plus exact update should rewrite");
@@ -4666,7 +4729,7 @@ fn compact_placeable_token_add_rejects_shifted_or_bit_short_37_update() {
                 scale_first_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
                 object_id,
             ),
-            exact_scalar_door_placeable_update_bits(),
+            exact_scalar_door_placeable_update_bits(super::PLACEABLE_OBJECT_TYPE),
         ),
         (
             "bit-short",
@@ -5072,7 +5135,9 @@ fn door_add_visual_map_repair_accepts_following_exact_37_update() {
     ));
 
     let mut bits = vec![true, false, true, false, false, true, true];
-    bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+        super::DOOR_OBJECT_TYPE,
+    ));
     let mut payload = live_object_payload_with_bits(&live, bits);
 
     let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
@@ -5103,7 +5168,7 @@ fn door_add_visual_map_repair_rejects_shifted_or_bit_short_37_update() {
                 scale_first_door_placeable_full_update_live_bytes(super::DOOR_OBJECT_TYPE),
                 object_id,
             ),
-            exact_scalar_door_placeable_update_bits(),
+            exact_scalar_door_placeable_update_bits(super::DOOR_OBJECT_TYPE),
         ),
         (
             "bit-short",

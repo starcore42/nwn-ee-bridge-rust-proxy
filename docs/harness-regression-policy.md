@@ -33,40 +33,38 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, as of 2026-07-15 14:54 +10: current-code
+Latest known live HG proxy status, checked 2026-07-16 10:08 +10: current-code
 account-5 capture
 `C:\nwnbridge\codex-live-area-index-door-20260715-1455\harness-proxy-20260715-145143`
 selected typed `starcore-druid60`, reached `Module_Loaded`, exact
 `Area_ClientArea`, proxy-owned `Area_AreaLoaded`, sustained gameplay, an exact
-36-slot quickbar, and real `Input_WalkToWaypoint` traffic while approaching the
-requested door. This live-confirms the indexed module-resource path on HG. The
-door action then exposed server sequence 95 as a 246-byte alternating
-`A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream. Current production owns
-the six packed control bits at an exact nonterminal direct-name `U/09 -> A/09`
-handoff and preserves that name through the typed EE reader. Its final named
-compact `U/09` now leaves 17 MSB-first fragment bits after the known
-source-to-EE field walk; no proof yet authorizes those remaining bits.
-The strict proxy correctly quarantined two copies plus one rejected diagnostic
-candidate. The structured log ended at `2026-07-15T14:54:03+10:00`; gameplay
-was reached, but `UseObject` did not complete before the run was stopped.
-Production diagnostics now confirm the currently selected terminal source
-reader begins at bit 58 of 84, reads five state BOOLs plus name selectors `1,0`
-at cursors 65/66 and an inline locstring CExoString, then stops at bit 67. The
-committed five-row rewrite ledger ends the preceding second `A/09` at source
-`40..50` / emitted `47..58`; that add owns exactly ten Diamond BOOLs and emits
-eleven EE BOOLs. Two bounded suffix readings reach the fragment end: the
-locstring-selected terminal candidate is `001000110` at `75..84`, leaving a
-17-bit gap after the add, while direct-name `01000110` at `76..84` leaves 18.
-The Diamond server placeable snapshot writer confirms the add cannot own either
-gap. Do not trim, passthrough, or cursor-search this fragment tail. The next fix
-must trace the stock update serializer and HG fragment assembly handoff,
-identify the gap owner and terminal name branch, require a final exact EE claim,
-and then rerun the live door `UseObject` probe.
-Strict replay
-`C:\nwnbridge\codex-proxy2-replay-tail9-ledger-20260716-0619` processed all
+36-slot quickbar, and real `Input_WalkToWaypoint` traffic. The structured log
+`proxy.structured.log` ended at `2026-07-15T14:54:03.2911325+10:00`, making it
+about 19 hours 14 minutes old at this run's gate and therefore current gameplay
+evidence. `UseObject` did not complete.
+
+Server sequence 95 remains the active connection/gameplay failure: two
+246-byte strict copies and one 270-byte diagnostic candidate were quarantined.
+A corrected Diamond/EE decompile audit proves EE placeables consume five state
+BOOLs, EE doors consume six, and both support the same mask-`0x00080000` name
+grammar. Production now inserts the neutral sixth bit only for doors and
+accepts exact named updates for either type. Its terminal diagnostics retain
+immutable source and emitted cursors separately: five precursor rows end at
+source 50 / emitted 57; the terminal source spans `50..76`, the selected reader
+ends at source 59, and end-aligned locstring/direct candidates at 67/68 leave
+8/9-bit gaps. No decompile proof authorizes trimming those gaps. Trace stock
+update serializer `0x445160` and the HG fragment-assembly handoff, then require
+an exact final EE claim and rerun the live door `UseObject` probe.
+
+Current-code strict replay
+`C:\nwnbridge\codex-proxy2-replay-placeable-state-width-20260716-1116`
+processed all
 164 packet files with 304 strict allows, zero strict/semantic quarantines or
 files, one committed quickbar profile, both area-context checks, and zero
-terminal live-object residuals on isolated ports 60421/60433.
+terminal live-object residuals on isolated ports 61421/61433. Some older private
+capture-only exact-claim tests now reject under the corrected five-bit
+placeable reader; keep those streams quarantined until their real source
+writer/handoff owns the residual bits.
 
 The earlier zero-quarantine account-5 capture
 `C:\nwnbridge\codex-live-freshness-account5-20260715-0855\harness-proxy-20260715-084947`

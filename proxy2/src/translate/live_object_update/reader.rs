@@ -455,22 +455,19 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     }
 
     let mask = read_u32_le(bytes, offset + 6)?;
-    // EE dispatch `sub_1407B8380` runs the shared `sub_14079C050` reader and
-    // then dispatches object type 0x09 to the placeable-specific
-    // `sub_140797780`. That reader consumes six state BOOLs and tests mask bit
-    // 19 (`0x0008_0000`) before reading a selector BOOL and either a localized
-    // string or `ReadCExoString(32)`. Object type 0x0A instead dispatches to
-    // `sub_14076FA20`, which has no corresponding name read. Keep the name bit
-    // type-specific so a semantically plausible door row cannot shift the
-    // shared fragment cursor.
-    let mut allowed_mask = LEGACY_UPDATE_POSITION_MASK
+    // EE dispatch `sub_1407B8380` runs the shared `sub_14079C050` reader, then
+    // routes type 0x09 to placeable reader `sub_1407A8460` and type 0x0A to
+    // door reader `sub_140797780`. Both object readers test mask bit 19
+    // (`0x0008_0000`) and consume the same outer name selector followed by
+    // either `sub_1409735F0` (localized) or `ReadCExoString(32)` (direct).
+    // Their state blocks differ: the placeable reader consumes five BOOLs,
+    // while the door reader consumes a sixth BOOL after the shared five.
+    let allowed_mask = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
         | LEGACY_UPDATE_STATE_MASK
-        | LEGACY_UPDATE_APPEARANCE_MASK;
-    if object_type == PLACEABLE_OBJECT_TYPE {
-        allowed_mask |= LEGACY_UPDATE_NAME_MASK;
-    }
+        | LEGACY_UPDATE_APPEARANCE_MASK
+        | LEGACY_UPDATE_NAME_MASK;
     if mask == 0 || (mask & !allowed_mask) != 0 {
         return None;
     }
@@ -659,42 +656,45 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
             fragment_cursor,
             LEGACY_UPDATE_STATE_FRAGMENT_BITS,
         )?;
-        if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
-            // EE's object-specific placeable/door update readers consume one
-            // extra BOOL beyond Diamond's five legacy state bits. The
-            // translator inserts `false`, so an exact bridge packet must carry
-            // that neutral branch.
+        let neutral_ee_state_suffix = if object_type == DOOR_OBJECT_TYPE {
+            // EE door reader `sub_140797780` consumes a sixth state BOOL after
+            // the five BOOLs shared with Diamond `sub_44E2C0`. The translator
+            // inserts `false`, so an exact bridge door packet must carry that
+            // neutral branch. EE placeable `sub_1407A8460`, like Diamond
+            // `sub_44EB40`, stops after the five shared BOOLs.
             let neutral_ee_state_suffix = fragment_bits.get(fragment_cursor).copied()?;
             if neutral_ee_state_suffix {
                 return None;
             }
-            state = Some(VerifiedEeDoorPlaceableState {
-                bit_cursor: state_cursor,
-                visual_selector,
-                visual_state_active,
-                locked,
-                lockable,
-                visual_payload,
-                neutral_ee_state_suffix,
-            });
             fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
-        }
+            neutral_ee_state_suffix
+        } else {
+            false
+        };
+        state = Some(VerifiedEeDoorPlaceableState {
+            bit_cursor: state_cursor,
+            visual_selector,
+            visual_state_active,
+            locked,
+            lockable,
+            visual_payload,
+            neutral_ee_state_suffix,
+        });
     }
 
     if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
-        if object_type != PLACEABLE_OBJECT_TYPE {
-            return None;
-        }
         let selector_bit_cursor = fragment_cursor;
         let localized = fragment_bits.get(fragment_cursor).copied()?;
         fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
         let name_read_offset = read_cursor;
         let (name_read_end, locstring_selector_bit_cursor, kind) = if localized {
-            // EE `sub_140797780` calls `sub_1409735F0` after the outer selector.
+            // Both EE door/placeable readers call `sub_1409735F0` after the
+            // outer selector.
             // The helper reads exactly one inner BOOL. Its false branch calls
             // `ReadCExoString(32)`; its true branch calls `ReadBYTE(1, 1)` and
-            // then `ReadDWORD(32)`. Diamond `sub_44EB40` -> `sub_53E700` has the
-            // same outer/inner BOOL order and the same byte-side branches. Keep
+            // then `ReadDWORD(32)`. Diamond door/placeable readers `sub_44E2C0`
+            // / `sub_44EB40` -> `sub_53E700` have the same outer/inner BOOL
+            // order and the same byte-side branches. Keep
             // this cursor explicit: treating the inner selector as a string bit
             // would shift every following live-object record.
             let inner_selector_bit_cursor = fragment_cursor;
@@ -952,7 +952,7 @@ mod tests {
         live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
         live.extend_from_slice(&(name.len() as u32).to_le_bytes());
         live.extend_from_slice(name);
-        let bits = [false]; // direct CExoString selector in `sub_140797780`.
+        let bits = [false]; // direct CExoString selector in `sub_1407A8460`.
 
         let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
             .expect("EE placeable direct-name update should exact-claim");
@@ -1031,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn ee_door_update_parser_rejects_placeable_only_name_branch() {
+    fn ee_door_update_parser_claims_shared_direct_name_branch() {
         let object_id = 0x1234_ABCD_u32;
         let mut live = Vec::new();
         live.extend_from_slice(&[b'U', DOOR_OBJECT_TYPE]);
@@ -1039,11 +1039,14 @@ mod tests {
         live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
         live.extend_from_slice(&0_u32.to_le_bytes());
 
-        assert!(
-            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[false], 0,)
-                .is_none(),
-            "EE object type 0x0A dispatches to sub_14076FA20, which does not consume mask 0x80000"
-        );
+        let claim =
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[false], 0)
+                .expect("EE door direct-name update should exact-claim");
+        assert_eq!(claim.next_bit_cursor, 1);
+        assert!(matches!(
+            claim.placeable_name.map(|name| name.kind),
+            Some(VerifiedEePlaceableNameKind::DirectCExoString { byte_length: 0 })
+        ));
     }
 
     #[test]
@@ -1110,9 +1113,8 @@ mod tests {
         live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
         let bits = vec![
             true, false, // position low Z bits.
-            true, false, true, false, true,  // five legacy state bits.
-            false, // EE-only neutral state suffix.
-            true,  // following stream bit, not owned by this record.
+            true, false, true, false, true, // five legacy state bits.
+            true, // following stream bit, not owned by this record.
         ];
 
         let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
@@ -1132,7 +1134,7 @@ mod tests {
         assert!(!state.neutral_ee_state_suffix);
         assert_eq!(
             claim.next_bit_cursor,
-            LEGACY_UPDATE_POSITION_FRAGMENT_BITS + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS + LEGACY_UPDATE_STATE_FRAGMENT_BITS
         );
     }
 
