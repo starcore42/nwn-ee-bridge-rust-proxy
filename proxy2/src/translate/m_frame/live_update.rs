@@ -2170,6 +2170,66 @@ mod fixture_free_tests {
         assert_eq!(stock_source.source_reader_residual.bit_end, 76);
         assert_eq!(stock_source.source_reader_residual.bit_count, 13);
 
+        let handoff = evidence
+            .terminal_fragment_handoff_correlation
+            .expect("stock residual should be compared with exact prior ledger spans");
+        assert_eq!(handoff.anchored_source_bit_cursor, 63);
+        assert_eq!(handoff.source_fragment_bit_count, 76);
+        assert_eq!(handoff.unresolved_source_bits.bit_start, 63);
+        assert_eq!(handoff.unresolved_source_bits.bit_end, 76);
+        assert_eq!(handoff.unresolved_source_bits.bit_count, 13);
+        assert_eq!(
+            handoff.ambiguity_count,
+            handoff.candidate_count.saturating_sub(1)
+        );
+        assert_eq!(
+            handoff.candidates_retained,
+            handoff.candidate_count.min(
+                live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT
+            )
+        );
+        let replay = handoff
+            .candidates
+            .iter()
+            .flatten()
+            .find(|candidate| {
+                candidate.prior_source_bit_start == 40
+                    && candidate.prior_source_bit_end == 50
+                    && candidate.replayed_source_bits.bit_start == 65
+                    && candidate.replayed_source_bits.bit_end == 75
+            })
+            .expect("terminal residual should retain the preceding A/09 source-span replay");
+        assert_eq!((replay.prior_offset, replay.prior_record_end), (125, 182));
+        assert_eq!((replay.prior_opcode, replay.prior_marker), (b'A', 9));
+        assert_eq!(replay.prior_object_id, Some(0x8000_1003));
+        assert_eq!(replay.focus_offset, 182);
+        assert_eq!(replay.focus_object_id, Some(0x8000_1003));
+        assert!(replay.same_object);
+        assert!(replay.immediately_precedes_focus);
+        assert_eq!(replay.prior_source_bit_count, 10);
+        assert_eq!(
+            (
+                replay.unresolved_prefix.bit_start,
+                replay.unresolved_prefix.bit_end,
+                replay.unresolved_prefix.bit_count,
+            ),
+            (63, 65, 2)
+        );
+        assert_eq!(replay.replayed_source_bits.bit_count, 10);
+        assert_eq!(
+            (
+                replay.unresolved_suffix.bit_start,
+                replay.unresolved_suffix.bit_end,
+                replay.unresolved_suffix.bit_count,
+            ),
+            (75, 76, 1)
+        );
+        assert_eq!(
+            replay.replayed_source_bits.bits[..10],
+            preceding_add.source_bits.bits[..10],
+            "the correlation must compare the complete immutable ledger row"
+        );
+
         assert_eq!(evidence.end_aligned_diamond_reader_candidate_count, 1);
         let mut end_aligned_candidates = evidence
             .end_aligned_diamond_reader_candidates
@@ -2362,6 +2422,54 @@ mod fixture_free_tests {
         assert_eq!(
             payload, original,
             "strict orchestration must preserve the rejected terminal stream"
+        );
+    }
+
+    #[test]
+    fn alternating_tail9_handoff_correlation_rejects_a_one_bit_near_match() {
+        let mut payload = alternating_legacy_door_placeable_payload();
+        let declared = usize::try_from(u32::from_le_bytes(
+            payload[3..7].try_into().expect("declared length bytes"),
+        ))
+        .expect("declared length");
+        let replay_bit_cursor = 69usize;
+        payload[declared + replay_bit_cursor / 8] ^= 0x80 >> (replay_bit_cursor % 8);
+        let original = payload.clone();
+
+        let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
+        assert!(attempt.summary.is_none());
+        let failure = attempt
+            .failure
+            .expect("one changed residual bit must remain a strict terminal failure");
+        assert_eq!(
+            failure.kind,
+            live_object_update::LiveObjectUpdateRewriteFailureKind::
+                DoorPlaceableTail9TerminalResidualFragmentBits
+        );
+        let evidence = failure
+            .terminal_door_placeable_tail9_residual
+            .expect("near-match failure should retain terminal evidence");
+        assert!(evidence.stock_diamond_source.is_some());
+        let handoff = evidence
+            .terminal_fragment_handoff_correlation
+            .expect("stock residual should still receive bounded correlation analysis");
+        assert!(
+            handoff.candidates.iter().flatten().all(|candidate| {
+                !(candidate.prior_source_bit_start == 40
+                    && candidate.prior_source_bit_end == 50
+                    && candidate.replayed_source_bits.bit_start == 65
+                    && candidate.replayed_source_bits.bit_end == 75)
+            }),
+            "a one-bit mismatch must not be reported as an exact prior-row replay"
+        );
+        assert_eq!(
+            payload, original,
+            "diagnostic near-match analysis must not mutate the staged packet"
+        );
+        assert!(rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none());
+        assert_eq!(
+            payload, original,
+            "strict orchestration must keep the near-match packet quarantined"
         );
     }
 }

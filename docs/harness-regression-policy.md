@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-17 01:11 +10 (about 2h52m
+Latest known live HG proxy status, checked 2026-07-17 04:14 +10 (about 5h55m
 old): current-code
 account-5 capture
 `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
@@ -69,16 +69,24 @@ count by its three inserted add-row bits, excluding transport count repair as
 the explanation. Stock serializer `0x445160` ends the terminal row at cursor 63;
 the continuous writer/finalizer cannot synthesize the suffix, and a later stock
 row would require an absent 10-byte `U` header. Because all 13 bits are still
-declared valid, do not trim them. Trace the predecessor handoff or an HG custom
-writer (or instrument `0x445160`, `0x507FC0`, and `0x508B80`), then require an
-exact final EE claim and rerun the live door `UseObject` probe.
+declared valid, do not trim them. Production diagnostics now correlate the
+anchored residual against complete immutable source spans from the bounded
+preceding ledger. The reduced stream identifies an exact same-object,
+immediately preceding `A/09` replay from source `40..50` into residual
+`65..75`, with a two-bit prefix and one-bit suffix; a one-bit mutation rejects
+that exact candidate. Candidate count and ambiguity remain evidence only and cannot own or
+remove bits. Diamond `0x507F30` is the fragment-capacity growth helper, not the
+finalizer; the actual `GetWriteMessage` finalizer is `0x508B80`. Trace the
+predecessor handoff or an HG custom writer (or instrument `0x445160`,
+`0x507FC0`, and `0x508B80`), then require an exact final EE claim and rerun the
+live door `UseObject` probe.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-end-aligned-stock-20260717-0147`
-processed all
-164 packet files with 304 strict allows, zero strict/semantic quarantines or
-files, one committed quickbar profile, both area-context checks, and zero
-terminal live-object residuals on isolated ports 62421/62433. Some older private
+`C:\nwnbridge\codex-proxy2-replay-tail9-handoff-correlation-20260717-0438`
+processed all 164 packet files with 304 strict allows, zero strict/semantic
+quarantines or files, one exact 36-slot quickbar, both area-context checks, ten
+area rewrites, and zero terminal live-object residuals on isolated ports
+63621/63633. Some older private
 capture-only exact-claim tests now reject under the corrected five-bit
 placeable reader; keep those streams quarantined until their real source
 writer/handoff owns the residual bits.

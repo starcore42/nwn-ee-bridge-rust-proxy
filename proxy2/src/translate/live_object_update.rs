@@ -114,7 +114,7 @@ const CNW_LENGTH_BYTES: usize = 4;
 // Diamond `CNWMessage::CreateWriteMessage` (`nwserver` 0x507E30) and EE
 // `CNWMessage::CreateWriteMessage` (`nwn` 0x1402D54A0) initialize the write
 // cursor at byte offset 7 and immediately write three zero bits via the shared
-// MSB-first bit writer. `GetWriteMessage` (`nwserver` 0x507F30, EE
+// MSB-first bit writer. `GetWriteMessage` (`nwserver` 0x508B80, EE
 // 0x1402D5880) later overwrites only those top three bits with the final-byte
 // valid-bit count, so live-object semantic bits begin only after this fixed
 // header.
@@ -19089,6 +19089,8 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub proven_terminal_packed_name_bits: usize,
     pub precursor_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
     pub stock_diamond_source: Option<LiveObjectUpdateDoorPlaceableStockSourceEvidence>,
+    pub terminal_fragment_handoff_correlation:
+        Option<LiveObjectUpdateTerminalFragmentHandoffCorrelationEvidence>,
     pub end_aligned_diamond_reader_candidate_count: usize,
     pub end_aligned_diamond_reader_candidates:
         [Option<LiveObjectUpdateDoorPlaceableEndAlignedDiamondReaderCandidateEvidence>;
@@ -19097,6 +19099,39 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub source_suffix_candidates: [Option<
         LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence,
     >; LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT],
+}
+
+pub const LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateTerminalFragmentHandoffCorrelationEvidence {
+    pub anchored_source_bit_cursor: usize,
+    pub source_fragment_bit_count: usize,
+    pub unresolved_source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub candidate_count: usize,
+    pub candidates_retained: usize,
+    pub ambiguity_count: usize,
+    pub candidates: [Option<LiveObjectUpdateTerminalFragmentReplayCandidateEvidence>;
+        LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateTerminalFragmentReplayCandidateEvidence {
+    pub prior_offset: usize,
+    pub prior_record_end: usize,
+    pub prior_opcode: u8,
+    pub prior_marker: u8,
+    pub prior_object_id: Option<u32>,
+    pub focus_offset: usize,
+    pub focus_object_id: Option<u32>,
+    pub same_object: bool,
+    pub immediately_precedes_focus: bool,
+    pub prior_source_bit_start: usize,
+    pub prior_source_bit_end: usize,
+    pub prior_source_bit_count: usize,
+    pub unresolved_prefix: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub replayed_source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub unresolved_suffix: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27094,6 +27129,15 @@ fn rewrite_update_records_payload_with_area_context_inner(
         .map(|mut evidence| {
             evidence.precursor_tail =
                 rewrite_bit_ledger.contiguous_tail_evidence(&fragment_bits, bit_cursor);
+            evidence.terminal_fragment_handoff_correlation =
+                evidence.stock_diamond_source.and_then(|source| {
+                    rewrite_bit_ledger.terminal_fragment_handoff_correlation_evidence(
+                        &live_bytes,
+                        rewrite_bit_ledger.source_bits(&fragment_bits),
+                        source.source_reader_bit_cursor,
+                        offset,
+                    )
+                });
             evidence
         });
         let Some(record_rewrite) = record::rewrite_update_record_for_ee_with_area_context(
@@ -38492,6 +38536,103 @@ impl LiveObjectRewriteBitLedger {
             emitted_gap_to_cursor: tail.emitted_gap_to_cursor,
             source_gap_to_cursor: tail.source_gap_to_cursor,
             entries,
+        })
+    }
+
+    fn terminal_fragment_handoff_correlation_evidence(
+        &self,
+        live_bytes: &[u8],
+        source_bits: &[bool],
+        anchored_source_bit_cursor: usize,
+        focus_offset: usize,
+    ) -> Option<LiveObjectUpdateTerminalFragmentHandoffCorrelationEvidence> {
+        const RECENT_LEDGER_ENTRY_LIMIT: usize =
+            LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT;
+        const MAX_UNRESOLVED_SOURCE_BITS: usize = 64;
+
+        let source_fragment_bit_count = source_bits.len();
+        let unresolved = source_bits.get(anchored_source_bit_cursor..)?;
+        if unresolved.is_empty() || unresolved.len() > MAX_UNRESOLVED_SOURCE_BITS {
+            return None;
+        }
+
+        let focus_object_id = read_u32_le(live_bytes, focus_offset.saturating_add(2));
+        let mut candidates = [None; LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT];
+        let mut candidate_count = 0usize;
+
+        // This is correlation evidence only. It searches a bounded set of
+        // already committed ledger rows for an exact replay of each complete
+        // source span inside the stock-reader residual. A matching bit pattern
+        // cannot by itself own, erase, or advance the terminal fragment.
+        for entry in self.recent_entries(RECENT_LEDGER_ENTRY_LIMIT).iter().rev() {
+            let prior_source_bits = self.source_values_for_entry(source_bits, entry);
+            if prior_source_bits.is_empty() || prior_source_bits.len() > unresolved.len() {
+                continue;
+            }
+            let Some(last_replay_start) =
+                source_fragment_bit_count.checked_sub(prior_source_bits.len())
+            else {
+                continue;
+            };
+            for replay_start in anchored_source_bit_cursor..=last_replay_start {
+                let replay_end = replay_start.saturating_add(prior_source_bits.len());
+                if source_bits.get(replay_start..replay_end) != Some(prior_source_bits) {
+                    continue;
+                }
+
+                let prior_object_id = read_u32_le(live_bytes, entry.offset.saturating_add(2));
+                let candidate = LiveObjectUpdateTerminalFragmentReplayCandidateEvidence {
+                    prior_offset: entry.offset,
+                    prior_record_end: entry.record_end,
+                    prior_opcode: entry.opcode,
+                    prior_marker: entry.marker,
+                    prior_object_id,
+                    focus_offset,
+                    focus_object_id,
+                    same_object: prior_object_id.is_some() && prior_object_id == focus_object_id,
+                    immediately_precedes_focus: entry.record_end == focus_offset,
+                    prior_source_bit_start: entry.source_bit_start,
+                    prior_source_bit_end: entry.source_bit_end,
+                    prior_source_bit_count: prior_source_bits.len(),
+                    unresolved_prefix: live_object_rewrite_bit_slice_evidence(
+                        anchored_source_bit_cursor,
+                        replay_start,
+                        source_bits
+                            .get(anchored_source_bit_cursor..replay_start)
+                            .unwrap_or(&[]),
+                    ),
+                    replayed_source_bits: live_object_rewrite_bit_slice_evidence(
+                        replay_start,
+                        replay_end,
+                        source_bits.get(replay_start..replay_end).unwrap_or(&[]),
+                    ),
+                    unresolved_suffix: live_object_rewrite_bit_slice_evidence(
+                        replay_end,
+                        source_fragment_bit_count,
+                        source_bits.get(replay_end..).unwrap_or(&[]),
+                    ),
+                };
+                if let Some(slot) = candidates.get_mut(candidate_count) {
+                    *slot = Some(candidate);
+                }
+                candidate_count = candidate_count.saturating_add(1);
+            }
+        }
+
+        let candidates_retained =
+            candidate_count.min(LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT);
+        Some(LiveObjectUpdateTerminalFragmentHandoffCorrelationEvidence {
+            anchored_source_bit_cursor,
+            source_fragment_bit_count,
+            unresolved_source_bits: live_object_rewrite_bit_slice_evidence(
+                anchored_source_bit_cursor,
+                source_fragment_bit_count,
+                unresolved,
+            ),
+            candidate_count,
+            candidates_retained,
+            ambiguity_count: candidate_count.saturating_sub(1),
+            candidates,
         })
     }
 }

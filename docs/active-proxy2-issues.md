@@ -267,8 +267,8 @@ not as standalone workaround targets.
   but `UseObject` did not complete. Two 246-byte copies and one 270-byte
   diagnostic candidate remain correctly quarantined.
 
-  Fresh current-code gate capture, checked at `2026-07-17T01:11+10:00`
-  (about 2h52m old),
+  Fresh current-code gate capture, checked at `2026-07-17T04:14+10:00`
+  (about 5h55m old),
   `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
   ended at `2026-07-16T22:18:53.6452776+10:00` after reaching gameplay through
   two area handoffs and 28 exact live-object claims, with zero quarantine files
@@ -313,16 +313,31 @@ not as standalone workaround targets.
   so neither the duplicate pattern nor the end-aligned alternative authorizes
   trimming or a rewrite.
 
-  Next: trace the predecessor cursor handoff and any HG custom fragment writer,
-  or instrument a controlled Diamond writer at `0x445160`, `0x507FC0`, and
-  `0x508B80`; identify the exact owner of `63..76`, require a final exact EE
+  Production failure evidence now correlates the stock-reader residual against
+  complete immutable source spans from the bounded preceding rewrite ledger.
+  It counts every exact replay candidate, retains up to four, and reports
+  ambiguity, row
+  identity/object id, whether the row immediately precedes the failure and has
+  the same object, and the unresolved prefix/replay/suffix ranges. The reduced
+  sequence-95 shape proves the immediately preceding same-object `A/09` source
+  span `40..50` is replayed exactly at `65..75`, with a two-bit prefix and
+  one-bit suffix; a one-bit mutation rejects that exact candidate. This remains
+  diagnostic-only and cannot move a cursor, trim the fragment, or relax final
+  validation.
+
+  The connected decompile citation is also corrected: Diamond `0x507F30` is
+  the fragment-capacity growth helper reached by the shared bit writer; the
+  actual `GetWriteMessage` finalizer is `0x508B80`. The ownership conclusion is
+  unchanged. Next: use the typed predecessor correlation to scope an HG custom
+  writer trace or a controlled Diamond writer probe at `0x445160`, `0x507FC0`,
+  and `0x508B80`; identify the exact owner of `63..76`, require a final exact EE
   claim, and rerun the live door `UseObject` probe.
   Current-code strict replay
-  `C:\nwnbridge\codex-proxy2-replay-end-aligned-stock-20260717-0147`
-  processed
-  164 packet files with 304 strict allows, zero strict/semantic quarantines or
-  files, one exact 36-slot quickbar, two area-context checks, and zero terminal
-  live-object residuals. Several older private capture regressions that encoded
+  `C:\nwnbridge\codex-proxy2-replay-tail9-handoff-correlation-20260717-0438`
+  processed 164 packet files with 304 strict allows, zero strict/semantic
+  quarantines or files, one exact 36-slot quickbar, both area-context checks,
+  ten area rewrites, and zero terminal live-object residuals on isolated ports
+  63621/63633. Several older private capture regressions that encoded
   the disproved sixth placeable bit as an exact owner now remain conservatively
   unclaimed. Do not restore that owner to satisfy them; reduce each failing
   capture to its actual source writer/handoff before changing production.
@@ -7993,16 +8008,19 @@ Current status:
   unresolved two-bit `U/6` cursor. Verified with `CARGO_INCREMENTAL=0
   CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260607-raw-cont-short
   cargo test -q -p hgbridge-proxy2 raw_prefixed_continuation -- --nocapture`.
-- 2026-06-07 `P/05/01` CNW fragment-header/finalization audit: no packet
+- 2026-06-07 `P/05/01` CNW fragment-header/finalization audit (address
+  corrected 2026-07-17): no packet
   behavior changed. Diamond server `CNWMessage::CreateWriteMessage`
   (`nwserver` 0x507E30) and EE `CNWMessage::CreateWriteMessage`
   (`nwn` 0x1402D54A0) both start the write buffer at byte offset 7 and reserve
   exactly three MSB fragment-header bits before semantic BOOLs. Diamond
-  `GetWriteMessage` (`nwserver` 0x507F30) and EE `GetWriteMessage`
+  `GetWriteMessage` (`nwserver` 0x508B80) and EE `GetWriteMessage`
   (`nwn` 0x1402D5880) overwrite only those top three bits with the final-byte
   valid-bit count, while Diamond `WriteBOOL` (`0x507FC0 -> 0x507340`) and EE
   `WriteBOOL` (`0x1402DA920 -> 0x1402DB990`) write later BOOLs with the same
-  MSB-first cursor. Added public coverage proving repack/final-count handling
+  MSB-first cursor. Diamond `0x507F30` is instead the fragment-capacity growth
+  helper called by the shared bit writer. Added public coverage proving
+  repack/final-count handling
   preserves the next record's semantic bits at cursor 3. This rules out the CNW
   fragment header or finalization step as the two-bit owner for the active CEP
   v2.3 `U/6 mask=0xFFFF_FFF3` cursor; continue with the original server

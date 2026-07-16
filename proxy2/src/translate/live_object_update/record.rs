@@ -2453,6 +2453,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         proven_terminal_packed_name_bits,
         precursor_tail: None,
         stock_diamond_source,
+        terminal_fragment_handoff_correlation: None,
         end_aligned_diamond_reader_candidate_count,
         end_aligned_diamond_reader_candidates,
         source_suffix_candidate_count,
