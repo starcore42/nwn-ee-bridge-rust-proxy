@@ -2170,6 +2170,77 @@ mod fixture_free_tests {
         assert_eq!(stock_source.source_reader_residual.bit_end, 76);
         assert_eq!(stock_source.source_reader_residual.bit_count, 13);
 
+        assert_eq!(evidence.end_aligned_diamond_reader_candidate_count, 1);
+        let mut end_aligned_candidates = evidence
+            .end_aligned_diamond_reader_candidates
+            .iter()
+            .flatten();
+        let end_aligned = end_aligned_candidates
+            .next()
+            .expect("the stock-reader residual should itself be an exact terminal reader walk");
+        assert_eq!(end_aligned.raw_mask, 0xFFFF_FFF7);
+        assert_eq!(end_aligned.effective_mask, 0x0008_0037);
+        assert_eq!(end_aligned.ignored_mask, 0xFFF7_FFC0);
+        assert_eq!(end_aligned.read_end, 245);
+        assert_eq!(end_aligned.source_bit_cursor, 63);
+        assert_eq!(end_aligned.source_reader_bit_cursor, 76);
+        assert_eq!(end_aligned.source_reader_bits_consumed, 13);
+        assert_eq!(end_aligned.source_orientation_vector, Some(false));
+        assert_eq!(end_aligned.source_state_bit_cursor, Some(70));
+        assert_eq!(end_aligned.source_name_selector_bit_cursor, Some(75));
+        assert_eq!(end_aligned.source_name_selector, Some(false));
+        assert_eq!(end_aligned.source_name_locstring_selector_bit_cursor, None);
+        assert_eq!(end_aligned.source_name_locstring_selector, None);
+        assert_eq!(end_aligned.source_name_kind, Some("direct-cexostring"));
+        assert_eq!(
+            (
+                end_aligned.source_gap_from_ledger_cursor.bit_start,
+                end_aligned.source_gap_from_ledger_cursor.bit_end,
+                end_aligned.source_gap_from_ledger_cursor.bit_count,
+            ),
+            (50, 63, 13)
+        );
+        let anchored_gap = end_aligned
+            .source_gap_from_anchored_reader
+            .expect("end-aligned candidate should start exactly at the anchored reader end");
+        assert_eq!(
+            (
+                anchored_gap.bit_start,
+                anchored_gap.bit_end,
+                anchored_gap.bit_count,
+                anchored_gap.bits_retained,
+            ),
+            (63, 63, 0, 0)
+        );
+        assert_eq!(
+            (
+                end_aligned.source_bits.bit_start,
+                end_aligned.source_bits.bit_end,
+                end_aligned.source_bits.bit_count,
+                end_aligned.source_bits.bits_retained,
+            ),
+            (63, 76, 13, 13)
+        );
+        assert_eq!(
+            end_aligned.source_bits.bits[..13],
+            [
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+                Some(false),
+            ]
+        );
+        assert!(end_aligned_candidates.next().is_none());
+
         assert_eq!(evidence.source_suffix_candidate_count, 2);
         let mut suffix_candidates = evidence.source_suffix_candidates.iter().flatten();
         let locstring_candidate = suffix_candidates
@@ -2243,6 +2314,54 @@ mod fixture_free_tests {
         assert_eq!(
             payload, original,
             "exact orchestration must not commit a partial alternating rewrite"
+        );
+    }
+
+    #[test]
+    fn alternating_tail9_diagnostics_require_an_exact_end_aligned_diamond_byte_walk() {
+        let mut payload = alternating_legacy_door_placeable_payload();
+        let terminal_update_offset = payload
+            .windows(2)
+            .rposition(|window| window == [b'U', 9])
+            .expect("fixture should end with a U/09 record");
+        // The compact tail9 reader treats these bytes as the facing high byte
+        // and an ignored state byte. The Diamond generic reader treats them as
+        // its appearance WORD. 0xFFFE selects a mandatory 16-byte resref branch,
+        // making the byte walk inexact without disturbing the compact terminal
+        // evidence used to diagnose the residual fragment bits.
+        payload[terminal_update_offset + 17..terminal_update_offset + 19]
+            .copy_from_slice(&0xFFFEu16.to_le_bytes());
+        let original = payload.clone();
+
+        let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
+        assert!(attempt.summary.is_none());
+        let failure = attempt
+            .failure
+            .expect("compact terminal walk should still retain residual evidence");
+        assert_eq!(
+            failure.kind,
+            live_object_update::LiveObjectUpdateRewriteFailureKind::
+                DoorPlaceableTail9TerminalResidualFragmentBits
+        );
+        let evidence = failure
+            .terminal_door_placeable_tail9_residual
+            .expect("tail9 residual evidence should survive the byte-shape discriminator");
+        assert!(evidence.stock_diamond_source.is_none());
+        assert_eq!(evidence.end_aligned_diamond_reader_candidate_count, 0);
+        assert!(
+            evidence
+                .end_aligned_diamond_reader_candidates
+                .iter()
+                .all(Option::is_none)
+        );
+        assert_eq!(
+            payload, original,
+            "diagnostic candidate rejection must not commit a staged rewrite"
+        );
+        assert!(rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none());
+        assert_eq!(
+            payload, original,
+            "strict orchestration must preserve the rejected terminal stream"
         );
     }
 }

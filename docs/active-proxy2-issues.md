@@ -258,7 +258,7 @@ not as standalone workaround targets.
   processed 164 packet files with 304 strict allows, zero strict/semantic
   quarantines or files, 10 area rewrite summaries, two distinct area context
   checks, one exact 36-slot quickbar, and zero terminal live-object residuals.
-- 2026-07-16 alternating door/placeable live-object fragment ownership:
+- 2026-07-17 alternating door/placeable live-object fragment ownership:
   current-code account-5 capture
   `C:\nwnbridge\codex-live-area-index-door-20260715-1455\harness-proxy-20260715-145143`
   reached gameplay, emitted real `Input_WalkToWaypoint`, and exposed server
@@ -267,7 +267,8 @@ not as standalone workaround targets.
   but `UseObject` did not complete. Two 246-byte copies and one 270-byte
   diagnostic candidate remain correctly quarantined.
 
-  Fresh current-code gate capture
+  Fresh current-code gate capture, checked at `2026-07-17T01:11+10:00`
+  (about 2h52m old),
   `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
   ended at `2026-07-16T22:18:53.6452776+10:00` after reaching gameplay through
   two area handoffs and 28 exact live-object claims, with zero quarantine files
@@ -286,23 +287,38 @@ not as standalone workaround targets.
   Production exact parsing, rewriting, and validators now follow this
   type-specific bit order and accept exact named doors and placeables.
 
-  Production diagnostics now compare two non-mutating source interpretations at
+  Production diagnostics compare two non-mutating source interpretations at
   immutable source cursor 50 in the 76-bit fragment. The compact-tail9 reader
   ends at 59 and leaves 17 bits. The exact stock Diamond candidate filters raw
   mask `0xFFFFFFF7` to reader-owned `0x00080037` (recording ignored
   `0xFFF7FFC0`), then consumes position `50..52`, scalar orientation `52..57`,
   five state BOOLs `57..62`, and a false direct-name selector at 62; it ends at
-  63 and leaves 13 bits. End-aligned locstring/direct alternatives still begin
-  at 67/68, leaving 8/9-bit gaps after the compact reader or 4/5-bit gaps after
-  the stock reader. Neither interpretation owns the complete source fragment,
-  so neither can move the production cursor, authorize trimming, or authorize a
-  rewrite.
+  63 and leaves 13 valid bits. The bounded production failure evidence now also
+  enumerates exact Diamond reader candidates that begin at or after that
+  anchored endpoint, consume the complete byte shape, and end exactly at the
+  immutable fragment boundary. Sequence 95 has one such alternative at
+  `63..76` (scalar orientation, five state BOOLs, direct-name selector), with a
+  zero-bit gap from the anchored reader. It is diagnostic only and does not
+  change the production cursor or staged packet.
 
-  Next: trace stock update serializer `0x445160` and the HG read-buffer/fragment
-  assembly handoff before the terminal row, identify the missing source owner,
-  require a final exact EE claim, and rerun the live door `UseObject` probe.
+  Capture reduction found that the candidate's `63..76` bits are
+  `00 + source[40..50] + 0`: the middle ten bits exactly repeat the immediately
+  preceding `A/09` row's immutable source span. The 270-byte speculative retry
+  adds three proven add-row bits and updates the final-valid count from four to
+  seven while preserving this suffix exactly, so the transport header is not
+  the cause. Stock serializer `0x445160` owns the terminal row only through
+  cursor 63; `WriteBOOL`/`GetWriteMessage` keep one continuous MSB-first cursor,
+  the finalizer merely appends it, and any later stock row would add a 10-byte
+  `U` header that is absent here. The 13 bits are nevertheless declared valid,
+  so neither the duplicate pattern nor the end-aligned alternative authorizes
+  trimming or a rewrite.
+
+  Next: trace the predecessor cursor handoff and any HG custom fragment writer,
+  or instrument a controlled Diamond writer at `0x445160`, `0x507FC0`, and
+  `0x508B80`; identify the exact owner of `63..76`, require a final exact EE
+  claim, and rerun the live door `UseObject` probe.
   Current-code strict replay
-  `C:\nwnbridge\codex-proxy2-replay-stock-source-evidence-20260716-2250`
+  `C:\nwnbridge\codex-proxy2-replay-end-aligned-stock-20260717-0147`
   processed
   164 packet files with 304 strict allows, zero strict/semantic quarantines or
   files, one exact 36-slot quickbar, two area-context checks, and zero terminal

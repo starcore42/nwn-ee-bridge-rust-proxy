@@ -29,6 +29,10 @@ const MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES: usize = 64;
 const LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS: usize = 6;
 const LEGACY_TAIL9_MAX_SOURCE_READER_BITS: usize =
     LEGACY_UPDATE_POSITION_FRAGMENT_BITS + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 2;
+const DIAMOND_DOOR_PLACEABLE_MAX_SOURCE_READER_BITS: usize = LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+    + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+    + 2;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RecordRewrite {
@@ -2406,6 +2410,15 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
                 ),
             }
         });
+    let (end_aligned_diamond_reader_candidate_count, end_aligned_diamond_reader_candidates) =
+        terminal_end_aligned_diamond_reader_candidates(
+            live_bytes,
+            record_offset,
+            record_end,
+            source_fragment_bits,
+            source_bit_cursor,
+            stock_diamond_source.map(|source| source.source_reader_bit_cursor),
+        );
     let (source_suffix_candidate_count, source_suffix_candidates) =
         terminal_tail9_source_suffix_candidates(
             live_bytes,
@@ -2440,9 +2453,125 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         proven_terminal_packed_name_bits,
         precursor_tail: None,
         stock_diamond_source,
+        end_aligned_diamond_reader_candidate_count,
+        end_aligned_diamond_reader_candidates,
         source_suffix_candidate_count,
         source_suffix_candidates,
     })
+}
+
+fn terminal_end_aligned_diamond_reader_candidates(
+    live_bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    ledger_source_bit_cursor: usize,
+    anchored_reader_bit_cursor: Option<usize>,
+) -> (
+    usize,
+    [Option<super::LiveObjectUpdateDoorPlaceableEndAlignedDiamondReaderCandidateEvidence>;
+        super::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT],
+) {
+    let mut candidates =
+        [None; super::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT];
+    let mut candidate_count = 0usize;
+
+    // This search describes only complete Diamond client-reader alternatives
+    // inside the unresolved terminal suffix. It starts at the end of the exact
+    // ledger-anchored reader when one exists, so a candidate cannot overlap or
+    // supersede that interpretation. The widest possible Diamond fragment walk
+    // is position (2), scalar orientation (5), state (5), and localized-name
+    // selectors (2); appearance and scale/state are byte-only fields. Candidates
+    // remain immutable evidence and can neither move a cursor nor authorize a
+    // rewrite or fragment trim.
+    let unresolved_source_start = anchored_reader_bit_cursor
+        .unwrap_or_else(|| ledger_source_bit_cursor.saturating_add(1))
+        .max(ledger_source_bit_cursor.saturating_add(1));
+    let candidate_search_start = unresolved_source_start.max(
+        fragment_bits
+            .len()
+            .saturating_sub(DIAMOND_DOOR_PLACEABLE_MAX_SOURCE_READER_BITS),
+    );
+    for candidate_bit_cursor in candidate_search_start..fragment_bits.len() {
+        let Some(source) = reader::parse_verified_diamond_door_placeable_update_source_candidate(
+            live_bytes,
+            record_offset,
+            record_end,
+            fragment_bits,
+            candidate_bit_cursor,
+        ) else {
+            continue;
+        };
+        let claim = source.claim;
+        if claim.read_end != record_end || claim.next_bit_cursor != fragment_bits.len() {
+            continue;
+        }
+
+        let source_name = claim.placeable_name;
+        let source_name_selector_bit_cursor = source_name.map(|name| name.selector_bit_cursor);
+        let source_name_selector =
+            source_name_selector_bit_cursor.and_then(|cursor| fragment_bits.get(cursor).copied());
+        let source_name_locstring_selector_bit_cursor =
+            source_name.and_then(|name| name.locstring_selector_bit_cursor);
+        let source_name_locstring_selector = source_name_locstring_selector_bit_cursor
+            .and_then(|cursor| fragment_bits.get(cursor).copied());
+        let source_reader_bit_cursor = claim.next_bit_cursor;
+        let source_gap_from_anchored_reader = anchored_reader_bit_cursor.map(|bit_start| {
+            super::live_object_rewrite_bit_slice_evidence(
+                bit_start,
+                candidate_bit_cursor,
+                fragment_bits
+                    .get(bit_start..candidate_bit_cursor)
+                    .unwrap_or(&[]),
+            )
+        });
+        let candidate =
+            super::LiveObjectUpdateDoorPlaceableEndAlignedDiamondReaderCandidateEvidence {
+                raw_mask: source.raw_mask,
+                effective_mask: source.effective_mask,
+                ignored_mask: source.ignored_mask,
+                read_end: claim.read_end,
+                source_bit_cursor: candidate_bit_cursor,
+                source_reader_bit_cursor,
+                source_reader_bits_consumed: source_reader_bit_cursor
+                    .saturating_sub(candidate_bit_cursor),
+                source_orientation_vector: if (source.effective_mask
+                    & LEGACY_UPDATE_ORIENTATION_MASK)
+                    != 0
+                {
+                    Some(claim.vector_orientation.is_some())
+                } else {
+                    None
+                },
+                source_state_bit_cursor: claim.state_bit_cursor,
+                source_name_selector_bit_cursor,
+                source_name_selector,
+                source_name_locstring_selector_bit_cursor,
+                source_name_locstring_selector,
+                source_name_kind: source_name.map(|name| placeable_name_kind_label(name.kind)),
+                source_gap_from_ledger_cursor: super::live_object_rewrite_bit_slice_evidence(
+                    ledger_source_bit_cursor,
+                    candidate_bit_cursor,
+                    fragment_bits
+                        .get(ledger_source_bit_cursor..candidate_bit_cursor)
+                        .unwrap_or(&[]),
+                ),
+                source_gap_from_anchored_reader,
+                source_bits: super::live_object_rewrite_bit_slice_evidence(
+                    candidate_bit_cursor,
+                    source_reader_bit_cursor,
+                    fragment_bits
+                        .get(candidate_bit_cursor..source_reader_bit_cursor)
+                        .unwrap_or(&[]),
+                ),
+            };
+        if let Some(slot) = candidates.get_mut(candidate_count) {
+            *slot = Some(candidate);
+        }
+        candidate_count = candidate_count.saturating_add(1);
+    }
+
+    (candidate_count, candidates)
 }
 
 fn terminal_tail9_source_suffix_candidates(

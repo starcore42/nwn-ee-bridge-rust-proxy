@@ -19089,6 +19089,10 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub proven_terminal_packed_name_bits: usize,
     pub precursor_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
     pub stock_diamond_source: Option<LiveObjectUpdateDoorPlaceableStockSourceEvidence>,
+    pub end_aligned_diamond_reader_candidate_count: usize,
+    pub end_aligned_diamond_reader_candidates:
+        [Option<LiveObjectUpdateDoorPlaceableEndAlignedDiamondReaderCandidateEvidence>;
+            LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT],
     pub source_suffix_candidate_count: usize,
     pub source_suffix_candidates: [Option<
         LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence,
@@ -19112,6 +19116,29 @@ pub struct LiveObjectUpdateDoorPlaceableStockSourceEvidence {
     pub source_name_locstring_selector: Option<bool>,
     pub source_name_kind: Option<&'static str>,
     pub source_reader_residual: LiveObjectUpdateRewriteBitSliceEvidence,
+}
+
+pub const LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateDoorPlaceableEndAlignedDiamondReaderCandidateEvidence {
+    pub raw_mask: u32,
+    pub effective_mask: u32,
+    pub ignored_mask: u32,
+    pub read_end: usize,
+    pub source_bit_cursor: usize,
+    pub source_reader_bit_cursor: usize,
+    pub source_reader_bits_consumed: usize,
+    pub source_orientation_vector: Option<bool>,
+    pub source_state_bit_cursor: Option<usize>,
+    pub source_name_selector_bit_cursor: Option<usize>,
+    pub source_name_selector: Option<bool>,
+    pub source_name_locstring_selector_bit_cursor: Option<usize>,
+    pub source_name_locstring_selector: Option<bool>,
+    pub source_name_kind: Option<&'static str>,
+    pub source_gap_from_ledger_cursor: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub source_gap_from_anchored_reader: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
 pub const LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT: usize = 4;

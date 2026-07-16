@@ -33,7 +33,8 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-16 22:18 +10: current-code
+Latest known live HG proxy status, checked 2026-07-17 01:11 +10 (about 2h52m
+old): current-code
 account-5 capture
 `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
 selected typed `starcore-druid60`, reached `Module_Loaded`, completed two area
@@ -50,22 +51,30 @@ Server sequence 95 remains the active connection/gameplay failure: two
 A corrected Diamond/EE decompile audit proves EE placeables consume five state
 BOOLs, EE doors consume six, and both support the same mask-`0x00080000` name
 grammar. Production now inserts the neutral sixth bit only for doors and
-accepts exact named updates for either type. Terminal diagnostics now compare
+accepts exact named updates for either type. Terminal diagnostics compare
 two non-mutating source interpretations at immutable source cursor 50 in the
 76-bit fragment. The compact-tail9 reader ends at 59 and leaves 17 bits. The
 exact stock Diamond candidate filters raw mask `0xFFFFFFF7` to reader-owned
 `0x00080037` (recording ignored `0xFFF7FFC0`), then consumes position `50..52`,
 scalar orientation `52..57`, five state BOOLs `57..62`, and a false direct-name
-selector at 62; it ends at 63 and leaves 13 bits. End-aligned locstring/direct
-alternatives still begin at 67/68, leaving 8/9-bit gaps after the compact reader
-or 4/5-bit gaps after the stock reader. Neither interpretation owns the complete
-source fragment, so neither can move the production cursor, authorize trimming,
-or authorize a rewrite. Trace stock update serializer `0x445160` and the HG
-fragment-assembly handoff, then require an exact final EE claim and rerun the
-live door `UseObject` probe.
+selector at 62; it ends at 63 and leaves 13 valid bits. Bounded production
+failure evidence now enumerates exact Diamond reader candidates entirely inside
+that unresolved suffix, requiring both an exact terminal byte walk and an exact
+fragment-end handoff. Sequence 95 has one diagnostic-only direct-name candidate
+at `63..76`, with no gap after the anchored reader; it does not move a cursor or
+commit staged bytes. The same 13-bit span is `00 + source[40..50] + 0`, exactly
+repeating the preceding `A/09` row's ten source bits in its middle. A 270-byte
+speculative retry preserves that suffix while correctly advancing the fragment
+count by its three inserted add-row bits, excluding transport count repair as
+the explanation. Stock serializer `0x445160` ends the terminal row at cursor 63;
+the continuous writer/finalizer cannot synthesize the suffix, and a later stock
+row would require an absent 10-byte `U` header. Because all 13 bits are still
+declared valid, do not trim them. Trace the predecessor handoff or an HG custom
+writer (or instrument `0x445160`, `0x507FC0`, and `0x508B80`), then require an
+exact final EE claim and rerun the live door `UseObject` probe.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-stock-source-evidence-20260716-2250`
+`C:\nwnbridge\codex-proxy2-replay-end-aligned-stock-20260717-0147`
 processed all
 164 packet files with 304 strict allows, zero strict/semantic quarantines or
 files, one committed quickbar profile, both area-context checks, and zero
@@ -2026,6 +2035,7 @@ work.
 | Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-13 12:00 bard50 attempt stalled; the 12:02 traced retry observed BNK3 after 124 ms and reached sustained gameplay. |
 | A delayed `ClientGuiInventory` request reaches proxy2, then the same reliable-M client sequences retransmit and each replay increments bridge update indices or queues the same synthetic status request | Fixed in production code 2026-07-13: semantic inventory/quickbar effects were rerun for an exact reliable sequence/payload while expensive quickbar stream candidate probing delayed ACK progress | Exact sequence/payload pairs now apply typed semantic/bridge effects once while retransmissions and ACK changes remain transport-visible; the cache is bounded for sequence wrap. Require a live recurrence to confirm suppression, then continue bounding independent candidate-analysis latency. Bard50 capture `codex-live-bard50-stale-area-fast-20260713` resolved the missing-GQ context, showed repeats through bridge update 40, and ended with HG `BNDP`; focused tests and strict replay `codex-proxy2-replay-client-reliable-effects-20260713-175105` pass. |
 | `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |
+| Gameplay reaches movement, then sequence 95 quarantines an alternating `A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream and `UseObject` never completes | The terminal stock `U/09` reader ends at fragment cursor 63 while 13 additional bits are declared valid; they repeat a neighboring add-row span but have no proven stock owner, indicating an earlier cursor handoff error or an HG custom fragment extension | Keep the packet quarantined. Inspect the end-aligned Diamond-reader and immutable ledger evidence, trace the predecessor/HG writer or instrument the controlled Diamond serializer/finalizer, and rerun the same door interaction only after one exact owner explains `63..76`; never trim from the duplicate pattern alone. |
 | Capture reaches `BNVR A` and one `P/01/03` response, but never sends client `P/11/01` | Driver fell back to native DirectConnect after missing or discarding the server-list path | Keep using the server-list DirectConnect path; if Diamond's app-state server-list slot is empty, retry with the remembered `SERVERLIST_PANEL` from the constructor hook before native fallback. |
 | `PRE_PLAYMOD` selection fires with `entries=0 count=0` | Auto-character path is too early or lacks refresh/retry | Add wait/refresh/retry instrumentation and rerun until the character list is populated or a new blocker is proven. |
 | Player-password prompt or native connect overlay appears | Harness regressed to the wrong login path or password handling | Keep the old driver connect path; do not pass native `+password`; seed the player password internally with default `A`. |
