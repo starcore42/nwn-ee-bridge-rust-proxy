@@ -33,8 +33,8 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-17 16:17 +10 (about
-17h58m49s old): current-code
+Latest known live HG proxy status, checked 2026-07-17 19:16 +10 (about
+20h57m old): current-code
 account-5 capture
 `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
 selected typed `starcore-druid60`, reached `Module_Loaded`, completed two area
@@ -87,7 +87,7 @@ immediately preceding `A/09` replay from source `40..50` into residual
   HG custom writer (or instrument `0x445160`, `0x507FC0`, and `0x508B80`), then
   require an exact final EE claim and rerun the live door `UseObject` probe.
 
-The version-4 terminal artifact also records a typed reused-record reader
+The version-5 terminal artifact also records a typed reused-record reader
 counterfactual for the exact end-aligned `63..76` interpretation. It is emitted
 only when the stock and candidate readers match in object identity, masks, and
 ordered relative field topology and widths; field values deliberately stay
@@ -123,10 +123,24 @@ read another 8-bit opcode whenever either read-buffer bytes or fragment bits
 remain. EE `sub_14079BCE0` uses the same contract through
 `CNWMessage::MessageMoreDataToRead`. In both clients, fragment-only residue at
 the terminal row therefore triggers an opcode read from the exhausted byte
-buffer; it is not legal padding. The version-4 terminal TSV records source
+buffer; it is not legal padding. The version-5 terminal TSV records source
 `245..245` plus fragment `63..76` and emitted `245..245` plus fragment `71..88`
 as `fragment-only`, with `next_opcode_read_overflows=true` for both views.
 Retain strict quarantine until the source writer/list owner is proven.
+
+Production now keeps the terminal evidence model in
+`live_object_update/terminal_evidence.rs` and applies one typed ownership gate
+at the final exact-claim boundary. Only exact read-buffer and MSB-first fragment
+cursor equality is claimable; a remaining fragment is
+`fragment-writer-owner-unproven`, while cursor overruns are rejected explicitly.
+The version-5 artifact and structured failure log expose the source and emitted
+verdicts. Sequence 95 remains quarantined without changing any packet bits,
+BOOL order, or cursor movement. Focused ownership coverage, all 29 `tail9`
+tests, and strict replay
+`C:\nwnbridge\codex-proxy2-replay-terminal-ownership-20260717-1945` passed. The
+replay processed 164 packets with 304 strict allows, 97 exact live-object
+claims, 19 rewrites, and zero strict/semantic quarantines, quarantine files,
+rewrite failures, terminal residuals, or stderr.
 
 The supplied `Hgx.Server.dll` is not that owner. Exact host and import evidence
 shows a Diamond `nwmain` client overlay: it has no socket send/receive imports,
@@ -169,10 +183,10 @@ handoff nevertheless adds no fragment bits and therefore does not own HG
 sequence 95's declared `63..76` suffix.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-reused-record-reader-20260717-1643`
+`C:\nwnbridge\codex-proxy2-replay-terminal-ownership-20260717-1945`
 processed all 164 packet files with 304 strict allows, zero strict/semantic
 quarantines or files, 97 exact live-object claims, 19 live-object rewrites, and
-zero terminal live-object residuals on isolated ports 65121/65133. Its stderr
+zero terminal live-object residuals on isolated ports 65321/65333. Its stderr
 was empty, and all 29 focused `tail9` tests passed. Some older private
 capture-only exact-claim tests now reject under the corrected five-bit
 placeable reader; keep those streams quarantined until their real source

@@ -26,7 +26,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "4".to_string(),
+            "5".to_string(),
         ],
     );
     write_tsv_line(
@@ -35,6 +35,16 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "ownership".to_string(),
             "status".to_string(),
             "unproven-source-owner".to_string(),
+            "source_fragment_ownership".to_string(),
+            evidence
+                .source_fragment_ownership_verdict()
+                .as_str()
+                .to_string(),
+            "emitted_fragment_ownership".to_string(),
+            evidence
+                .emitted_fragment_ownership_verdict()
+                .as_str()
+                .to_string(),
             "claimable".to_string(),
             "false".to_string(),
             "rewrite_authorized".to_string(),

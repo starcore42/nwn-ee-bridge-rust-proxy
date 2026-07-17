@@ -20,8 +20,8 @@ not as standalone workaround targets.
 - 2026-07-17 live gate and terminal handoff classification: the newest real HG
   gameplay artifact is
   `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658\proxy.structured.log`,
-  timestamp `2026-07-16T22:18:53.6452776+10:00` and about 17h58m49s old when
-  checked at 16:17. It reached typed character selection, `Module_Loaded`, two
+  timestamp `2026-07-16T22:18:53.6452776+10:00` and about 20h57m old when
+  checked at 19:16. It reached typed character selection, `Module_Loaded`, two
   native area handoffs, and sustained exact live-object gameplay through 28
   claims with zero quarantines or `BNDP`; no fresh live run was required. It
   carried no interaction flags, so the older sequence-95 `UseObject` capture
@@ -34,7 +34,7 @@ not as standalone workaround targets.
   opcode from an exhausted byte buffer. Sequence 95 therefore cannot safely
   ignore its source `63..76` or emitted `71..88` residue; both are classified as
   fragment-only continuation with an overflowing next-opcode read. The bounded
-  terminal artifact is version 4 and records this verdict explicitly.
+  terminal artifact is version 5 and records this verdict explicitly.
 
   The immutable-ledger correlation now also has a typed, non-authorizing
   classifier for the exact adjacent same-object `A/09` replay: ten Diamond
@@ -62,7 +62,7 @@ not as standalone workaround targets.
   implementation overflowed the proxy thread stack at replay packet 122;
   bounded type-size coverage and the full replay now guard this constraint.
 
-  Version 4 also records one exact end-aligned Diamond reader interpretation
+  Version 5 also records one exact end-aligned Diamond reader interpretation
   that would require reusing the already-consumed terminal update bytes. The
   stock walk ends at fragment cursor 63 and the candidate spans `63..76`, with
   identical raw/effective/ignored masks, object identity, and ordered relative
@@ -83,14 +83,25 @@ not as standalone workaround targets.
   also found only the generic, inactive Community Patch `nwnx_patch.dll`; its
   references to the stock BOOL writer/finalizer are a reverse-engineering lead,
   not evidence that HG loads it or that it owns the suffix. A real owner trace
-  requires the HG server component or operator-side instrumentation. Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-reused-record-reader-20260717-1643`
+  requires the HG server component or operator-side instrumentation.
+
+  Production now isolates the 445-line terminal evidence/classification model
+  in `live_object_update/terminal_evidence.rs` instead of growing the 1.9 MB
+  live-object translator. A typed terminal-fragment ownership gate permits an
+  exact claim only when both read-buffer and MSB-first fragment cursors are
+  exactly consumed; under-consumed fragments report
+  `fragment-writer-owner-unproven`, and any cursor overrun is rejected. The
+  sequence-95 source `63..76` and emitted `71..88` spans therefore remain
+  non-claiming and non-trimmable. No packet field, BOOL order, fragment bit, or
+  cursor handoff changed. Focused ownership and all 29 `tail9` tests pass.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-ownership-20260717-1945`
   processed 164 files with 304 strict allows, zero strict/semantic quarantines
-  or files, 97 exact live-object claims, 19 rewrites, and zero terminal
-  residuals; stderr was empty and all 29 focused `tail9` tests passed. Next:
-  obtain the actual HG custom server component or a runtime writer trace around
-  `0x445160`, `0x507FC0`, and `0x508B80`, prove the owner of all 13 bits,
-  require a final exact EE claim, then rerun live door `UseObject`.
+  or files, 97 exact live-object claims, 19 rewrites, zero rewrite failures,
+  zero terminal residuals, and empty stderr. Next: obtain the actual HG custom
+  server component or a runtime writer trace around `0x445160`, `0x507FC0`,
+  and `0x508B80`, prove the owner of all 13 bits, require a final exact EE
+  claim, then rerun live door `UseObject`.
 - ~~2026-07-14 live-object exact-rejection CPU bound~~: fixed and live-confirmed
   2026-07-14. Fresh pre-fix capture
   `C:\nwnbridge\codex-live-bard50-bounded-20260714-0245\harness-proxy-20260714-024358`

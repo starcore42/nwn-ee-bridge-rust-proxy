@@ -2191,6 +2191,11 @@ mod fixture_free_tests {
         );
         assert!(continuation.source_next_opcode_read_overflows);
         assert_eq!(
+            evidence.source_fragment_ownership_verdict(),
+            live_object_update::LiveObjectUpdateTerminalFragmentOwnershipVerdict::
+                FragmentWriterOwnerUnproven
+        );
+        assert_eq!(
             (
                 continuation.emitted_read_buffer_cursor,
                 continuation.emitted_read_buffer_end,
@@ -2204,6 +2209,11 @@ mod fixture_free_tests {
             live_object_update::LiveObjectUpdateReaderContinuationSource::FragmentOnly
         );
         assert!(continuation.emitted_next_opcode_read_overflows);
+        assert_eq!(
+            evidence.emitted_fragment_ownership_verdict(),
+            live_object_update::LiveObjectUpdateTerminalFragmentOwnershipVerdict::
+                FragmentWriterOwnerUnproven
+        );
 
         let handoff = evidence
             .terminal_fragment_handoff_correlation
@@ -2648,9 +2658,9 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t4\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t5\n"));
         assert!(capture.contains(
-            "ownership\tstatus\tunproven-source-owner\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
+            "ownership\tstatus\tunproven-source-owner\tsource_fragment_ownership\tfragment-writer-owner-unproven\temitted_fragment_ownership\tfragment-writer-owner-unproven\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
         ));
         assert!(capture.contains(
             "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"
@@ -2816,7 +2826,9 @@ mod fixture_free_tests {
             failure,
         )
         .expect("near-match terminal failure should still emit bounded evidence");
-        assert!(capture.contains("ownership\tstatus\tunproven-source-owner\tclaimable\tfalse"));
+        assert!(capture.contains(
+            "ownership\tstatus\tunproven-source-owner\tsource_fragment_ownership\tfragment-writer-owner-unproven\temitted_fragment_ownership\tfragment-writer-owner-unproven\tclaimable\tfalse"
+        ));
         assert!(
             capture
                 .lines()

@@ -3072,6 +3072,12 @@ fn trace_live_object_update_rewrite_failure(
         let tail9_reused_record_reader_interpretation = tail9_residual
             .as_ref()
             .and_then(|evidence| evidence.reused_record_reader_interpretation());
+        let tail9_source_fragment_ownership = tail9_residual
+            .map(|evidence| evidence.source_fragment_ownership_verdict().as_str())
+            .unwrap_or("none");
+        let tail9_emitted_fragment_ownership = tail9_residual
+            .map(|evidence| evidence.emitted_fragment_ownership_verdict().as_str())
+            .unwrap_or("none");
         tracing::debug!(
             source,
             reason = failure.reason,
@@ -3144,6 +3150,8 @@ fn trace_live_object_update_rewrite_failure(
                 tail9_reused_record_reader_interpretation.is_some()
             ),
             tail9_reused_record_reader_interpretation = ?tail9_reused_record_reader_interpretation,
+            tail9_source_fragment_ownership,
+            tail9_emitted_fragment_ownership,
             tail9_source_suffix_candidate_count = tail9_residual
                 .map(|evidence| evidence.source_suffix_candidate_count)
                 .unwrap_or_default(),
