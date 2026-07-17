@@ -33,16 +33,18 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-17 19:16 +10 (about
-20h57m old): current-code
-account-5 capture
-`C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
-selected typed `starcore-druid60`, reached `Module_Loaded`, completed two area
-handoffs with native/proxy `Area_AreaLoaded` evidence, and sustained exact
-live-object gameplay through 28 claimed payloads. The structured log
-`C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658\proxy.structured.log`
-ended at `2026-07-16T22:18:53.6452776+10:00`; the run wrote zero quarantine files
-and no `BNDP`. It carried no interaction flags, so it did not issue
+Latest known live HG proxy status: the previous gameplay capture crossed the
+24-hour limit during the 2026-07-17 22:21 +10 gate, so the current-code
+account-5 harness was refreshed at
+`C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351`.
+It selected typed `starcore-druid60`, reached `Module_Loaded`, completed native
+`Area_AreaLoaded` for `voyage` and `docksofascension`, and sustained gameplay
+through 30 direct live-object claims and 45 exact-shape accepts. The structured
+log
+`C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`
+ended at `2026-07-17T22:25:49.3713181+10:00`; proxy stderr was empty and the run
+wrote zero quarantine actions/files and no `BNDP`. It carried no interaction
+flags, so it did not issue
 `Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
 interaction capture remains the regression evidence for that active packet.
 
@@ -135,9 +137,17 @@ cursor equality is claimable; a remaining fragment is
 `fragment-writer-owner-unproven`, while cursor overruns are rejected explicitly.
 The version-5 artifact and structured failure log expose the source and emitted
 verdicts. Sequence 95 remains quarantined without changing any packet bits,
-BOOL order, or cursor movement. Focused ownership coverage, all 29 `tail9`
-tests, and strict replay
-`C:\nwnbridge\codex-proxy2-replay-terminal-ownership-20260717-1945` passed. The
+BOOL order, or cursor movement.
+
+The final trim implementation now stores its five existing owner candidates in
+the fixed typed claim set at `live_object_update/terminal_claim.rs` and resolves
+them through one evaluator. Every registered owner must match the final cursor;
+family-specific exact truncated-packet validators retain their prior scope and
+run only under the reliable-residual gate. Unresolved tail9 has no direct claim
+or registration path, while already-typed tail9 retains the existing generic
+family completion path. Three claim-set tests, focused ownership/family-trim
+coverage, all 29 `tail9` tests, `cargo check`, and strict replay
+`C:\nwnbridge\codex-proxy2-replay-terminal-claim-set-20260717-225751` passed. The
 replay processed 164 packets with 304 strict allows, 97 exact live-object
 claims, 19 rewrites, and zero strict/semantic quarantines, quarantine files,
 rewrite failures, terminal residuals, or stderr.
@@ -183,10 +193,10 @@ handoff nevertheless adds no fragment bits and therefore does not own HG
 sequence 95's declared `63..76` suffix.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-terminal-ownership-20260717-1945`
+`C:\nwnbridge\codex-proxy2-replay-terminal-claim-set-20260717-225751`
 processed all 164 packet files with 304 strict allows, zero strict/semantic
 quarantines or files, 97 exact live-object claims, 19 live-object rewrites, and
-zero terminal live-object residuals on isolated ports 65321/65333. Its stderr
+zero terminal live-object residuals on isolated ports 65421/65433. Its stderr
 was empty, and all 29 focused `tail9` tests passed. Some older private
 capture-only exact-claim tests now reject under the corrected five-bit
 placeable reader; keep those streams quarantined until their real source

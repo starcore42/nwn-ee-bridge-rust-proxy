@@ -17,15 +17,17 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
-- 2026-07-17 live gate and terminal handoff classification: the newest real HG
-  gameplay artifact is
-  `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658\proxy.structured.log`,
-  timestamp `2026-07-16T22:18:53.6452776+10:00` and about 20h57m old when
-  checked at 19:16. It reached typed character selection, `Module_Loaded`, two
-  native area handoffs, and sustained exact live-object gameplay through 28
-  claims with zero quarantines or `BNDP`; no fresh live run was required. It
-  carried no interaction flags, so the older sequence-95 `UseObject` capture
-  remains the current failure evidence.
+- 2026-07-17 live gate and terminal handoff classification: the prior gameplay
+  capture crossed the 24-hour limit during the 22:21 +10 gate, so the newest
+  real HG gameplay artifact is
+  `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
+  timestamp `2026-07-17T22:25:49.3713181+10:00`. It selected typed
+  `starcore-druid60`, reached `Module_Loaded`, completed native
+  `Area_AreaLoaded` for `voyage` and `docksofascension`, and sustained gameplay
+  through 30 direct live-object claims and 45 exact-shape accepts. Proxy stderr
+  was empty, with zero quarantine actions/files and no `BNDP`. It carried no
+  interaction flags, so the older sequence-95 `UseObject` capture remains the
+  current failure evidence.
 
   Production terminal evidence now models the actual outer-reader continuation
   contract. Diamond `sub_44EF00`/`sub_4FBBA0` and EE
@@ -93,9 +95,21 @@ not as standalone workaround targets.
   `fragment-writer-owner-unproven`, and any cursor overrun is rejected. The
   sequence-95 source `63..76` and emitted `71..88` spans therefore remain
   non-claiming and non-trimmable. No packet field, BOOL order, fragment bit, or
-  cursor handoff changed. Focused ownership and all 29 `tail9` tests pass.
-  Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-terminal-ownership-20260717-1945`
+  cursor handoff changed.
+
+  The final trim boundary now centralizes its five pre-existing owner
+  candidates (family, creature update, live-GUI item, promoted storage, and
+  work-remaining storage) in `live_object_update/terminal_claim.rs`. Each slot
+  must match the exact final MSB-first cursor, and the evaluator repeats every
+  family-specific truncated-packet validator that the previous gate required.
+  It runs only inside the same reliable-residual gate as before. Unresolved
+  tail9 has no direct claim variant or registration path; successfully typed
+  tail9 can still finish through the existing generic family claim. This is an
+  ownership/state-machine refactor: no packet field, bit width/order, storage
+  span, trim rule, or cursor handoff changed. Three focused claim-set tests, the
+  typed ownership invariant, exact family-trim guard, and all 29 `tail9` tests
+  pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-claim-set-20260717-225751`
   processed 164 files with 304 strict allows, zero strict/semantic quarantines
   or files, 97 exact live-object claims, 19 rewrites, zero rewrite failures,
   zero terminal residuals, and empty stderr. Next: obtain the actual HG custom
