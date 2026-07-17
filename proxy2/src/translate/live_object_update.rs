@@ -100,7 +100,8 @@ pub(crate) use terminal_evidence::{
 };
 #[allow(unused_imports)]
 pub(crate) use terminal_evidence::{
-    LiveObjectUpdateReaderContinuationSource,
+    LiveObjectUpdateReaderContinuationSource, LiveObjectUpdateTerminalEeFinalClaimObservation,
+    LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict,
     LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence,
     LiveObjectUpdateTerminalWriterHandoffRequirement, LiveObjectUpdateTerminalWriterHandoffVerdict,
     LiveObjectUpdateTerminalWriterObservation, LiveObjectUpdateTerminalWriterPacketCorrelation,

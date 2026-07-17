@@ -2338,6 +2338,11 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         rewritten_bits.len(),
         rewritten_bits.get(rewritten_bit_cursor..).unwrap_or(&[]),
     );
+    let rewritten_residual_exact = packed_fragment_bit_span_evidence(
+        rewritten_bit_cursor,
+        rewritten_bits.len(),
+        &rewritten_bits,
+    );
     let proven_terminal_packed_name_bits = if residual_fragment_bits
         == LEGACY_TAIL9_PACKED_NAME_FRAGMENT_BITS
         && reader::legacy_name_tail_ready(
@@ -2379,7 +2384,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
             let source_name_locstring_selector = source_name_locstring_selector_bit_cursor
                 .and_then(|cursor| source_fragment_bits.get(cursor).copied());
             let source_reader_bit_cursor = stock_claim.next_bit_cursor;
-            let source_reader_bits = packed_fragment_bit_span_evidence(
+            let source_reader_bits = packed_stock_reader_fragment_bit_span_evidence(
                 source_bit_cursor,
                 source_reader_bit_cursor,
                 source_fragment_bits,
@@ -2470,6 +2475,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         rewritten_fragment_bit_count: rewritten_bits.len(),
         residual_fragment_bits,
         rewritten_residual,
+        rewritten_residual_exact,
         proven_terminal_packed_name_bits,
         precursor_tail: None,
         stock_diamond_source,
@@ -2602,19 +2608,34 @@ fn packed_fragment_bit_span_evidence(
     fragment_bits: &[bool],
 ) -> Option<super::LiveObjectUpdatePackedFragmentBitSpanEvidence> {
     let bit_count = bit_end.checked_sub(bit_start)?;
-    if bit_count > u16::BITS as usize {
+    if bit_count > u32::BITS as usize {
         return None;
     }
     let bits = fragment_bits.get(bit_start..bit_end)?;
-    let mut packed_msb = 0u16;
+    let mut packed_msb = 0u32;
     for bit in bits {
-        packed_msb = (packed_msb << 1) | u16::from(*bit);
+        packed_msb = (packed_msb << 1) | u32::from(*bit);
     }
     Some(super::LiveObjectUpdatePackedFragmentBitSpanEvidence {
         bit_start,
         bit_end,
         packed_msb,
     })
+}
+
+fn packed_stock_reader_fragment_bit_span_evidence(
+    bit_start: usize,
+    bit_end: usize,
+    fragment_bits: &[bool],
+) -> Option<super::LiveObjectUpdatePackedFragmentBitSpanEvidence> {
+    // The widest decompile-owned Diamond door/placeable field walk is bounded
+    // to 14 bits. Keep stock-reader provenance at its original <=16 admission
+    // even though the shared compact representation can retain a 17-bit EE
+    // final-claim obligation.
+    if bit_end.checked_sub(bit_start)? > u16::BITS as usize {
+        return None;
+    }
+    packed_fragment_bit_span_evidence(bit_start, bit_end, fragment_bits)
 }
 
 fn terminal_tail9_source_suffix_candidates(

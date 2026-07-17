@@ -2120,6 +2120,28 @@ mod fixture_free_tests {
             evidence.rewritten_residual.bits,
             evidence.source_reader_residual.bits
         );
+        let rewritten_residual_exact = evidence
+            .rewritten_residual_exact
+            .expect("all 17 emitted terminal bits should be retained compactly");
+        assert_eq!(
+            (
+                rewritten_residual_exact.bit_start,
+                rewritten_residual_exact.bit_end,
+                rewritten_residual_exact.bit_count(),
+            ),
+            (71, 88, 17)
+        );
+        let expected_emitted_bits = [
+            false, false, true, false, false, false, false, false, false, false, true, false,
+            false, false, true, true, false,
+        ];
+        for (offset, expected) in expected_emitted_bits.into_iter().enumerate() {
+            assert_eq!(
+                rewritten_residual_exact.bit(71 + offset),
+                Some(expected),
+                "emitted residual bit {offset} must preserve MSB-first reader order"
+            );
+        }
         assert_eq!(evidence.proven_terminal_packed_name_bits, 0);
         let precursor = evidence
             .precursor_tail
@@ -2630,6 +2652,21 @@ mod fixture_free_tests {
             "packed reader evidence must not grow into per-field bit arrays"
         );
         assert!(
+            std::mem::size_of::<
+                live_object_update::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence,
+            >() <= 5_376,
+            "terminal residual evidence is copied through retry paths and must remain stack-bounded"
+        );
+        assert!(
+            std::mem::size_of::<live_object_update::LiveObjectUpdateRewriteFailure>() <= 15_872,
+            "the complete retry-path failure value must remain stack-bounded"
+        );
+        assert!(
+            std::mem::size_of::<live_object_update::LiveObjectUpdateTerminalWriterHandoffRequirement>(
+            ) <= 256,
+            "writer handoff requirements must remain compact in copied failure evidence"
+        );
+        assert!(
             std::mem::size_of::<live_object_update::LiveObjectUpdateDoorPlaceableStockSourceEvidence>(
             ) <= 256,
             "terminal evidence is copied through retry paths and must remain stack-bounded"
@@ -2681,8 +2718,48 @@ mod fixture_free_tests {
                 writer_requirement.emitted_fragment_bit_count,
                 writer_requirement.emitted_fragment_bits_retained,
             ),
-            (245, 245, 71, 88, 17, 16),
-            "the emitted side is an exact final-claim span with a bounded 16-bit preview"
+            (245, 245, 71, 88, 17, 17),
+            "the emitted side must retain the complete compact final-claim obligation"
+        );
+        assert_eq!(
+            writer_requirement.emitted_fragment_bits,
+            evidence
+                .rewritten_residual_exact
+                .expect("writer requirement must carry exact emitted values")
+        );
+        assert_eq!(writer_requirement.emitted_fragment_bits.packed_msb, 0x4046);
+        let exact_ee_observation =
+            live_object_update::LiveObjectUpdateTerminalEeFinalClaimObservation {
+                read_buffer_cursor: writer_requirement.emitted_read_buffer_cursor,
+                read_buffer_end: writer_requirement.emitted_read_buffer_end,
+                fragment_bits_written: writer_requirement.emitted_fragment_bits,
+                final_fragment_bit_cursor: writer_requirement.emitted_fragment_bit_end,
+                final_fragment_bit_end: writer_requirement.emitted_fragment_bit_end,
+                exact_payload_validator_accepted: true,
+            };
+        let exact_ee_verdict =
+            writer_requirement.correlate_ee_final_claim(Some(exact_ee_observation));
+        assert_eq!(
+            exact_ee_verdict,
+            live_object_update::LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict::
+                ExactTypedEeFinalClaimReady
+        );
+        assert!(exact_ee_verdict.final_claim_ready());
+        assert!(!exact_ee_verdict.allows_exact_claim());
+        assert!(!exact_ee_verdict.authorizes_rewrite());
+        assert!(!exact_ee_verdict.authorizes_cursor_advance());
+        assert!(!exact_ee_verdict.authorizes_fragment_trim());
+
+        let mut changed_ee_bits = writer_requirement.emitted_fragment_bits;
+        changed_ee_bits.packed_msb ^= 1 << 7;
+        assert_eq!(
+            writer_requirement.correlate_ee_final_claim(Some(
+                live_object_update::LiveObjectUpdateTerminalEeFinalClaimObservation {
+                    fragment_bits_written: changed_ee_bits,
+                    ..exact_ee_observation
+                }
+            )),
+            live_object_update::LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict::BitMismatch
         );
         assert!(writer_requirement.emitted_next_opcode_read_overflows);
         let mut nonterminal_read_buffer = evidence;
@@ -2721,7 +2798,7 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t6\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t7\n"));
         let payload_md5_hint = format!("{:x}", md5::compute(&capture_payload));
         assert!(capture.contains(&format!("payload_md5_hint\t{payload_md5_hint}")));
         assert!(capture.contains(
@@ -2731,16 +2808,19 @@ mod fixture_free_tests {
             "writer_handoff_requirement\tobject_type\t0x09\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\tsource_read_buffer\t245..245\tsource_fragment\t63..76:"
         ));
         assert!(capture.contains(
-            "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment_obligation\t71..88\temitted_fragment_bits\t17\temitted_fragment_bits_retained\t16\temitted_fragment_preview\t71..88:"
+            "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment_obligation\t71..88\temitted_fragment_bits\t17\temitted_fragment_bits_retained\t17\temitted_fragment_exact\t71..88:00100000001000110"
         ));
         assert!(capture.contains(
-            "emitted_fragment_values_complete\tfalse\temitted_next_opcode_read_overflows\ttrue"
+            "emitted_fragment_values_complete\ttrue\temitted_next_opcode_read_overflows\ttrue"
         ));
         assert!(capture.contains(
             "packet_correlation_required\texact-payload-bytes\tfinal_ee_claim_required\ttrue\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         assert!(capture.contains(
             "writer_handoff_correlation\tobservation\tnone\tverdict\tincomplete-trace\twriter_handoff_observed\tfalse\tclaimable\tfalse"
+        ));
+        assert!(capture.contains(
+            "ee_final_claim_readiness\tobservation\tnone\tverdict\tincomplete-typed-ee-writer\tready\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         assert!(capture.contains(
             "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"
@@ -2844,7 +2924,7 @@ mod fixture_free_tests {
         );
         assert!(
             capture.lines().count()
-                <= 14
+                <= 15
                     + 1
                     + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT

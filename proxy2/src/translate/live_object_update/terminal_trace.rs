@@ -1,7 +1,7 @@
 use super::{
-    LiveObjectUpdateRewriteFailure, format_live_object_byte, format_optional_bool,
-    format_optional_u32_hex, format_optional_usize, format_rewrite_bit_slice_evidence,
-    write_rewrite_tail_capture, write_tsv_line,
+    LiveObjectUpdatePackedFragmentBitSpanEvidence, LiveObjectUpdateRewriteFailure,
+    format_live_object_byte, format_optional_bool, format_optional_u32_hex, format_optional_usize,
+    format_rewrite_bit_slice_evidence, write_rewrite_tail_capture, write_tsv_line,
 };
 
 /// Format bounded terminal door/placeable fragment evidence for comparison
@@ -26,7 +26,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "6".to_string(),
+            "7".to_string(),
         ],
     );
     write_tsv_line(
@@ -105,8 +105,8 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 requirement.emitted_fragment_bit_count.to_string(),
                 "emitted_fragment_bits_retained".to_string(),
                 requirement.emitted_fragment_bits_retained.to_string(),
-                "emitted_fragment_preview".to_string(),
-                format_rewrite_bit_slice_evidence(evidence.rewritten_residual),
+                "emitted_fragment_exact".to_string(),
+                format_packed_fragment_bit_span(requirement.emitted_fragment_bits),
                 "emitted_fragment_values_complete".to_string(),
                 (requirement.emitted_fragment_bits_retained
                     == requirement.emitted_fragment_bit_count)
@@ -138,6 +138,29 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 unavailable.writer_handoff_observed().to_string(),
                 "claimable".to_string(),
                 unavailable.allows_exact_claim().to_string(),
+            ],
+        );
+        let final_claim_readiness = requirement.correlate_ee_final_claim(None);
+        write_tsv_line(
+            &mut out,
+            &[
+                "ee_final_claim_readiness".to_string(),
+                "observation".to_string(),
+                "none".to_string(),
+                "verdict".to_string(),
+                final_claim_readiness.as_str().to_string(),
+                "ready".to_string(),
+                final_claim_readiness.final_claim_ready().to_string(),
+                "claimable".to_string(),
+                final_claim_readiness.allows_exact_claim().to_string(),
+                "rewrite_authorized".to_string(),
+                final_claim_readiness.authorizes_rewrite().to_string(),
+                "cursor_advance_authorized".to_string(),
+                final_claim_readiness
+                    .authorizes_cursor_advance()
+                    .to_string(),
+                "fragment_trim_authorized".to_string(),
+                final_claim_readiness.authorizes_fragment_trim().to_string(),
             ],
         );
     } else {
@@ -635,6 +658,28 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
     Some(out)
 }
 
+fn format_packed_fragment_bit_span(
+    evidence: LiveObjectUpdatePackedFragmentBitSpanEvidence,
+) -> String {
+    if !evidence.is_valid() {
+        return format!(
+            "{}..{}:<invalid-packed-span>",
+            evidence.bit_start, evidence.bit_end
+        );
+    }
+    let mut out = format!("{}..{}:", evidence.bit_start, evidence.bit_end);
+    for bit_cursor in evidence.bit_start..evidence.bit_end {
+        let Some(bit) = evidence.bit(bit_cursor) else {
+            return format!(
+                "{}..{}:<invalid-packed-span>",
+                evidence.bit_start, evidence.bit_end
+            );
+        };
+        out.push(if bit { '1' } else { '0' });
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_diamond_fragment_field_rows<F>(
     out: &mut String,
@@ -747,4 +792,32 @@ fn write_diamond_fragment_field_rows<F>(
         field_index <= super::LIVE_OBJECT_UPDATE_DOOR_PLACEABLE_FRAGMENT_FIELD_LIMIT,
         "exact Diamond fragment field walk must stay within its bounded schema"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LiveObjectUpdatePackedFragmentBitSpanEvidence as PackedSpan,
+        format_packed_fragment_bit_span,
+    };
+
+    #[test]
+    fn packed_fragment_formatter_rejects_malformed_spans() {
+        assert_eq!(
+            format_packed_fragment_bit_span(PackedSpan {
+                bit_start: 88,
+                bit_end: 71,
+                packed_msb: 0,
+            }),
+            "88..71:<invalid-packed-span>"
+        );
+        assert_eq!(
+            format_packed_fragment_bit_span(PackedSpan {
+                bit_start: 71,
+                bit_end: 104,
+                packed_msb: 0,
+            }),
+            "71..104:<invalid-packed-span>"
+        );
+    }
 }

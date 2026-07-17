@@ -20,37 +20,36 @@ not as standalone workaround targets.
 - 2026-07-18 live gate and typed writer-handoff contract: the newest gameplay
   artifact remains
   `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
-  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 5 hours 55 minutes old
-  at the run gate. It reached typed character selection, `Module_Loaded`, and
-  native `Area_AreaLoaded` in two areas, then sustained gameplay with empty
-  stderr and zero quarantines. It is current gameplay evidence, so no refresh
-  was required; it contains no interaction flag and therefore does not replace
-  the earlier sequence-95 `UseObject` failure seed.
+  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 8 hours 55 minutes old
+  at the 2026-07-18 07:20 +10 gate. It selected typed `starcore-druid60`,
+  reached `Module_Loaded`, completed native `Area_AreaLoaded` for `voyage` and
+  `docksofascension`, and sustained gameplay through 30 direct live-object
+  claims and 45 exact-shape accepts. Stderr and quarantine/error counts were
+  zero. It is current gameplay evidence, so no refresh was required; it
+  contains no interaction flag and therefore does not replace the earlier
+  sequence-95 `UseObject` failure seed.
 
-  Production terminal evidence now exposes a typed writer/list-handoff join
-  contract instead of leaving the next operator trace as prose. The version-6
-  TSV pins the stock Diamond source identity and mask, exhausted byte cursor
-  `245..245`, exact MSB-first source bits `63..76`, overflowing next-opcode
-  read, finalizer cursor, and an exact-payload-byte correlation requirement.
-  It separately records the EE final-claim obligation `71..88`; only 16 of
-  those 17 diagnostic preview bits are retained, so that side is explicitly
-  incomplete. Missing writer/list or finalizer events, identity/read-cursor/
-  bit mismatches, non-contiguous finalization, and digest-only correlation all
-  reject the handoff. Even exact source ownership remains non-authorizing:
-  `allows_exact_claim=false`, with no packet, cursor, trim, claim, or rewrite
-  change. The controlled stock writer trace still proves a zero terminal
-  fragment delta and therefore is not the owner.
+  Production version-7 terminal evidence retains the complete EE residual
+  `71..88`: 17 MSB-first bits `00100000001000110`, packed as `0x4046`. It also
+  pins the candidate source requirement `63..76` (13 bits, `0x46`) and the
+  stock Diamond walk `50..63` (`0x0AE2`). A typed final-EE-claim readiness join
+  now compares the exact emitted read buffer, fragment cursors, bit count, and
+  bit values. Invalid or incomplete evidence fails closed. Even an exact-ready
+  observation keeps every claim, rewrite, trim, packet, and cursor
+  authorization false; sequence 95 remains quarantined. The controlled stock
+  writer trace still proves a zero terminal fragment delta and therefore is
+  not the owner.
 
-  Focused writer-contract tests, the sequence-95 integration regression, all
-  29 `tail9` tests, `cargo check`, formatting, and strict replay
-  `C:\nwnbridge\codex-proxy2-replay-writer-handoff-contract-20260718-050748`
+  Focused writer-contract and sequence-95 integration tests, all 29 `tail9`
+  tests, `cargo check`, formatting, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-ee-exact-20260718-075509`
   pass. The replay processed 164 packets with 304 strict allows, zero strict or
   semantic quarantines/files, 97 exact live-object claims, 19 exact rewrites,
   zero rewrite failures, zero terminal residuals, and empty stderr. Next:
-  obtain the deployed HG custom component or an operator-side trace tied
-  byte-for-byte to the sequence-95 payload, feed the observation into this
-  contract, implement the proven typed HG-owner/EE-writer boundary, require a
-  final exact EE claim, and rerun live door `UseObject`.
+  obtain the deployed HG custom component or an operator-side trace around
+  `0x445160`, `0x507FC0`, and `0x508B80` tied byte-for-byte to the sequence-95
+  payload, establish ownership, implement the proven typed HG-owner/EE-writer
+  boundary, require a final exact EE claim, and rerun live door `UseObject`.
 - 2026-07-17 live gate and terminal handoff classification: the prior gameplay
   capture crossed the 24-hour limit during the 22:21 +10 gate, so the newest
   real HG gameplay artifact is
