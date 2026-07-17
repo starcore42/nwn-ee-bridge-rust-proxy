@@ -3069,6 +3069,9 @@ fn trace_live_object_update_rewrite_failure(
         .unwrap_or("none");
     let Some(evidence) = failure.item_update_cursor_evidence else {
         let tail9_residual = failure.terminal_door_placeable_tail9_residual;
+        let tail9_reused_record_reader_interpretation = tail9_residual
+            .as_ref()
+            .and_then(|evidence| evidence.reused_record_reader_interpretation());
         tracing::debug!(
             source,
             reason = failure.reason,
@@ -3137,6 +3140,10 @@ fn trace_live_object_update_rewrite_failure(
                 .unwrap_or_default(),
             tail9_end_aligned_diamond_reader_candidates = ?tail9_residual
                 .map(|evidence| evidence.end_aligned_diamond_reader_candidates),
+            tail9_reused_record_reader_interpretation_count = usize::from(
+                tail9_reused_record_reader_interpretation.is_some()
+            ),
+            tail9_reused_record_reader_interpretation = ?tail9_reused_record_reader_interpretation,
             tail9_source_suffix_candidate_count = tail9_residual
                 .map(|evidence| evidence.source_suffix_candidate_count)
                 .unwrap_or_default(),

@@ -26,7 +26,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "3".to_string(),
+            "4".to_string(),
         ],
     );
     write_tsv_line(
@@ -228,6 +228,71 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "false".to_string(),
         ],
     );
+
+    let reused_record_interpretation = evidence.reused_record_reader_interpretation();
+    let reused_record_count = usize::from(reused_record_interpretation.is_some());
+    write_tsv_line(
+        &mut out,
+        &[
+            "reused_record_reader_summary".to_string(),
+            "candidates".to_string(),
+            reused_record_count.to_string(),
+            "retained".to_string(),
+            reused_record_count.to_string(),
+            "ownership".to_string(),
+            "unknown".to_string(),
+            "claimable".to_string(),
+            "false".to_string(),
+        ],
+    );
+    if let Some(candidate) = reused_record_interpretation {
+        write_tsv_line(
+            &mut out,
+            &[
+                "reused_record_reader_interpretation".to_string(),
+                candidate.candidate_index.to_string(),
+                "dialect".to_string(),
+                "diamond".to_string(),
+                "record_end".to_string(),
+                candidate.record_end.to_string(),
+                "read_buffer".to_string(),
+                format!(
+                    "{}..{}",
+                    candidate.read_buffer_cursor, candidate.read_buffer_end
+                ),
+                "required_second_row_header_bytes".to_string(),
+                candidate.required_second_row_header_bytes.to_string(),
+                "available_second_row_header_bytes".to_string(),
+                candidate.available_second_row_header_bytes.to_string(),
+                "stock_fragment".to_string(),
+                format!(
+                    "{}..{}",
+                    candidate.stock_fragment_bit_start, candidate.stock_fragment_bit_end
+                ),
+                "candidate_fragment".to_string(),
+                format!(
+                    "{}..{}",
+                    candidate.candidate_fragment_bit_start, candidate.candidate_fragment_bit_end
+                ),
+                "fragment_gap_bits".to_string(),
+                candidate.fragment_gap_bits.to_string(),
+                "reader_shape_bits".to_string(),
+                candidate.reader_shape_bits.to_string(),
+                "same_ordered_field_topology".to_string(),
+                "true".to_string(),
+                "second_stock_row_dispatch_possible".to_string(),
+                candidate.second_stock_row_dispatch_possible.to_string(),
+                "writer_replay_proven".to_string(),
+                "false".to_string(),
+                "claimable".to_string(),
+                "false".to_string(),
+                "rewrite_authorized".to_string(),
+                "false".to_string(),
+                "fragment_trim_authorized".to_string(),
+                "false".to_string(),
+            ],
+        );
+    }
 
     if let Some(handoff) = evidence.terminal_fragment_handoff_correlation {
         write_tsv_line(

@@ -2358,6 +2358,80 @@ mod fixture_free_tests {
         );
         assert!(end_aligned_candidates.next().is_none());
 
+        let reused = evidence
+            .reused_record_reader_interpretation()
+            .expect("contiguous equal-topology walk should retain reused-record evidence");
+        assert_eq!(reused.candidate_index, 0);
+        assert_eq!(reused.record_end, 245);
+        assert_eq!(
+            (reused.read_buffer_cursor, reused.read_buffer_end),
+            (245, 245)
+        );
+        assert_eq!(reused.required_second_row_header_bytes, 10);
+        assert_eq!(reused.available_second_row_header_bytes, 0);
+        assert_eq!(
+            (
+                reused.stock_fragment_bit_start,
+                reused.stock_fragment_bit_end,
+                reused.candidate_fragment_bit_start,
+                reused.candidate_fragment_bit_end,
+            ),
+            (50, 63, 63, 76)
+        );
+        assert_eq!(reused.fragment_gap_bits, 0);
+        assert_eq!(reused.reader_shape_bits, 13);
+        assert!(!reused.second_stock_row_dispatch_possible);
+
+        let mut gapped_interpretation = evidence;
+        gapped_interpretation.source_fragment_bit_count += 1;
+        gapped_interpretation
+            .terminal_reader_continuation
+            .source_fragment_bit_end += 1;
+        let gapped_candidate = gapped_interpretation.end_aligned_diamond_reader_candidates[0]
+            .as_mut()
+            .expect("fixture should retain its first end-aligned candidate");
+        gapped_candidate.source_bit_cursor += 1;
+        gapped_candidate.source_reader_bit_cursor += 1;
+        gapped_candidate.source_state_bit_cursor = gapped_candidate
+            .source_state_bit_cursor
+            .map(|cursor| cursor + 1);
+        gapped_candidate.source_name_selector_bit_cursor = gapped_candidate
+            .source_name_selector_bit_cursor
+            .map(|cursor| cursor + 1);
+        gapped_candidate.source_name_locstring_selector_bit_cursor = gapped_candidate
+            .source_name_locstring_selector_bit_cursor
+            .map(|cursor| cursor + 1);
+        let gapped_span = gapped_candidate
+            .source_gap_from_anchored_reader
+            .as_mut()
+            .expect("fixture candidate should retain its anchored gap");
+        gapped_span.bit_end += 1;
+        gapped_span.bit_count = 1;
+        assert!(
+            gapped_interpretation
+                .reused_record_reader_interpretation()
+                .is_none(),
+            "even a one-bit gap must reject reused-record classification"
+        );
+
+        let mut nonterminal_read_buffer = evidence;
+        nonterminal_read_buffer
+            .terminal_reader_continuation
+            .source_read_buffer_end += 1;
+        nonterminal_read_buffer
+            .terminal_reader_continuation
+            .source_more_data_source =
+            live_object_update::LiveObjectUpdateReaderContinuationSource::ReadBufferAndFragment;
+        nonterminal_read_buffer
+            .terminal_reader_continuation
+            .source_next_opcode_read_overflows = false;
+        assert!(
+            nonterminal_read_buffer
+                .reused_record_reader_interpretation()
+                .is_none(),
+            "remaining read bytes must use ordinary row dispatch instead of reused-record evidence"
+        );
+
         assert_eq!(evidence.source_suffix_candidate_count, 2);
         let mut suffix_candidates = evidence.source_suffix_candidates.iter().flatten();
         let locstring_candidate = suffix_candidates
@@ -2464,6 +2538,10 @@ mod fixture_free_tests {
         assert_eq!(stock.source_name_kind, Some("locstring-inline-cexostring"));
         assert_eq!(stock.source_reader_bits.bit_start, 50);
         assert_eq!(stock.source_reader_bits.bit_end, 64);
+        assert!(
+            evidence.reused_record_reader_interpretation().is_none(),
+            "localized selector width changes must not match the anchored reader topology"
+        );
         let capture = live_object_update::format_live_object_update_terminal_tail9_handoff_capture(
             "localized-stock-field-map",
             &payload,
@@ -2519,6 +2597,10 @@ mod fixture_free_tests {
                 .iter()
                 .all(Option::is_none)
         );
+        assert!(
+            evidence.reused_record_reader_interpretation().is_none(),
+            "a reused-record interpretation requires an exact anchored stock walk"
+        );
         assert_eq!(
             payload, original,
             "diagnostic candidate rejection must not commit a staged rewrite"
@@ -2542,6 +2624,12 @@ mod fixture_free_tests {
             ) <= 256,
             "terminal evidence is copied through retry paths and must remain stack-bounded"
         );
+        assert!(
+            std::mem::size_of::<
+                live_object_update::LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence,
+            >() <= 128,
+            "one reused-record interpretation must remain compact"
+        );
         let mut payload = alternating_legacy_door_placeable_payload();
         let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
         assert!(attempt.summary.is_none());
@@ -2560,7 +2648,7 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t3\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t4\n"));
         assert!(capture.contains(
             "ownership\tstatus\tunproven-source-owner\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
         ));
@@ -2569,6 +2657,12 @@ mod fixture_free_tests {
         ));
         assert!(capture.contains(
             "reader_continuation\tsource_read_buffer\t245..245\tsource_fragment\t63..76\tsource_more_data\tfragment-only\tsource_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment\t71..88\temitted_more_data\tfragment-only\temitted_next_opcode_read_overflows\ttrue\tclaimable\tfalse"
+        ));
+        assert!(capture.contains(
+            "reused_record_reader_summary\tcandidates\t1\tretained\t1\townership\tunknown\tclaimable\tfalse"
+        ));
+        assert!(capture.contains(
+            "reused_record_reader_interpretation\t0\tdialect\tdiamond\trecord_end\t245\tread_buffer\t245..245\trequired_second_row_header_bytes\t10\tavailable_second_row_header_bytes\t0\tstock_fragment\t50..63\tcandidate_fragment\t63..76\tfragment_gap_bits\t0\treader_shape_bits\t13\tsame_ordered_field_topology\ttrue\tsecond_stock_row_dispatch_possible\tfalse\twriter_replay_proven\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         let expected_stock_fields = [
             ("position-z-low", 50, 52),
@@ -2661,6 +2755,8 @@ mod fixture_free_tests {
         assert!(
             capture.lines().count()
                 <= 12
+                    + 1
+                    + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
@@ -2709,6 +2805,10 @@ mod fixture_free_tests {
                     && candidate.replayed_source_bits.bit_end == 75)
             }),
             "a one-bit mismatch must not be reported as an exact prior-row replay"
+        );
+        assert!(
+            evidence.reused_record_reader_interpretation().is_some(),
+            "reader topology evidence must remain independent of prior-row bit equality"
         );
         let capture = live_object_update::format_live_object_update_terminal_tail9_handoff_capture(
             "live-object-update-records",

@@ -19119,6 +19119,137 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     >; LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT],
 }
 
+/// An end-aligned exact Diamond reader interpretation that would require
+/// reusing the already-consumed update record bytes to consume only the
+/// terminal fragment residue.
+///
+/// Diamond `sub_44EF00` and EE `sub_14079BCE0` both test
+/// `MessageMoreDataToRead`, then read a fresh 8-bit row opcode before entering
+/// another typed row reader. Consequently, a fragment-only interpretation
+/// with no remaining read-buffer bytes cannot be a legal second stock row: it
+/// has no `U/type/object-id/mask` header and the opcode read overflows. This is
+/// still only failure evidence. It does not prove that a custom writer replayed
+/// the fields or authorize a cursor advance, rewrite, or fragment trim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence {
+    pub candidate_index: usize,
+    pub record_end: usize,
+    pub read_buffer_cursor: usize,
+    pub read_buffer_end: usize,
+    pub required_second_row_header_bytes: usize,
+    pub available_second_row_header_bytes: usize,
+    pub stock_fragment_bit_start: usize,
+    pub stock_fragment_bit_end: usize,
+    pub candidate_fragment_bit_start: usize,
+    pub candidate_fragment_bit_end: usize,
+    pub fragment_gap_bits: usize,
+    pub reader_shape_bits: usize,
+    pub second_stock_row_dispatch_possible: bool,
+}
+
+impl LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
+    /// Classify exact end-aligned walks that repeat the anchored stock reader's
+    /// ordered field topology and would require reusing the same exhausted byte
+    /// record.
+    /// Bit values deliberately are not compared: a shape match narrows the
+    /// owner trace even when the terminal values differ from the first walk.
+    pub fn reused_record_reader_interpretation(
+        &self,
+    ) -> Option<LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence> {
+        let Some(stock) = self.stock_diamond_source else {
+            return None;
+        };
+        let continuation = self.terminal_reader_continuation;
+        if continuation.source_more_data_source
+            != LiveObjectUpdateReaderContinuationSource::FragmentOnly
+            || !continuation.source_next_opcode_read_overflows
+            || continuation.source_read_buffer_cursor != continuation.source_read_buffer_end
+            || stock.read_end != continuation.source_read_buffer_end
+            || continuation.source_fragment_bit_cursor != stock.source_reader_bit_cursor
+            || continuation.source_fragment_bit_end != self.source_fragment_bit_count
+        {
+            return None;
+        }
+
+        let stock_relative_state =
+            relative_fragment_cursor(stock.source_state_bit_cursor, stock.source_bit_cursor);
+        let stock_relative_name = relative_fragment_cursor(
+            stock.source_name_selector_bit_cursor,
+            stock.source_bit_cursor,
+        );
+        let stock_relative_locstring = relative_fragment_cursor(
+            stock.source_name_locstring_selector_bit_cursor,
+            stock.source_bit_cursor,
+        );
+        for (candidate_index, candidate) in self
+            .end_aligned_diamond_reader_candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| candidate.map(|candidate| (index, candidate)))
+        {
+            let same_field_topology = candidate.raw_mask == stock.raw_mask
+                && candidate.effective_mask == stock.effective_mask
+                && candidate.ignored_mask == stock.ignored_mask
+                && candidate.source_reader_bits_consumed == stock.source_reader_bits_consumed
+                && candidate.source_orientation_vector == stock.source_orientation_vector
+                && relative_fragment_cursor(
+                    candidate.source_state_bit_cursor,
+                    candidate.source_bit_cursor,
+                ) == stock_relative_state
+                && relative_fragment_cursor(
+                    candidate.source_name_selector_bit_cursor,
+                    candidate.source_bit_cursor,
+                ) == stock_relative_name
+                && relative_fragment_cursor(
+                    candidate.source_name_locstring_selector_bit_cursor,
+                    candidate.source_bit_cursor,
+                ) == stock_relative_locstring
+                && candidate.source_name_kind == stock.source_name_kind;
+            let contiguous_reused_record = candidate.read_end == stock.read_end
+                && candidate.read_end == continuation.source_read_buffer_end
+                && candidate.source_bit_cursor == stock.source_reader_bit_cursor
+                && candidate.source_reader_bit_cursor == self.source_fragment_bit_count
+                && candidate
+                    .source_gap_from_anchored_reader
+                    .is_some_and(|gap| {
+                        gap.bit_start == stock.source_reader_bit_cursor
+                            && gap.bit_end == candidate.source_bit_cursor
+                            && gap.bit_count == 0
+                    });
+            if !same_field_topology || !contiguous_reused_record {
+                continue;
+            }
+
+            return Some(
+                LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence {
+                    candidate_index,
+                    record_end: candidate.read_end,
+                    read_buffer_cursor: continuation.source_read_buffer_cursor,
+                    read_buffer_end: continuation.source_read_buffer_end,
+                    required_second_row_header_bytes: LEGACY_UPDATE_HEADER_BYTES,
+                    available_second_row_header_bytes: continuation
+                        .source_read_buffer_end
+                        .saturating_sub(continuation.source_read_buffer_cursor),
+                    stock_fragment_bit_start: stock.source_bit_cursor,
+                    stock_fragment_bit_end: stock.source_reader_bit_cursor,
+                    candidate_fragment_bit_start: candidate.source_bit_cursor,
+                    candidate_fragment_bit_end: candidate.source_reader_bit_cursor,
+                    fragment_gap_bits: candidate
+                        .source_bit_cursor
+                        .saturating_sub(stock.source_reader_bit_cursor),
+                    reader_shape_bits: candidate.source_reader_bits_consumed,
+                    second_stock_row_dispatch_possible: false,
+                },
+            );
+        }
+        None
+    }
+}
+
+fn relative_fragment_cursor(cursor: Option<usize>, bit_start: usize) -> Option<usize> {
+    cursor.and_then(|cursor| cursor.checked_sub(bit_start))
+}
+
 /// Which CNW input store makes `MessageMoreDataToRead` continue dispatch.
 ///
 /// Diamond `sub_4FBBA0` and EE `CNWMessage::MessageMoreDataToRead`
