@@ -2262,6 +2262,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
     }
 
     let object_type = live_bytes.get(record_offset + 1).copied()?;
+    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
     let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
     let translated_mask = translate_legacy_live_object_update_mask(object_type, raw_mask);
     let mut claim = parse_compact_door_placeable_tail9_update_claim(
@@ -2367,7 +2368,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
             source_fragment_bits,
             source_bit_cursor,
         )
-        .map(|source| {
+        .and_then(|source| {
             let stock_claim = source.claim;
             let source_name = stock_claim.placeable_name;
             let source_name_selector_bit_cursor = source_name.map(|name| name.selector_bit_cursor);
@@ -2378,7 +2379,12 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
             let source_name_locstring_selector = source_name_locstring_selector_bit_cursor
                 .and_then(|cursor| source_fragment_bits.get(cursor).copied());
             let source_reader_bit_cursor = stock_claim.next_bit_cursor;
-            super::LiveObjectUpdateDoorPlaceableStockSourceEvidence {
+            let source_reader_bits = packed_fragment_bit_span_evidence(
+                source_bit_cursor,
+                source_reader_bit_cursor,
+                source_fragment_bits,
+            )?;
+            Some(super::LiveObjectUpdateDoorPlaceableStockSourceEvidence {
                 raw_mask: source.raw_mask,
                 effective_mask: source.effective_mask,
                 ignored_mask: source.ignored_mask,
@@ -2387,6 +2393,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
                 source_reader_bit_cursor,
                 source_reader_bits_consumed: source_reader_bit_cursor
                     .saturating_sub(source_bit_cursor),
+                source_reader_bits,
                 source_orientation_vector: if (source.effective_mask
                     & LEGACY_UPDATE_ORIENTATION_MASK)
                     != 0
@@ -2408,7 +2415,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
                         .get(source_reader_bit_cursor..)
                         .unwrap_or(&[]),
                 ),
-            }
+            })
         });
     let (end_aligned_diamond_reader_candidate_count, end_aligned_diamond_reader_candidates) =
         terminal_end_aligned_diamond_reader_candidates(
@@ -2443,6 +2450,8 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         );
 
     Some(super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
+        object_type,
+        object_id,
         raw_mask,
         translated_mask: claim.translated_mask,
         source_fragment_bit_count: source_fragment_bits.len(),
@@ -2585,6 +2594,27 @@ fn terminal_end_aligned_diamond_reader_candidates(
     }
 
     (candidate_count, candidates)
+}
+
+fn packed_fragment_bit_span_evidence(
+    bit_start: usize,
+    bit_end: usize,
+    fragment_bits: &[bool],
+) -> Option<super::LiveObjectUpdatePackedFragmentBitSpanEvidence> {
+    let bit_count = bit_end.checked_sub(bit_start)?;
+    if bit_count > u16::BITS as usize {
+        return None;
+    }
+    let bits = fragment_bits.get(bit_start..bit_end)?;
+    let mut packed_msb = 0u16;
+    for bit in bits {
+        packed_msb = (packed_msb << 1) | u16::from(*bit);
+    }
+    Some(super::LiveObjectUpdatePackedFragmentBitSpanEvidence {
+        bit_start,
+        bit_end,
+        packed_msb,
+    })
 }
 
 fn terminal_tail9_source_suffix_candidates(

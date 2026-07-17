@@ -19080,6 +19080,11 @@ pub struct LiveObjectUpdateRewriteFailure {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
+    /// Typed identity captured from the exact terminal record at failure time.
+    /// Keep this with the evidence: later orchestration passes may shift the
+    /// staged payload, so the formatter must not reapply `failure.offset`.
+    pub object_type: u8,
+    pub object_id: u32,
     pub raw_mask: u32,
     pub translated_mask: u32,
     pub source_fragment_bit_count: usize,
@@ -19271,6 +19276,64 @@ pub struct LiveObjectUpdateTerminalDirectNamePlaceableAddReplayEvidence {
     pub emitted_bits: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
+pub const LIVE_OBJECT_UPDATE_DOOR_PLACEABLE_FRAGMENT_FIELD_LIMIT: usize = 10;
+
+/// A decompile-owned fragment field from one exact Diamond door/placeable
+/// reader walk.  These spans describe reader semantics only; they do not prove
+/// which server writer emitted a terminal duplicate-looking span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateDoorPlaceableFragmentFieldKind {
+    PositionZLow,
+    OrientationSelector,
+    ScalarOrientationLow,
+    StateVisualSelector,
+    StateVisualActive,
+    StateLocked,
+    StateLockable,
+    StateVisualPayload,
+    NameSelector,
+    NameLocStringSelector,
+}
+
+impl LiveObjectUpdateDoorPlaceableFragmentFieldKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PositionZLow => "position-z-low",
+            Self::OrientationSelector => "orientation-selector",
+            Self::ScalarOrientationLow => "scalar-orientation-low",
+            Self::StateVisualSelector => "state-visual-selector",
+            Self::StateVisualActive => "state-visual-active",
+            Self::StateLocked => "state-locked",
+            Self::StateLockable => "state-lockable",
+            Self::StateVisualPayload => "state-visual-payload",
+            Self::NameSelector => "name-selector",
+            Self::NameLocStringSelector => "name-locstring-selector",
+        }
+    }
+}
+
+/// A bounded source-reader span packed in reader order. Terminal failure
+/// evidence is copied through retry paths, so retaining one 16-bit walk avoids
+/// embedding a large bit-slice array for every individual field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdatePackedFragmentBitSpanEvidence {
+    pub bit_start: usize,
+    pub bit_end: usize,
+    pub packed_msb: u16,
+}
+
+impl LiveObjectUpdatePackedFragmentBitSpanEvidence {
+    pub fn bit(self, bit_cursor: usize) -> Option<bool> {
+        if bit_cursor < self.bit_start || bit_cursor >= self.bit_end {
+            return None;
+        }
+        let bit_count = self.bit_end.checked_sub(self.bit_start)?;
+        let bit_offset = bit_cursor.checked_sub(self.bit_start)?;
+        let shift = bit_count.checked_sub(bit_offset.saturating_add(1))?;
+        Some(((self.packed_msb >> shift) & 1) != 0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateDoorPlaceableStockSourceEvidence {
     pub raw_mask: u32,
@@ -19280,6 +19343,7 @@ pub struct LiveObjectUpdateDoorPlaceableStockSourceEvidence {
     pub source_bit_cursor: usize,
     pub source_reader_bit_cursor: usize,
     pub source_reader_bits_consumed: usize,
+    pub source_reader_bits: LiveObjectUpdatePackedFragmentBitSpanEvidence,
     pub source_orientation_vector: Option<bool>,
     pub source_state_bit_cursor: Option<usize>,
     pub source_name_selector_bit_cursor: Option<usize>,

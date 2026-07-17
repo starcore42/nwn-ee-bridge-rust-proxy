@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-17 10:15 +10 (about 11h56m
+Latest known live HG proxy status, checked 2026-07-17 13:14 +10 (about 14h55m
 old): current-code
 account-5 capture
 `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
@@ -88,12 +88,30 @@ predecessor handoff or an HG custom writer (or instrument `0x445160`,
 `0x507FC0`, and `0x508B80`), then require an exact final EE claim and rerun the
   live door `UseObject` probe.
 
+Terminal artifacts also carry a bounded typed fragment-field provenance map.
+For each stock or end-aligned Diamond reader walk it records the dialect,
+object type/id, raw mask, field kind, exact source bit span/value, and matching
+full probe cursor. Sequence 95's stock walk is position `50..52`, orientation
+selector plus scalar low bits `52..57`, five state BOOLs `57..62`, and the
+direct-name selector `62..63`; the sole end-aligned candidate repeats that
+field order at `63..76`. The writer probe's cursor is the full fragment-vector
+coordinate and already includes the three initial CNW message bits, so do not
+subtract three when joining these artifacts. Every field row remains
+`claimable=false` and `rewrite_authorized=false`.
+
+Keep that provenance compact in retry state. The first implementation embedded
+per-field bit arrays in every retained reader candidate and strict replay
+`C:\nwnbridge\codex-proxy2-replay-terminal-field-provenance-20260717-1343`
+overflowed the proxy thread stack at packet 122. Production now stores the
+complete stock walk once as a packed 16-bit span and derives field rows only
+when formatting; type-size tests guard against reintroducing nested arrays.
+
 Diamond `sub_44EF00` calls `sub_4FBBA0` after every live-object row and loops to
 read another 8-bit opcode whenever either read-buffer bytes or fragment bits
 remain. EE `sub_14079BCE0` uses the same contract through
 `CNWMessage::MessageMoreDataToRead`. In both clients, fragment-only residue at
 the terminal row therefore triggers an opcode read from the exhausted byte
-buffer; it is not legal padding. The version-2 terminal TSV records source
+buffer; it is not legal padding. The version-3 terminal TSV records source
 `245..245` plus fragment `63..76` and emitted `245..245` plus fragment `71..88`
 as `fragment-only`, with `next_opcode_read_overflows=true` for both views.
 Retain strict quarantine until the source writer/list owner is proven.
@@ -105,6 +123,12 @@ at `0x455940` only writes named-pipe notification type `0x7D4` before resuming
 the stock reader. No HG server or NWNX protocol component is present in the HGX
 source tree. The next evidence target is the actual HG custom server binary or
 a runtime server-side writer/list handoff trace.
+
+A bounded local owner search found no such server component. The only other
+writer-address-bearing binary was the generic Community Patch
+`nwnx_patch.dll`; it was not loaded by the controlled harness, is not HG-specific,
+and its stock-address references do not prove a hook or suffix owner. Obtaining
+the deployed HG component or HG operator-side trace remains required.
 
 The controlled stock-writer instrumentation is now available behind the
 opt-in `-TraceServerWriter` server-harness switch (environment contract
@@ -133,10 +157,10 @@ handoff nevertheless adds no fragment bits and therefore does not own HG
 sequence 95's declared `63..76` suffix.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-terminal-reader-semantics-20260717-1044`
+`C:\nwnbridge\codex-proxy2-replay-terminal-field-provenance-20260717-1358`
 processed all 164 packet files with 304 strict allows, zero strict/semantic
 quarantines or files, 97 exact live-object claims, 19 live-object rewrites, and
-zero terminal live-object residuals on isolated ports 64921/64933. Its stderr
+zero terminal live-object residuals on isolated ports 65021/65033. Its stderr
 was empty. Some older private
 capture-only exact-claim tests now reject under the corrected five-bit
 placeable reader; keep those streams quarantined until their real source

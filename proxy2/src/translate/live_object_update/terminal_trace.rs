@@ -26,7 +26,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "2".to_string(),
+            "3".to_string(),
         ],
     );
     write_tsv_line(
@@ -159,11 +159,30 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 format_optional_bool(stock.source_name_locstring_selector),
                 "name_kind".to_string(),
                 stock.source_name_kind.unwrap_or("none").to_string(),
+                "object_type".to_string(),
+                format_live_object_byte(evidence.object_type),
+                "object_id".to_string(),
+                format_optional_u32_hex(Some(evidence.object_id)),
                 "residual".to_string(),
                 format_rewrite_bit_slice_evidence(stock.source_reader_residual),
                 "claimable".to_string(),
                 "false".to_string(),
             ],
+        );
+        write_diamond_fragment_field_rows(
+            &mut out,
+            "stock_diamond_fragment_field",
+            None,
+            stock.raw_mask,
+            stock.effective_mask,
+            stock.source_bit_cursor,
+            stock.source_orientation_vector,
+            stock.source_state_bit_cursor,
+            stock.source_name_selector_bit_cursor,
+            stock.source_name_locstring_selector_bit_cursor,
+            evidence.object_type,
+            evidence.object_id,
+            |bit_cursor| stock.source_reader_bits.bit(bit_cursor),
         );
     } else {
         write_tsv_line(
@@ -368,6 +387,10 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 format_optional_bool(candidate.source_name_selector),
                 "name_kind".to_string(),
                 candidate.source_name_kind.unwrap_or("none").to_string(),
+                "object_type".to_string(),
+                format_live_object_byte(evidence.object_type),
+                "object_id".to_string(),
+                format_optional_u32_hex(Some(evidence.object_id)),
                 "gap_from_ledger".to_string(),
                 format_rewrite_bit_slice_evidence(candidate.source_gap_from_ledger_cursor),
                 "gap_from_anchor".to_string(),
@@ -380,6 +403,24 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 "claimable".to_string(),
                 "false".to_string(),
             ],
+        );
+        write_diamond_fragment_field_rows(
+            &mut out,
+            "end_aligned_fragment_field",
+            Some(index),
+            candidate.raw_mask,
+            candidate.effective_mask,
+            candidate.source_bit_cursor,
+            candidate.source_orientation_vector,
+            candidate.source_state_bit_cursor,
+            candidate.source_name_selector_bit_cursor,
+            candidate.source_name_locstring_selector_bit_cursor,
+            evidence.object_type,
+            evidence.object_id,
+            |bit_cursor| {
+                let offset = bit_cursor.checked_sub(candidate.source_bits.bit_start)?;
+                candidate.source_bits.bits.get(offset).copied().flatten()
+            },
         );
     }
 
@@ -435,4 +476,118 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
 
     write_rewrite_tail_capture(&mut out, evidence.precursor_tail);
     Some(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_diamond_fragment_field_rows<F>(
+    out: &mut String,
+    row_kind: &str,
+    candidate_index: Option<usize>,
+    raw_mask: u32,
+    effective_mask: u32,
+    source_bit_cursor: usize,
+    orientation_vector: Option<bool>,
+    state_bit_cursor: Option<usize>,
+    name_selector_bit_cursor: Option<usize>,
+    name_locstring_selector_bit_cursor: Option<usize>,
+    object_type: u8,
+    object_id: u32,
+    mut source_bit: F,
+) where
+    F: FnMut(usize) -> Option<bool>,
+{
+    use super::LiveObjectUpdateDoorPlaceableFragmentFieldKind as Kind;
+
+    let mut field_index = 0usize;
+    let mut emit = |kind: Kind, bit_start: usize, bit_end: usize| {
+        let mut columns = Vec::with_capacity(24);
+        columns.push(row_kind.to_string());
+        if let Some(index) = candidate_index {
+            columns.push(index.to_string());
+            columns.push("field".to_string());
+        }
+        columns.push(field_index.to_string());
+        columns.push("kind".to_string());
+        columns.push(kind.as_str().to_string());
+        columns.push("dialect".to_string());
+        columns.push("diamond".to_string());
+        columns.push("object_type".to_string());
+        columns.push(format_live_object_byte(object_type));
+        columns.push("object_id".to_string());
+        columns.push(format_optional_u32_hex(Some(object_id)));
+        columns.push("mask".to_string());
+        columns.push(format!("0x{raw_mask:08X}"));
+        columns.push("source".to_string());
+        let mut source = format!("{bit_start}..{bit_end}:");
+        for bit_cursor in bit_start..bit_end {
+            source.push(match source_bit(bit_cursor) {
+                Some(false) => '0',
+                Some(true) => '1',
+                None => '?',
+            });
+        }
+        columns.push(source);
+        columns.push("probe_cursor".to_string());
+        // DiamondFragmentCursor uses the full fragment vector: the three CNW
+        // header bits are already present before the typed writer begins.
+        columns.push(format!("{bit_start}..{bit_end}"));
+        columns.push("claimable".to_string());
+        columns.push("false".to_string());
+        columns.push("rewrite_authorized".to_string());
+        columns.push("false".to_string());
+        write_tsv_line(out, &columns);
+        field_index = field_index.saturating_add(1);
+    };
+
+    let mut cursor = source_bit_cursor;
+    if (effective_mask & super::LEGACY_UPDATE_POSITION_MASK) != 0 {
+        emit(Kind::PositionZLow, cursor, cursor.saturating_add(2));
+        cursor = cursor.saturating_add(2);
+    }
+    if (effective_mask & super::LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        if let Some(vector) = orientation_vector {
+            emit(Kind::OrientationSelector, cursor, cursor.saturating_add(1));
+            if !vector {
+                emit(
+                    Kind::ScalarOrientationLow,
+                    cursor.saturating_add(1),
+                    cursor.saturating_add(5),
+                );
+            }
+        }
+    }
+    if (effective_mask & super::LEGACY_UPDATE_STATE_MASK) != 0 {
+        if let Some(state_start) = state_bit_cursor {
+            for (offset, kind) in [
+                Kind::StateVisualSelector,
+                Kind::StateVisualActive,
+                Kind::StateLocked,
+                Kind::StateLockable,
+                Kind::StateVisualPayload,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let bit_start = state_start.saturating_add(offset);
+                emit(kind, bit_start, bit_start.saturating_add(1));
+            }
+        }
+    }
+    if (effective_mask & super::LEGACY_UPDATE_NAME_MASK) != 0 {
+        if let Some(bit_start) = name_selector_bit_cursor {
+            emit(Kind::NameSelector, bit_start, bit_start.saturating_add(1));
+        }
+        if let Some(bit_start) = name_locstring_selector_bit_cursor {
+            emit(
+                Kind::NameLocStringSelector,
+                bit_start,
+                bit_start.saturating_add(1),
+            );
+        }
+    }
+
+    debug_assert!(
+        field_index <= super::LIVE_OBJECT_UPDATE_DOOR_PLACEABLE_FRAGMENT_FIELD_LIMIT,
+        "exact Diamond fragment field walk must stay within its bounded schema"
+    );
 }

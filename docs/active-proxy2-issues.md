@@ -20,8 +20,8 @@ not as standalone workaround targets.
 - 2026-07-17 live gate and terminal handoff classification: the newest real HG
   gameplay artifact is
   `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658\proxy.structured.log`,
-  timestamp `2026-07-16T22:18:53.6452776+10:00` and about 11h56m old when
-  checked at 10:15. It reached typed character selection, `Module_Loaded`, two
+  timestamp `2026-07-16T22:18:53.6452776+10:00` and about 14h55m old when
+  checked at 13:14. It reached typed character selection, `Module_Loaded`, two
   native area handoffs, and sustained exact live-object gameplay through 28
   claims with zero quarantines or `BNDP`; no fresh live run was required. It
   carried no interaction flags, so the older sequence-95 `UseObject` capture
@@ -34,7 +34,7 @@ not as standalone workaround targets.
   opcode from an exhausted byte buffer. Sequence 95 therefore cannot safely
   ignore its source `63..76` or emitted `71..88` residue; both are classified as
   fragment-only continuation with an overflowing next-opcode read. The bounded
-  terminal artifact is version 2 and records this verdict explicitly.
+  terminal artifact is version 3 and records this verdict explicitly.
 
   The immutable-ledger correlation now also has a typed, non-authorizing
   classifier for the exact adjacent same-object `A/09` replay: ten Diamond
@@ -47,15 +47,34 @@ not as standalone workaround targets.
   packet, or advance either cursor. Focused positive, one-bit replay mismatch,
   and true-suffix tests pass transactionally.
 
+  Production terminal evidence now exports an exact typed fragment-field map
+  for both the stock Diamond walk and each retained end-aligned Diamond
+  candidate. Rows carry dialect, object type/id, raw mask, field kind, source
+  span/value, and the full MSB-first probe cursor: sequence 95 maps position
+  `50..52`, scalar orientation `52..57`, state `57..62`, and name selector
+  `62..63`; its competing candidate maps the same field order at `63..76`.
+  The controlled probe cursor already includes the three initial CNW message
+  bits, so these coordinates must not be shifted by three. The artifact remains
+  bounded and every field row is explicitly `claimable=false` and
+  `rewrite_authorized=false`; it changes no packet, cursor, trim, or claim.
+  Retry-state retains the complete stock walk as one packed 16-bit span and
+  derives per-field rows only while formatting. An initial per-field-array
+  implementation overflowed the proxy thread stack at replay packet 122;
+  bounded type-size coverage and the full replay now guard this constraint.
+
   Local `Hgx.Server.dll` was ruled out as the suffix owner: it is a Diamond
   `nwmain` client overlay, imports no socket send/receive API, has no references
   to the server writer/list addresses, and its `0x455940` reader detour only
   emits a named-pipe notification before resuming the original reader. The HGX
-  tree contains no HG server/NWNX protocol component. Strict replay
-  `C:\nwnbridge\codex-proxy2-replay-terminal-reader-semantics-20260717-1044`
+  tree contains no HG server/NWNX protocol component. A bounded local search
+  also found only the generic, inactive Community Patch `nwnx_patch.dll`; its
+  references to the stock BOOL writer/finalizer are a reverse-engineering lead,
+  not evidence that HG loads it or that it owns the suffix. A real owner trace
+  requires the HG server component or operator-side instrumentation. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-field-provenance-20260717-1358`
   processed 164 files with 304 strict allows, zero strict/semantic quarantines
-  or files, 97 exact live-object claims, and zero terminal residuals; stderr was
-  empty. Next: obtain the actual HG custom server component or a runtime writer
+  or files, 97 exact live-object claims, 19 rewrites, and zero terminal
+  residuals; stderr was empty. Next: obtain the actual HG custom server component or a runtime writer
   trace around `0x445160`, `0x507FC0`, and `0x508B80`, prove the owner of all 13
   bits, require a final exact EE claim, then rerun live door `UseObject`.
 - ~~2026-07-14 live-object exact-rejection CPU bound~~: fixed and live-confirmed
@@ -308,8 +327,8 @@ not as standalone workaround targets.
   but `UseObject` did not complete. Two 246-byte copies and one 270-byte
   diagnostic candidate remain correctly quarantined.
 
-  Fresh current-code gate capture, checked at `2026-07-17T07:12+10:00`
-  (about 8h53m old),
+  Fresh current-code gate capture, rechecked at `2026-07-17T13:14+10:00`
+  (about 14h55m old),
   `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
   ended at `2026-07-16T22:18:53.6452776+10:00` after reaching gameplay through
   two area handoffs and 28 exact live-object claims, with zero quarantine files
@@ -341,6 +360,18 @@ not as standalone workaround targets.
   `63..76` (scalar orientation, five state BOOLs, direct-name selector), with a
   zero-bit gap from the anchored reader. It is diagnostic only and does not
   change the production cursor or staged packet.
+
+  The version-3 terminal artifact now reduces those walks to typed field rows
+  rather than leaving the comparison at whole-span granularity. The stock map
+  records position Z-low `50..52`, orientation selector `52..53`, scalar low
+  bits `53..57`, each state BOOL at `57..62`, and name selector `62..63`; the
+  end-aligned candidate records the identical field order at `63..76`.
+  Localized names retain the inner selector as a separate field. Rows carry
+  the failure-time typed object identity, raw mask, source value, and full
+  fragment-vector probe cursor; this avoids reapplying a stale staged byte
+  offset during later artifact formatting. The controlled probe includes the
+  initial three CNW bits in that cursor. Every row is bounded,
+  `claimable=false`, and `rewrite_authorized=false`.
 
   Capture reduction found that the candidate's `63..76` bits are
   `00 + source[40..50] + 0`: the middle ten bits exactly repeat the immediately
@@ -397,12 +428,23 @@ not as standalone workaround targets.
   writer trace or reproduce its exact writer/list handoff under the controlled
   probe; do not trim the duplicate-looking suffix before that owner is proven.
 
+  A bounded search of the local HGX/NWN trees found no deployed HG game-server
+  component. The misleading `Hgx.Server.dll` remains a client overlay; the only
+  additional writer-address-bearing binary is the inactive, generic Community
+  Patch `nwnx_patch.dll`. Its references to `0x507FC0` and `0x508B80` are a
+  possible reverse-engineering scaffold, not proof of a hook, HG deployment,
+  or suffix ownership. A true trace now requires the actual HG server component
+  or HG operator-side instrumentation.
+
   Current-code strict replay
-  `C:\nwnbridge\codex-proxy2-replay-terminal-trace-20260717-0752`
+  `C:\nwnbridge\codex-proxy2-replay-terminal-field-provenance-20260717-1358`
   processed 164 packet files with 304 strict allows, zero strict/semantic
   quarantines or files, 97 exact live-object claims, 19 live-object rewrites,
-  and zero terminal live-object residuals on isolated ports 64821/64833; stderr
-  was empty. Several older private capture regressions that encoded
+  and zero terminal live-object residuals on isolated ports 65021/65033; stderr
+  was empty. Its first attempt exposed and rejected a stack-size regression
+  from embedding field arrays in every copied retry candidate; production now
+  retains one packed 16-bit stock walk, derives rows only during formatting,
+  and enforces bounded evidence sizes. Several older private capture regressions that encoded
   the disproved sixth placeable bit as an exact owner now remain conservatively
   unclaimed. Do not restore that owner to satisfy them; reduce each failing
   capture to its actual source writer/handoff before changing production.

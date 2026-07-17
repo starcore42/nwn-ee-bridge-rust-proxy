@@ -2064,6 +2064,8 @@ mod fixture_free_tests {
         let evidence = failure
             .terminal_door_placeable_tail9_residual
             .expect("terminal tail9 failure should expose exact fragment evidence");
+        assert_eq!(evidence.object_type, 0x09);
+        assert_eq!(evidence.object_id, 0x8000_1003);
         assert_eq!(evidence.raw_mask, 0xFFFF_FFF7);
         assert_eq!(evidence.translated_mask, 0x0008_0017);
         assert_eq!(
@@ -2166,6 +2168,9 @@ mod fixture_free_tests {
         assert_eq!(stock_source.source_name_locstring_selector_bit_cursor, None);
         assert_eq!(stock_source.source_name_locstring_selector, None);
         assert_eq!(stock_source.source_name_kind, Some("direct-cexostring"));
+        assert_eq!(stock_source.source_reader_bits.bit_start, 50);
+        assert_eq!(stock_source.source_reader_bits.bit_end, 63);
+        assert_eq!(stock_source.source_reader_bits.packed_msb, 0x0AE2);
         assert_eq!(stock_source.source_reader_residual.bit_start, 63);
         assert_eq!(stock_source.source_reader_residual.bit_end, 76);
         assert_eq!(stock_source.source_reader_residual.bit_count, 13);
@@ -2430,6 +2435,54 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn alternating_tail9_stock_field_map_includes_localized_name_selector() {
+        let mut payload = alternating_legacy_door_placeable_payload();
+        let declared = usize::try_from(u32::from_le_bytes(
+            payload[3..7].try_into().expect("declared length bytes"),
+        ))
+        .expect("declared length");
+        let outer_name_selector = 62usize;
+        let inner_name_selector = 63usize;
+        payload[declared + outer_name_selector / 8] |= 0x80u8 >> (outer_name_selector % 8);
+        payload[declared + inner_name_selector / 8] &= !(0x80u8 >> (inner_name_selector % 8));
+        let original = payload.clone();
+
+        let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
+        assert!(attempt.summary.is_none());
+        let failure = attempt
+            .failure
+            .expect("localized stock walk should remain a typed terminal failure");
+        let evidence = failure
+            .terminal_door_placeable_tail9_residual
+            .expect("localized stock walk should retain typed residual evidence");
+        let stock = evidence
+            .stock_diamond_source
+            .expect("localized stock walk should retain exact Diamond evidence");
+        assert_eq!(stock.source_reader_bit_cursor, 64);
+        assert_eq!(stock.source_name_selector, Some(true));
+        assert_eq!(stock.source_name_locstring_selector, Some(false));
+        assert_eq!(stock.source_name_kind, Some("locstring-inline-cexostring"));
+        assert_eq!(stock.source_reader_bits.bit_start, 50);
+        assert_eq!(stock.source_reader_bits.bit_end, 64);
+        let capture = live_object_update::format_live_object_update_terminal_tail9_handoff_capture(
+            "localized-stock-field-map",
+            &payload,
+            failure,
+        )
+        .expect("localized typed failure should format bounded field evidence");
+        assert!(capture.lines().any(|line| {
+            line.starts_with(
+                "stock_diamond_fragment_field\t9\tkind\tname-locstring-selector\tdialect\tdiamond",
+            ) && line.contains("source\t63..64:0\tprobe_cursor\t63..64")
+                && line.ends_with("claimable\tfalse\trewrite_authorized\tfalse")
+        }));
+        assert_eq!(
+            payload, original,
+            "diagnostic field mapping must be transactional"
+        );
+    }
+
+    #[test]
     fn alternating_tail9_diagnostics_require_an_exact_end_aligned_diamond_byte_walk() {
         let mut payload = alternating_legacy_door_placeable_payload();
         let terminal_update_offset = payload
@@ -2479,20 +2532,35 @@ mod fixture_free_tests {
 
     #[test]
     fn alternating_tail9_terminal_capture_is_bounded_and_non_claiming() {
+        assert!(
+            std::mem::size_of::<live_object_update::LiveObjectUpdatePackedFragmentBitSpanEvidence>(
+            ) <= 24,
+            "packed reader evidence must not grow into per-field bit arrays"
+        );
+        assert!(
+            std::mem::size_of::<live_object_update::LiveObjectUpdateDoorPlaceableStockSourceEvidence>(
+            ) <= 256,
+            "terminal evidence is copied through retry paths and must remain stack-bounded"
+        );
         let mut payload = alternating_legacy_door_placeable_payload();
         let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
         assert!(attempt.summary.is_none());
         let failure = attempt
             .failure
             .expect("alternating terminal stream should retain typed failure evidence");
+        let mut capture_payload = payload.clone();
+        let capture_record_offset = 7usize.saturating_add(failure.offset);
+        capture_payload[capture_record_offset + 1] = 0x0A;
+        capture_payload[capture_record_offset + 2..capture_record_offset + 6]
+            .copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
         let capture = live_object_update::format_live_object_update_terminal_tail9_handoff_capture(
             "live-object-update-records",
-            &payload,
+            &capture_payload,
             failure,
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t2\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t3\n"));
         assert!(capture.contains(
             "ownership\tstatus\tunproven-source-owner\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
         ));
@@ -2502,6 +2570,57 @@ mod fixture_free_tests {
         assert!(capture.contains(
             "reader_continuation\tsource_read_buffer\t245..245\tsource_fragment\t63..76\tsource_more_data\tfragment-only\tsource_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment\t71..88\temitted_more_data\tfragment-only\temitted_next_opcode_read_overflows\ttrue\tclaimable\tfalse"
         ));
+        let expected_stock_fields = [
+            ("position-z-low", 50, 52),
+            ("orientation-selector", 52, 53),
+            ("scalar-orientation-low", 53, 57),
+            ("state-visual-selector", 57, 58),
+            ("state-visual-active", 58, 59),
+            ("state-locked", 59, 60),
+            ("state-lockable", 60, 61),
+            ("state-visual-payload", 61, 62),
+            ("name-selector", 62, 63),
+        ];
+        for (index, (kind, bit_start, bit_end)) in expected_stock_fields.into_iter().enumerate() {
+            let prefix =
+                format!("stock_diamond_fragment_field\t{index}\tkind\t{kind}\tdialect\tdiamond");
+            let line = capture
+                .lines()
+                .find(|line| line.starts_with(&prefix))
+                .expect("stock field map must retain every exact reader field");
+            assert!(line.contains("object_type\t0x09\tobject_id\t0x80001003\tmask\t0xFFFFFFF7"));
+            assert!(line.contains(&format!("source\t{bit_start}..{bit_end}:")));
+            assert!(line.contains(&format!("probe_cursor\t{bit_start}..{bit_end}")));
+            assert!(line.ends_with("claimable\tfalse\trewrite_authorized\tfalse"));
+        }
+        assert!(
+            !capture.contains("object_type\t0x0A\tobject_id\t0xDEADBEEF"),
+            "the formatter must use failure-time typed identity, not a later staged payload"
+        );
+        let expected_end_fields = [
+            ("position-z-low", 63, 65),
+            ("orientation-selector", 65, 66),
+            ("scalar-orientation-low", 66, 70),
+            ("state-visual-selector", 70, 71),
+            ("state-visual-active", 71, 72),
+            ("state-locked", 72, 73),
+            ("state-lockable", 73, 74),
+            ("state-visual-payload", 74, 75),
+            ("name-selector", 75, 76),
+        ];
+        for (field, (kind, bit_start, bit_end)) in expected_end_fields.into_iter().enumerate() {
+            let prefix = format!(
+                "end_aligned_fragment_field\t0\tfield\t{field}\tkind\t{kind}\tdialect\tdiamond"
+            );
+            let line = capture
+                .lines()
+                .find(|line| line.starts_with(&prefix))
+                .expect("end-aligned field map must retain every exact reader field");
+            assert!(line.contains("object_type\t0x09\tobject_id\t0x80001003\tmask\t0xFFFFFFF7"));
+            assert!(line.contains(&format!("source\t{bit_start}..{bit_end}:")));
+            assert!(line.contains(&format!("probe_cursor\t{bit_start}..{bit_end}")));
+            assert!(line.ends_with("claimable\tfalse\trewrite_authorized\tfalse"));
+        }
         assert!(capture.contains(
             "terminal_handoff\tanchored_cursor\t63\tfragment_bits\t76\tunresolved\t63..76:"
         ));
@@ -2546,6 +2665,9 @@ mod fixture_free_tests {
                     + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT
+                    + live_object_update::LIVE_OBJECT_UPDATE_DOOR_PLACEABLE_FRAGMENT_FIELD_LIMIT
+                    + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
+                        * live_object_update::LIVE_OBJECT_UPDATE_DOOR_PLACEABLE_FRAGMENT_FIELD_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT,
             "artifact row count must stay bounded by retained typed-evidence limits"
         );
