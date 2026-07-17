@@ -102,6 +102,8 @@ pub(crate) use terminal_evidence::{
 pub(crate) use terminal_evidence::{
     LiveObjectUpdateReaderContinuationSource,
     LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence,
+    LiveObjectUpdateTerminalWriterHandoffRequirement, LiveObjectUpdateTerminalWriterHandoffVerdict,
+    LiveObjectUpdateTerminalWriterObservation, LiveObjectUpdateTerminalWriterPacketCorrelation,
 };
 pub(crate) use terminal_trace::format_live_object_update_terminal_tail9_handoff_capture;
 

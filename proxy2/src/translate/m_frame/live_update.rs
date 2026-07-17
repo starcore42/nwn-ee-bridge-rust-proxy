@@ -2646,6 +2646,69 @@ mod fixture_free_tests {
         let failure = attempt
             .failure
             .expect("alternating terminal stream should retain typed failure evidence");
+        let evidence = failure
+            .terminal_door_placeable_tail9_residual
+            .expect("alternating terminal stream should retain typed residual evidence");
+        let writer_requirement = evidence
+            .writer_handoff_requirement()
+            .expect("all 13 source handoff bits should fit the bounded exact join contract");
+        assert_eq!(writer_requirement.object_type, 0x09);
+        assert_eq!(writer_requirement.object_id, 0x8000_1003);
+        assert_eq!(writer_requirement.raw_mask, 0xFFFF_FFF7);
+        assert_eq!(
+            (
+                writer_requirement.source_read_buffer_cursor,
+                writer_requirement.source_read_buffer_end,
+            ),
+            (245, 245)
+        );
+        assert_eq!(
+            (
+                writer_requirement.source_fragment_bits.bit_start,
+                writer_requirement.source_fragment_bits.bit_end,
+                writer_requirement.source_fragment_bits.bit_count,
+                writer_requirement.source_fragment_bits.bits_retained,
+            ),
+            (63, 76, 13, 13)
+        );
+        assert!(writer_requirement.source_next_opcode_read_overflows);
+        assert_eq!(
+            (
+                writer_requirement.emitted_read_buffer_cursor,
+                writer_requirement.emitted_read_buffer_end,
+                writer_requirement.emitted_fragment_bit_start,
+                writer_requirement.emitted_fragment_bit_end,
+                writer_requirement.emitted_fragment_bit_count,
+                writer_requirement.emitted_fragment_bits_retained,
+            ),
+            (245, 245, 71, 88, 17, 16),
+            "the emitted side is an exact final-claim span with a bounded 16-bit preview"
+        );
+        assert!(writer_requirement.emitted_next_opcode_read_overflows);
+        let mut nonterminal_read_buffer = evidence;
+        nonterminal_read_buffer
+            .terminal_reader_continuation
+            .source_read_buffer_cursor = 244;
+        nonterminal_read_buffer
+            .terminal_reader_continuation
+            .source_more_data_source =
+            live_object_update::LiveObjectUpdateReaderContinuationSource::ReadBufferAndFragment;
+        assert!(
+            nonterminal_read_buffer
+                .writer_handoff_requirement()
+                .is_none(),
+            "writer join requirements are terminal fragment-only contracts"
+        );
+        let mut incomplete_emitted_continuation = evidence;
+        incomplete_emitted_continuation
+            .terminal_reader_continuation
+            .emitted_next_opcode_read_overflows = false;
+        assert!(
+            incomplete_emitted_continuation
+                .writer_handoff_requirement()
+                .is_none(),
+            "both source and emitted terminal continuation invariants are required"
+        );
         let mut capture_payload = payload.clone();
         let capture_record_offset = 7usize.saturating_add(failure.offset);
         capture_payload[capture_record_offset + 1] = 0x0A;
@@ -2658,9 +2721,26 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t5\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t6\n"));
+        let payload_md5_hint = format!("{:x}", md5::compute(&capture_payload));
+        assert!(capture.contains(&format!("payload_md5_hint\t{payload_md5_hint}")));
         assert!(capture.contains(
             "ownership\tstatus\tunproven-source-owner\tsource_fragment_ownership\tfragment-writer-owner-unproven\temitted_fragment_ownership\tfragment-writer-owner-unproven\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
+        ));
+        assert!(capture.contains(
+            "writer_handoff_requirement\tobject_type\t0x09\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\tsource_read_buffer\t245..245\tsource_fragment\t63..76:"
+        ));
+        assert!(capture.contains(
+            "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment_obligation\t71..88\temitted_fragment_bits\t17\temitted_fragment_bits_retained\t16\temitted_fragment_preview\t71..88:"
+        ));
+        assert!(capture.contains(
+            "emitted_fragment_values_complete\tfalse\temitted_next_opcode_read_overflows\ttrue"
+        ));
+        assert!(capture.contains(
+            "packet_correlation_required\texact-payload-bytes\tfinal_ee_claim_required\ttrue\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"
+        ));
+        assert!(capture.contains(
+            "writer_handoff_correlation\tobservation\tnone\tverdict\tincomplete-trace\twriter_handoff_observed\tfalse\tclaimable\tfalse"
         ));
         assert!(capture.contains(
             "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"
@@ -2764,7 +2844,7 @@ mod fixture_free_tests {
         );
         assert!(
             capture.lines().count()
-                <= 12
+                <= 14
                     + 1
                     + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT

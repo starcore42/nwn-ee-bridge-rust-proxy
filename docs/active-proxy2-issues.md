@@ -17,6 +17,40 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-18 live gate and typed writer-handoff contract: the newest gameplay
+  artifact remains
+  `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
+  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 5 hours 55 minutes old
+  at the run gate. It reached typed character selection, `Module_Loaded`, and
+  native `Area_AreaLoaded` in two areas, then sustained gameplay with empty
+  stderr and zero quarantines. It is current gameplay evidence, so no refresh
+  was required; it contains no interaction flag and therefore does not replace
+  the earlier sequence-95 `UseObject` failure seed.
+
+  Production terminal evidence now exposes a typed writer/list-handoff join
+  contract instead of leaving the next operator trace as prose. The version-6
+  TSV pins the stock Diamond source identity and mask, exhausted byte cursor
+  `245..245`, exact MSB-first source bits `63..76`, overflowing next-opcode
+  read, finalizer cursor, and an exact-payload-byte correlation requirement.
+  It separately records the EE final-claim obligation `71..88`; only 16 of
+  those 17 diagnostic preview bits are retained, so that side is explicitly
+  incomplete. Missing writer/list or finalizer events, identity/read-cursor/
+  bit mismatches, non-contiguous finalization, and digest-only correlation all
+  reject the handoff. Even exact source ownership remains non-authorizing:
+  `allows_exact_claim=false`, with no packet, cursor, trim, claim, or rewrite
+  change. The controlled stock writer trace still proves a zero terminal
+  fragment delta and therefore is not the owner.
+
+  Focused writer-contract tests, the sequence-95 integration regression, all
+  29 `tail9` tests, `cargo check`, formatting, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-writer-handoff-contract-20260718-050748`
+  pass. The replay processed 164 packets with 304 strict allows, zero strict or
+  semantic quarantines/files, 97 exact live-object claims, 19 exact rewrites,
+  zero rewrite failures, zero terminal residuals, and empty stderr. Next:
+  obtain the deployed HG custom component or an operator-side trace tied
+  byte-for-byte to the sequence-95 payload, feed the observation into this
+  contract, implement the proven typed HG-owner/EE-writer boundary, require a
+  final exact EE claim, and rerun live door `UseObject`.
 - 2026-07-17 live gate and terminal handoff classification: the prior gameplay
   capture crossed the 24-hour limit during the 22:21 +10 gate, so the newest
   real HG gameplay artifact is
@@ -36,7 +70,7 @@ not as standalone workaround targets.
   opcode from an exhausted byte buffer. Sequence 95 therefore cannot safely
   ignore its source `63..76` or emitted `71..88` residue; both are classified as
   fragment-only continuation with an overflowing next-opcode read. The bounded
-  terminal artifact is version 5 and records this verdict explicitly.
+  terminal artifact is version 6 and records this verdict explicitly.
 
   The immutable-ledger correlation now also has a typed, non-authorizing
   classifier for the exact adjacent same-object `A/09` replay: ten Diamond
@@ -64,7 +98,7 @@ not as standalone workaround targets.
   implementation overflowed the proxy thread stack at replay packet 122;
   bounded type-size coverage and the full replay now guard this constraint.
 
-  Version 5 also records one exact end-aligned Diamond reader interpretation
+  Version 6 also records one exact end-aligned Diamond reader interpretation
   that would require reusing the already-consumed terminal update bytes. The
   stock walk ends at fragment cursor 63 and the candidate spans `63..76`, with
   identical raw/effective/ignored masks, object identity, and ordered relative

@@ -48,6 +48,27 @@ flags, so it did not issue
 `Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
 interaction capture remains the regression evidence for that active packet.
 
+At the 2026-07-18 04:20 +10 gate this artifact was about 5 hours 55 minutes old
+and still met the 24-hour gameplay requirement, so another live login was not
+required. Current production evidence now emits a version-6 typed
+writer/list-handoff requirement for sequence 95: exact object identity and raw
+mask, exhausted source byte cursor `245..245`, fully retained MSB-first source
+span `63..76`, source next-opcode overflow, finalizer cursor, and exact payload
+bytes are all mandatory. Fingerprints are lookup hints only. The EE side is a
+separate final-claim obligation at `71..88`, with a bounded 16-of-17-bit preview
+that cannot prove the output. Every current verdict remains non-authorizing and
+changes no packet, fragment cursor, trim, claim, or rewrite.
+
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-writer-handoff-contract-20260718-050748`
+processed all 164 packets with 304 strict allows, zero strict/semantic
+quarantines or files, 97 exact live-object claims, 19 rewrites, zero rewrite
+failures, zero terminal residuals, and empty stderr. Focused contract and
+sequence-95 tests plus all 29 `tail9` tests pass. The next required live test is
+still the door `UseObject` probe, after an actual HG server writer/list trace
+has been correlated byte-for-byte and a typed EE writer produces a final exact
+claim.
+
 Server sequence 95 remains the active connection/gameplay failure: two
 246-byte strict copies and one 270-byte diagnostic candidate were quarantined.
 A corrected Diamond/EE decompile audit proves EE placeables consume five state
@@ -89,7 +110,7 @@ immediately preceding `A/09` replay from source `40..50` into residual
   HG custom writer (or instrument `0x445160`, `0x507FC0`, and `0x508B80`), then
   require an exact final EE claim and rerun the live door `UseObject` probe.
 
-The version-5 terminal artifact also records a typed reused-record reader
+The version-6 terminal artifact also records a typed reused-record reader
 counterfactual for the exact end-aligned `63..76` interpretation. It is emitted
 only when the stock and candidate readers match in object identity, masks, and
 ordered relative field topology and widths; field values deliberately stay
@@ -125,7 +146,7 @@ read another 8-bit opcode whenever either read-buffer bytes or fragment bits
 remain. EE `sub_14079BCE0` uses the same contract through
 `CNWMessage::MessageMoreDataToRead`. In both clients, fragment-only residue at
 the terminal row therefore triggers an opcode read from the exhausted byte
-buffer; it is not legal padding. The version-5 terminal TSV records source
+buffer; it is not legal padding. The version-6 terminal TSV records source
 `245..245` plus fragment `63..76` and emitted `245..245` plus fragment `71..88`
 as `fragment-only`, with `next_opcode_read_overflows=true` for both views.
 Retain strict quarantine until the source writer/list owner is proven.
@@ -135,7 +156,7 @@ Production now keeps the terminal evidence model in
 at the final exact-claim boundary. Only exact read-buffer and MSB-first fragment
 cursor equality is claimable; a remaining fragment is
 `fragment-writer-owner-unproven`, while cursor overruns are rejected explicitly.
-The version-5 artifact and structured failure log expose the source and emitted
+The version-6 artifact and structured failure log expose the source and emitted
 verdicts. Sequence 95 remains quarantined without changing any packet bits,
 BOOL order, or cursor movement.
 

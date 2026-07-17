@@ -26,7 +26,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "5".to_string(),
+            "6".to_string(),
         ],
     );
     write_tsv_line(
@@ -65,10 +65,92 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             source.to_string(),
             "payload_len".to_string(),
             payload.len().to_string(),
+            "payload_md5_hint".to_string(),
+            format!("{:x}", md5::compute(payload)),
             "payload_prefix".to_string(),
             crate::packet::hex_prefix(payload, 64),
         ],
     );
+    if let Some(requirement) = evidence.writer_handoff_requirement() {
+        write_tsv_line(
+            &mut out,
+            &[
+                "writer_handoff_requirement".to_string(),
+                "object_type".to_string(),
+                format_live_object_byte(requirement.object_type),
+                "object_id".to_string(),
+                format_optional_u32_hex(Some(requirement.object_id)),
+                "raw_mask".to_string(),
+                format!("0x{:08X}", requirement.raw_mask),
+                "source_read_buffer".to_string(),
+                format!(
+                    "{}..{}",
+                    requirement.source_read_buffer_cursor, requirement.source_read_buffer_end
+                ),
+                "source_fragment".to_string(),
+                format_rewrite_bit_slice_evidence(requirement.source_fragment_bits),
+                "source_next_opcode_read_overflows".to_string(),
+                requirement.source_next_opcode_read_overflows.to_string(),
+                "emitted_read_buffer".to_string(),
+                format!(
+                    "{}..{}",
+                    requirement.emitted_read_buffer_cursor, requirement.emitted_read_buffer_end
+                ),
+                "emitted_fragment_obligation".to_string(),
+                format!(
+                    "{}..{}",
+                    requirement.emitted_fragment_bit_start, requirement.emitted_fragment_bit_end
+                ),
+                "emitted_fragment_bits".to_string(),
+                requirement.emitted_fragment_bit_count.to_string(),
+                "emitted_fragment_bits_retained".to_string(),
+                requirement.emitted_fragment_bits_retained.to_string(),
+                "emitted_fragment_preview".to_string(),
+                format_rewrite_bit_slice_evidence(evidence.rewritten_residual),
+                "emitted_fragment_values_complete".to_string(),
+                (requirement.emitted_fragment_bits_retained
+                    == requirement.emitted_fragment_bit_count)
+                    .to_string(),
+                "emitted_next_opcode_read_overflows".to_string(),
+                requirement.emitted_next_opcode_read_overflows.to_string(),
+                "packet_correlation_required".to_string(),
+                "exact-payload-bytes".to_string(),
+                "final_ee_claim_required".to_string(),
+                "true".to_string(),
+                "claimable".to_string(),
+                "false".to_string(),
+                "rewrite_authorized".to_string(),
+                "false".to_string(),
+                "fragment_trim_authorized".to_string(),
+                "false".to_string(),
+            ],
+        );
+        let unavailable = requirement.correlate(None);
+        write_tsv_line(
+            &mut out,
+            &[
+                "writer_handoff_correlation".to_string(),
+                "observation".to_string(),
+                "none".to_string(),
+                "verdict".to_string(),
+                unavailable.as_str().to_string(),
+                "writer_handoff_observed".to_string(),
+                unavailable.writer_handoff_observed().to_string(),
+                "claimable".to_string(),
+                unavailable.allows_exact_claim().to_string(),
+            ],
+        );
+    } else {
+        write_tsv_line(
+            &mut out,
+            &[
+                "writer_handoff_requirement".to_string(),
+                "unavailable-incomplete-bounded-evidence".to_string(),
+                "claimable".to_string(),
+                "false".to_string(),
+            ],
+        );
+    }
     write_tsv_line(
         &mut out,
         &[
