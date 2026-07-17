@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status, checked 2026-07-17 07:12 +10 (about 8h53m
+Latest known live HG proxy status, checked 2026-07-17 10:15 +10 (about 11h56m
 old): current-code
 account-5 capture
 `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658`
@@ -73,13 +73,38 @@ declared valid, do not trim them. Production diagnostics now correlate the
 anchored residual against complete immutable source spans from the bounded
 preceding ledger. The reduced stream identifies an exact same-object,
 immediately preceding `A/09` replay from source `40..50` into residual
-`65..75`, with a two-bit prefix and one-bit suffix; a one-bit mutation rejects
-that exact candidate. Candidate count and ambiguity remain evidence only and cannot own or
-remove bits. Diamond `0x507F30` is the fragment-capacity growth helper, not the
+  `65..75`, with a two-bit prefix and one-bit suffix; a one-bit mutation rejects
+  that exact candidate. Production now classifies this replay semantically only
+  when the immediate same-object ledger row is `A/09`, its complete Diamond
+  direct-name source span is ten BOOLs, the independently verified EE add span
+  is eleven BOOLs (`+1/-0`), and the remaining suffix is exactly one false bit.
+  The classifier and its machine-readable `terminal_semantic_replay` row are
+  explicitly non-claiming and non-authorizing; a true one-bit suffix preserves
+  raw correlation but rejects the typed envelope. Candidate count and ambiguity
+  remain evidence only and cannot own or remove bits. Diamond `0x507F30` is the
+  fragment-capacity growth helper, not the
 finalizer; the actual `GetWriteMessage` finalizer is `0x508B80`. Trace the
 predecessor handoff or an HG custom writer (or instrument `0x445160`,
 `0x507FC0`, and `0x508B80`), then require an exact final EE claim and rerun the
-live door `UseObject` probe.
+  live door `UseObject` probe.
+
+Diamond `sub_44EF00` calls `sub_4FBBA0` after every live-object row and loops to
+read another 8-bit opcode whenever either read-buffer bytes or fragment bits
+remain. EE `sub_14079BCE0` uses the same contract through
+`CNWMessage::MessageMoreDataToRead`. In both clients, fragment-only residue at
+the terminal row therefore triggers an opcode read from the exhausted byte
+buffer; it is not legal padding. The version-2 terminal TSV records source
+`245..245` plus fragment `63..76` and emitted `245..245` plus fragment `71..88`
+as `fragment-only`, with `next_opcode_read_overflows=true` for both views.
+Retain strict quarantine until the source writer/list owner is proven.
+
+The supplied `Hgx.Server.dll` is not that owner. Exact host and import evidence
+shows a Diamond `nwmain` client overlay: it has no socket send/receive imports,
+no references to the server writer/list addresses, and its client-reader detour
+at `0x455940` only writes named-pipe notification type `0x7D4` before resuming
+the stock reader. No HG server or NWNX protocol component is present in the HGX
+source tree. The next evidence target is the actual HG custom server binary or
+a runtime server-side writer/list handoff trace.
 
 The controlled stock-writer instrumentation is now available behind the
 opt-in `-TraceServerWriter` server-harness switch (environment contract
@@ -108,10 +133,10 @@ handoff nevertheless adds no fragment bits and therefore does not own HG
 sequence 95's declared `63..76` suffix.
 
 Current-code strict replay
-`C:\nwnbridge\codex-proxy2-replay-terminal-trace-20260717-0752`
+`C:\nwnbridge\codex-proxy2-replay-terminal-reader-semantics-20260717-1044`
 processed all 164 packet files with 304 strict allows, zero strict/semantic
 quarantines or files, 97 exact live-object claims, 19 live-object rewrites, and
-zero terminal live-object residuals on isolated ports 64821/64833. Its stderr
+zero terminal live-object residuals on isolated ports 64921/64933. Its stderr
 was empty. Some older private
 capture-only exact-claim tests now reject under the corrected five-bit
 placeable reader; keep those streams quarantined until their real source

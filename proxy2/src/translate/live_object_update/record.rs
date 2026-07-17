@@ -2430,6 +2430,17 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
             source_fragment_bits,
             source_reader_bit_cursor,
         );
+    let terminal_reader_continuation =
+        super::LiveObjectUpdateTerminalReaderContinuationEvidence::from_terminal_cursors(
+            record_end,
+            live_bytes.len(),
+            stock_diamond_source
+                .map(|source| source.source_reader_bit_cursor)
+                .unwrap_or(source_reader_bit_cursor),
+            source_fragment_bits.len(),
+            rewritten_bit_cursor,
+            rewritten_bits.len(),
+        );
 
     Some(super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
         raw_mask,
@@ -2453,6 +2464,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         proven_terminal_packed_name_bits,
         precursor_tail: None,
         stock_diamond_source,
+        terminal_reader_continuation,
         terminal_fragment_handoff_correlation: None,
         end_aligned_diamond_reader_candidate_count,
         end_aligned_diamond_reader_candidates,

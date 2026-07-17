@@ -19101,6 +19101,7 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub proven_terminal_packed_name_bits: usize,
     pub precursor_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
     pub stock_diamond_source: Option<LiveObjectUpdateDoorPlaceableStockSourceEvidence>,
+    pub terminal_reader_continuation: LiveObjectUpdateTerminalReaderContinuationEvidence,
     pub terminal_fragment_handoff_correlation:
         Option<LiveObjectUpdateTerminalFragmentHandoffCorrelationEvidence>,
     pub end_aligned_diamond_reader_candidate_count: usize,
@@ -19111,6 +19112,114 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     pub source_suffix_candidates: [Option<
         LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence,
     >; LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT],
+}
+
+/// Which CNW input store makes `MessageMoreDataToRead` continue dispatch.
+///
+/// Diamond `sub_4FBBA0` and EE `CNWMessage::MessageMoreDataToRead`
+/// (`0x1402D9430`) both check the read-buffer cursor first and then the
+/// fragment-byte/bit cursor. The live-object dispatchers consequently attempt
+/// another 8-bit row-opcode read even when only fragment bits remain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateReaderContinuationSource {
+    None,
+    ReadBufferOnly,
+    FragmentOnly,
+    ReadBufferAndFragment,
+}
+
+impl LiveObjectUpdateReaderContinuationSource {
+    fn from_cursors(
+        read_buffer_cursor: usize,
+        read_buffer_end: usize,
+        fragment_bit_cursor: usize,
+        fragment_bit_end: usize,
+    ) -> Self {
+        match (
+            read_buffer_cursor < read_buffer_end,
+            fragment_bit_cursor < fragment_bit_end,
+        ) {
+            (false, false) => Self::None,
+            (true, false) => Self::ReadBufferOnly,
+            (false, true) => Self::FragmentOnly,
+            (true, true) => Self::ReadBufferAndFragment,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ReadBufferOnly => "read-buffer-only",
+            Self::FragmentOnly => "fragment-only",
+            Self::ReadBufferAndFragment => "read-buffer-and-fragment",
+        }
+    }
+
+    fn has_more_data(self) -> bool {
+        self != Self::None
+    }
+}
+
+/// Exact terminal reader state for the immutable Diamond source and the
+/// staged EE output candidate.
+///
+/// This is failure evidence only. In particular, `FragmentOnly` means the
+/// original client reader will attempt another row opcode and overflow the
+/// exhausted read buffer; it is not permission to ignore or erase those bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateTerminalReaderContinuationEvidence {
+    pub source_read_buffer_cursor: usize,
+    pub source_read_buffer_end: usize,
+    pub source_fragment_bit_cursor: usize,
+    pub source_fragment_bit_end: usize,
+    pub source_more_data_source: LiveObjectUpdateReaderContinuationSource,
+    pub source_next_opcode_read_overflows: bool,
+    pub emitted_read_buffer_cursor: usize,
+    pub emitted_read_buffer_end: usize,
+    pub emitted_fragment_bit_cursor: usize,
+    pub emitted_fragment_bit_end: usize,
+    pub emitted_more_data_source: LiveObjectUpdateReaderContinuationSource,
+    pub emitted_next_opcode_read_overflows: bool,
+}
+
+impl LiveObjectUpdateTerminalReaderContinuationEvidence {
+    fn from_terminal_cursors(
+        read_buffer_cursor: usize,
+        read_buffer_end: usize,
+        source_fragment_bit_cursor: usize,
+        source_fragment_bit_end: usize,
+        emitted_fragment_bit_cursor: usize,
+        emitted_fragment_bit_end: usize,
+    ) -> Self {
+        let source_more_data_source = LiveObjectUpdateReaderContinuationSource::from_cursors(
+            read_buffer_cursor,
+            read_buffer_end,
+            source_fragment_bit_cursor,
+            source_fragment_bit_end,
+        );
+        let emitted_more_data_source = LiveObjectUpdateReaderContinuationSource::from_cursors(
+            read_buffer_cursor,
+            read_buffer_end,
+            emitted_fragment_bit_cursor,
+            emitted_fragment_bit_end,
+        );
+        Self {
+            source_read_buffer_cursor: read_buffer_cursor,
+            source_read_buffer_end: read_buffer_end,
+            source_fragment_bit_cursor,
+            source_fragment_bit_end,
+            source_more_data_source,
+            source_next_opcode_read_overflows: source_more_data_source.has_more_data()
+                && read_buffer_cursor >= read_buffer_end,
+            emitted_read_buffer_cursor: read_buffer_cursor,
+            emitted_read_buffer_end: read_buffer_end,
+            emitted_fragment_bit_cursor,
+            emitted_fragment_bit_end,
+            emitted_more_data_source,
+            emitted_next_opcode_read_overflows: emitted_more_data_source.has_more_data()
+                && read_buffer_cursor >= read_buffer_end,
+        }
+    }
 }
 
 pub const LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT: usize = 4;
@@ -19144,6 +19253,22 @@ pub struct LiveObjectUpdateTerminalFragmentReplayCandidateEvidence {
     pub unresolved_prefix: LiveObjectUpdateRewriteBitSliceEvidence,
     pub replayed_source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub unresolved_suffix: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub direct_name_placeable_add_replay:
+        Option<LiveObjectUpdateTerminalDirectNamePlaceableAddReplayEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateTerminalDirectNamePlaceableAddReplayEvidence {
+    pub prior_emitted_bit_start: usize,
+    pub prior_emitted_bit_end: usize,
+    pub prior_emitted_bit_count: usize,
+    pub prior_bits_inserted: usize,
+    pub prior_bits_removed: usize,
+    pub source_name_selector_bit_cursor: usize,
+    pub emitted_name_selector_bit_cursor: usize,
+    pub emitted_post_name_bit_cursor: usize,
+    pub emitted_next_bit_cursor: usize,
+    pub emitted_bits: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27146,6 +27271,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     rewrite_bit_ledger.terminal_fragment_handoff_correlation_evidence(
                         &live_bytes,
                         rewrite_bit_ledger.source_bits(&fragment_bits),
+                        &fragment_bits,
                         source.source_reader_bit_cursor,
                         offset,
                     )
@@ -38555,6 +38681,7 @@ impl LiveObjectRewriteBitLedger {
         &self,
         live_bytes: &[u8],
         source_bits: &[bool],
+        emitted_bits: &[bool],
         anchored_source_bit_cursor: usize,
         focus_offset: usize,
     ) -> Option<LiveObjectUpdateTerminalFragmentHandoffCorrelationEvidence> {
@@ -38593,6 +38720,79 @@ impl LiveObjectRewriteBitLedger {
                 }
 
                 let prior_object_id = read_u32_le(live_bytes, entry.offset.saturating_add(2));
+                let unresolved_prefix = live_object_rewrite_bit_slice_evidence(
+                    anchored_source_bit_cursor,
+                    replay_start,
+                    source_bits
+                        .get(anchored_source_bit_cursor..replay_start)
+                        .unwrap_or(&[]),
+                );
+                let replayed_source_bits = live_object_rewrite_bit_slice_evidence(
+                    replay_start,
+                    replay_end,
+                    source_bits.get(replay_start..replay_end).unwrap_or(&[]),
+                );
+                let unresolved_suffix = live_object_rewrite_bit_slice_evidence(
+                    replay_end,
+                    source_fragment_bit_count,
+                    source_bits.get(replay_end..).unwrap_or(&[]),
+                );
+                let same_object = prior_object_id.is_some() && prior_object_id == focus_object_id;
+                let immediately_precedes_focus = entry.record_end == focus_offset;
+                let prior_emitted_bits = self.emitted_values_for_entry(emitted_bits, entry);
+
+                // Diamond `sub_44E4A0` owns ten fragment BOOLs for a direct-name
+                // placeable add. EE `sub_1407A7800` owns the same ordered run plus
+                // one final visual-transform guard, for eleven emitted BOOLs.
+                // Classify an exact replay only after the committed ledger shape,
+                // the rewritten EE byte/fragment validator, same-object adjacency,
+                // and the single false residual suffix all agree. This remains
+                // diagnostic evidence: it does not own the unresolved prefix or
+                // authorize trimming, cursor movement, or a packet claim.
+                let direct_name_placeable_add_replay = (entry.opcode == b'A'
+                    && entry.marker == PLACEABLE_OBJECT_TYPE
+                    && entry.family == "add-compact-rewrite"
+                    && same_object
+                    && immediately_precedes_focus
+                    && entry.source_bit_end.saturating_sub(entry.source_bit_start) == 10
+                    && entry
+                        .emitted_bit_end
+                        .saturating_sub(entry.emitted_bit_start)
+                        == 11
+                    && entry.bits_inserted == 1
+                    && entry.bits_removed == 0
+                    && prior_source_bits.first().copied() == Some(false)
+                    && unresolved_suffix.bit_count == 1
+                    && source_bits.get(replay_end).copied() == Some(false))
+                .then(|| {
+                    add::verified_ee_placeable_add_fragment_layout(
+                        live_bytes,
+                        entry.offset,
+                        entry.record_end,
+                        emitted_bits,
+                        entry.emitted_bit_start,
+                    )
+                })
+                .flatten()
+                .filter(|layout| layout.next_bit_cursor == entry.emitted_bit_end)
+                .map(
+                    |layout| LiveObjectUpdateTerminalDirectNamePlaceableAddReplayEvidence {
+                        prior_emitted_bit_start: entry.emitted_bit_start,
+                        prior_emitted_bit_end: entry.emitted_bit_end,
+                        prior_emitted_bit_count: prior_emitted_bits.len(),
+                        prior_bits_inserted: entry.bits_inserted,
+                        prior_bits_removed: entry.bits_removed,
+                        source_name_selector_bit_cursor: entry.source_bit_start,
+                        emitted_name_selector_bit_cursor: entry.emitted_bit_start,
+                        emitted_post_name_bit_cursor: layout.post_name_bit,
+                        emitted_next_bit_cursor: layout.next_bit_cursor,
+                        emitted_bits: live_object_rewrite_bit_slice_evidence(
+                            entry.emitted_bit_start,
+                            entry.emitted_bit_end,
+                            prior_emitted_bits,
+                        ),
+                    },
+                );
                 let candidate = LiveObjectUpdateTerminalFragmentReplayCandidateEvidence {
                     prior_offset: entry.offset,
                     prior_record_end: entry.record_end,
@@ -38601,28 +38801,15 @@ impl LiveObjectRewriteBitLedger {
                     prior_object_id,
                     focus_offset,
                     focus_object_id,
-                    same_object: prior_object_id.is_some() && prior_object_id == focus_object_id,
-                    immediately_precedes_focus: entry.record_end == focus_offset,
+                    same_object,
+                    immediately_precedes_focus,
                     prior_source_bit_start: entry.source_bit_start,
                     prior_source_bit_end: entry.source_bit_end,
                     prior_source_bit_count: prior_source_bits.len(),
-                    unresolved_prefix: live_object_rewrite_bit_slice_evidence(
-                        anchored_source_bit_cursor,
-                        replay_start,
-                        source_bits
-                            .get(anchored_source_bit_cursor..replay_start)
-                            .unwrap_or(&[]),
-                    ),
-                    replayed_source_bits: live_object_rewrite_bit_slice_evidence(
-                        replay_start,
-                        replay_end,
-                        source_bits.get(replay_start..replay_end).unwrap_or(&[]),
-                    ),
-                    unresolved_suffix: live_object_rewrite_bit_slice_evidence(
-                        replay_end,
-                        source_fragment_bit_count,
-                        source_bits.get(replay_end..).unwrap_or(&[]),
-                    ),
+                    unresolved_prefix,
+                    replayed_source_bits,
+                    unresolved_suffix,
+                    direct_name_placeable_add_replay,
                 };
                 if let Some(slot) = candidates.get_mut(candidate_count) {
                     *slot = Some(candidate);

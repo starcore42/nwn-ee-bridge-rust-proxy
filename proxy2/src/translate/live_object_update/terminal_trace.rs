@@ -26,7 +26,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "1".to_string(),
+            "2".to_string(),
         ],
     );
     write_tsv_line(
@@ -172,6 +172,44 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
         );
     }
 
+    let continuation = evidence.terminal_reader_continuation;
+    write_tsv_line(
+        &mut out,
+        &[
+            "reader_continuation".to_string(),
+            "source_read_buffer".to_string(),
+            format!(
+                "{}..{}",
+                continuation.source_read_buffer_cursor, continuation.source_read_buffer_end
+            ),
+            "source_fragment".to_string(),
+            format!(
+                "{}..{}",
+                continuation.source_fragment_bit_cursor, continuation.source_fragment_bit_end
+            ),
+            "source_more_data".to_string(),
+            continuation.source_more_data_source.as_str().to_string(),
+            "source_next_opcode_read_overflows".to_string(),
+            continuation.source_next_opcode_read_overflows.to_string(),
+            "emitted_read_buffer".to_string(),
+            format!(
+                "{}..{}",
+                continuation.emitted_read_buffer_cursor, continuation.emitted_read_buffer_end
+            ),
+            "emitted_fragment".to_string(),
+            format!(
+                "{}..{}",
+                continuation.emitted_fragment_bit_cursor, continuation.emitted_fragment_bit_end
+            ),
+            "emitted_more_data".to_string(),
+            continuation.emitted_more_data_source.as_str().to_string(),
+            "emitted_next_opcode_read_overflows".to_string(),
+            continuation.emitted_next_opcode_read_overflows.to_string(),
+            "claimable".to_string(),
+            "false".to_string(),
+        ],
+    );
+
     if let Some(handoff) = evidence.terminal_fragment_handoff_correlation {
         write_tsv_line(
             &mut out,
@@ -232,6 +270,42 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                     "false".to_string(),
                 ],
             );
+            if let Some(replay) = candidate.direct_name_placeable_add_replay {
+                write_tsv_line(
+                    &mut out,
+                    &[
+                        "terminal_semantic_replay".to_string(),
+                        index.to_string(),
+                        "kind".to_string(),
+                        "direct-name-placeable-add".to_string(),
+                        "source_name_selector".to_string(),
+                        replay.source_name_selector_bit_cursor.to_string(),
+                        "emitted_name_selector".to_string(),
+                        replay.emitted_name_selector_bit_cursor.to_string(),
+                        "prior_emitted".to_string(),
+                        format!(
+                            "{}..{}",
+                            replay.prior_emitted_bit_start, replay.prior_emitted_bit_end
+                        ),
+                        "prior_emitted_bits".to_string(),
+                        replay.prior_emitted_bit_count.to_string(),
+                        "inserted".to_string(),
+                        replay.prior_bits_inserted.to_string(),
+                        "removed".to_string(),
+                        replay.prior_bits_removed.to_string(),
+                        "post_name".to_string(),
+                        replay.emitted_post_name_bit_cursor.to_string(),
+                        "next".to_string(),
+                        replay.emitted_next_bit_cursor.to_string(),
+                        "emitted".to_string(),
+                        format_rewrite_bit_slice_evidence(replay.emitted_bits),
+                        "claimable".to_string(),
+                        "false".to_string(),
+                        "rewrite_authorized".to_string(),
+                        "false".to_string(),
+                    ],
+                );
+            }
         }
     } else {
         write_tsv_line(

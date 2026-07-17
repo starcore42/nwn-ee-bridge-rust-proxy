@@ -2170,6 +2170,36 @@ mod fixture_free_tests {
         assert_eq!(stock_source.source_reader_residual.bit_end, 76);
         assert_eq!(stock_source.source_reader_residual.bit_count, 13);
 
+        let continuation = evidence.terminal_reader_continuation;
+        assert_eq!(
+            (
+                continuation.source_read_buffer_cursor,
+                continuation.source_read_buffer_end,
+                continuation.source_fragment_bit_cursor,
+                continuation.source_fragment_bit_end,
+            ),
+            (245, 245, 63, 76)
+        );
+        assert_eq!(
+            continuation.source_more_data_source,
+            live_object_update::LiveObjectUpdateReaderContinuationSource::FragmentOnly
+        );
+        assert!(continuation.source_next_opcode_read_overflows);
+        assert_eq!(
+            (
+                continuation.emitted_read_buffer_cursor,
+                continuation.emitted_read_buffer_end,
+                continuation.emitted_fragment_bit_cursor,
+                continuation.emitted_fragment_bit_end,
+            ),
+            (245, 245, 71, 88)
+        );
+        assert_eq!(
+            continuation.emitted_more_data_source,
+            live_object_update::LiveObjectUpdateReaderContinuationSource::FragmentOnly
+        );
+        assert!(continuation.emitted_next_opcode_read_overflows);
+
         let handoff = evidence
             .terminal_fragment_handoff_correlation
             .expect("stock residual should be compared with exact prior ledger spans");
@@ -2228,6 +2258,28 @@ mod fixture_free_tests {
             replay.replayed_source_bits.bits[..10],
             preceding_add.source_bits.bits[..10],
             "the correlation must compare the complete immutable ledger row"
+        );
+        let semantic_replay = replay
+            .direct_name_placeable_add_replay
+            .expect("exact same-object A/09 replay should retain its decompile-backed semantics");
+        assert_eq!(
+            (
+                semantic_replay.prior_emitted_bit_start,
+                semantic_replay.prior_emitted_bit_end,
+                semantic_replay.prior_emitted_bit_count,
+            ),
+            (46, 57, 11)
+        );
+        assert_eq!(semantic_replay.prior_bits_inserted, 1);
+        assert_eq!(semantic_replay.prior_bits_removed, 0);
+        assert_eq!(semantic_replay.source_name_selector_bit_cursor, 40);
+        assert_eq!(semantic_replay.emitted_name_selector_bit_cursor, 46);
+        assert_eq!(semantic_replay.emitted_post_name_bit_cursor, 47);
+        assert_eq!(semantic_replay.emitted_next_bit_cursor, 57);
+        assert_eq!(
+            semantic_replay.emitted_bits.bits[..11],
+            preceding_add.emitted_bits.bits[..11],
+            "semantic classification must validate the exact emitted EE add span"
         );
 
         assert_eq!(evidence.end_aligned_diamond_reader_candidate_count, 1);
@@ -2440,12 +2492,15 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t1\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t2\n"));
         assert!(capture.contains(
             "ownership\tstatus\tunproven-source-owner\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
         ));
         assert!(capture.contains(
             "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"
+        ));
+        assert!(capture.contains(
+            "reader_continuation\tsource_read_buffer\t245..245\tsource_fragment\t63..76\tsource_more_data\tfragment-only\tsource_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment\t71..88\temitted_more_data\tfragment-only\temitted_next_opcode_read_overflows\ttrue\tclaimable\tfalse"
         ));
         assert!(capture.contains(
             "terminal_handoff\tanchored_cursor\t63\tfragment_bits\t76\tunresolved\t63..76:"
@@ -2464,6 +2519,15 @@ mod fixture_free_tests {
         assert!(replay.contains("unresolved_suffix\t75..76:"));
         assert!(replay.ends_with("claimable\tfalse"));
         assert!(capture.lines().any(|line| {
+            line.starts_with("terminal_semantic_replay\t")
+                && line.contains("kind\tdirect-name-placeable-add")
+                && line.contains("source_name_selector\t40")
+                && line.contains("emitted_name_selector\t46")
+                && line.contains("prior_emitted\t46..57")
+                && line.contains("post_name\t47\tnext\t57")
+                && line.ends_with("claimable\tfalse\trewrite_authorized\tfalse")
+        }));
+        assert!(capture.lines().any(|line| {
             line.starts_with("end_aligned_candidate\t")
                 && line.contains("start\t63\tend\t76\tconsumed\t13")
                 && line.ends_with("claimable\tfalse")
@@ -2477,7 +2541,8 @@ mod fixture_free_tests {
         );
         assert!(
             capture.lines().count()
-                <= 11
+                <= 12
+                    + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_TERMINAL_FRAGMENT_REPLAY_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT
                     + live_object_update::LIVE_OBJECT_UPDATE_TAIL9_SOURCE_CANDIDATE_LIMIT
@@ -2550,6 +2615,58 @@ mod fixture_free_tests {
         assert_eq!(
             payload, original,
             "strict orchestration must keep the near-match packet quarantined"
+        );
+    }
+
+    #[test]
+    fn alternating_tail9_semantic_replay_requires_a_single_false_suffix() {
+        let mut payload = alternating_legacy_door_placeable_payload();
+        let declared = usize::try_from(u32::from_le_bytes(
+            payload[3..7].try_into().expect("declared length bytes"),
+        ))
+        .expect("declared length");
+        let suffix_bit_cursor = 75usize;
+        payload[declared + suffix_bit_cursor / 8] ^= 0x80 >> (suffix_bit_cursor % 8);
+        let original = payload.clone();
+
+        let attempt = rewrite_payload_if_needed_with_area_context_attempt(&mut payload, None);
+        assert!(attempt.summary.is_none());
+        let failure = attempt
+            .failure
+            .expect("changed terminal suffix must remain a strict terminal failure");
+        assert_eq!(
+            failure.kind,
+            live_object_update::LiveObjectUpdateRewriteFailureKind::
+                DoorPlaceableTail9TerminalResidualFragmentBits
+        );
+        let evidence = failure
+            .terminal_door_placeable_tail9_residual
+            .expect("changed suffix should retain terminal evidence");
+        let handoff = evidence
+            .terminal_fragment_handoff_correlation
+            .expect("stock residual should still receive bounded correlation analysis");
+        let replay = handoff
+            .candidates
+            .iter()
+            .flatten()
+            .find(|candidate| {
+                candidate.prior_source_bit_start == 40
+                    && candidate.prior_source_bit_end == 50
+                    && candidate.replayed_source_bits.bit_start == 65
+                    && candidate.replayed_source_bits.bit_end == 75
+            })
+            .expect("changing the suffix must preserve the exact raw A/09 replay");
+        assert_eq!(replay.unresolved_suffix.bit_count, 1);
+        assert_eq!(replay.unresolved_suffix.bits[0], Some(true));
+        assert!(
+            replay.direct_name_placeable_add_replay.is_none(),
+            "a non-neutral trailing bit must prevent semantic envelope classification"
+        );
+        assert_eq!(payload, original, "diagnostics must remain transactional");
+        assert!(rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none());
+        assert_eq!(
+            payload, original,
+            "strict orchestration must retain quarantine"
         );
     }
 }

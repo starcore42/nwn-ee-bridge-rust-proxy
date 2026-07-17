@@ -17,6 +17,47 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-17 live gate and terminal handoff classification: the newest real HG
+  gameplay artifact is
+  `C:\nwnbridge\codex-live-freshness-20260716-2220\harness-proxy-20260716-221658\proxy.structured.log`,
+  timestamp `2026-07-16T22:18:53.6452776+10:00` and about 11h56m old when
+  checked at 10:15. It reached typed character selection, `Module_Loaded`, two
+  native area handoffs, and sustained exact live-object gameplay through 28
+  claims with zero quarantines or `BNDP`; no fresh live run was required. It
+  carried no interaction flags, so the older sequence-95 `UseObject` capture
+  remains the current failure evidence.
+
+  Production terminal evidence now models the actual outer-reader continuation
+  contract. Diamond `sub_44EF00`/`sub_4FBBA0` and EE
+  `sub_14079BCE0`/`CNWMessage::MessageMoreDataToRead` both report more data when
+  only declared fragment bits remain, then loop and request another 8-bit row
+  opcode from an exhausted byte buffer. Sequence 95 therefore cannot safely
+  ignore its source `63..76` or emitted `71..88` residue; both are classified as
+  fragment-only continuation with an overflowing next-opcode read. The bounded
+  terminal artifact is version 2 and records this verdict explicitly.
+
+  The immutable-ledger correlation now also has a typed, non-authorizing
+  classifier for the exact adjacent same-object `A/09` replay: ten Diamond
+  direct-name placeable-add BOOLs at source `40..50`, eleven independently
+  validated EE BOOLs at emitted `46..57` (`+1/-0`), replayed at `65..75`, and
+  followed by exactly one false residual bit. Any source/emitted layout,
+  adjacency, identity, family, or suffix mismatch rejects the semantic class.
+  Even a positive class remains `claimable=false` and
+  `rewrite_authorized=false`; it does not own the two-bit prefix, trim the
+  packet, or advance either cursor. Focused positive, one-bit replay mismatch,
+  and true-suffix tests pass transactionally.
+
+  Local `Hgx.Server.dll` was ruled out as the suffix owner: it is a Diamond
+  `nwmain` client overlay, imports no socket send/receive API, has no references
+  to the server writer/list addresses, and its `0x455940` reader detour only
+  emits a named-pipe notification before resuming the original reader. The HGX
+  tree contains no HG server/NWNX protocol component. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-reader-semantics-20260717-1044`
+  processed 164 files with 304 strict allows, zero strict/semantic quarantines
+  or files, 97 exact live-object claims, and zero terminal residuals; stderr was
+  empty. Next: obtain the actual HG custom server component or a runtime writer
+  trace around `0x445160`, `0x507FC0`, and `0x508B80`, prove the owner of all 13
+  bits, require a final exact EE claim, then rerun live door `UseObject`.
 - ~~2026-07-14 live-object exact-rejection CPU bound~~: fixed and live-confirmed
   2026-07-14. Fresh pre-fix capture
   `C:\nwnbridge\codex-live-bard50-bounded-20260714-0245\harness-proxy-20260714-024358`

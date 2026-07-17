@@ -3128,6 +3128,8 @@ fn trace_live_object_update_rewrite_failure(
                 .and_then(|evidence| evidence.precursor_tail),
             tail9_stock_diamond_source = ?tail9_residual
                 .and_then(|evidence| evidence.stock_diamond_source),
+            tail9_terminal_reader_continuation = ?tail9_residual
+                .map(|evidence| evidence.terminal_reader_continuation),
             tail9_terminal_fragment_handoff_correlation = ?tail9_residual
                 .and_then(|evidence| evidence.terminal_fragment_handoff_correlation),
             tail9_end_aligned_diamond_reader_candidate_count = tail9_residual
