@@ -1,6 +1,7 @@
 use super::{
     LEGACY_UPDATE_HEADER_BYTES, LiveObjectUpdateRewriteBitSliceEvidence,
-    LiveObjectUpdateRewriteTailEvidence,
+    LiveObjectUpdateRewriteTailEvidence, terminal_ee_writer::ExactTerminalEeFinalClaim,
+    terminal_writer_trace::ExactTerminalWriterHandoff,
 };
 
 pub(super) const UNKNOWN_SOURCE_RECORD_OFFSET: u32 = u32::MAX;
@@ -14,6 +15,9 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
     // binding in one compact word because this evidence is copied through the
     // retry stack; Option<usize> adds a discriminant word on 64-bit targets.
     pub source_record_offset: u32,
+    /// Record offset in the staged EE work buffer after preceding records have
+    /// been translated. This is distinct from the immutable source offset.
+    pub emitted_record_offset: usize,
     pub object_type: u8,
     pub object_id: u32,
     pub raw_mask: u32,
@@ -71,6 +75,8 @@ pub struct LiveObjectUpdateTerminalWriterHandoffRequirement {
     pub source_read_buffer_end: usize,
     pub source_fragment_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub source_next_opcode_read_overflows: bool,
+    pub emitted_record_offset: usize,
+    pub emitted_mask: u32,
     pub emitted_read_buffer_cursor: usize,
     pub emitted_read_buffer_end: usize,
     pub emitted_fragment_bit_start: usize,
@@ -157,6 +163,54 @@ pub enum LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
     ExactTypedEeFinalClaimReady,
 }
 
+/// State of the sealed source-writer/typed-EE proof join. Even a complete join
+/// remains non-authorizing until a dedicated terminal writer is implemented
+/// and registered at the normal exact-claim boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateTerminalProofJoinVerdict {
+    InvalidRequirement,
+    IncompleteSourceAndEeProof,
+    IncompleteSourceProof,
+    IncompleteEeProof,
+    SourceProofMismatch,
+    EeProofMismatch,
+    ExactTwoSidedProofReady,
+}
+
+impl LiveObjectUpdateTerminalProofJoinVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequirement => "invalid-requirement",
+            Self::IncompleteSourceAndEeProof => "incomplete-source-and-ee-proof",
+            Self::IncompleteSourceProof => "incomplete-source-proof",
+            Self::IncompleteEeProof => "incomplete-ee-proof",
+            Self::SourceProofMismatch => "source-proof-mismatch",
+            Self::EeProofMismatch => "ee-proof-mismatch",
+            Self::ExactTwoSidedProofReady => "exact-two-sided-proof-ready",
+        }
+    }
+
+    pub fn proof_join_ready(self) -> bool {
+        self == Self::ExactTwoSidedProofReady
+    }
+
+    pub fn allows_exact_claim(self) -> bool {
+        false
+    }
+
+    pub fn authorizes_rewrite(self) -> bool {
+        false
+    }
+
+    pub fn authorizes_cursor_advance(self) -> bool {
+        false
+    }
+
+    pub fn authorizes_fragment_trim(self) -> bool {
+        false
+    }
+}
+
 impl LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -193,25 +247,38 @@ impl LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
 }
 
 impl LiveObjectUpdateTerminalWriterHandoffRequirement {
-    fn correlate_ee_final_claim(
+    pub(super) fn source_contract_is_valid(self) -> bool {
+        self.source_read_buffer_cursor == self.source_read_buffer_end
+            && self.source_next_opcode_read_overflows
+            && bit_slice_is_fully_retained(self.source_fragment_bits)
+    }
+
+    pub(super) fn emitted_contract_is_valid(self) -> bool {
+        let emitted_bits = self.emitted_fragment_bits;
+        emitted_bits.is_valid()
+            && self.emitted_read_buffer_cursor == self.emitted_read_buffer_end
+            && self.emitted_fragment_bit_start == emitted_bits.bit_start
+            && self.emitted_fragment_bit_end == emitted_bits.bit_end
+            && self.emitted_fragment_bit_count == emitted_bits.bit_count()
+            && self.emitted_fragment_bits_retained == emitted_bits.bit_count()
+            && self.emitted_fragment_bit_count
+                == self
+                    .emitted_fragment_bit_end
+                    .saturating_sub(self.emitted_fragment_bit_start)
+            && self.emitted_next_opcode_read_overflows
+    }
+
+    pub(super) fn proof_join_contract_is_valid(self) -> bool {
+        self.source_contract_is_valid() && self.emitted_contract_is_valid()
+    }
+
+    fn correlate_ee_final_claim_observation(
         self,
         observation: Option<LiveObjectUpdateTerminalEeFinalClaimObservation>,
     ) -> LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
         use LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict as Verdict;
 
-        let emitted_bits = self.emitted_fragment_bits;
-        if !emitted_bits.is_valid()
-            || self.emitted_read_buffer_cursor != self.emitted_read_buffer_end
-            || self.emitted_fragment_bit_start != emitted_bits.bit_start
-            || self.emitted_fragment_bit_end != emitted_bits.bit_end
-            || self.emitted_fragment_bit_count != emitted_bits.bit_count()
-            || self.emitted_fragment_bits_retained != emitted_bits.bit_count()
-            || self.emitted_fragment_bit_count
-                != self
-                    .emitted_fragment_bit_end
-                    .saturating_sub(self.emitted_fragment_bit_start)
-            || !self.emitted_next_opcode_read_overflows
-        {
+        if !self.emitted_contract_is_valid() {
             return Verdict::InvalidEmittedRequirement;
         }
         let Some(observation) = observation else {
@@ -246,10 +313,69 @@ impl LiveObjectUpdateTerminalWriterHandoffRequirement {
         Verdict::ExactTypedEeFinalClaimReady
     }
 
-    pub(super) fn ee_final_claim_readiness_without_observation(
+    pub(super) fn ee_final_claim_readiness(
         self,
+        source_payload: &[u8],
+        exact_final_claim: Option<&ExactTerminalEeFinalClaim>,
     ) -> LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
-        self.correlate_ee_final_claim(None)
+        let observation = exact_final_claim
+            .filter(|claim| claim.matches(self, source_payload))
+            .map(|claim| LiveObjectUpdateTerminalEeFinalClaimObservation {
+                read_buffer_cursor: claim.read_buffer_cursor(),
+                read_buffer_end: claim.read_buffer_end(),
+                fragment_bits_written: claim.fragment_bits_written(),
+                final_fragment_bit_cursor: claim.final_fragment_bit_cursor(),
+                final_fragment_bit_end: claim.final_fragment_bit_end(),
+                exact_payload_validator_accepted: true,
+            });
+        self.correlate_ee_final_claim_observation(observation)
+    }
+
+    pub(super) fn terminal_proof_join(
+        self,
+        source_payload: &[u8],
+        source_handoff: Option<&ExactTerminalWriterHandoff>,
+        ee_final_claim: Option<&ExactTerminalEeFinalClaim>,
+    ) -> LiveObjectUpdateTerminalProofJoinVerdict {
+        use LiveObjectUpdateTerminalProofJoinVerdict as Verdict;
+
+        if !self.proof_join_contract_is_valid() {
+            return Verdict::InvalidRequirement;
+        }
+        match (source_handoff, ee_final_claim) {
+            (None, None) => Verdict::IncompleteSourceAndEeProof,
+            (None, Some(claim)) => {
+                if claim.matches(self, source_payload)
+                    && self
+                        .ee_final_claim_readiness(source_payload, Some(claim))
+                        .final_claim_ready()
+                {
+                    Verdict::IncompleteSourceProof
+                } else {
+                    Verdict::EeProofMismatch
+                }
+            }
+            (Some(handoff), None) => {
+                if handoff.matches(self, source_payload) {
+                    Verdict::IncompleteEeProof
+                } else {
+                    Verdict::SourceProofMismatch
+                }
+            }
+            (Some(handoff), Some(claim)) => {
+                if !handoff.matches(self, source_payload) {
+                    Verdict::SourceProofMismatch
+                } else if !claim.matches(self, source_payload)
+                    || !self
+                        .ee_final_claim_readiness(source_payload, Some(claim))
+                        .final_claim_ready()
+                {
+                    Verdict::EeProofMismatch
+                } else {
+                    Verdict::ExactTwoSidedProofReady
+                }
+            }
+        }
     }
 }
 
@@ -343,6 +469,8 @@ impl LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
             source_read_buffer_end: continuation.source_read_buffer_end,
             source_fragment_bits,
             source_next_opcode_read_overflows: continuation.source_next_opcode_read_overflows,
+            emitted_record_offset: self.emitted_record_offset,
+            emitted_mask: self.translated_mask,
             emitted_read_buffer_cursor: continuation.emitted_read_buffer_cursor,
             emitted_read_buffer_end: continuation.emitted_read_buffer_end,
             emitted_fragment_bit_start: self.rewritten_residual.bit_start,
@@ -855,11 +983,16 @@ pub struct LiveObjectUpdateDoorPlaceableTail9SourceCandidateEvidence {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        terminal_ee_writer::exact_terminal_ee_final_claim_for_test,
+        terminal_writer_trace::exact_terminal_writer_handoff_for_test,
+    };
     use super::{
         LiveObjectUpdatePackedFragmentBitSpanEvidence as PackedSpan,
         LiveObjectUpdateTerminalEeFinalClaimObservation as EeFinalClaimObservation,
         LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict as EeFinalClaimVerdict,
         LiveObjectUpdateTerminalFragmentOwnershipVerdict as Verdict,
+        LiveObjectUpdateTerminalProofJoinVerdict as ProofJoinVerdict,
         LiveObjectUpdateTerminalWriterHandoffRequirement as WriterRequirement,
     };
     use crate::translate::live_object_update::{
@@ -911,6 +1044,8 @@ mod tests {
                 ],
             ),
             source_next_opcode_read_overflows: true,
+            emitted_record_offset: 164,
+            emitted_mask: 0xFFFF_FFF7,
             emitted_read_buffer_cursor: 243,
             emitted_read_buffer_end: 243,
             emitted_fragment_bit_start: 71,
@@ -969,7 +1104,7 @@ mod tests {
     fn terminal_ee_final_claim_readiness_requires_exact_bits_and_cursors() {
         let requirement = writer_requirement();
         let exact = ee_final_claim_observation(requirement);
-        let verdict = requirement.correlate_ee_final_claim(Some(exact));
+        let verdict = requirement.correlate_ee_final_claim_observation(Some(exact));
         assert_eq!(verdict, EeFinalClaimVerdict::ExactTypedEeFinalClaimReady);
         assert!(verdict.final_claim_ready());
         assert!(!verdict.allows_exact_claim());
@@ -978,18 +1113,18 @@ mod tests {
         assert!(!verdict.authorizes_fragment_trim());
 
         assert_eq!(
-            requirement.correlate_ee_final_claim(None),
+            requirement.correlate_ee_final_claim_observation(None),
             EeFinalClaimVerdict::IncompleteTypedEeWriter
         );
         assert_eq!(
-            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+            requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
                 exact_payload_validator_accepted: false,
                 ..exact
             })),
             EeFinalClaimVerdict::IncompleteTypedEeWriter
         );
         assert_eq!(
-            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+            requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
                 read_buffer_cursor: 245,
                 read_buffer_end: 245,
                 ..exact
@@ -1000,7 +1135,7 @@ mod tests {
         let mut changed_bits = exact.fragment_bits_written;
         changed_bits.packed_msb ^= 1 << 7;
         assert_eq!(
-            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+            requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
                 fragment_bits_written: changed_bits,
                 ..exact
             })),
@@ -1008,7 +1143,7 @@ mod tests {
         );
 
         assert_eq!(
-            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+            requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
                 fragment_bits_written: PackedSpan {
                     bit_end: exact.fragment_bits_written.bit_end - 1,
                     ..exact.fragment_bits_written
@@ -1020,21 +1155,22 @@ mod tests {
         );
 
         assert_eq!(
-            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+            requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
                 final_fragment_bit_cursor: exact.final_fragment_bit_end + 1,
                 ..exact
             })),
             EeFinalClaimVerdict::TypedCursorOverrun
         );
 
-        let incomplete = requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
-            fragment_bits_written: PackedSpan {
-                bit_start: 71,
-                bit_end: 104,
-                packed_msb: 0,
-            },
-            ..exact
-        }));
+        let incomplete =
+            requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
+                fragment_bits_written: PackedSpan {
+                    bit_start: 71,
+                    bit_end: 104,
+                    packed_msb: 0,
+                },
+                ..exact
+            }));
         assert_eq!(incomplete, EeFinalClaimVerdict::IncompleteTypedEeWriter);
         assert!(!incomplete.final_claim_ready());
 
@@ -1043,7 +1179,7 @@ mod tests {
                 emitted_fragment_bits_retained: 16,
                 ..requirement
             }
-            .correlate_ee_final_claim(None),
+            .correlate_ee_final_claim_observation(None),
             EeFinalClaimVerdict::InvalidEmittedRequirement
         );
         assert_eq!(
@@ -1055,8 +1191,77 @@ mod tests {
                 },
                 ..requirement
             }
-            .correlate_ee_final_claim(None),
+            .correlate_ee_final_claim_observation(None),
             EeFinalClaimVerdict::InvalidEmittedRequirement
+        );
+    }
+
+    #[test]
+    fn terminal_proof_join_requires_both_opaque_exact_tokens() {
+        let requirement = writer_requirement();
+        let source_payload = b"source P/05/01 packet identity";
+        let source_handoff = exact_terminal_writer_handoff_for_test(requirement, source_payload);
+        let ee_final_claim = exact_terminal_ee_final_claim_for_test(requirement, source_payload);
+
+        assert_eq!(
+            requirement.terminal_proof_join(source_payload, None, None),
+            ProofJoinVerdict::IncompleteSourceAndEeProof
+        );
+        assert_eq!(
+            requirement.terminal_proof_join(source_payload, None, Some(&ee_final_claim)),
+            ProofJoinVerdict::IncompleteSourceProof
+        );
+        assert_eq!(
+            requirement.terminal_proof_join(source_payload, Some(&source_handoff), None),
+            ProofJoinVerdict::IncompleteEeProof
+        );
+        let exact = requirement.terminal_proof_join(
+            source_payload,
+            Some(&source_handoff),
+            Some(&ee_final_claim),
+        );
+        assert_eq!(exact, ProofJoinVerdict::ExactTwoSidedProofReady);
+        assert!(exact.proof_join_ready());
+        assert!(!exact.allows_exact_claim());
+        assert!(!exact.authorizes_rewrite());
+        assert!(!exact.authorizes_cursor_advance());
+        assert!(!exact.authorizes_fragment_trim());
+
+        assert_eq!(
+            requirement.terminal_proof_join(
+                b"different source packet",
+                Some(&source_handoff),
+                Some(&ee_final_claim),
+            ),
+            ProofJoinVerdict::SourceProofMismatch
+        );
+        let mismatched_requirement = WriterRequirement {
+            object_id: requirement.object_id ^ 1,
+            ..requirement
+        };
+        assert_eq!(
+            requirement.terminal_proof_join(
+                source_payload,
+                Some(&source_handoff),
+                Some(&exact_terminal_ee_final_claim_for_test(
+                    mismatched_requirement,
+                    source_payload,
+                )),
+            ),
+            ProofJoinVerdict::EeProofMismatch
+        );
+
+        let invalid_requirement = WriterRequirement {
+            source_next_opcode_read_overflows: false,
+            ..requirement
+        };
+        assert_eq!(
+            invalid_requirement.terminal_proof_join(
+                source_payload,
+                Some(&source_handoff),
+                Some(&ee_final_claim),
+            ),
+            ProofJoinVerdict::InvalidRequirement
         );
     }
 

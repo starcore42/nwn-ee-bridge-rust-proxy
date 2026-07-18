@@ -133,12 +133,57 @@ struct CompactDoorPlaceableTail9EeWritePlan {
 /// vector may escape into `LiveObjectUpdateRewriteFailure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TerminalDoorPlaceableTail9EeStage {
-    pub(super) live_bytes: Vec<u8>,
-    pub(super) fragment_bits: Vec<bool>,
-    pub(super) typed_row_read_buffer_cursor: usize,
-    pub(super) typed_row_read_buffer_end: usize,
-    pub(super) typed_row_fragment_cursor: usize,
-    pub(super) candidate_fragment_bit_end: usize,
+    live_bytes: Vec<u8>,
+    fragment_bits: Vec<bool>,
+    typed_row_read_buffer_cursor: usize,
+    typed_row_read_buffer_end: usize,
+    typed_row_fragment_cursor: usize,
+    candidate_fragment_bit_end: usize,
+}
+
+impl TerminalDoorPlaceableTail9EeStage {
+    pub(super) fn live_bytes(&self) -> &[u8] {
+        &self.live_bytes
+    }
+
+    pub(super) fn fragment_bits(&self) -> &[bool] {
+        &self.fragment_bits
+    }
+
+    pub(super) fn typed_row_read_buffer_cursor(&self) -> usize {
+        self.typed_row_read_buffer_cursor
+    }
+
+    pub(super) fn typed_row_read_buffer_end(&self) -> usize {
+        self.typed_row_read_buffer_end
+    }
+
+    pub(super) fn typed_row_fragment_cursor(&self) -> usize {
+        self.typed_row_fragment_cursor
+    }
+
+    pub(super) fn candidate_fragment_bit_end(&self) -> usize {
+        self.candidate_fragment_bit_end
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_terminal_ee_writer_test(
+        live_bytes: Vec<u8>,
+        fragment_bits: Vec<bool>,
+        typed_row_read_buffer_cursor: usize,
+        typed_row_read_buffer_end: usize,
+        typed_row_fragment_cursor: usize,
+        candidate_fragment_bit_end: usize,
+    ) -> Self {
+        Self {
+            live_bytes,
+            fragment_bits,
+            typed_row_read_buffer_cursor,
+            typed_row_read_buffer_end,
+            typed_row_fragment_cursor,
+            candidate_fragment_bit_end,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2619,6 +2664,7 @@ pub(super) fn terminal_door_placeable_tail9_analysis(
         // The outer transaction binds it back to the immutable attempt input
         // only when that exact U/type/id/mask header is unique there.
         source_record_offset: super::terminal_evidence::UNKNOWN_SOURCE_RECORD_OFFSET,
+        emitted_record_offset: record_offset,
         object_type,
         object_id,
         raw_mask,

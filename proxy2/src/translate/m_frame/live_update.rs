@@ -2785,14 +2785,14 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t10\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t11\n"));
         let payload_md5_hint = format!("{:x}", md5::compute(&capture_payload));
         assert!(capture.contains(&format!("payload_md5_hint\t{payload_md5_hint}")));
         assert!(capture.contains(
             "ownership\tstatus\tunproven-source-owner\tsource_fragment_ownership\tfragment-writer-owner-unproven\temitted_fragment_ownership\tfragment-writer-owner-unproven\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
         ));
         assert!(capture.contains(
-            "writer_handoff_requirement\tobject_type\t0x09\tsource_record_offset\t166\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\tsource_read_buffer\t245..245\tsource_fragment\t63..76:"
+            "writer_handoff_requirement\tobject_type\t0x09\tsource_record_offset\t166\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\temitted_record_offset\t182\temitted_mask\t0x00080017\tsource_read_buffer\t245..245\tsource_fragment\t63..76:"
         ), "capture omitted exact source record binding:\n{capture}");
         assert!(capture.contains(
             "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_fragment_obligation\t71..88\temitted_fragment_bits\t17\temitted_fragment_bits_retained\t17\temitted_fragment_exact\t71..88:00100000001000110"
@@ -2811,6 +2811,9 @@ mod fixture_free_tests {
         ), "capture omitted mismatch audit row:\n{capture}");
         assert!(capture.contains(
             "ee_final_claim_readiness\tobservation\tnone\tverdict\tincomplete-typed-ee-writer\tready\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
+        ));
+        assert!(capture.contains(
+            "terminal_proof_join\tsource_handoff_token\tfalse\tee_final_claim_token\tfalse\tverdict\tincomplete-source-and-ee-proof\tready\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         assert!(capture.contains(
             "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"

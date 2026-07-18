@@ -27111,10 +27111,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
             }
             if let Some(analysis) = terminal_tail9_analysis {
                 if let Some(audit) = terminal_ee_writer_audit.as_deref_mut() {
-                    *audit = analysis
-                        .ee_stage
-                        .as_ref()
-                        .and_then(terminal_ee_writer::audit_staged_terminal_ee_candidate);
+                    let requirement = analysis.evidence.writer_handoff_requirement();
+                    *audit = analysis.ee_stage.as_ref().and_then(|stage| {
+                        terminal_ee_writer::audit_staged_terminal_ee_candidate_for_requirement(
+                            stage,
+                            requirement,
+                        )
+                    });
                 }
                 let evidence = analysis.evidence;
                 let kind = LiveObjectUpdateRewriteFailureKind::

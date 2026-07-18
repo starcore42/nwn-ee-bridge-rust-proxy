@@ -17,6 +17,43 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-18 live gate and sealed two-sided terminal proof join: at the 22:18
+  +10 gate the newest gameplay-reaching HG artifact was
+  `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
+  timestamp `2026-07-17T22:25:49.3713181+10:00`, 23 hours 52 minutes old. It
+  reached typed character selection, `Module_Loaded`, native
+  `Area_AreaLoaded` for `voyage` and `docksofascension`, and sustained gameplay
+  with 30 direct live-object claims and 45 exact-shape accepts. Stderr,
+  quarantine actions/files, WARN/ERROR, and `BNDP` were zero, so the live gate
+  passed without another login. The artifact crossed 24 hours during this run;
+  the next run must refresh it unless a newer gameplay-reaching capture exists.
+
+  The reference setup was the live sequence-95 failure plus the controlled
+  stock Diamond writer/decompile, because the deployed HG owner/list/finalizer
+  sidecar remains unavailable. Production version-11 diagnostics now mint a
+  private source token only from one ordered, byte-for-byte exact v1 writer
+  sidecar and a private EE token only from the opaque typed-reader stage after
+  the full candidate validator accepts. The EE mint additionally binds the
+  staged `U/type/id/translated-mask` at the exact emitted record offset, the
+  complete MSB-first fragment span/cursors, the exact candidate bytes, and the
+  exact source payload. Malformed source/emitted contracts fail closed. A
+  two-sided join reports readiness only when both exact tokens match the same
+  requirement and payload, but remains deliberately non-authorizing: claim,
+  rewrite, cursor advance, and trim are all false until a dedicated typed
+  writer is implemented and registered at the normal exact-claim boundary.
+  Sequence 95 still has neither token, reports
+  `incomplete-source-and-ee-proof`, and remains rejected; no wire bytes or bit
+  cursor movement changed.
+
+  All 57 terminal-focused tests and the debug production build pass. Strict
+  replay `C:\nwnbridge\codex-proxy2-replay-terminal-proof-join-20260718-2328`
+  processed all 164 packets with 304 strict allows, 97 exact live-object
+  claims, 19 exact-shape rewrites, both area contexts observed, 143 generated
+  ACKs, empty stderr, and zero strict/semantic quarantines, quarantine files,
+  rewrite failures, terminal residuals, WARN, or ERROR. Next: deploy or obtain
+  the exact HG v1 sidecar producer, correlate sequence 95 byte-for-byte,
+  implement the decompile-proven typed EE terminal writer behind this join,
+  then rerun live door `UseObject` through completion.
 - 2026-07-18 live gate and exact whole-packet EE candidate audit: the newest
   real gameplay artifact remains
   `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,

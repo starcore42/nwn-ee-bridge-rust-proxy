@@ -29,7 +29,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "10".to_string(),
+            "11".to_string(),
         ],
     );
     write_tsv_line(
@@ -87,6 +87,10 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 format_optional_u32_hex(Some(requirement.object_id)),
                 "raw_mask".to_string(),
                 format!("0x{:08X}", requirement.raw_mask),
+                "emitted_record_offset".to_string(),
+                requirement.emitted_record_offset.to_string(),
+                "emitted_mask".to_string(),
+                format!("0x{:08X}", requirement.emitted_mask),
                 "source_read_buffer".to_string(),
                 format!(
                     "{}..{}",
@@ -142,11 +146,11 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "claimable".to_string(),
             correlation.verdict.allows_exact_claim().to_string(),
         ];
-        correlation_columns.extend(terminal_writer_trace_identity_columns(correlation));
+        correlation_columns.extend(terminal_writer_trace_identity_columns(&correlation));
         write_tsv_line(&mut out, &correlation_columns);
-        if let Some(audit) =
-            super::terminal_ee_writer::audit_terminal_ee_writer_candidate(payload, failure)
-        {
+        let audit = super::terminal_ee_writer::audit_terminal_ee_writer_candidate(payload, failure);
+        let exact_final_claim = audit.as_ref().and_then(|audit| audit.exact_final_claim());
+        if let Some(audit) = audit.as_ref() {
             let reject = audit.reject;
             write_tsv_line(
                 &mut out,
@@ -221,13 +225,18 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 ],
             );
         }
-        let final_claim_readiness = requirement.ee_final_claim_readiness_without_observation();
+        let final_claim_readiness =
+            requirement.ee_final_claim_readiness(payload, exact_final_claim);
         write_tsv_line(
             &mut out,
             &[
                 "ee_final_claim_readiness".to_string(),
                 "observation".to_string(),
-                "none".to_string(),
+                if exact_final_claim.is_some() {
+                    "sealed-exact-payload".to_string()
+                } else {
+                    "none".to_string()
+                },
                 "verdict".to_string(),
                 final_claim_readiness.as_str().to_string(),
                 "ready".to_string(),
@@ -242,6 +251,33 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                     .to_string(),
                 "fragment_trim_authorized".to_string(),
                 final_claim_readiness.authorizes_fragment_trim().to_string(),
+            ],
+        );
+        let proof_join = requirement.terminal_proof_join(
+            payload,
+            correlation.exact_handoff.as_ref(),
+            exact_final_claim,
+        );
+        write_tsv_line(
+            &mut out,
+            &[
+                "terminal_proof_join".to_string(),
+                "source_handoff_token".to_string(),
+                correlation.exact_handoff.is_some().to_string(),
+                "ee_final_claim_token".to_string(),
+                exact_final_claim.is_some().to_string(),
+                "verdict".to_string(),
+                proof_join.as_str().to_string(),
+                "ready".to_string(),
+                proof_join.proof_join_ready().to_string(),
+                "claimable".to_string(),
+                proof_join.allows_exact_claim().to_string(),
+                "rewrite_authorized".to_string(),
+                proof_join.authorizes_rewrite().to_string(),
+                "cursor_advance_authorized".to_string(),
+                proof_join.authorizes_cursor_advance().to_string(),
+                "fragment_trim_authorized".to_string(),
+                proof_join.authorizes_fragment_trim().to_string(),
             ],
         );
     } else {
@@ -740,7 +776,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
 }
 
 fn terminal_writer_trace_identity_columns(
-    correlation: TerminalWriterTraceCorrelation,
+    correlation: &TerminalWriterTraceCorrelation,
 ) -> [String; 6] {
     [
         "trace_id".to_string(),
@@ -937,12 +973,13 @@ mod tests {
 
     #[test]
     fn terminal_writer_trace_identity_columns_preserve_loaded_artifact_provenance() {
-        let columns = terminal_writer_trace_identity_columns(TerminalWriterTraceCorrelation {
+        let columns = terminal_writer_trace_identity_columns(&TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
             verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff,
             trace_id: Some(17),
             message_id: Some(0x1234_ABCD),
             component_sha256: Some([0xA5; 32]),
+            exact_handoff: None,
         });
         assert_eq!(
             columns[0..4],

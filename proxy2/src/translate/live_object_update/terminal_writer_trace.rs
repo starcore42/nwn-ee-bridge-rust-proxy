@@ -52,13 +52,54 @@ impl TerminalWriterTraceArtifactStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TerminalWriterTraceCorrelation {
     pub(super) artifact_status: TerminalWriterTraceArtifactStatus,
     pub(super) verdict: LiveObjectUpdateTerminalWriterHandoffVerdict,
     pub(super) trace_id: Option<u64>,
     pub(super) message_id: Option<u64>,
     pub(super) component_sha256: Option<[u8; 32]>,
+    pub(super) exact_handoff: Option<ExactTerminalWriterHandoff>,
+}
+
+/// Opaque proof that one ordered operator trace matched the complete source
+/// packet and the exact terminal writer-handoff requirement. Sibling modules
+/// may carry or compare this token, but only this module can construct one.
+/// It remains source-side evidence and cannot authorize an EE rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ExactTerminalWriterHandoff {
+    requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+    identity: TerminalWriterTraceIdentity,
+    source_payload: Box<[u8]>,
+}
+
+impl ExactTerminalWriterHandoff {
+    pub(super) fn matches(
+        &self,
+        requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+        source_payload: &[u8],
+    ) -> bool {
+        requirement.source_contract_is_valid()
+            && self.requirement == requirement
+            && self.identity.trace_id != 0
+            && self.source_payload.as_ref() == source_payload
+    }
+}
+
+#[cfg(test)]
+pub(super) fn exact_terminal_writer_handoff_for_test(
+    requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+    source_payload: &[u8],
+) -> ExactTerminalWriterHandoff {
+    ExactTerminalWriterHandoff {
+        requirement,
+        identity: TerminalWriterTraceIdentity {
+            trace_id: 1,
+            message_id: 1,
+            component_sha256: [0xA5; 32],
+        },
+        source_payload: source_payload.into(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,18 +265,36 @@ pub(super) fn correlate_terminal_writer_trace(
             trace_id: None,
             message_id: None,
             component_sha256: None,
+            exact_handoff: None,
         };
     };
+    correlate_loaded_terminal_writer_trace(requirement, quarantined_payload, artifact)
+}
+
+fn correlate_loaded_terminal_writer_trace(
+    requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+    quarantined_payload: &[u8],
+    artifact: &OwnedTerminalWriterTraceArtifact,
+) -> TerminalWriterTraceCorrelation {
+    let verdict = correlate_bounded_terminal_writer_trace(
+        requirement,
+        quarantined_payload,
+        Some(artifact.as_trace()),
+    );
+    let exact_handoff = (verdict
+        == LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff)
+        .then(|| ExactTerminalWriterHandoff {
+            requirement,
+            identity: artifact.identity,
+            source_payload: quarantined_payload.into(),
+        });
     TerminalWriterTraceCorrelation {
         artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
-        verdict: correlate_bounded_terminal_writer_trace(
-            requirement,
-            quarantined_payload,
-            Some(artifact.as_trace()),
-        ),
+        verdict,
         trace_id: Some(artifact.identity.trace_id),
         message_id: Some(artifact.identity.message_id),
         component_sha256: Some(artifact.identity.component_sha256),
+        exact_handoff,
     }
 }
 
@@ -473,6 +532,9 @@ fn correlate_bounded_terminal_writer_trace(
     quarantined_payload: &[u8],
     trace: Option<TerminalWriterTrace<'_>>,
 ) -> LiveObjectUpdateTerminalWriterHandoffVerdict {
+    if !requirement.source_contract_is_valid() {
+        return LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace;
+    }
     let Some(trace) = trace else {
         return LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace;
     };
@@ -788,6 +850,8 @@ mod tests {
             source_read_buffer_end: 229,
             source_fragment_bits: bit_slice(63, &SOURCE_VALUES),
             source_next_opcode_read_overflows: true,
+            emitted_record_offset: 164,
+            emitted_mask: 0xFFFF_FFF7,
             emitted_read_buffer_cursor: 243,
             emitted_read_buffer_end: 243,
             emitted_fragment_bit_start: 71,
@@ -975,6 +1039,33 @@ mod tests {
                 .allows_exact_claim(),
             "operator proof alone must remain non-claiming"
         );
+        let correlation = correlate_loaded_terminal_writer_trace(
+            requirement(),
+            &artifact.finalized_payload,
+            &artifact,
+        );
+        let exact_handoff = correlation
+            .exact_handoff
+            .expect("byte-for-byte exact trace should mint one opaque source token");
+        assert!(exact_handoff.matches(requirement(), &artifact.finalized_payload));
+        let mut different_payload = artifact.finalized_payload.clone();
+        different_payload[7] ^= 1;
+        assert!(!exact_handoff.matches(requirement(), &different_payload));
+
+        let invalid_requirement = LiveObjectUpdateTerminalWriterHandoffRequirement {
+            source_next_opcode_read_overflows: false,
+            ..requirement()
+        };
+        let invalid = correlate_loaded_terminal_writer_trace(
+            invalid_requirement,
+            &artifact.finalized_payload,
+            &artifact,
+        );
+        assert_eq!(
+            invalid.verdict,
+            LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace
+        );
+        assert!(invalid.exact_handoff.is_none());
     }
 
     #[test]
@@ -1274,6 +1365,7 @@ mod tests {
                 trace_id: None,
                 message_id: None,
                 component_sha256: None,
+                exact_handoff: None,
             }
         );
     }

@@ -33,43 +33,49 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status: the previous gameplay capture crossed the
-24-hour limit during the 2026-07-17 22:21 +10 gate, so the current-code
-account-5 harness was refreshed at
-`C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351`.
-It selected typed `starcore-druid60`, reached `Module_Loaded`, completed native
-`Area_AreaLoaded` for `voyage` and `docksofascension`, and sustained gameplay
-through 30 direct live-object claims and 45 exact-shape accepts. The structured
-log
+Latest known live HG proxy status: the current account-5 gameplay artifact is
+`C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351`,
+with structured log
 `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`
-ended at `2026-07-17T22:25:49.3713181+10:00`; proxy stderr was empty and the run
-wrote zero quarantine actions/files and no `BNDP`. It carried no interaction
-flags, so it did not issue
-`Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
-interaction capture remains the regression evidence for that active packet.
+timestamped `2026-07-17T22:25:49.3713181+10:00`. It selected typed
+`starcore-druid60`, reached `Module_Loaded`, completed native
+`Area_AreaLoaded` for `voyage` and `docksofascension`, and sustained gameplay
+through 30 direct live-object claims and 45 exact-shape accepts. Proxy stderr,
+quarantine actions/files, WARN/ERROR, and `BNDP` were zero. It carried no
+interaction flags, so it did not issue `Input_WalkToWaypoint` or reproduce
+sequence 95 / `UseObject`; the earlier interaction capture remains the active
+failure seed.
 
-At the 2026-07-18 19:20 +10 check this artifact was about 20 hours 55 minutes
-old and still met the 24-hour gameplay requirement, so another live login was
-not required. Current production evidence retains the version-10 terminal
-contract for sequence 95: source read buffer `245..245` plus fragment `63..76`
-(13 MSB-first bits, `0x46`), and emitted read buffer `243..243` plus fragment
-`71..88` (17 bits, `00100000001000110`, packed `0x4046`). The strongest
-available reference remains the live sequence-95 failure combined with the
-controlled stock Diamond writer/decompile contract; the deployed HG custom
-owner/list/finalizer trace is still unavailable.
+At the 2026-07-18 22:18 +10 gate this artifact was 23 hours 52 minutes old and
+still met the 24-hour gameplay requirement, so another live login was not
+required. It crossed the limit during the run; the next automation run must
+refresh it unless a newer gameplay-reaching HG capture exists. Current
+production evidence retains the sequence-95 source contract at read buffer
+`245..245` plus fragment `63..76` (13 MSB-first bits, `0x46`) and the emitted
+contract at `243..243` plus `71..88` (17 bits,
+`00100000001000110`, packed `0x4046`). The strongest reference remains that
+live failure combined with the controlled stock Diamond writer/decompile; the
+deployed HG custom owner/list/finalizer sidecar is still unavailable.
 
-Version 10 additionally stages the complete proposed EE packet only during the
-diagnostic rerun and submits it to the existing exact full-payload validator.
-For sequence 95 the typed row consumes read buffer `243..243` and fragment bits
-through cursor 71, but the packet declares a valid-bit end of 88. The validator
-rejects at `fragment-cursor`; the artifact names `71..88` as unconsumed, never
-as typed writer output, and every claim/rewrite/cursor/trim authorization stays
-false. Strict replay
-`C:\nwnbridge\codex-proxy2-replay-terminal-ee-audit-20260718-2007`
+Version 11 joins two opaque diagnostic proofs. The source token requires one
+ordered v1 sidecar whose complete finalized `P/05/01` bytes exactly equal the
+source payload. The EE token can be minted only from the record parser's opaque
+typed stage after the full candidate validator accepts and its emitted record
+offset, `U/type/id/translated-mask`, MSB-first fragment span, and terminal
+cursors exactly match the requirement; it retains the exact candidate and
+source bytes. Invalid source/emitted contracts reject. Even an exact two-sided
+join remains non-authorizing until a dedicated typed writer is registered at
+the normal exact-claim boundary. Sequence 95 has neither token, reports
+`incomplete-source-and-ee-proof`, and remains rejected without changing wire
+bytes, claims, cursor movement, or fragment trimming.
+
+All 57 terminal-focused tests and the debug production build pass. Strict
+replay `C:\nwnbridge\codex-proxy2-replay-terminal-proof-join-20260718-2328`
 processed 164 packets with 304 strict allows, 97 exact live-object claims, 19
-rewrites, and zero strict/semantic quarantines, quarantine artifacts, rewrite
-failures, terminal residuals, or stderr. A final claim still requires the full
-deployed HG writer sidecar and a decompile-proven typed EE writer/handoff.
+exact-shape rewrites, both area contexts observed, 143 generated ACKs, empty
+stderr, and zero strict/semantic quarantines, quarantine artifacts, rewrite
+failures, terminal residuals, WARN, or ERROR. A final claim still requires the
+full deployed HG writer sidecar and a decompile-proven typed EE writer/handoff.
 
 Writer evidence now enters through one sealed bounded factory instead of a
 caller-constructed observation. The only admissible trace order is
@@ -122,8 +128,9 @@ hgbridge_proxy2.exe --packet-dump --log C:\nwnbridge\<run>\proxy.structured.log 
 Alternatively pass `-TerminalWriterTracePath C:\secure\terminal-writer-v1.tsv`
 to `tools\test-hg-bridge.ps1`. A diagnostic destination is mandatory:
 `--packet-dump` plus `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`. Correlation is
-written to the version-9 `.terminal.tsv` row with artifact status, verdict,
-trace id, message id, and component SHA-256. The file is private operator
+written to the version-11 `.terminal.tsv` rows with artifact status, verdict,
+trace id, message id, component SHA-256, and two-sided proof-join state. The
+file is private operator
 evidence and must never be copied to the public repository. Current
 DiamondProbe logs do not satisfy this contract because they truncate output to
 a suffix and do not retain the substantive list handoff.
