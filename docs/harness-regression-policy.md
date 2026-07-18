@@ -48,12 +48,28 @@ flags, so it did not issue
 `Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
 interaction capture remains the regression evidence for that active packet.
 
-At the 2026-07-18 16:20 +10 check this artifact was about 17 hours 54 minutes
+At the 2026-07-18 19:20 +10 check this artifact was about 20 hours 55 minutes
 old and still met the 24-hour gameplay requirement, so another live login was
-not required. Current production evidence retains the version-9 terminal
+not required. Current production evidence retains the version-10 terminal
 contract for sequence 95: source read buffer `245..245` plus fragment `63..76`
 (13 MSB-first bits, `0x46`), and emitted read buffer `243..243` plus fragment
-`71..88` (17 bits, `00100000001000110`, packed `0x4046`).
+`71..88` (17 bits, `00100000001000110`, packed `0x4046`). The strongest
+available reference remains the live sequence-95 failure combined with the
+controlled stock Diamond writer/decompile contract; the deployed HG custom
+owner/list/finalizer trace is still unavailable.
+
+Version 10 additionally stages the complete proposed EE packet only during the
+diagnostic rerun and submits it to the existing exact full-payload validator.
+For sequence 95 the typed row consumes read buffer `243..243` and fragment bits
+through cursor 71, but the packet declares a valid-bit end of 88. The validator
+rejects at `fragment-cursor`; the artifact names `71..88` as unconsumed, never
+as typed writer output, and every claim/rewrite/cursor/trim authorization stays
+false. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-terminal-ee-audit-20260718-2007`
+processed 164 packets with 304 strict allows, 97 exact live-object claims, 19
+rewrites, and zero strict/semantic quarantines, quarantine artifacts, rewrite
+failures, terminal residuals, or stderr. A final claim still requires the full
+deployed HG writer sidecar and a decompile-proven typed EE writer/handoff.
 
 Writer evidence now enters through one sealed bounded factory instead of a
 caller-constructed observation. The only admissible trace order is

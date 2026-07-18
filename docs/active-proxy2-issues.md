@@ -17,6 +17,40 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-18 live gate and exact whole-packet EE candidate audit: the newest
+  real gameplay artifact remains
+  `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
+  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 20 hours 55 minutes old
+  at the 19:20 +10 gate. It reached typed `starcore-druid60`, `Module_Loaded`,
+  native `Area_AreaLoaded` for `voyage` and `docksofascension`, and sustained
+  gameplay with 30 direct live-object claims and 45 exact-shape accepts.
+  Stderr, quarantine actions/files, WARN/ERROR, and `BNDP` were zero. It was
+  still under 24 hours, so no fresh login was required. It did not issue a walk
+  or `UseObject`; the gameplay-reaching sequence-95 interaction capture remains
+  the active failure seed.
+
+  The reference setup for this slice was that live sequence-95 failure plus the
+  controlled stock Diamond writer/decompile contract, because the deployed HG
+  custom owner/list/finalizer trace is not yet available. Production version-10
+  terminal diagnostics now stage the complete proposed EE `P/05/01` packet on
+  the heap and run the existing exact full-payload validator. The stage is
+  retained only for the explicit diagnostic rerun, avoiding overlap with normal
+  transactional rewrite buffers. On the exact capture, the typed EE row consumes
+  read buffer `243..243` and stops at fragment cursor 71, while the candidate
+  still declares bits `71..88`; the full validator therefore rejects at
+  `fragment-cursor` with candidate payload length 261. The 17 bits are reported
+  as an unconsumed fragment, not as writer output. Claim, rewrite, cursor, and
+  trim authority all remain false; no final-claim observation is constructed.
+
+  Focused whole-packet audit and terminal/tail9 tests, formatting, `cargo check`,
+  and the full release build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-ee-audit-20260718-2007`
+  processed 164 packets with 304 strict allows, 97 exact live-object claims,
+  19 rewrites, and zero strict/semantic quarantines, quarantine artifacts,
+  rewrite failures, terminal residuals, or stderr. Next: obtain a complete
+  deployed HG owner/list/finalizer sidecar tied byte-for-byte to sequence 95,
+  use it to decide ownership of source fragment `63..76`, implement only the
+  proven typed EE writer/handoff, and rerun live door `UseObject` to completion.
 - 2026-07-18 live gate and bounded operator trace ingestion: the newest real
   gameplay artifact is still
   `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,

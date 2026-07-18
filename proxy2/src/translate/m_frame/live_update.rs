@@ -2759,8 +2759,22 @@ mod fixture_free_tests {
                 .is_none(),
             "both source and emitted terminal continuation invariants are required"
         );
+        let exact_candidate_capture =
+            live_object_update::format_live_object_update_terminal_tail9_handoff_capture(
+                "live-object-update-records",
+                &payload,
+                failure,
+            )
+            .expect("the exact failure payload should support a bounded EE candidate audit");
+        assert!(exact_candidate_capture.contains(
+            "terminal_ee_writer_candidate\tstatus\texact-payload-rejected\ttyped_row_exact\ttrue\tcandidate_payload_len\t261\tcandidate_read_buffer\t243..243\ttyped_row_read_buffer\t243..243\tunconsumed_fragment\t71..88\tcandidate_fragment_end\t88\texact_payload_validator_accepted\tfalse\treject_stage\tfragment-cursor\treject_read_buffer\t243..243\treject_fragment_cursor\t71\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
+        ));
         let mut capture_payload = payload.clone();
-        let capture_record_offset = 7usize.saturating_add(failure.offset);
+        // `failure.offset` belongs to the staged mutable read buffer after
+        // earlier rows grew. Mutate the immutable source header bound by the
+        // writer requirement so the diagnostic rerun must reject a genuinely
+        // different packet rather than unrelated bytes at the staged offset.
+        let capture_record_offset = 7usize.saturating_add(writer_requirement.source_record_offset);
         capture_payload[capture_record_offset + 1] = 0x0A;
         capture_payload[capture_record_offset + 2..capture_record_offset + 6]
             .copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
@@ -2771,7 +2785,7 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t9\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t10\n"));
         let payload_md5_hint = format!("{:x}", md5::compute(&capture_payload));
         assert!(capture.contains(&format!("payload_md5_hint\t{payload_md5_hint}")));
         assert!(capture.contains(
@@ -2792,6 +2806,9 @@ mod fixture_free_tests {
         assert!(capture.contains(
             "writer_handoff_correlation\tartifact_status\tnot-configured\tverdict\tincomplete-trace\twriter_handoff_observed\tfalse\tclaimable\tfalse\ttrace_id\tnone\tmessage_id\tnone\tcomponent_sha256\tnone"
         ));
+        assert!(capture.contains(
+            "terminal_ee_writer_candidate\tstatus\tunavailable-bounded-rerun-mismatch\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
+        ), "capture omitted mismatch audit row:\n{capture}");
         assert!(capture.contains(
             "ee_final_claim_readiness\tobservation\tnone\tverdict\tincomplete-typed-ee-writer\tready\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));

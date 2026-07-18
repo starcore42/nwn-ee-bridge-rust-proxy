@@ -69,6 +69,7 @@ mod reader;
 mod record;
 mod tail_repair;
 mod terminal_claim;
+mod terminal_ee_writer;
 mod terminal_evidence;
 mod terminal_trace;
 mod terminal_writer_trace;
@@ -23698,8 +23699,12 @@ pub fn rewrite_update_records_payload_with_area_context_attempt(
     area_context: Option<&AreaPlaceableContext>,
 ) -> LiveObjectUpdateRewriteAttempt {
     let mut failure = None;
-    let summary =
-        rewrite_update_records_payload_with_area_context_inner(payload, area_context, &mut failure);
+    let summary = rewrite_update_records_payload_with_area_context_inner(
+        payload,
+        area_context,
+        &mut failure,
+        None,
+    );
     LiveObjectUpdateRewriteAttempt { summary, failure }
 }
 
@@ -23707,6 +23712,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
     rewrite_failure: &mut Option<LiveObjectUpdateRewriteFailure>,
+    mut terminal_ee_writer_audit: Option<
+        &mut Option<terminal_ee_writer::TerminalEeWholePacketAudit>,
+    >,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
         eprintln!(
@@ -27047,7 +27055,11 @@ fn rewrite_update_records_payload_with_area_context_inner(
         let bit_cursor_was_reliable = bit_cursor_reliable;
         let update_start_bit_cursor = bit_cursor;
         let source_bit_cursor = rewrite_bit_ledger.source_cursor_for_emitted_cursor(bit_cursor);
-        let terminal_tail9_residual = record::terminal_door_placeable_tail9_residual_evidence(
+        // The whole-packet EE stage owns full byte/bit vectors. Retain it only
+        // for the diagnostic rerun so normal rewrites do not overlap those
+        // buffers with the record rewriter's transactional clones.
+        let retain_terminal_ee_stage = terminal_ee_writer_audit.is_some();
+        let terminal_tail9_analysis = record::terminal_door_placeable_tail9_analysis(
             &live_bytes,
             offset,
             record_end,
@@ -27055,20 +27067,21 @@ fn rewrite_update_records_payload_with_area_context_inner(
             source_bit_cursor,
             &fragment_bits,
             bit_cursor,
+            retain_terminal_ee_stage,
         )
-        .map(|mut evidence| {
-            evidence.source_record_offset = unique_source_update_header_offset(
+        .map(|mut analysis| {
+            analysis.evidence.source_record_offset = unique_source_update_header_offset(
                 source_live_bytes,
-                evidence.object_type,
-                evidence.object_id,
-                evidence.raw_mask,
+                analysis.evidence.object_type,
+                analysis.evidence.object_id,
+                analysis.evidence.raw_mask,
             )
             .and_then(|offset| u32::try_from(offset).ok())
             .unwrap_or(terminal_evidence::UNKNOWN_SOURCE_RECORD_OFFSET);
-            evidence.precursor_tail =
+            analysis.evidence.precursor_tail =
                 rewrite_bit_ledger.contiguous_tail_evidence(&fragment_bits, bit_cursor);
-            evidence.terminal_fragment_handoff_correlation =
-                evidence.stock_diamond_source.and_then(|source| {
+            analysis.evidence.terminal_fragment_handoff_correlation =
+                analysis.evidence.stock_diamond_source.and_then(|source| {
                     rewrite_bit_ledger.terminal_fragment_handoff_correlation_evidence(
                         &live_bytes,
                         rewrite_bit_ledger.source_bits(&fragment_bits),
@@ -27077,7 +27090,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         offset,
                     )
                 });
-            evidence
+            analysis
         });
         let Some(record_rewrite) = record::rewrite_update_record_for_ee_with_area_context(
             &mut live_bytes,
@@ -27096,7 +27109,14 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     read_u32_le(&live_bytes, offset + 6).map(|mask| format!("0x{mask:08X}"))
                 );
             }
-            if let Some(evidence) = terminal_tail9_residual {
+            if let Some(analysis) = terminal_tail9_analysis {
+                if let Some(audit) = terminal_ee_writer_audit.as_deref_mut() {
+                    *audit = analysis
+                        .ee_stage
+                        .as_ref()
+                        .and_then(terminal_ee_writer::audit_staged_terminal_ee_candidate);
+                }
+                let evidence = analysis.evidence;
                 let kind = LiveObjectUpdateRewriteFailureKind::
                     DoorPlaceableTail9TerminalResidualFragmentBits;
                 *rewrite_failure = Some(LiveObjectUpdateRewriteFailure {

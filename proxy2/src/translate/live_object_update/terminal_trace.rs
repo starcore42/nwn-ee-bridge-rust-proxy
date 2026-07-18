@@ -29,7 +29,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "9".to_string(),
+            "10".to_string(),
         ],
     );
     write_tsv_line(
@@ -144,6 +144,83 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
         ];
         correlation_columns.extend(terminal_writer_trace_identity_columns(correlation));
         write_tsv_line(&mut out, &correlation_columns);
+        if let Some(audit) =
+            super::terminal_ee_writer::audit_terminal_ee_writer_candidate(payload, failure)
+        {
+            let reject = audit.reject;
+            write_tsv_line(
+                &mut out,
+                &[
+                    "terminal_ee_writer_candidate".to_string(),
+                    "status".to_string(),
+                    audit.status().to_string(),
+                    "typed_row_exact".to_string(),
+                    "true".to_string(),
+                    "candidate_payload_len".to_string(),
+                    audit.candidate_payload_length.to_string(),
+                    "candidate_read_buffer".to_string(),
+                    format!(
+                        "{}..{}",
+                        audit.typed_row_read_buffer_cursor, audit.candidate_read_buffer_end
+                    ),
+                    "typed_row_read_buffer".to_string(),
+                    format!(
+                        "{}..{}",
+                        audit.typed_row_read_buffer_cursor, audit.typed_row_read_buffer_end
+                    ),
+                    "unconsumed_fragment".to_string(),
+                    format!(
+                        "{}..{}",
+                        audit.typed_row_fragment_cursor, audit.candidate_fragment_bit_end
+                    ),
+                    "candidate_fragment_end".to_string(),
+                    audit.candidate_fragment_bit_end.to_string(),
+                    "exact_payload_validator_accepted".to_string(),
+                    audit.exact_payload_validator_accepted.to_string(),
+                    "reject_stage".to_string(),
+                    audit
+                        .reject_stage()
+                        .map(|stage| stage.as_str())
+                        .unwrap_or("none")
+                        .to_string(),
+                    "reject_read_buffer".to_string(),
+                    reject
+                        .and_then(|reject| reject.offset.zip(reject.record_end))
+                        .map(|(cursor, end)| format!("{cursor}..{end}"))
+                        .unwrap_or_else(|| "none".to_string()),
+                    "reject_fragment_cursor".to_string(),
+                    reject
+                        .and_then(|reject| reject.bit_cursor)
+                        .map(|cursor| cursor.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    "claimable".to_string(),
+                    audit.authorizes_claim().to_string(),
+                    "rewrite_authorized".to_string(),
+                    audit.authorizes_rewrite().to_string(),
+                    "cursor_advance_authorized".to_string(),
+                    audit.authorizes_cursor_advance().to_string(),
+                    "fragment_trim_authorized".to_string(),
+                    audit.authorizes_fragment_trim().to_string(),
+                ],
+            );
+        } else {
+            write_tsv_line(
+                &mut out,
+                &[
+                    "terminal_ee_writer_candidate".to_string(),
+                    "status".to_string(),
+                    "unavailable-bounded-rerun-mismatch".to_string(),
+                    "claimable".to_string(),
+                    "false".to_string(),
+                    "rewrite_authorized".to_string(),
+                    "false".to_string(),
+                    "cursor_advance_authorized".to_string(),
+                    "false".to_string(),
+                    "fragment_trim_authorized".to_string(),
+                    "false".to_string(),
+                ],
+            );
+        }
         let final_claim_readiness = requirement.ee_final_claim_readiness_without_observation();
         write_tsv_line(
             &mut out,

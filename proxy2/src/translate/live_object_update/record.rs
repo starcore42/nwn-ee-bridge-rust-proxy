@@ -127,6 +127,26 @@ struct CompactDoorPlaceableTail9EeWritePlan {
     bytes_removed: u32,
 }
 
+/// Heap-backed EE candidate retained only while a diagnostic audit reruns the
+/// transactional update translator. This is deliberately separate from the
+/// compact retry-path failure evidence: neither the staged bytes nor fragment
+/// vector may escape into `LiveObjectUpdateRewriteFailure`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TerminalDoorPlaceableTail9EeStage {
+    pub(super) live_bytes: Vec<u8>,
+    pub(super) fragment_bits: Vec<bool>,
+    pub(super) typed_row_read_buffer_cursor: usize,
+    pub(super) typed_row_read_buffer_end: usize,
+    pub(super) typed_row_fragment_cursor: usize,
+    pub(super) candidate_fragment_bit_end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TerminalDoorPlaceableTail9Analysis {
+    pub(super) evidence: super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence,
+    pub(super) ee_stage: Option<TerminalDoorPlaceableTail9EeStage>,
+}
+
 impl CompactDoorPlaceableTail9EeWritePlan {
     fn build(
         live_bytes: &[u8],
@@ -2345,7 +2365,7 @@ fn parse_compact_door_placeable_tail9_update_claim(
     })
 }
 
-pub(super) fn terminal_door_placeable_tail9_residual_evidence(
+pub(super) fn terminal_door_placeable_tail9_analysis(
     live_bytes: &[u8],
     record_offset: usize,
     record_end: usize,
@@ -2353,7 +2373,8 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
     source_bit_cursor: usize,
     emitted_fragment_bits: &[bool],
     emitted_bit_cursor: usize,
-) -> Option<super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence> {
+    retain_ee_stage: bool,
+) -> Option<TerminalDoorPlaceableTail9Analysis> {
     if record_end != live_bytes.len()
         || live_bytes.get(record_offset).copied() != Some(b'U')
         || record_offset + LEGACY_UPDATE_HEADER_BYTES > record_end
@@ -2593,7 +2614,7 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
             rewritten_bits.len(),
         );
 
-    Some(super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
+    let evidence = super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
         // The record offset here belongs to the mutable parser work buffer.
         // The outer transaction binds it back to the immutable attempt input
         // only when that exact U/type/id/mask header is unique there.
@@ -2628,7 +2649,16 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         end_aligned_diamond_reader_candidates,
         source_suffix_candidate_count,
         source_suffix_candidates,
-    })
+    };
+    let ee_stage = retain_ee_stage.then_some(TerminalDoorPlaceableTail9EeStage {
+        live_bytes: emitted_live_bytes,
+        fragment_bits: rewritten_bits,
+        typed_row_read_buffer_cursor: emitted_typed_claim.read_end,
+        typed_row_read_buffer_end: emitted_record_end,
+        typed_row_fragment_cursor: emitted_typed_claim.next_bit_cursor,
+        candidate_fragment_bit_end: evidence.rewritten_fragment_bit_count,
+    });
+    Some(TerminalDoorPlaceableTail9Analysis { evidence, ee_stage })
 }
 
 fn terminal_end_aligned_diamond_reader_candidates(
