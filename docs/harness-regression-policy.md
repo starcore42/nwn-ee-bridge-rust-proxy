@@ -37,12 +37,14 @@ Latest known live HG proxy status: the current account-5 gameplay artifact is
 `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223`,
 with structured log
 `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`
-timestamped `2026-07-19T01:54:31.4350837+10:00`. It selected typed
-`starcore-druid60`, reached `Module_Loaded`, completed native
-`Area_AreaLoaded` for `docksofascension`, and remained active for more than 90
-seconds past area completion with 52 exact live-object accepts and advancing
-client acknowledgements. Proxy stderr, quarantine files, error/termination
-rows, and `BNDP` disconnects were zero. The emitted Area packet was already
+with last write `2026-07-19T01:54:46.6027963+10:00` and final structured row
+`2026-07-19T01:54:46.602975+10:00`. It selected typed `starcore-druid60`,
+reached `Module_Loaded`, completed native `Area_AreaLoaded` for
+`docksofascension` at `2026-07-19T01:53:00.120803+10:00`, and remained active
+106.48 seconds past area completion with 61 exact live-object accepts and
+advancing client acknowledgements. Proxy stderr, quarantine files,
+error/termination rows, and `BNDP` disconnects were zero; the only WARN was the
+expected pre-seeded NWSync-manifest notice. The emitted Area packet was already
 normalized at width 11 / height 14, so this run proves sustained gameplay and
 no regression but did not directly exercise the combined height/sound repair.
 It carried no interaction flags and did not issue the sequence-95 `UseObject`;
@@ -72,9 +74,10 @@ emitted contract at `243..243` plus `71..88` (17 bits,
 live failure combined with the controlled stock Diamond writer/decompile; the
 deployed HG custom owner/list/finalizer sidecar is still unavailable.
 
-Version 11 joins two opaque diagnostic proofs. The source token requires one
-ordered v1 sidecar whose complete finalized `P/05/01` bytes exactly equal the
-source payload. The EE token can be minted only from the record parser's opaque
+Version 12 joins two opaque diagnostic proofs. The source token requires one
+uniquely selected ordered v1 trace block whose complete finalized `P/05/01`
+bytes exactly equal the source payload. The EE token can be minted only from
+the record parser's opaque
 typed stage after the full candidate validator accepts and its emitted record
 offset, `U/type/id/translated-mask`, MSB-first fragment span, and terminal
 cursors exactly match the requirement; it retains the exact candidate and
@@ -84,17 +87,28 @@ the normal exact-claim boundary. Sequence 95 has neither token, reports
 `incomplete-source-and-ee-proof`, and remains rejected without changing wire
 bytes, claims, cursor movement, or fragment trimming.
 
-All 57 terminal-focused tests and the debug production build pass. Strict
-replay `C:\nwnbridge\codex-proxy2-replay-terminal-proof-join-20260718-2328`
-processed 164 packets with 304 strict allows, 97 exact live-object claims, 19
-exact-shape rewrites, both area contexts observed, 143 generated ACKs, empty
-stderr, and zero strict/semantic quarantines, quarantine artifacts, rewrite
-failures, terminal residuals, WARN, or ERROR. A final claim still requires the
-full deployed HG writer sidecar and a decompile-proven typed EE writer/handoff.
+All 61 terminal-focused tests, formatting, locked offline `cargo check`, the
+debug production build, full Release bridge build, diff checks, and independent
+fail-closed/wire review pass. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-terminal-journal-20260719-045358` processed
+164 packets with 304 strict allows, 97 exact live-object claims, 19 exact-shape
+rewrites, ten Area rewrites, both Area contexts, and 143 generated ACKs. Stderr,
+WARN/ERROR/BNDP, strict/semantic quarantines and artifacts, rewrite failures,
+terminal residuals, and leftover replay ports were zero. A final claim still
+requires the deployed HG journal and a decompile-proven typed EE writer/handoff.
 
-Writer evidence now enters through one sealed bounded factory instead of a
-caller-constructed observation. The only admissible trace order is
-owner-begin, owner-end, list-handoff, then finalizer. The factory validates the
+Writer evidence enters through one sealed bounded factory instead of a
+caller-constructed observation. `--terminal-writer-trace` now accepts one
+private journal containing 1 through 64 immediately consecutive six-row v1
+blocks. The whole journal is capped at 8,421,376 bytes and each decoded payload
+at 524,288 bytes. There are no blank, comment, or separator rows. Duplicate
+`(trace_id,message_id,component_sha256)` identities, partial blocks, malformed
+UTF-8 or TSV/number/hex syntax, entry overflow, file overflow, malformed CNW
+envelopes, invalid declared splits, non-update record offsets, and inconsistent
+owner/list/finalizer cursors fail startup.
+
+Within each block, the only admissible trace order is owner-begin, owner-end,
+list-handoff, then finalizer. The factory validates the
 `P/05/01` envelope and little-endian declared split, binds byte/finalizer
 cursors to that split, decodes the CNW valid-bit end, and derives the bracketed
 `U/type/id/mask` plus terminal MSB-first bits from the same finalized payload.
@@ -110,8 +124,8 @@ therefore persist the full finalized CNW message privately, not only the
 suffix, and pair it with the writer/list bracket at `0x445160`/`0x507FC0` and
 finalizer at `0x508B80`.
 
-The private operator sidecar is exactly six UTF-8 (no BOM) tab-separated rows
-in this order; placeholders in angle brackets are values, not literal text:
+Each journal block is exactly six UTF-8 (no BOM) tab-separated rows in this
+order; placeholders in angle brackets are values, not literal text:
 
 ```text
 terminal-writer-trace\tversion\t1\ttrace_id\t<positive-decimal>\tmessage_id\t<16-hex>\tcomponent_sha256\t<64-hex>
@@ -122,7 +136,10 @@ finalize\ttrace_id\t<T>\tmessage_id\t<M>\tcomponent_sha256\t<H>\tabsolute_read_b
 finalized-payload\ttrace_id\t<T>\tmessage_id\t<M>\tcomponent_sha256\t<H>\thex\t<complete-P/05/01-hex>
 ```
 
-`T`, `M`, and `H` must repeat the header identity exactly on every event.
+Blocks are concatenated directly with no intervening blank or separator row;
+the normal final newline and CRLF line endings are accepted. `T`, `M`, and `H`
+must repeat the block header identity exactly on every event, and the complete
+identity tuple must be unique across the journal.
 Writer byte coordinates are absolute within the finalized `P/05/01`, including
 its seven-byte envelope: owner-begin record/read offsets are equal, owner-end,
 list-handoff, and final read offsets equal the little-endian declared split.
@@ -132,9 +149,15 @@ final fragment cursors must agree with the valid-bit end derived from the
 complete payload. The payload hex is even-length and contains every finalized
 byte, not a suffix or digest.
 
-Supply the finished file before proxy startup. Proxy2 opens, bounds, parses,
-and caches it once; a partial file or later replacement is not observed. Direct
-CLI use is:
+Supply the finished journal before proxy startup. Proxy2 opens, bounds, parses,
+and caches it once; later appends or replacement are not observed. For each
+quarantined source it first counts complete byte-for-byte payload matches.
+Zero yields `selection_status=no-payload-match` with no selected identity or
+source token. One yields `unique-payload-match` and only then runs the existing
+record/cursor/bit requirement correlation; uniqueness alone does not mint a
+token. More than one yields `ambiguous-payload-match` and fails closed before
+requirement correlation, with no provenance or token even if one block would
+otherwise match. Direct CLI use is:
 
 ```powershell
 hgbridge_proxy2.exe --packet-dump --log C:\nwnbridge\<run>\proxy.structured.log --terminal-writer-trace C:\secure\terminal-writer-v1.tsv <normal proxy arguments>
@@ -143,10 +166,12 @@ hgbridge_proxy2.exe --packet-dump --log C:\nwnbridge\<run>\proxy.structured.log 
 Alternatively pass `-TerminalWriterTracePath C:\secure\terminal-writer-v1.tsv`
 to `tools\test-hg-bridge.ps1`. A diagnostic destination is mandatory:
 `--packet-dump` plus `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`. Correlation is
-written to the version-11 `.terminal.tsv` rows with artifact status, verdict,
-trace id, message id, component SHA-256, and two-sided proof-join state. The
-file is private operator
-evidence and must never be copied to the public repository. Current
+written to the version-12 `.terminal.tsv` rows with artifact status, selection
+status, journal artifact count, payload match count, verdict, selected trace
+identity, and two-sided proof-join state. Journal selection and its opaque
+source token remain diagnostic evidence only: they cannot claim, rewrite,
+advance a cursor, trim a fragment, or mutate wire bytes. The file is private
+operator evidence and must never be copied to the public repository. Current
 DiamondProbe logs do not satisfy this contract because they truncate output to
 a suffix and do not retain the substantive list handoff.
 

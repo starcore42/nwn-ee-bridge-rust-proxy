@@ -2785,7 +2785,7 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t11\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t12\n"));
         let payload_md5_hint = format!("{:x}", md5::compute(&capture_payload));
         assert!(capture.contains(&format!("payload_md5_hint\t{payload_md5_hint}")));
         assert!(capture.contains(
@@ -2804,7 +2804,7 @@ mod fixture_free_tests {
             "packet_correlation_required\texact-payload-bytes\tfinal_ee_claim_required\ttrue\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         assert!(capture.contains(
-            "writer_handoff_correlation\tartifact_status\tnot-configured\tverdict\tincomplete-trace\twriter_handoff_observed\tfalse\tclaimable\tfalse\ttrace_id\tnone\tmessage_id\tnone\tcomponent_sha256\tnone"
+            "writer_handoff_correlation\tartifact_status\tnot-configured\tselection_status\tnot-configured\tjournal_artifact_count\t0\tpayload_match_count\t0\tverdict\tincomplete-trace\twriter_handoff_observed\tfalse\tclaimable\tfalse\ttrace_id\tnone\tmessage_id\tnone\tcomponent_sha256\tnone"
         ));
         assert!(capture.contains(
             "terminal_ee_writer_candidate\tstatus\tunavailable-bounded-rerun-mismatch\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"

@@ -2,9 +2,12 @@
 //!
 //! A writer trace is diagnostic proof, not a live rewrite input. Exact proof
 //! is constructed only here from one ordered owner/list/finalizer trace and
-//! one complete finalized `P/05/01` payload. The factory validates the CNW
-//! envelope, derives record identity and terminal MSB-first bits from those
-//! finalized bytes, and then compares the entire payload with quarantine.
+//! one complete finalized `P/05/01` payload. A configured journal may contain
+//! multiple independently sealed traces. Correlation first requires one unique
+//! full-payload selection, then applies the existing exact-requirement proof.
+//! The factory validates the CNW envelope, derives record identity and terminal
+//! MSB-first bits from those finalized bytes, and compares the entire payload
+//! with quarantine.
 
 use std::{
     fs::File,
@@ -26,8 +29,10 @@ const TERMINAL_WRITER_TRACE_ARTIFACT_VERSION: &str = "1";
 const TERMINAL_WRITER_TRACE_ARTIFACT_OVERHEAD_BYTES: usize = 4 * 1024;
 const MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES: usize =
     MAX_REASONABLE_LIVE_PAYLOAD_BYTES * 2 + TERMINAL_WRITER_TRACE_ARTIFACT_OVERHEAD_BYTES;
+const MAX_TERMINAL_WRITER_TRACE_JOURNAL_ARTIFACTS: usize = 64;
+const MAX_TERMINAL_WRITER_TRACE_JOURNAL_BYTES: usize = MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES * 8;
 
-static TERMINAL_WRITER_TRACE_ARTIFACT: OnceLock<OwnedTerminalWriterTraceArtifact> = OnceLock::new();
+static TERMINAL_WRITER_TRACE_JOURNAL: OnceLock<OwnedTerminalWriterTraceJournal> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TerminalWriterTraceArtifactStatus {
@@ -52,9 +57,31 @@ impl TerminalWriterTraceArtifactStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TerminalWriterTraceSelectionStatus {
+    NotConfigured,
+    NoPayloadMatch,
+    UniquePayloadMatch,
+    AmbiguousPayloadMatch,
+}
+
+impl TerminalWriterTraceSelectionStatus {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not-configured",
+            Self::NoPayloadMatch => "no-payload-match",
+            Self::UniquePayloadMatch => "unique-payload-match",
+            Self::AmbiguousPayloadMatch => "ambiguous-payload-match",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TerminalWriterTraceCorrelation {
     pub(super) artifact_status: TerminalWriterTraceArtifactStatus,
+    pub(super) selection_status: TerminalWriterTraceSelectionStatus,
+    pub(super) artifact_count: usize,
+    pub(super) payload_match_count: usize,
     pub(super) verdict: LiveObjectUpdateTerminalWriterHandoffVerdict,
     pub(super) trace_id: Option<u64>,
     pub(super) message_id: Option<u64>,
@@ -107,6 +134,11 @@ struct TerminalWriterTraceIdentity {
     trace_id: u64,
     message_id: u64,
     component_sha256: [u8; 32],
+}
+
+#[derive(Debug)]
+struct OwnedTerminalWriterTraceJournal {
+    artifacts: Vec<OwnedTerminalWriterTraceArtifact>,
 }
 
 #[derive(Debug)]
@@ -234,33 +266,38 @@ struct ValidatedPacketLayout<'a> {
     fragment_valid_bits: usize,
 }
 
-/// Configure and eagerly validate the one private operator artifact that
-/// terminal diagnostics may ingest. Eager loading prevents a partial or
-/// transient first diagnostic read from becoming the process-wide result.
+/// Configure and eagerly validate the private operator journal that terminal
+/// diagnostics may ingest. Eager loading prevents a partial or transient
+/// first diagnostic read from becoming the process-wide result.
 pub(crate) fn configure_terminal_writer_trace_path(path: PathBuf) -> Result<(), &'static str> {
-    if TERMINAL_WRITER_TRACE_ARTIFACT.get().is_some() {
+    if TERMINAL_WRITER_TRACE_JOURNAL.get().is_some() {
         return Err("already-configured");
     }
-    let artifact = load_terminal_writer_trace_artifact(&path).map_err(|status| status.as_str())?;
-    TERMINAL_WRITER_TRACE_ARTIFACT
-        .set(artifact)
+    let journal = load_terminal_writer_trace_journal(&path).map_err(|status| status.as_str())?;
+    TERMINAL_WRITER_TRACE_JOURNAL
+        .set(journal)
         .map_err(|_| "already-configured")
 }
 
 pub(crate) fn terminal_writer_trace_configured() -> bool {
-    TERMINAL_WRITER_TRACE_ARTIFACT.get().is_some()
+    TERMINAL_WRITER_TRACE_JOURNAL.get().is_some()
 }
 
-/// Correlate the configured operator artifact inside this sealed module.
-/// Loading is bounded and happens at most once. Even an exact result remains
-/// diagnostic: `ExactObservedHandoff::allows_exact_claim()` is always false.
+/// Correlate the configured operator journal inside this sealed module.
+/// Loading is bounded and happens at most once. A source token is minted only
+/// after a unique complete-payload selection also reaches exact requirement
+/// correlation. Even that result remains diagnostic:
+/// `ExactObservedHandoff::allows_exact_claim()` is false.
 pub(super) fn correlate_terminal_writer_trace(
     requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
     quarantined_payload: &[u8],
 ) -> TerminalWriterTraceCorrelation {
-    let Some(artifact) = TERMINAL_WRITER_TRACE_ARTIFACT.get() else {
+    let Some(journal) = TERMINAL_WRITER_TRACE_JOURNAL.get() else {
         return TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::NotConfigured,
+            selection_status: TerminalWriterTraceSelectionStatus::NotConfigured,
+            artifact_count: 0,
+            payload_match_count: 0,
             verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace,
             trace_id: None,
             message_id: None,
@@ -268,7 +305,60 @@ pub(super) fn correlate_terminal_writer_trace(
             exact_handoff: None,
         };
     };
-    correlate_loaded_terminal_writer_trace(requirement, quarantined_payload, artifact)
+    correlate_loaded_terminal_writer_trace_journal(requirement, quarantined_payload, journal)
+}
+
+fn correlate_loaded_terminal_writer_trace_journal(
+    requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+    quarantined_payload: &[u8],
+    journal: &OwnedTerminalWriterTraceJournal,
+) -> TerminalWriterTraceCorrelation {
+    let artifact_count = journal.artifacts.len();
+    let payload_matches: Vec<_> = journal
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.finalized_payload == quarantined_payload)
+        .collect();
+    let payload_match_count = payload_matches.len();
+    if payload_matches.is_empty() {
+        return TerminalWriterTraceCorrelation {
+            artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
+            selection_status: TerminalWriterTraceSelectionStatus::NoPayloadMatch,
+            artifact_count,
+            payload_match_count,
+            verdict: if requirement.source_contract_is_valid() {
+                LiveObjectUpdateTerminalWriterHandoffVerdict::PacketMismatch
+            } else {
+                LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace
+            },
+            trace_id: None,
+            message_id: None,
+            component_sha256: None,
+            exact_handoff: None,
+        };
+    }
+    if payload_match_count > 1 {
+        return TerminalWriterTraceCorrelation {
+            artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
+            selection_status: TerminalWriterTraceSelectionStatus::AmbiguousPayloadMatch,
+            artifact_count,
+            payload_match_count,
+            verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace,
+            trace_id: None,
+            message_id: None,
+            component_sha256: None,
+            exact_handoff: None,
+        };
+    }
+
+    let mut correlation = correlate_loaded_terminal_writer_trace(
+        requirement,
+        quarantined_payload,
+        payload_matches[0],
+    );
+    correlation.artifact_count = artifact_count;
+    correlation.payload_match_count = payload_match_count;
+    correlation
 }
 
 fn correlate_loaded_terminal_writer_trace(
@@ -290,6 +380,9 @@ fn correlate_loaded_terminal_writer_trace(
         });
     TerminalWriterTraceCorrelation {
         artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
+        selection_status: TerminalWriterTraceSelectionStatus::UniquePayloadMatch,
+        artifact_count: 1,
+        payload_match_count: 1,
         verdict,
         trace_id: Some(artifact.identity.trace_id),
         message_id: Some(artifact.identity.message_id),
@@ -298,42 +391,107 @@ fn correlate_loaded_terminal_writer_trace(
     }
 }
 
-fn load_terminal_writer_trace_artifact(
+fn load_terminal_writer_trace_journal(
     path: &Path,
-) -> Result<OwnedTerminalWriterTraceArtifact, TerminalWriterTraceArtifactStatus> {
+) -> Result<OwnedTerminalWriterTraceJournal, TerminalWriterTraceArtifactStatus> {
     let file = File::open(path).map_err(|_| TerminalWriterTraceArtifactStatus::ReadFailed)?;
     // Inspect and read the same open handle. `take(MAX + 1)` bounds allocation
     // even if a producer grows or replaces the path between metadata and read.
     let metadata = file
         .metadata()
         .map_err(|_| TerminalWriterTraceArtifactStatus::ReadFailed)?;
-    let artifact_len =
+    let journal_len =
         usize::try_from(metadata.len()).map_err(|_| TerminalWriterTraceArtifactStatus::TooLarge)?;
-    if artifact_len > MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES {
+    if journal_len > MAX_TERMINAL_WRITER_TRACE_JOURNAL_BYTES {
         return Err(TerminalWriterTraceArtifactStatus::TooLarge);
     }
-    let read_limit = u64::try_from(MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES)
+    let read_limit = u64::try_from(MAX_TERMINAL_WRITER_TRACE_JOURNAL_BYTES)
         .unwrap_or(u64::MAX)
         .saturating_add(1);
-    let mut bytes = Vec::with_capacity(artifact_len.min(MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES));
+    let mut bytes = Vec::with_capacity(journal_len.min(MAX_TERMINAL_WRITER_TRACE_JOURNAL_BYTES));
     file.take(read_limit)
         .read_to_end(&mut bytes)
         .map_err(|_| TerminalWriterTraceArtifactStatus::ReadFailed)?;
-    if bytes.len() > MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES {
+    if bytes.len() > MAX_TERMINAL_WRITER_TRACE_JOURNAL_BYTES {
         return Err(TerminalWriterTraceArtifactStatus::TooLarge);
     }
     let text =
         std::str::from_utf8(&bytes).map_err(|_| TerminalWriterTraceArtifactStatus::InvalidUtf8)?;
-    parse_terminal_writer_trace_artifact(text)
+    parse_terminal_writer_trace_journal(text)
         .ok_or(TerminalWriterTraceArtifactStatus::InvalidFormat)
 }
 
-/// Parse the private, single-trace v1 sidecar format. Each ordered event
-/// repeats the trace id, message id, and component fingerprint so separately
-/// captured rows cannot be spliced into one observation. Cursor coordinates
-/// are absolute writer byte offsets and full MSB-first fragment offsets.
+/// Parse one or more consecutive private v1 trace blocks. Every six-line block
+/// remains independently sealed: each ordered event repeats the trace id,
+/// message id, and component fingerprint so separately captured rows cannot be
+/// spliced into one observation. Cursor coordinates are absolute writer byte
+/// offsets and full MSB-first fragment offsets. Partial blocks, separators,
+/// duplicate identities, and journals beyond the entry cap fail closed.
+fn parse_terminal_writer_trace_journal(text: &str) -> Option<OwnedTerminalWriterTraceJournal> {
+    let mut lines = text.lines();
+    let mut artifacts = Vec::new();
+    while let Some(header_line) = lines.next() {
+        if artifacts.len() >= MAX_TERMINAL_WRITER_TRACE_JOURNAL_ARTIFACTS {
+            return None;
+        }
+        let block = [
+            header_line,
+            lines.next()?,
+            lines.next()?,
+            lines.next()?,
+            lines.next()?,
+            lines.next()?,
+        ];
+        let artifact = parse_terminal_writer_trace_artifact_lines(block)?;
+        if !terminal_writer_trace_artifact_is_structurally_valid(&artifact) {
+            return None;
+        }
+        if artifacts
+            .iter()
+            .any(|existing: &OwnedTerminalWriterTraceArtifact| {
+                existing.identity == artifact.identity
+            })
+        {
+            return None;
+        }
+        artifacts.push(artifact);
+    }
+    (!artifacts.is_empty()).then_some(OwnedTerminalWriterTraceJournal { artifacts })
+}
+
+fn terminal_writer_trace_artifact_is_structurally_valid(
+    artifact: &OwnedTerminalWriterTraceArtifact,
+) -> bool {
+    let Some(layout) = validated_packet_layout(&artifact.finalized_payload) else {
+        return false;
+    };
+    artifact.absolute_record_offset == artifact.owner_begin_read_cursor
+        && artifact.absolute_record_offset >= LIVE_OBJECT_CNW_WRITER_HEADER_BYTES
+        && artifact
+            .absolute_record_offset
+            .checked_add(LIVE_OBJECT_UPDATE_HEADER_BYTES)
+            .is_some_and(|end| end <= layout.declared)
+        && artifact.owner_end_read_cursor == layout.declared
+        && artifact.list_handoff_read_cursor == artifact.owner_end_read_cursor
+        && artifact.final_read_end == layout.declared
+        && artifact.owner_begin_fragment_cursor <= artifact.owner_end_fragment_cursor
+        && artifact.list_handoff_fragment_cursor == artifact.owner_end_fragment_cursor
+        && artifact.final_fragment_cursor == artifact.owner_end_fragment_cursor
+        && artifact.final_fragment_cursor == layout.fragment_valid_bits
+        && layout.payload.get(artifact.absolute_record_offset).copied() == Some(b'U')
+}
+
+#[cfg(test)]
 fn parse_terminal_writer_trace_artifact(text: &str) -> Option<OwnedTerminalWriterTraceArtifact> {
-    let lines: Vec<_> = text.lines().collect();
+    let mut journal = parse_terminal_writer_trace_journal(text)?;
+    (journal.artifacts.len() == 1)
+        .then(|| journal.artifacts.pop())
+        .flatten()
+}
+
+fn parse_terminal_writer_trace_artifact_lines(
+    lines: [&str; 6],
+) -> Option<OwnedTerminalWriterTraceArtifact> {
     let [
         header_line,
         owner_begin_line,
@@ -341,10 +499,7 @@ fn parse_terminal_writer_trace_artifact(text: &str) -> Option<OwnedTerminalWrite
         list_handoff_line,
         finalize_line,
         payload_line,
-    ] = lines.as_slice()
-    else {
-        return None;
-    };
+    ] = lines;
 
     let header = split_tsv_exact::<9>(header_line)?;
     if header[0] != "terminal-writer-trace"
@@ -990,18 +1145,27 @@ mod tests {
     }
 
     fn artifact_text(payload: &[u8], record_offset: usize) -> String {
+        artifact_text_for_identity(payload, record_offset, trace_identity())
+    }
+
+    fn artifact_text_for_identity(
+        payload: &[u8],
+        record_offset: usize,
+        identity: TerminalWriterTraceIdentity,
+    ) -> String {
         use std::fmt::Write as _;
 
         let mut payload_hex = String::with_capacity(payload.len() * 2);
         for byte in payload {
             write!(&mut payload_hex, "{byte:02X}").expect("write payload hex");
         }
-        let identity = concat!(
-            "trace_id\t17\t",
-            "message_id\t000000001234ABCD\t",
-            "component_sha256\t",
-            "A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5",
-            "A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5"
+        let mut component_sha256 = String::with_capacity(64);
+        for byte in identity.component_sha256 {
+            write!(&mut component_sha256, "{byte:02X}").expect("write component digest hex");
+        }
+        let identity = format!(
+            "trace_id\t{}\tmessage_id\t{:016X}\tcomponent_sha256\t{}",
+            identity.trace_id, identity.message_id, component_sha256
         );
         format!(
             "terminal-writer-trace\tversion\t1\t{identity}\n\
@@ -1066,6 +1230,208 @@ mod tests {
             LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace
         );
         assert!(invalid.exact_handoff.is_none());
+    }
+
+    #[test]
+    fn bounded_journal_selects_one_exact_payload_and_reports_provenance() {
+        let (payload, record_offset) = coherent_payload();
+        let mut unrelated_payload = payload.clone();
+        unrelated_payload[7] ^= 0x01;
+        let unrelated_identity = TerminalWriterTraceIdentity {
+            trace_id: 18,
+            message_id: 0x0000_0000_1234_ABCE,
+            component_sha256: [0xB6; 32],
+        };
+        let journal_text = format!(
+            "{}{}",
+            artifact_text_for_identity(&unrelated_payload, record_offset, unrelated_identity),
+            artifact_text(&payload, record_offset)
+        );
+        let journal = parse_terminal_writer_trace_journal(&journal_text)
+            .expect("two independently sealed trace blocks");
+        assert_eq!(journal.artifacts.len(), 2);
+
+        let correlation =
+            correlate_loaded_terminal_writer_trace_journal(requirement(), &payload, &journal);
+        assert_eq!(
+            correlation.artifact_status,
+            TerminalWriterTraceArtifactStatus::Loaded
+        );
+        assert_eq!(
+            correlation.selection_status,
+            TerminalWriterTraceSelectionStatus::UniquePayloadMatch
+        );
+        assert_eq!(correlation.artifact_count, 2);
+        assert_eq!(correlation.payload_match_count, 1);
+        assert_eq!(
+            correlation.verdict,
+            LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff
+        );
+        assert_eq!(correlation.trace_id, Some(trace_identity().trace_id));
+        assert_eq!(correlation.message_id, Some(trace_identity().message_id));
+        assert_eq!(
+            correlation.component_sha256,
+            Some(trace_identity().component_sha256)
+        );
+        let exact_handoff = correlation
+            .exact_handoff
+            .expect("the unique exact block should mint one opaque source token");
+        assert!(exact_handoff.matches(requirement(), &payload));
+        assert!(
+            !LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff
+                .allows_exact_claim(),
+            "journal selection must not turn source proof into wire authority"
+        );
+
+        let mut absent_payload = payload.clone();
+        absent_payload[8] ^= 0x02;
+        let absent = correlate_loaded_terminal_writer_trace_journal(
+            requirement(),
+            &absent_payload,
+            &journal,
+        );
+        assert_eq!(
+            absent.artifact_status,
+            TerminalWriterTraceArtifactStatus::Loaded
+        );
+        assert_eq!(
+            absent.selection_status,
+            TerminalWriterTraceSelectionStatus::NoPayloadMatch
+        );
+        assert_eq!(absent.artifact_count, 2);
+        assert_eq!(absent.payload_match_count, 0);
+        assert_eq!(
+            absent.verdict,
+            LiveObjectUpdateTerminalWriterHandoffVerdict::PacketMismatch
+        );
+        assert_eq!(absent.trace_id, None);
+        assert_eq!(absent.message_id, None);
+        assert_eq!(absent.component_sha256, None);
+        assert!(absent.exact_handoff.is_none());
+    }
+
+    #[test]
+    fn journal_rejects_ambiguous_payload_before_requirement_correlation() {
+        let (payload, record_offset) = coherent_payload();
+        let other_identity = TerminalWriterTraceIdentity {
+            trace_id: 19,
+            message_id: 0x0000_0000_1234_ABCF,
+            component_sha256: [0xC7; 32],
+        };
+        let journal_text = format!(
+            "{}{}",
+            artifact_text(&payload, record_offset),
+            artifact_text_for_identity(&payload, 83, other_identity)
+        );
+        let journal = parse_terminal_writer_trace_journal(&journal_text)
+            .expect("same payload with distinct identities stays parseable");
+        let correlation =
+            correlate_loaded_terminal_writer_trace_journal(requirement(), &payload, &journal);
+
+        assert_eq!(
+            correlation.artifact_status,
+            TerminalWriterTraceArtifactStatus::Loaded
+        );
+        assert_eq!(
+            correlation.selection_status,
+            TerminalWriterTraceSelectionStatus::AmbiguousPayloadMatch
+        );
+        assert_eq!(correlation.artifact_count, 2);
+        assert_eq!(correlation.payload_match_count, 2);
+        assert_eq!(
+            correlation.verdict,
+            LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace
+        );
+        assert_eq!(correlation.trace_id, None);
+        assert_eq!(correlation.message_id, None);
+        assert_eq!(correlation.component_sha256, None);
+        assert!(
+            correlation.exact_handoff.is_none(),
+            "even one requirement-exact block cannot win an ambiguous payload selection"
+        );
+    }
+
+    #[test]
+    fn journal_parser_rejects_duplicate_identities_partial_blocks_separators_and_entry_overflow() {
+        let (payload, record_offset) = coherent_payload();
+        let exact = artifact_text(&payload, record_offset);
+        assert!(parse_terminal_writer_trace_journal(&format!("{exact}{exact}")).is_none());
+
+        let partial = exact.lines().take(5).collect::<Vec<_>>().join("\n");
+        assert!(parse_terminal_writer_trace_journal(&partial).is_none());
+
+        let second_identity = TerminalWriterTraceIdentity {
+            trace_id: 18,
+            message_id: 0x0000_0000_1234_ABCE,
+            component_sha256: [0xB6; 32],
+        };
+        let separated = format!(
+            "{exact}\n{}",
+            artifact_text_for_identity(&payload, record_offset, second_identity)
+        );
+        assert!(
+            parse_terminal_writer_trace_journal(&separated).is_none(),
+            "the append-only grammar admits consecutive sealed blocks only"
+        );
+
+        let capped = (1..=MAX_TERMINAL_WRITER_TRACE_JOURNAL_ARTIFACTS)
+            .map(|trace_id| {
+                artifact_text_for_identity(
+                    &payload,
+                    record_offset,
+                    TerminalWriterTraceIdentity {
+                        trace_id: trace_id as u64,
+                        message_id: 0x1000 + trace_id as u64,
+                        component_sha256: [trace_id as u8; 32],
+                    },
+                )
+            })
+            .collect::<String>();
+        assert_eq!(
+            parse_terminal_writer_trace_journal(&capped)
+                .expect("journal at entry cap")
+                .artifacts
+                .len(),
+            MAX_TERMINAL_WRITER_TRACE_JOURNAL_ARTIFACTS
+        );
+        let overflow = format!(
+            "{capped}{}",
+            artifact_text_for_identity(
+                &payload,
+                record_offset,
+                TerminalWriterTraceIdentity {
+                    trace_id: (MAX_TERMINAL_WRITER_TRACE_JOURNAL_ARTIFACTS + 1) as u64,
+                    message_id: 0x2000,
+                    component_sha256: [0xEE; 32],
+                }
+            )
+        );
+        assert!(parse_terminal_writer_trace_journal(&overflow).is_none());
+    }
+
+    #[test]
+    fn journal_parser_rejects_malformed_packet_layout_and_writer_cursors() {
+        let (payload, record_offset) = coherent_payload();
+
+        let mut malformed_envelope = payload.clone();
+        malformed_envelope[2] = 0x02;
+        assert!(
+            parse_terminal_writer_trace_journal(&artifact_text(&malformed_envelope, record_offset))
+                .is_none()
+        );
+
+        let malformed_cursor = artifact_text(&payload, record_offset).replacen(
+            "\tabsolute_read_buffer_cursor\t236\tfragment_bit_cursor\t76\n",
+            "\tabsolute_read_buffer_cursor\t235\tfragment_bit_cursor\t76\n",
+            1,
+        );
+        assert!(parse_terminal_writer_trace_journal(&malformed_cursor).is_none());
+
+        assert!(
+            parse_terminal_writer_trace_journal(&artifact_text(&payload, record_offset + 1))
+                .is_none(),
+            "the bracket must begin at an actual U/type/id/mask record"
+        );
     }
 
     #[test]
@@ -1361,6 +1727,9 @@ mod tests {
             correlate_terminal_writer_trace(requirement(), &payload),
             TerminalWriterTraceCorrelation {
                 artifact_status: TerminalWriterTraceArtifactStatus::NotConfigured,
+                selection_status: TerminalWriterTraceSelectionStatus::NotConfigured,
+                artifact_count: 0,
+                payload_match_count: 0,
                 verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace,
                 trace_id: None,
                 message_id: None,
@@ -1377,16 +1746,39 @@ mod tests {
         let valid_path = temp_artifact_path("valid");
         std::fs::write(&valid_path, artifact_text(&payload, record_offset))
             .expect("write valid terminal writer artifact");
-        let loaded = load_terminal_writer_trace_artifact(&valid_path)
-            .expect("valid v1 terminal writer artifact should load");
-        assert_eq!(loaded.identity, trace_identity());
-        assert_eq!(loaded.finalized_payload, payload);
+        let loaded = load_terminal_writer_trace_journal(&valid_path)
+            .expect("valid single-block v1 terminal writer journal should load");
+        assert_eq!(loaded.artifacts.len(), 1);
+        assert_eq!(loaded.artifacts[0].identity, trace_identity());
+        assert_eq!(loaded.artifacts[0].finalized_payload, payload);
         std::fs::remove_file(&valid_path).expect("remove valid terminal writer artifact");
+
+        let journal_path = temp_artifact_path("valid-journal");
+        let second_identity = TerminalWriterTraceIdentity {
+            trace_id: 18,
+            message_id: 0x0000_0000_1234_ABCE,
+            component_sha256: [0xB6; 32],
+        };
+        std::fs::write(
+            &journal_path,
+            format!(
+                "{}{}",
+                artifact_text(&payload, record_offset),
+                artifact_text_for_identity(&payload, record_offset, second_identity)
+            ),
+        )
+        .expect("write valid terminal writer journal");
+        let loaded = load_terminal_writer_trace_journal(&journal_path)
+            .expect("valid consecutive v1 trace blocks should load");
+        assert_eq!(loaded.artifacts.len(), 2);
+        assert_eq!(loaded.artifacts[0].identity, trace_identity());
+        assert_eq!(loaded.artifacts[1].identity, second_identity);
+        std::fs::remove_file(&journal_path).expect("remove valid terminal writer journal");
 
         let invalid_utf8_path = temp_artifact_path("invalid-utf8");
         std::fs::write(&invalid_utf8_path, [0xFF, 0xFE]).expect("write invalid UTF-8 artifact");
         assert!(matches!(
-            load_terminal_writer_trace_artifact(&invalid_utf8_path),
+            load_terminal_writer_trace_journal(&invalid_utf8_path),
             Err(TerminalWriterTraceArtifactStatus::InvalidUtf8)
         ));
         std::fs::remove_file(&invalid_utf8_path).expect("remove invalid UTF-8 artifact");
@@ -1395,19 +1787,33 @@ mod tests {
         std::fs::write(&invalid_format_path, b"terminal-writer-trace\tversion\t2\n")
             .expect("write invalid format artifact");
         assert!(matches!(
-            load_terminal_writer_trace_artifact(&invalid_format_path),
+            load_terminal_writer_trace_journal(&invalid_format_path),
             Err(TerminalWriterTraceArtifactStatus::InvalidFormat)
         ));
         std::fs::remove_file(&invalid_format_path).expect("remove invalid format artifact");
 
+        let malformed_packet_path = temp_artifact_path("malformed-packet");
+        let mut malformed_packet = payload.clone();
+        malformed_packet[2] = 0x02;
+        std::fs::write(
+            &malformed_packet_path,
+            artifact_text(&malformed_packet, record_offset),
+        )
+        .expect("write malformed packet artifact");
+        assert!(matches!(
+            load_terminal_writer_trace_journal(&malformed_packet_path),
+            Err(TerminalWriterTraceArtifactStatus::InvalidFormat)
+        ));
+        std::fs::remove_file(&malformed_packet_path).expect("remove malformed packet artifact");
+
         let oversized_path = temp_artifact_path("oversized");
         let oversized = File::create(&oversized_path).expect("create sparse oversized artifact");
         oversized
-            .set_len((MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES as u64).saturating_add(1))
+            .set_len((MAX_TERMINAL_WRITER_TRACE_JOURNAL_BYTES as u64).saturating_add(1))
             .expect("size sparse oversized artifact");
         drop(oversized);
         assert!(matches!(
-            load_terminal_writer_trace_artifact(&oversized_path),
+            load_terminal_writer_trace_journal(&oversized_path),
             Err(TerminalWriterTraceArtifactStatus::TooLarge)
         ));
         std::fs::remove_file(&oversized_path).expect("remove oversized artifact");

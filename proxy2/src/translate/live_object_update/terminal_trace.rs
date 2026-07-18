@@ -29,7 +29,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "11".to_string(),
+            "12".to_string(),
         ],
     );
     write_tsv_line(
@@ -139,6 +139,12 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "writer_handoff_correlation".to_string(),
             "artifact_status".to_string(),
             correlation.artifact_status.as_str().to_string(),
+            "selection_status".to_string(),
+            correlation.selection_status.as_str().to_string(),
+            "journal_artifact_count".to_string(),
+            correlation.artifact_count.to_string(),
+            "payload_match_count".to_string(),
+            correlation.payload_match_count.to_string(),
             "verdict".to_string(),
             correlation.verdict.as_str().to_string(),
             "writer_handoff_observed".to_string(),
@@ -948,6 +954,7 @@ mod tests {
         LiveObjectUpdateTerminalWriterHandoffVerdict,
         terminal_writer_trace::{
             TerminalWriterTraceArtifactStatus, TerminalWriterTraceCorrelation,
+            TerminalWriterTraceSelectionStatus,
         },
     };
 
@@ -975,6 +982,9 @@ mod tests {
     fn terminal_writer_trace_identity_columns_preserve_loaded_artifact_provenance() {
         let columns = terminal_writer_trace_identity_columns(&TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
+            selection_status: TerminalWriterTraceSelectionStatus::UniquePayloadMatch,
+            artifact_count: 3,
+            payload_match_count: 1,
             verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff,
             trace_id: Some(17),
             message_id: Some(0x1234_ABCD),

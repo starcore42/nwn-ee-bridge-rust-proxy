@@ -17,6 +17,39 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-19 bounded terminal-writer trace journal: the newest live HG evidence
+  remains
+  `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`,
+  last written `2026-07-19T01:54:46.6027963+10:00` and about 2 hours 25 minutes
+  old at the 04:20 gate. It reached typed character selection, `Module_Loaded`,
+  native Docks `Area_AreaLoaded`, and 106.48 seconds of continued gameplay with
+  61 exact live-object accepts and advancing ACKs. Stderr, quarantine files,
+  `BNDP`, ERROR, and termination rows were zero, so no fresh login was needed.
+
+  The deployed HG owner/list/finalizer producer remains unavailable, while a
+  real producer will naturally see many finalized messages. Production now
+  eagerly loads a bounded journal of 1 through 64 consecutive, independently
+  sealed six-row v1 traces rather than requiring manual extraction of one
+  block. The journal is capped at 8,421,376 bytes and each payload at 524,288
+  bytes. Structural packet/cursor validation, duplicate identity rejection,
+  and incremental parsing fail closed. Correlation requires one unique complete
+  payload match before running the existing exact requirement proof; zero and
+  ambiguous matches select no identity and mint no source token. Version-12
+  terminal diagnostics expose selection status plus journal and match counts.
+  This remains diagnostic-only: no byte, BOOL, MSB-first bit cursor, claim,
+  rewrite, advance, or fragment trim changed, and sequence 95 stays rejected.
+
+  All 61 terminal-focused tests, formatting, locked offline `cargo check`, the
+  debug production build, the full Release bridge build, diff checks, and an
+  independent fail-closed/wire review pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-journal-20260719-045358` processed
+  all 164 packets with 304 strict allows, 97 exact claims, 19 rewrites, ten Area
+  rewrites, both Area contexts, and 143 generated ACKs. Stderr, WARN/ERROR/BNDP,
+  strict/semantic quarantines and artifacts, rewrite failures, terminal
+  residuals, and leftover replay ports were zero. Next: deploy the HG producer,
+  capture complete journal blocks around sequence 95, require one byte-exact
+  source match, then implement only the proven typed EE writer/handoff and rerun
+  live door `UseObject` through completion.
 - 2026-07-19 fresh live gate and composable legacy Area tail repair: the prior
   gameplay artifact was more than 26 hours old, so account 5 was refreshed at
   `C:\nwnbridge\codex-live-freshness-20260719-0128\harness-proxy-20260719-012352\proxy.structured.log`
@@ -42,10 +75,11 @@ not as standalone workaround targets.
 
   A rebuilt account-5 rerun reached and sustained real Docks gameplay at
   `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`
-  (last write `2026-07-19T01:54:31.4350837+10:00`). It selected typed
-  `starcore-druid60`, reached `Module_Loaded` and native `Area_AreaLoaded`, then
-  remained active more than 90 seconds past area completion with 52 exact
-  live-object accepts and advancing client acknowledgements. There were no
+  (last write `2026-07-19T01:54:46.6027963+10:00`; final structured row
+  `2026-07-19T01:54:46.602975+10:00`). It selected typed `starcore-druid60`,
+  reached `Module_Loaded` and native `Area_AreaLoaded`, then remained active
+  106.48 seconds past area completion with 61 exact live-object accepts and
+  advancing client acknowledgements. There were no
   `BNDP` disconnects, termination/error rows, quarantine files, or stderr. This
   server emission was already normalized at width 11 / height 14 and therefore
   proves the composition change did not regress live gameplay; direct execution

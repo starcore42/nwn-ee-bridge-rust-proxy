@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         tracing::info!(
             path = %path.display(),
             output_dir = %output_dir.display(),
-            "loaded and validated private terminal writer trace artifact"
+            "loaded bounded private terminal writer trace journal"
         );
     }
 
