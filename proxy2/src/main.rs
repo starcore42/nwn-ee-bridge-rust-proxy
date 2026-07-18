@@ -33,6 +33,22 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(path) = config.terminal_writer_trace.clone() {
+        translate::live_object_update::configure_terminal_writer_trace_path(path.clone()).map_err(
+            |reason| anyhow::anyhow!("terminal writer trace {}: {reason}", path.display()),
+        )?;
+        let output_dir = translate::diagnostics::probe_dump_dir().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--terminal-writer-trace requires a diagnostic output: use --packet-dump with --log, or set NWN_BRIDGE_QUARANTINE_DIR"
+            )
+        })?;
+        tracing::info!(
+            path = %path.display(),
+            output_dir = %output_dir.display(),
+            "loaded and validated private terminal writer trace artifact"
+        );
+    }
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         listen = %config.listen,

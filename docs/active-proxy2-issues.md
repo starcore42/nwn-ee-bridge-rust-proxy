@@ -17,6 +17,51 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-18 live gate and bounded operator trace ingestion: the newest real
+  gameplay artifact is still
+  `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
+  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 17 hours 54 minutes old
+  at the 16:20 +10 gate. It reached typed `starcore-druid60`, `Module_Loaded`,
+  native `Area_AreaLoaded` in `voyage` and `docksofascension`, and sustained
+  gameplay with 30 direct live-object claims and 45 exact-shape accepts.
+  Stderr, quarantine actions/files, warnings/errors, and `BNDP` were zero. It
+  remains current gameplay evidence, so no new live login was required; it did
+  not issue a walk or `UseObject`, so sequence 95 remains the interaction seed.
+
+  Proxy2 now accepts one private six-row v1 server-writer sidecar through
+  `--terminal-writer-trace`. Loading is eager at startup, reads one open handle
+  through a hard size cap, validates the complete UTF-8 TSV and finalized
+  `P/05/01` bytes, and fails startup on read/size/encoding/format errors or when
+  no diagnostic output directory is configured. Correlation retains
+  `trace_id`, `message_id`, and component SHA-256 in version-9 terminal output.
+  Each event repeats that identity; owner/list/finalizer cursor order, the
+  declared byte split, full MSB-first fragment cursor including the initial
+  three CNW bits, exact terminal `U/type/id/mask`, and complete payload bytes
+  must all agree. The immutable attempt-input record offset is resolved only
+  from a unique exact update header; duplicate same-identity headers fail
+  closed. Raw HG diagnostic replay is deferred until a staged terminal failure
+  exists and is stored separately from translator rejection state, so enabling
+  diagnostics cannot alter claims, rewrites, or quarantine routing. The exact
+  observation remains non-authorizing: the typed EE writer and final exact EE
+  validator are still missing.
+
+  The harness exposes the sidecar as `-TerminalWriterTracePath`; the canonical
+  grammar and cursor bases are documented in
+  `docs/harness-regression-policy.md`. The deployed HG producer is still the
+  blocker: existing DiamondProbe output retains only a short suffix, not the
+  full finalized message or substantive list handoff. Verification includes
+  13 trace-ingestion tests, 27 tail9 tests, three immutable-snapshot/route
+  tests, `cargo check`, and full release/debug builds. The first debug replay
+  also caught the Windows default 1 MiB stack reserve failing on the known
+  large area-load live-object packet. The source offset is now retained as one
+  bounded word, and MSVC builds reserve 8 MiB for the finite parser/retry
+  pipeline. An accelerated replay at
+  `C:\nwnbridge\codex-proxy2-replay-terminal-trace-ingest-stack8m-20260718-1751`
+  then traversed that packet and completed with empty stderr, no WARN/ERROR,
+  no strict quarantine, and no quarantine artifacts. Next: emit this exact v1
+  sidecar around the deployed HG owner/list/finalizer, correlate sequence 95,
+  implement the decompile-proven typed EE terminal writer, then rerun live door
+  `UseObject` through completion.
 - 2026-07-18 live gate and sealed terminal writer-proof ingestion: the newest
   gameplay artifact remains
   `C:\\nwnbridge\\codex-live-freshness-20260717-2224\\harness-proxy-20260717-222351\\proxy.structured.log`,
@@ -78,7 +123,7 @@ not as standalone workaround targets.
   interaction flag and does not replace the earlier sequence-95 `UseObject`
   failure seed.
 
-  Production version-8 terminal evidence no longer copies the immutable
+  Production version-9 terminal evidence no longer copies the immutable
   Diamond read-buffer end into the emitted EE side. A shared transactional byte
   plan now drives both the normal compact-tail9 rewrite and the diagnostic
   candidate: the legacy facing/state/scale/generic-state tail is nine bytes,

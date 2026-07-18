@@ -3,7 +3,7 @@
 //! These helpers know only the NWN MSB-first fragment bit packing. Door,
 //! placeable, and trigger semantics stay in their own modules.
 
-pub(super) fn decode_msb_valid_bits(fragment: &[u8], min_valid_bits: usize) -> Option<Vec<bool>> {
+pub(super) fn msb_valid_bit_count(fragment: &[u8], min_valid_bits: usize) -> Option<usize> {
     let first = *fragment.first()?;
     let final_fragment_bits = ((first & 0xE0) >> 5) as usize;
     let valid_bits = if final_fragment_bits == 0 {
@@ -18,6 +18,11 @@ pub(super) fn decode_msb_valid_bits(fragment: &[u8], min_valid_bits: usize) -> O
     if valid_bits < min_valid_bits {
         return None;
     }
+    Some(valid_bits)
+}
+
+pub(super) fn decode_msb_valid_bits(fragment: &[u8], min_valid_bits: usize) -> Option<Vec<bool>> {
+    let valid_bits = msb_valid_bit_count(fragment, min_valid_bits)?;
 
     let mut bits = Vec::with_capacity(valid_bits);
     for bit_index in 0..valid_bits {
@@ -130,5 +135,22 @@ mod tests {
             next_record_bits,
             "semantic bits must remain at cursor 3 after final-count repack"
         );
+    }
+
+    #[test]
+    fn valid_bit_count_covers_every_cnw_final_byte_header_value() {
+        for final_byte_bits in 0usize..=7 {
+            let fragment = [(final_byte_bits as u8) << 5, 0xA5];
+            let expected = if final_byte_bits == 0 {
+                16
+            } else {
+                8 + final_byte_bits
+            };
+            assert_eq!(msb_valid_bit_count(&fragment, 3), Some(expected));
+            assert_eq!(
+                decode_msb_valid_bits(&fragment, 3).map(|bits| bits.len()),
+                Some(expected)
+            );
+        }
     }
 }

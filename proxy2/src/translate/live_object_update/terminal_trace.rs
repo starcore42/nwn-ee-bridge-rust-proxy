@@ -1,4 +1,6 @@
-use super::terminal_writer_trace::correlate_terminal_writer_trace;
+use super::terminal_writer_trace::{
+    TerminalWriterTraceCorrelation, correlate_terminal_writer_trace,
+};
 use super::{
     LiveObjectUpdatePackedFragmentBitSpanEvidence, LiveObjectUpdateRewriteFailure,
     format_live_object_byte, format_optional_bool, format_optional_u32_hex, format_optional_usize,
@@ -27,7 +29,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "8".to_string(),
+            "9".to_string(),
         ],
     );
     write_tsv_line(
@@ -79,6 +81,8 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 "writer_handoff_requirement".to_string(),
                 "object_type".to_string(),
                 format_live_object_byte(requirement.object_type),
+                "source_record_offset".to_string(),
+                requirement.source_record_offset.to_string(),
                 "object_id".to_string(),
                 format_optional_u32_hex(Some(requirement.object_id)),
                 "raw_mask".to_string(),
@@ -126,21 +130,20 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 "false".to_string(),
             ],
         );
-        let unavailable = correlate_terminal_writer_trace(requirement, payload);
-        write_tsv_line(
-            &mut out,
-            &[
-                "writer_handoff_correlation".to_string(),
-                "observation".to_string(),
-                "none".to_string(),
-                "verdict".to_string(),
-                unavailable.as_str().to_string(),
-                "writer_handoff_observed".to_string(),
-                unavailable.writer_handoff_observed().to_string(),
-                "claimable".to_string(),
-                unavailable.allows_exact_claim().to_string(),
-            ],
-        );
+        let correlation = correlate_terminal_writer_trace(requirement, payload);
+        let mut correlation_columns = vec![
+            "writer_handoff_correlation".to_string(),
+            "artifact_status".to_string(),
+            correlation.artifact_status.as_str().to_string(),
+            "verdict".to_string(),
+            correlation.verdict.as_str().to_string(),
+            "writer_handoff_observed".to_string(),
+            correlation.verdict.writer_handoff_observed().to_string(),
+            "claimable".to_string(),
+            correlation.verdict.allows_exact_claim().to_string(),
+        ];
+        correlation_columns.extend(terminal_writer_trace_identity_columns(correlation));
+        write_tsv_line(&mut out, &correlation_columns);
         let final_claim_readiness = requirement.ee_final_claim_readiness_without_observation();
         write_tsv_line(
             &mut out,
@@ -659,6 +662,33 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
     Some(out)
 }
 
+fn terminal_writer_trace_identity_columns(
+    correlation: TerminalWriterTraceCorrelation,
+) -> [String; 6] {
+    [
+        "trace_id".to_string(),
+        correlation
+            .trace_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        "message_id".to_string(),
+        correlation
+            .message_id
+            .map(|value| format!("{value:016X}"))
+            .unwrap_or_else(|| "none".to_string()),
+        "component_sha256".to_string(),
+        correlation
+            .component_sha256
+            .map(|digest| {
+                digest
+                    .iter()
+                    .map(|byte| format!("{byte:02X}"))
+                    .collect::<String>()
+            })
+            .unwrap_or_else(|| "none".to_string()),
+    ]
+}
+
 fn format_packed_fragment_bit_span(
     evidence: LiveObjectUpdatePackedFragmentBitSpanEvidence,
 ) -> String {
@@ -799,7 +829,13 @@ fn write_diamond_fragment_field_rows<F>(
 mod tests {
     use super::{
         LiveObjectUpdatePackedFragmentBitSpanEvidence as PackedSpan,
-        format_packed_fragment_bit_span,
+        format_packed_fragment_bit_span, terminal_writer_trace_identity_columns,
+    };
+    use crate::translate::live_object_update::{
+        LiveObjectUpdateTerminalWriterHandoffVerdict,
+        terminal_writer_trace::{
+            TerminalWriterTraceArtifactStatus, TerminalWriterTraceCorrelation,
+        },
     };
 
     #[test]
@@ -820,5 +856,22 @@ mod tests {
             }),
             "71..104:<invalid-packed-span>"
         );
+    }
+
+    #[test]
+    fn terminal_writer_trace_identity_columns_preserve_loaded_artifact_provenance() {
+        let columns = terminal_writer_trace_identity_columns(TerminalWriterTraceCorrelation {
+            artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
+            verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff,
+            trace_id: Some(17),
+            message_id: Some(0x1234_ABCD),
+            component_sha256: Some([0xA5; 32]),
+        });
+        assert_eq!(
+            columns[0..4],
+            ["trace_id", "17", "message_id", "000000001234ABCD"]
+        );
+        assert_eq!(columns[4], "component_sha256");
+        assert_eq!(columns[5], "A5".repeat(32));
     }
 }

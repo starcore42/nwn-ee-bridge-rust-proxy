@@ -48,9 +48,9 @@ flags, so it did not issue
 `Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
 interaction capture remains the regression evidence for that active packet.
 
-At the 2026-07-18 13:21 +10 check this artifact was about 14 hours 56 minutes
+At the 2026-07-18 16:20 +10 check this artifact was about 17 hours 54 minutes
 old and still met the 24-hour gameplay requirement, so another live login was
-not required. Current production evidence retains the version-8 terminal
+not required. Current production evidence retains the version-9 terminal
 contract for sequence 95: source read buffer `245..245` plus fragment `63..76`
 (13 MSB-first bits, `0x46`), and emitted read buffer `243..243` plus fragment
 `71..88` (17 bits, `00100000001000110`, packed `0x4046`).
@@ -72,6 +72,45 @@ above the existing 512-KiB live-object bound reject. The HG operator trace must
 therefore persist the full finalized CNW message privately, not only the
 suffix, and pair it with the writer/list bracket at `0x445160`/`0x507FC0` and
 finalizer at `0x508B80`.
+
+The private operator sidecar is exactly six UTF-8 (no BOM) tab-separated rows
+in this order; placeholders in angle brackets are values, not literal text:
+
+```text
+terminal-writer-trace\tversion\t1\ttrace_id\t<positive-decimal>\tmessage_id\t<16-hex>\tcomponent_sha256\t<64-hex>
+owner-begin\ttrace_id\t<T>\tmessage_id\t<M>\tcomponent_sha256\t<H>\tabsolute_record_offset\t<decimal>\tabsolute_read_buffer_cursor\t<decimal>\tfragment_bit_cursor\t<decimal>
+owner-end\ttrace_id\t<T>\tmessage_id\t<M>\tcomponent_sha256\t<H>\tabsolute_read_buffer_cursor\t<decimal>\tfragment_bit_cursor\t<decimal>
+list-handoff\ttrace_id\t<T>\tmessage_id\t<M>\tcomponent_sha256\t<H>\tabsolute_read_buffer_cursor\t<decimal>\tfragment_bit_cursor\t<decimal>
+finalize\ttrace_id\t<T>\tmessage_id\t<M>\tcomponent_sha256\t<H>\tabsolute_read_buffer_end\t<decimal>\tfragment_bit_cursor\t<decimal>
+finalized-payload\ttrace_id\t<T>\tmessage_id\t<M>\tcomponent_sha256\t<H>\thex\t<complete-P/05/01-hex>
+```
+
+`T`, `M`, and `H` must repeat the header identity exactly on every event.
+Writer byte coordinates are absolute within the finalized `P/05/01`, including
+its seven-byte envelope: owner-begin record/read offsets are equal, owner-end,
+list-handoff, and final read offsets equal the little-endian declared split.
+Fragment coordinates are the full MSB-first CNW cursor, including the initial
+three valid-count bits; do not subtract three. Owner-end, list-handoff, and
+final fragment cursors must agree with the valid-bit end derived from the
+complete payload. The payload hex is even-length and contains every finalized
+byte, not a suffix or digest.
+
+Supply the finished file before proxy startup. Proxy2 opens, bounds, parses,
+and caches it once; a partial file or later replacement is not observed. Direct
+CLI use is:
+
+```powershell
+hgbridge_proxy2.exe --packet-dump --log C:\nwnbridge\<run>\proxy.structured.log --terminal-writer-trace C:\secure\terminal-writer-v1.tsv <normal proxy arguments>
+```
+
+Alternatively pass `-TerminalWriterTracePath C:\secure\terminal-writer-v1.tsv`
+to `tools\test-hg-bridge.ps1`. A diagnostic destination is mandatory:
+`--packet-dump` plus `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`. Correlation is
+written to the version-9 `.terminal.tsv` row with artifact status, verdict,
+trace id, message id, and component SHA-256. The file is private operator
+evidence and must never be copied to the public repository. Current
+DiamondProbe logs do not satisfy this contract because they truncate output to
+a suffix and do not retain the substantive list handoff.
 
 The emitted final-claim observation is also subsystem-private. Sequence 95 no
 longer synthesizes a successful validator observation from its retained 17-bit

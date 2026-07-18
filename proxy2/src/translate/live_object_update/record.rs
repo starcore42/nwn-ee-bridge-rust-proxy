@@ -2594,6 +2594,10 @@ pub(super) fn terminal_door_placeable_tail9_residual_evidence(
         );
 
     Some(super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
+        // The record offset here belongs to the mutable parser work buffer.
+        // The outer transaction binds it back to the immutable attempt input
+        // only when that exact U/type/id/mask header is unique there.
+        source_record_offset: super::terminal_evidence::UNKNOWN_SOURCE_RECORD_OFFSET,
         object_type,
         object_id,
         raw_mask,

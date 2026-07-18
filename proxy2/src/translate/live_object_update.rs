@@ -108,6 +108,9 @@ pub(crate) use terminal_evidence::{
     LiveObjectUpdateTerminalWriterHandoffRequirement, LiveObjectUpdateTerminalWriterHandoffVerdict,
 };
 pub(crate) use terminal_trace::format_live_object_update_terminal_tail9_handoff_capture;
+pub(crate) use terminal_writer_trace::{
+    configure_terminal_writer_trace_path, terminal_writer_trace_configured,
+};
 
 pub(crate) fn looks_like_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
     world_status::is_work_remaining_record_at(bytes, offset)
@@ -23749,7 +23752,8 @@ fn rewrite_update_records_payload_with_area_context_inner(
         return None;
     }
 
-    let mut live_bytes = payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared].to_vec();
+    let source_live_bytes = &payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared];
+    let mut live_bytes = source_live_bytes.to_vec();
     let mut fragment_bytes = payload[declared..].to_vec();
     if !live_bytes.is_empty()
         && !gui::looks_like_legacy_live_gui_rewrite_boundary(&live_bytes, 0)
@@ -27053,6 +27057,14 @@ fn rewrite_update_records_payload_with_area_context_inner(
             bit_cursor,
         )
         .map(|mut evidence| {
+            evidence.source_record_offset = unique_source_update_header_offset(
+                source_live_bytes,
+                evidence.object_type,
+                evidence.object_id,
+                evidence.raw_mask,
+            )
+            .and_then(|offset| u32::try_from(offset).ok())
+            .unwrap_or(terminal_evidence::UNKNOWN_SOURCE_RECORD_OFFSET);
             evidence.precursor_tail =
                 rewrite_bit_ledger.contiguous_tail_evidence(&fragment_bits, bit_cursor);
             evidence.terminal_fragment_handoff_correlation =
@@ -27562,6 +27574,25 @@ fn rewrite_update_records_payload_with_area_context_inner(
     summary.new_fragment_bytes = fragment_bytes.len();
     *payload = rewritten;
     Some(summary)
+}
+
+fn unique_source_update_header_offset(
+    source_live_bytes: &[u8],
+    object_type: u8,
+    object_id: u32,
+    raw_mask: u32,
+) -> Option<usize> {
+    let mut header = [0u8; LEGACY_UPDATE_HEADER_BYTES];
+    header[0] = b'U';
+    header[1] = object_type;
+    header[2..6].copy_from_slice(&object_id.to_le_bytes());
+    header[6..10].copy_from_slice(&raw_mask.to_le_bytes());
+    let mut matches = source_live_bytes
+        .windows(header.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == header).then_some(offset));
+    let offset = matches.next()?;
+    matches.next().is_none().then_some(offset)
 }
 
 fn rewrite_verified_placeable_states_with_area_context_if_possible(

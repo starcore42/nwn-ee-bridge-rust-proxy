@@ -3,11 +3,17 @@ use super::{
     LiveObjectUpdateRewriteTailEvidence,
 };
 
+pub(super) const UNKNOWN_SOURCE_RECORD_OFFSET: u32 = u32::MAX;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
-    /// Typed identity captured from the exact terminal record at failure time.
-    /// Keep this with the evidence: later orchestration passes may shift the
-    /// staged payload, so the formatter must not reapply `failure.offset`.
+    /// Exact record offset in the immutable attempt input, available only when
+    /// the U/type/id/mask header is unique there. The parser's working offset
+    /// may shift as earlier records are staged and must never be substituted.
+    // P/05/01 payloads are bounded far below u32::MAX. Keep the optional
+    // binding in one compact word because this evidence is copied through the
+    // retry stack; Option<usize> adds a discriminant word on 64-bit targets.
+    pub source_record_offset: u32,
     pub object_type: u8,
     pub object_id: u32,
     pub raw_mask: u32,
@@ -54,6 +60,10 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
 /// change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateTerminalWriterHandoffRequirement {
+    /// Immutable source record offset inside the declared `P/05/01` body. A
+    /// server-writer trace reports the absolute offset including the fixed
+    /// seven-byte envelope, so correlation adds that envelope exactly once.
+    pub source_record_offset: usize,
     pub object_type: u8,
     pub object_id: u32,
     pub raw_mask: u32,
@@ -79,6 +89,7 @@ pub struct LiveObjectUpdateTerminalWriterHandoffRequirement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectUpdateTerminalWriterHandoffVerdict {
     IncompleteTrace,
+    RecordOffsetMismatch,
     IdentityMismatch,
     ReadBufferMismatch,
     NoTerminalFragmentWrites,
@@ -93,6 +104,7 @@ impl LiveObjectUpdateTerminalWriterHandoffVerdict {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::IncompleteTrace => "incomplete-trace",
+            Self::RecordOffsetMismatch => "record-offset-mismatch",
             Self::IdentityMismatch => "identity-mismatch",
             Self::ReadBufferMismatch => "read-buffer-mismatch",
             Self::NoTerminalFragmentWrites => "no-terminal-fragment-writes",
@@ -320,7 +332,10 @@ impl LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
             return None;
         }
 
+        let source_record_offset = (self.source_record_offset != UNKNOWN_SOURCE_RECORD_OFFSET)
+            .then_some(self.source_record_offset as usize)?;
         Some(LiveObjectUpdateTerminalWriterHandoffRequirement {
+            source_record_offset,
             object_type: self.object_type,
             object_id: self.object_id,
             raw_mask: self.raw_mask,
@@ -882,6 +897,7 @@ mod tests {
 
     fn writer_requirement() -> WriterRequirement {
         WriterRequirement {
+            source_record_offset: 166,
             object_type: 9,
             object_id: 0x8000_1003,
             raw_mask: 0xFFFF_FFF7,

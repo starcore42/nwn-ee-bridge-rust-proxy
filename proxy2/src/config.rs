@@ -103,6 +103,15 @@ pub struct Config {
     #[arg(long)]
     pub quickbar_item_refresh_hint: Option<PathBuf>,
 
+    /// Private operator-side terminal writer trace artifact to correlate with
+    /// quarantined `P/05/01` live-object evidence. Requires `--packet-dump`
+    /// with `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`, for correlation output.
+    ///
+    /// This diagnostic input can prove source-writer ownership only. It never
+    /// authorizes a packet claim, rewrite, cursor advance, or fragment trim.
+    #[arg(long, value_name = "PATH")]
+    pub terminal_writer_trace: Option<PathBuf>,
+
     /// Diamond `nwncdkey.ini` used to derive 1.69 public CD-key fields.
     ///
     /// The Starcore5 harness account defaults to `C:\NWN\Config\5.nwncdkey.ini`

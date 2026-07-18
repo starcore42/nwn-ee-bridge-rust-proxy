@@ -3043,16 +3043,371 @@ fn claimed() -> ServerTranslatorOutcome {
     ServerTranslatorOutcome::Claim(ServerTranslatorClaim::default())
 }
 
+#[derive(Debug)]
+struct RetainedLiveObjectUpdateFailure {
+    failure: live_update::RewriteFailure,
+    /// Immutable candidate bytes from the failed rewrite attempt. Update
+    /// attempts are transactional on failure, so the post-attempt candidate is
+    /// the exact input that produced `failure`; later orchestration passes may
+    /// mutate their shared candidate independently.
+    payload: Vec<u8>,
+}
+
 fn note_update_attempt_failure(
     rejection_reason: &mut Option<&'static str>,
-    rejection_failure: &mut Option<live_update::RewriteFailure>,
+    rejection_failure: &mut Option<RetainedLiveObjectUpdateFailure>,
+    attempt_payload: &[u8],
     attempt: live_update::RewriteAttempt,
 ) -> Option<live_update::RewriteSummary> {
     if let Some(failure) = attempt.failure {
+        debug_assert!(
+            attempt.summary.is_none(),
+            "live-object update rewrite attempts must not both mutate and report failure"
+        );
         rejection_reason.get_or_insert(failure.reason);
-        rejection_failure.get_or_insert(failure);
+        if rejection_failure.is_none() {
+            *rejection_failure = Some(RetainedLiveObjectUpdateFailure {
+                failure,
+                payload: attempt_payload.to_vec(),
+            });
+        }
     }
     attempt.summary
+}
+
+fn unique_live_update_header_at(
+    payload: &[u8],
+    source_record_offset: usize,
+    object_type: u8,
+    object_id: u32,
+    raw_mask: u32,
+) -> bool {
+    if payload.get(..3) != Some(&[b'P', 0x05, 0x01]) {
+        return false;
+    }
+    let Some(declared_bytes) = payload.get(3..7) else {
+        return false;
+    };
+    let declared = u32::from_le_bytes([
+        declared_bytes[0],
+        declared_bytes[1],
+        declared_bytes[2],
+        declared_bytes[3],
+    ]) as usize;
+    let Some(body) = payload.get(7..declared) else {
+        return false;
+    };
+    let mut header = [0u8; 10];
+    header[0] = b'U';
+    header[1] = object_type;
+    header[2..6].copy_from_slice(&object_id.to_le_bytes());
+    header[6..10].copy_from_slice(&raw_mask.to_le_bytes());
+    body.get(source_record_offset..source_record_offset.saturating_add(header.len()))
+        == Some(header.as_slice())
+        && body
+            .windows(header.len())
+            .filter(|window| *window == header)
+            .count()
+            == 1
+}
+
+fn source_terminal_diagnostic_failure_if_matching(
+    source_payload: &[u8],
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    staged_failure: &RetainedLiveObjectUpdateFailure,
+) -> Option<RetainedLiveObjectUpdateFailure> {
+    if !crate::translate::live_object_update::terminal_writer_trace_configured()
+        && crate::translate::diagnostics::probe_dump_dir().is_none()
+    {
+        return None;
+    }
+    source_terminal_diagnostic_failure_if_matching_unchecked(
+        source_payload,
+        latest_area_placeables,
+        staged_failure,
+    )
+}
+
+fn source_terminal_diagnostic_failure_if_matching_unchecked(
+    source_payload: &[u8],
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    staged_failure: &RetainedLiveObjectUpdateFailure,
+) -> Option<RetainedLiveObjectUpdateFailure> {
+    let staged_tail = staged_failure
+        .failure
+        .terminal_door_placeable_tail9_residual?;
+    let staged_source_record_offset = (staged_tail.source_record_offset != u32::MAX)
+        .then_some(staged_tail.source_record_offset as usize)?;
+    if !unique_live_update_header_at(
+        &staged_failure.payload,
+        staged_source_record_offset,
+        staged_tail.object_type,
+        staged_tail.object_id,
+        staged_tail.raw_mask,
+    ) {
+        return None;
+    }
+
+    // Defer the raw replay until a staged terminal failure actually needs a
+    // dump. Ordinary live-object packets therefore do not pay for a second
+    // full rewrite walk merely because packet diagnostics are enabled.
+    let mut candidate = source_payload.to_vec();
+    let attempt = live_update::rewrite_payload_if_needed_with_area_context_attempt(
+        &mut candidate,
+        latest_area_placeables,
+    );
+    let failure = attempt.failure?;
+    debug_assert!(
+        attempt.summary.is_none(),
+        "source diagnostic update attempt must not both mutate and report failure"
+    );
+    let source_tail = failure.terminal_door_placeable_tail9_residual?;
+    let source_record_offset = (source_tail.source_record_offset != u32::MAX)
+        .then_some(source_tail.source_record_offset as usize)?;
+    if source_tail.object_type != staged_tail.object_type
+        || source_tail.object_id != staged_tail.object_id
+        || source_tail.raw_mask != staged_tail.raw_mask
+        || !unique_live_update_header_at(
+            &candidate,
+            source_record_offset,
+            source_tail.object_type,
+            source_tail.object_id,
+            source_tail.raw_mask,
+        )
+    {
+        return None;
+    }
+    Some(RetainedLiveObjectUpdateFailure {
+        failure,
+        payload: candidate,
+    })
+}
+
+#[cfg(test)]
+mod retained_update_failure_tests {
+    use super::*;
+    use crate::translate::live_object_update::LiveObjectUpdateRewriteFailureKind;
+
+    fn failure(offset: usize) -> live_update::RewriteFailure {
+        let kind = LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorWithoutLedger;
+        live_update::RewriteFailure {
+            reason: kind.as_str(),
+            kind,
+            offset,
+            record_end: offset.saturating_add(10),
+            bit_cursor: 3,
+            terminal_door_placeable_tail9_residual: None,
+            item_update_neighbor_gap_origin: None,
+            item_update_cursor_evidence: None,
+        }
+    }
+
+    #[test]
+    fn retained_failure_keeps_first_attempt_payload_after_candidate_mutates() {
+        let first_attempt_payload = vec![b'P', 0x05, 0x01, 0xAA];
+        let mut candidate = first_attempt_payload.clone();
+        let mut rejection_reason = None;
+        let mut retained = None;
+        let first_failure = failure(11);
+
+        assert!(
+            note_update_attempt_failure(
+                &mut rejection_reason,
+                &mut retained,
+                &candidate,
+                live_update::RewriteAttempt {
+                    summary: None,
+                    failure: Some(first_failure),
+                },
+            )
+            .is_none()
+        );
+
+        candidate[3] = 0xBB;
+        candidate.push(0xCC);
+        let second_failure = failure(22);
+        let _ = note_update_attempt_failure(
+            &mut rejection_reason,
+            &mut retained,
+            &candidate,
+            live_update::RewriteAttempt {
+                summary: None,
+                failure: Some(second_failure),
+            },
+        );
+
+        let retained = retained.expect("first failure and payload should be retained");
+        assert_eq!(rejection_reason, Some(first_failure.reason));
+        assert_eq!(retained.failure, first_failure);
+        assert_eq!(retained.payload, first_attempt_payload);
+        assert_ne!(retained.payload, candidate);
+    }
+
+    #[test]
+    fn unique_terminal_header_binding_rejects_duplicate_same_identity_updates() {
+        let object_type = 0x09u8;
+        let object_id = 0x8000_1003u32;
+        let raw_mask = 0xFFFF_FFF7u32;
+        let mut header = vec![b'U', object_type];
+        header.extend_from_slice(&object_id.to_le_bytes());
+        header.extend_from_slice(&raw_mask.to_le_bytes());
+
+        let mut body = vec![0xAA, 0xBB];
+        let first_offset = body.len();
+        body.extend_from_slice(&header);
+        let mut payload = vec![b'P', 0x05, 0x01];
+        payload.extend_from_slice(&(7u32 + body.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&body);
+        assert!(unique_live_update_header_at(
+            &payload,
+            first_offset,
+            object_type,
+            object_id,
+            raw_mask,
+        ));
+
+        body.extend_from_slice(&[0xCC, 0xDD]);
+        body.extend_from_slice(&header);
+        payload.truncate(3);
+        payload.extend_from_slice(&(7u32 + body.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&body);
+        assert!(!unique_live_update_header_at(
+            &payload,
+            first_offset,
+            object_type,
+            object_id,
+            raw_mask,
+        ));
+    }
+
+    #[test]
+    fn raw_terminal_diagnostic_replay_preserves_source_bytes_and_route_outcome() {
+        fn outcome_signature(
+            outcome: ServerTranslatorOutcome,
+        ) -> (
+            &'static str,
+            Option<&'static str>,
+            Option<crate::translate::live_object_update::LiveObjectUpdateRewriteFailureKind>,
+        ) {
+            match outcome {
+                ServerTranslatorOutcome::None => ("none", None, None),
+                ServerTranslatorOutcome::TransportOnly => ("transport-only", None, None),
+                ServerTranslatorOutcome::Rejected {
+                    reason,
+                    live_object_update_failure,
+                } => (
+                    "rejected",
+                    Some(reason),
+                    live_object_update_failure.map(|failure| failure.kind),
+                ),
+                ServerTranslatorOutcome::Claim(_) => ("claim", None, None),
+            }
+        }
+
+        let source = live_update::alternating_legacy_door_placeable_test_payload();
+        let mut staged = source.clone();
+        assert!(
+            live_object::rewrite_creature_add_visual_transform_maps_if_possible(&mut staged, None,)
+                .is_some(),
+            "the regression seed must shift terminal offsets before the staged update pass"
+        );
+        assert_ne!(staged, source);
+        let staged_attempt =
+            live_update::rewrite_payload_if_needed_with_area_context_attempt(&mut staged, None);
+        let staged_failure = staged_attempt
+            .failure
+            .expect("staged alternating seed should retain terminal tail9 failure");
+        let staged_retained = RetainedLiveObjectUpdateFailure {
+            failure: staged_failure,
+            payload: staged,
+        };
+        let staged_tail = staged_retained
+            .failure
+            .terminal_door_placeable_tail9_residual
+            .expect("staged failure should retain terminal evidence");
+        assert_ne!(staged_tail.source_record_offset, u32::MAX);
+        let staged_source_record_offset = staged_tail.source_record_offset as usize;
+        assert!(
+            unique_live_update_header_at(
+                &staged_retained.payload,
+                staged_source_record_offset,
+                staged_tail.object_type,
+                staged_tail.object_id,
+                staged_tail.raw_mask,
+            ),
+            "staged terminal header must be unique at offset {}",
+            staged_source_record_offset
+        );
+
+        let mut direct_source = source.clone();
+        let direct_source_attempt =
+            live_update::rewrite_payload_if_needed_with_area_context_attempt(
+                &mut direct_source,
+                None,
+            );
+        let direct_source_failure = direct_source_attempt
+            .failure
+            .expect("raw source should retain terminal tail9 failure");
+        let direct_source_tail = direct_source_failure
+            .terminal_door_placeable_tail9_residual
+            .expect("raw source failure should retain terminal evidence");
+        assert_ne!(direct_source_tail.source_record_offset, u32::MAX);
+        let direct_source_record_offset = direct_source_tail.source_record_offset as usize;
+        assert_eq!(
+            (
+                direct_source_tail.object_type,
+                direct_source_tail.object_id,
+                direct_source_tail.raw_mask,
+            ),
+            (
+                staged_tail.object_type,
+                staged_tail.object_id,
+                staged_tail.raw_mask,
+            )
+        );
+        assert!(
+            unique_live_update_header_at(
+                &direct_source,
+                direct_source_record_offset,
+                direct_source_tail.object_type,
+                direct_source_tail.object_id,
+                direct_source_tail.raw_mask,
+            ),
+            "raw terminal header must be unique at offset {}",
+            direct_source_record_offset
+        );
+
+        let source_diagnostic = source_terminal_diagnostic_failure_if_matching_unchecked(
+            &source,
+            None,
+            &staged_retained,
+        )
+        .expect("unique terminal record should map back to raw server bytes");
+        assert_eq!(source_diagnostic.payload, source);
+        let source_tail = source_diagnostic
+            .failure
+            .terminal_door_placeable_tail9_residual
+            .expect("raw diagnostic should retain terminal evidence");
+        assert_ne!(
+            source_tail.source_record_offset, staged_tail.source_record_offset,
+            "the seed must exercise the proxy-staged offset shift"
+        );
+
+        let mut before_payload = source.clone();
+        let before = outcome_signature(translate_live_object_records_if_verified(
+            &mut before_payload,
+            None,
+            "raw-terminal-route-invariance-before",
+        ));
+        let mut after_payload = source.clone();
+        let after = outcome_signature(translate_live_object_records_if_verified(
+            &mut after_payload,
+            None,
+            "raw-terminal-route-invariance-after",
+        ));
+        assert_eq!(before, after);
+        assert_eq!(before_payload, after_payload);
+    }
 }
 
 fn trace_live_object_update_rewrite_failure(
@@ -4077,26 +4432,30 @@ fn translate_live_object_records_if_verified(
             &mut candidate,
             latest_area_placeables,
         );
+    let update_pre_attempt = live_update::rewrite_payload_if_needed_with_area_context_attempt(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let update_pre_summary = note_update_attempt_failure(
         &mut rejection_reason,
         &mut rejection_failure,
-        live_update::rewrite_payload_if_needed_with_area_context_attempt(
-            &mut candidate,
-            latest_area_placeables,
-        ),
+        &candidate,
+        update_pre_attempt,
     );
     let add_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
+    let update_post_attempt = live_update::rewrite_payload_if_needed_with_area_context_attempt(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let update_post_summary = note_update_attempt_failure(
         &mut rejection_reason,
         &mut rejection_failure,
-        live_update::rewrite_payload_if_needed_with_area_context_attempt(
-            &mut candidate,
-            latest_area_placeables,
-        ),
+        &candidate,
+        update_post_attempt,
     );
     let add_name_bit_summary =
         live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate);
@@ -4105,39 +4464,48 @@ fn translate_live_object_records_if_verified(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_add_name_summary = note_update_attempt_failure(
-        &mut rejection_reason,
-        &mut rejection_failure,
+    let update_after_add_name_attempt =
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
-        ),
+        );
+    let update_after_add_name_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        &mut rejection_failure,
+        &candidate,
+        update_after_add_name_attempt,
     );
     let add_after_update_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_final_add_summary = note_update_attempt_failure(
-        &mut rejection_reason,
-        &mut rejection_failure,
+    let update_after_final_add_attempt =
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
-        ),
+        );
+    let update_after_final_add_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        &mut rejection_failure,
+        &candidate,
+        update_after_final_add_attempt,
     );
     let add_after_final_update_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_second_final_add_summary = note_update_attempt_failure(
-        &mut rejection_reason,
-        &mut rejection_failure,
+    let update_after_second_final_add_attempt =
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
-        ),
+        );
+    let update_after_second_final_add_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        &mut rejection_failure,
+        &candidate,
+        update_after_second_final_add_attempt,
     );
     let external_object_id_summary =
         live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate);
@@ -4158,13 +4526,23 @@ fn translate_live_object_records_if_verified(
         crate::translate::live_object_update::dump_live_object_fixture_candidate(
             &candidate, source,
         );
-        if let Some(failure) = rejection_failure {
-            trace_live_object_update_rewrite_failure(source, &candidate, failure);
+        if let Some(retained) = rejection_failure.as_ref() {
+            let source_diagnostic = source_terminal_diagnostic_failure_if_matching(
+                payload,
+                latest_area_placeables,
+                retained,
+            );
+            let diagnostic = source_diagnostic.as_ref().unwrap_or(retained);
+            trace_live_object_update_rewrite_failure(
+                source,
+                &diagnostic.payload,
+                diagnostic.failure,
+            );
         }
         return rejection_reason
             .map(|reason| ServerTranslatorOutcome::Rejected {
                 reason,
-                live_object_update_failure: rejection_failure,
+                live_object_update_failure: rejection_failure.map(|retained| retained.failure),
             })
             .unwrap_or(ServerTranslatorOutcome::None);
     }
@@ -4356,13 +4734,23 @@ fn translate_live_object_records_if_verified(
                 .unwrap_or_default(),
             "live-object semantic candidate did not claim: exact record-boundary validator rejected this intermediate rewrite"
         );
-        if let Some(failure) = rejection_failure {
-            trace_live_object_update_rewrite_failure(source, &candidate, failure);
+        if let Some(retained) = rejection_failure.as_ref() {
+            let source_diagnostic = source_terminal_diagnostic_failure_if_matching(
+                payload,
+                latest_area_placeables,
+                retained,
+            );
+            let diagnostic = source_diagnostic.as_ref().unwrap_or(retained);
+            trace_live_object_update_rewrite_failure(
+                source,
+                &diagnostic.payload,
+                diagnostic.failure,
+            );
         }
         rejection_reason
             .map(|reason| ServerTranslatorOutcome::Rejected {
                 reason,
-                live_object_update_failure: rejection_failure,
+                live_object_update_failure: rejection_failure.map(|retained| retained.failure),
             })
             .unwrap_or(ServerTranslatorOutcome::None)
     }
