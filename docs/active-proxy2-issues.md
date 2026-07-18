@@ -17,6 +17,55 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-18 live gate and sealed terminal writer-proof ingestion: the newest
+  gameplay artifact remains
+  `C:\\nwnbridge\\codex-live-freshness-20260717-2224\\harness-proxy-20260717-222351\\proxy.structured.log`,
+  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 14 hours 56 minutes old
+  at the 2026-07-18 13:21 +10 check. It selected typed `starcore-druid60`,
+  reached `Module_Loaded`, completed native `Area_AreaLoaded` for `voyage` and
+  `docksofascension`, and sustained gameplay through 30 direct live-object
+  claims and 45 exact-shape accepts. Stderr was empty, with zero quarantine
+  actions/files, warnings/errors, or `BNDP`. No newer gameplay-reaching live
+  capture exists, so another live login was not required. This capture has no
+  interaction flag and does not replace the earlier sequence-95 `UseObject`
+  failure seed.
+
+  Terminal source-writer evidence can no longer be fabricated by crate-level
+  callers setting `ExactPayloadBytes` or `finalizer_observed` directly. A new
+  sealed, bounded trace factory is the production construction boundary. It
+  accepts only one ordered owner-begin, owner-end, list-handoff, finalizer event
+  sequence; sibling modules can request only the conservative no-observation
+  verdict. The factory validates the exact `P/05/01` envelope and little-endian
+  declared split, requires the owner and finalizer byte cursors to land on that
+  split, decodes the CNW valid-bit end, and derives both `U/type/id/mask` and
+  the terminal MSB-first bit span from the same finalized payload. It then
+  subtracts only the fixed seven-byte envelope from absolute writer byte
+  cursors and grants exact correlation only when that complete payload equals
+  quarantine byte-for-byte. Digest/output-suffix matches remain
+  fingerprint-only; malformed envelopes, cross-packet traces, oversized
+  inputs, missing or reordered events, cursor gaps, bit/identity mismatches,
+  and different bytes reject. The current stock probe logs only an output
+  suffix, so it still cannot prove ownership of sequence 95.
+
+  The emitted EE observation is now subsystem-private and the sequence-95
+  integration no longer fabricates `exact_payload_validator_accepted=true`.
+  Its independently derived obligation remains read buffer `243..243` plus
+  fragment `71..88` (`0x4046`), but readiness stays
+  `incomplete-typed-ee-writer` until a real typed writer and exact full-payload
+  validator produce it. Source `245..245` plus `63..76` remains unowned. No
+  packet field, BOOL order, bit cursor, claim, rewrite, trim, or terminal-claim
+  registration changed. Seven coherent/malformed/cross-packet writer-trace
+  cases, the sealed EE final-claim branch matrix, and 27 terminal/tail9 tests
+  pass. Strict replay
+  `C:\\nwnbridge\\codex-proxy2-replay-terminal-proof-20260718-141014`
+  processed all 164 packets with 304 strict allows, zero strict/semantic
+  quarantines or files, 97 exact live-object claims, 19 exact rewrites, zero
+  rewrite failures/terminal residuals, both area contexts observed, and empty
+  stderr. Independent re-review found no remaining false exact-handoff or
+  bit/cursor defect. Next: make an HG operator trace retain the complete
+  finalized CNW payload, feed its exact owner bracket through this factory,
+  implement only the proven HG-owner/EE-writer boundary, and rerun live door
+  `UseObject` through completion.
 - 2026-07-18 live gate and independent emitted-reader contract: the newest
   gameplay artifact remains
   `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,

@@ -2729,51 +2729,6 @@ mod fixture_free_tests {
                 .expect("writer requirement must carry exact emitted values")
         );
         assert_eq!(writer_requirement.emitted_fragment_bits.packed_msb, 0x4046);
-        let exact_ee_observation =
-            live_object_update::LiveObjectUpdateTerminalEeFinalClaimObservation {
-                read_buffer_cursor: writer_requirement.emitted_read_buffer_cursor,
-                read_buffer_end: writer_requirement.emitted_read_buffer_end,
-                fragment_bits_written: writer_requirement.emitted_fragment_bits,
-                final_fragment_bit_cursor: writer_requirement.emitted_fragment_bit_end,
-                final_fragment_bit_end: writer_requirement.emitted_fragment_bit_end,
-                exact_payload_validator_accepted: true,
-            };
-        let exact_ee_verdict =
-            writer_requirement.correlate_ee_final_claim(Some(exact_ee_observation));
-        assert_eq!(
-            exact_ee_verdict,
-            live_object_update::LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict::
-                ExactTypedEeFinalClaimReady
-        );
-        assert!(exact_ee_verdict.final_claim_ready());
-        assert!(!exact_ee_verdict.allows_exact_claim());
-        assert!(!exact_ee_verdict.authorizes_rewrite());
-        assert!(!exact_ee_verdict.authorizes_cursor_advance());
-        assert!(!exact_ee_verdict.authorizes_fragment_trim());
-        assert_eq!(
-            writer_requirement.correlate_ee_final_claim(Some(
-                live_object_update::LiveObjectUpdateTerminalEeFinalClaimObservation {
-                    read_buffer_cursor: 245,
-                    read_buffer_end: 245,
-                    ..exact_ee_observation
-                }
-            )),
-            live_object_update::LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict::
-                ReadBufferMismatch,
-            "the immutable source end cannot stand in for the shorter emitted EE record"
-        );
-
-        let mut changed_ee_bits = writer_requirement.emitted_fragment_bits;
-        changed_ee_bits.packed_msb ^= 1 << 7;
-        assert_eq!(
-            writer_requirement.correlate_ee_final_claim(Some(
-                live_object_update::LiveObjectUpdateTerminalEeFinalClaimObservation {
-                    fragment_bits_written: changed_ee_bits,
-                    ..exact_ee_observation
-                }
-            )),
-            live_object_update::LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict::BitMismatch
-        );
         assert!(writer_requirement.emitted_next_opcode_read_overflows);
         let mut nonterminal_read_buffer = evidence;
         nonterminal_read_buffer

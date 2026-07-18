@@ -20,8 +20,10 @@
 //!   The update-list handoff at 0x43FF38..0x43FF5A chooses 0x444E60 or
 //!   0x445010. Both walkers call mask builder 0x4447D0, conditionally call the
 //!   typed `U` serializer 0x445160 (`0x444F23`/`0x4450AC`), then copy snapshot
-//!   fields through 0x444C70; direct binary disassembly found no inter-record
-//!   `WriteBOOL` outside the typed record serializers.
+//!   fields through 0x444C70. Controlled runtime tracing later proved that
+//!   other list helpers can write inter-update BOOLs in the same message, so
+//!   terminal ownership must come from an exact writer/list bracket rather
+//!   than from the typed serializer boundary alone.
 //! - The same server writer calls `CNWMessage::CreateWriteMessage` once at
 //!   0x43FDB3 and finalizes once through 0x508B80 at 0x4400B9, after all row
 //!   writers. Intermediate calls to 0x508B70 are pure length checks
@@ -69,6 +71,7 @@ mod tail_repair;
 mod terminal_claim;
 mod terminal_evidence;
 mod terminal_trace;
+mod terminal_writer_trace;
 #[cfg(all(test, hgbridge_private_fixtures))]
 mod tests;
 mod trigger;
@@ -100,11 +103,9 @@ pub(crate) use terminal_evidence::{
 };
 #[allow(unused_imports)]
 pub(crate) use terminal_evidence::{
-    LiveObjectUpdateReaderContinuationSource, LiveObjectUpdateTerminalEeFinalClaimObservation,
-    LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict,
+    LiveObjectUpdateReaderContinuationSource, LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict,
     LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence,
     LiveObjectUpdateTerminalWriterHandoffRequirement, LiveObjectUpdateTerminalWriterHandoffVerdict,
-    LiveObjectUpdateTerminalWriterObservation, LiveObjectUpdateTerminalWriterPacketCorrelation,
 };
 pub(crate) use terminal_trace::format_live_object_update_terminal_tail9_handoff_capture;
 

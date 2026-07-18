@@ -74,35 +74,6 @@ pub struct LiveObjectUpdateTerminalWriterHandoffRequirement {
     pub emitted_next_opcode_read_overflows: bool,
 }
 
-/// How an external writer trace was tied back to the exact quarantined
-/// payload. A digest is useful as a lookup hint but is not exact ownership
-/// proof; only byte-for-byte output correlation can reach the strongest
-/// writer-observation verdict.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LiveObjectUpdateTerminalWriterPacketCorrelation {
-    Unproven,
-    FingerprintOnly,
-    DifferentPayloadBytes,
-    ExactPayloadBytes,
-}
-
-/// One bounded server writer/list-handoff observation after its traced output
-/// has been replayed through the same Diamond read-buffer and MSB-first
-/// fragment coordinate spaces used by terminal failure evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LiveObjectUpdateTerminalWriterObservation {
-    pub object_type: u8,
-    pub object_id: u32,
-    pub raw_mask: u32,
-    pub replayed_read_buffer_cursor: usize,
-    pub replayed_read_buffer_end: usize,
-    pub fragment_bits_written: LiveObjectUpdateRewriteBitSliceEvidence,
-    pub writer_or_list_handoff_observed: bool,
-    pub finalizer_observed: bool,
-    pub finalized_fragment_bit_cursor: usize,
-    pub packet_correlation: LiveObjectUpdateTerminalWriterPacketCorrelation,
-}
-
 /// Why a writer/list observation does or does not satisfy the exact source
 /// handoff contract. No verdict here is itself an EE rewrite authorization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,13 +123,13 @@ impl LiveObjectUpdateTerminalWriterHandoffVerdict {
 /// cursors and values only proves that the prospective EE output is exact; it
 /// cannot authorize a claim until the HG source owner is independently proven.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LiveObjectUpdateTerminalEeFinalClaimObservation {
-    pub read_buffer_cursor: usize,
-    pub read_buffer_end: usize,
-    pub fragment_bits_written: LiveObjectUpdatePackedFragmentBitSpanEvidence,
-    pub final_fragment_bit_cursor: usize,
-    pub final_fragment_bit_end: usize,
-    pub exact_payload_validator_accepted: bool,
+pub(super) struct LiveObjectUpdateTerminalEeFinalClaimObservation {
+    read_buffer_cursor: usize,
+    read_buffer_end: usize,
+    fragment_bits_written: LiveObjectUpdatePackedFragmentBitSpanEvidence,
+    final_fragment_bit_cursor: usize,
+    final_fragment_bit_end: usize,
+    exact_payload_validator_accepted: bool,
 }
 
 /// Whether the emitted half of a terminal writer handoff is ready to be joined
@@ -210,100 +181,7 @@ impl LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
 }
 
 impl LiveObjectUpdateTerminalWriterHandoffRequirement {
-    pub fn correlate(
-        self,
-        observation: Option<LiveObjectUpdateTerminalWriterObservation>,
-    ) -> LiveObjectUpdateTerminalWriterHandoffVerdict {
-        use LiveObjectUpdateTerminalWriterHandoffVerdict as Verdict;
-
-        let Some(observation) = observation else {
-            return Verdict::IncompleteTrace;
-        };
-        if !observation.finalizer_observed {
-            return Verdict::IncompleteTrace;
-        }
-        if observation.packet_correlation
-            == LiveObjectUpdateTerminalWriterPacketCorrelation::DifferentPayloadBytes
-        {
-            return Verdict::PacketMismatch;
-        }
-        if observation.object_type != self.object_type
-            || observation.object_id != self.object_id
-            || observation.raw_mask != self.raw_mask
-        {
-            return Verdict::IdentityMismatch;
-        }
-        if observation.replayed_read_buffer_cursor != self.source_read_buffer_cursor
-            || observation.replayed_read_buffer_end != self.source_read_buffer_end
-        {
-            return Verdict::ReadBufferMismatch;
-        }
-
-        let observed_bits = observation.fragment_bits_written;
-        if observed_bits.bit_count == 0 && observed_bits.bit_start == observed_bits.bit_end {
-            if observed_bits.bit_start != self.source_fragment_bits.bit_start
-                || observation.finalized_fragment_bit_cursor != observed_bits.bit_end
-            {
-                return Verdict::CursorGapOrOverlap;
-            }
-            return match observation.packet_correlation {
-                LiveObjectUpdateTerminalWriterPacketCorrelation::ExactPayloadBytes => {
-                    Verdict::NoTerminalFragmentWrites
-                }
-                LiveObjectUpdateTerminalWriterPacketCorrelation::Unproven
-                | LiveObjectUpdateTerminalWriterPacketCorrelation::FingerprintOnly => {
-                    Verdict::MatchingWriterTracePacketUncorrelated
-                }
-                LiveObjectUpdateTerminalWriterPacketCorrelation::DifferentPayloadBytes => {
-                    Verdict::PacketMismatch
-                }
-            };
-        }
-        if !observation.writer_or_list_handoff_observed {
-            return Verdict::IncompleteTrace;
-        }
-        if observed_bits.bit_start != self.source_fragment_bits.bit_start
-            || observed_bits.bit_end != self.source_fragment_bits.bit_end
-            || observed_bits.bit_count != self.source_fragment_bits.bit_count
-        {
-            return Verdict::CursorGapOrOverlap;
-        }
-        if observation.finalized_fragment_bit_cursor != self.source_fragment_bits.bit_end {
-            return Verdict::CursorGapOrOverlap;
-        }
-        if !bit_slice_is_fully_retained(observed_bits)
-            || !bit_slice_is_fully_retained(self.source_fragment_bits)
-        {
-            return Verdict::IncompleteTrace;
-        }
-        if observed_bits
-            .bits
-            .iter()
-            .take(observed_bits.bit_count)
-            .ne(self
-                .source_fragment_bits
-                .bits
-                .iter()
-                .take(self.source_fragment_bits.bit_count))
-        {
-            return Verdict::BitMismatch;
-        }
-
-        match observation.packet_correlation {
-            LiveObjectUpdateTerminalWriterPacketCorrelation::DifferentPayloadBytes => {
-                Verdict::PacketMismatch
-            }
-            LiveObjectUpdateTerminalWriterPacketCorrelation::ExactPayloadBytes => {
-                Verdict::ExactObservedHandoff
-            }
-            LiveObjectUpdateTerminalWriterPacketCorrelation::Unproven
-            | LiveObjectUpdateTerminalWriterPacketCorrelation::FingerprintOnly => {
-                Verdict::MatchingWriterTracePacketUncorrelated
-            }
-        }
-    }
-
-    pub fn correlate_ee_final_claim(
+    fn correlate_ee_final_claim(
         self,
         observation: Option<LiveObjectUpdateTerminalEeFinalClaimObservation>,
     ) -> LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
@@ -354,6 +232,12 @@ impl LiveObjectUpdateTerminalWriterHandoffRequirement {
             return Verdict::BitMismatch;
         }
         Verdict::ExactTypedEeFinalClaimReady
+    }
+
+    pub(super) fn ee_final_claim_readiness_without_observation(
+        self,
+    ) -> LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
+        self.correlate_ee_final_claim(None)
     }
 }
 
@@ -962,9 +846,6 @@ mod tests {
         LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict as EeFinalClaimVerdict,
         LiveObjectUpdateTerminalFragmentOwnershipVerdict as Verdict,
         LiveObjectUpdateTerminalWriterHandoffRequirement as WriterRequirement,
-        LiveObjectUpdateTerminalWriterHandoffVerdict as WriterVerdict,
-        LiveObjectUpdateTerminalWriterObservation as WriterObservation,
-        LiveObjectUpdateTerminalWriterPacketCorrelation as PacketCorrelation,
     };
     use crate::translate::live_object_update::{
         LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT, LiveObjectUpdateRewriteBitSliceEvidence,
@@ -1009,13 +890,13 @@ mod tests {
             source_fragment_bits: bit_slice(
                 63,
                 &[
-                    false, false, true, false, true, false, false, true, true, false, true, false,
-                    false,
+                    false, false, false, false, false, false, true, false, false, false, true,
+                    true, false,
                 ],
             ),
             source_next_opcode_read_overflows: true,
-            emitted_read_buffer_cursor: 245,
-            emitted_read_buffer_end: 245,
+            emitted_read_buffer_cursor: 243,
+            emitted_read_buffer_end: 243,
             emitted_fragment_bit_start: 71,
             emitted_fragment_bit_end: 88,
             emitted_fragment_bit_count: 17,
@@ -1028,21 +909,6 @@ mod tests {
                 ],
             ),
             emitted_next_opcode_read_overflows: true,
-        }
-    }
-
-    fn writer_observation(requirement: WriterRequirement) -> WriterObservation {
-        WriterObservation {
-            object_type: requirement.object_type,
-            object_id: requirement.object_id,
-            raw_mask: requirement.raw_mask,
-            replayed_read_buffer_cursor: requirement.source_read_buffer_cursor,
-            replayed_read_buffer_end: requirement.source_read_buffer_end,
-            fragment_bits_written: requirement.source_fragment_bits,
-            writer_or_list_handoff_observed: true,
-            finalizer_observed: true,
-            finalized_fragment_bit_cursor: requirement.source_fragment_bits.bit_end,
-            packet_correlation: PacketCorrelation::ExactPayloadBytes,
         }
     }
 
@@ -1084,134 +950,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_writer_handoff_requires_exact_trace_and_payload_correlation() {
-        let requirement = writer_requirement();
-        let exact = writer_observation(requirement);
-        let verdict = requirement.correlate(Some(exact));
-        assert_eq!(verdict, WriterVerdict::ExactObservedHandoff);
-        assert!(verdict.writer_handoff_observed());
-        assert!(
-            !verdict.allows_exact_claim(),
-            "writer evidence still needs a typed EE writer and final exact claim"
-        );
-
-        let fingerprint_only = WriterObservation {
-            packet_correlation: PacketCorrelation::FingerprintOnly,
-            ..exact
-        };
-        assert_eq!(
-            requirement.correlate(Some(fingerprint_only)),
-            WriterVerdict::MatchingWriterTracePacketUncorrelated
-        );
-        let unproven = WriterObservation {
-            packet_correlation: PacketCorrelation::Unproven,
-            ..exact
-        };
-        assert_eq!(
-            requirement.correlate(Some(unproven)),
-            WriterVerdict::MatchingWriterTracePacketUncorrelated
-        );
-        let different_packet = WriterObservation {
-            packet_correlation: PacketCorrelation::DifferentPayloadBytes,
-            ..exact
-        };
-        assert_eq!(
-            requirement.correlate(Some(different_packet)),
-            WriterVerdict::PacketMismatch
-        );
-    }
-
-    #[test]
-    fn terminal_writer_handoff_rejects_identity_cursor_bit_and_trace_gaps() {
-        let requirement = writer_requirement();
-        let exact = writer_observation(requirement);
-
-        assert_eq!(requirement.correlate(None), WriterVerdict::IncompleteTrace);
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                finalizer_observed: false,
-                ..exact
-            })),
-            WriterVerdict::IncompleteTrace
-        );
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                object_id: exact.object_id ^ 1,
-                ..exact
-            })),
-            WriterVerdict::IdentityMismatch
-        );
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                replayed_read_buffer_cursor: 244,
-                ..exact
-            })),
-            WriterVerdict::ReadBufferMismatch
-        );
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                fragment_bits_written: bit_slice(64, &[false; 13]),
-                ..exact
-            })),
-            WriterVerdict::CursorGapOrOverlap
-        );
-
-        let mut changed_bits = requirement.source_fragment_bits;
-        changed_bits.bits[6] = changed_bits.bits[6].map(|value| !value);
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                fragment_bits_written: changed_bits,
-                ..exact
-            })),
-            WriterVerdict::BitMismatch
-        );
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                fragment_bits_written: changed_bits,
-                packet_correlation: PacketCorrelation::DifferentPayloadBytes,
-                ..exact
-            })),
-            WriterVerdict::PacketMismatch,
-            "known packet mismatch must dominate incidental cursor/bit differences"
-        );
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                finalized_fragment_bit_cursor: requirement
-                    .source_fragment_bits
-                    .bit_end
-                    .saturating_add(1),
-                ..exact
-            })),
-            WriterVerdict::CursorGapOrOverlap,
-            "extra writes before finalization must remain visible"
-        );
-        assert_eq!(
-            requirement.correlate(Some(WriterObservation {
-                writer_or_list_handoff_observed: false,
-                ..exact
-            })),
-            WriterVerdict::IncompleteTrace
-        );
-    }
-
-    #[test]
-    fn terminal_writer_handoff_classifies_stock_zero_delta_as_no_owner() {
-        let requirement = writer_requirement();
-        let exact = writer_observation(requirement);
-        let no_terminal_write = WriterObservation {
-            fragment_bits_written: bit_slice(requirement.source_fragment_bits.bit_start, &[]),
-            writer_or_list_handoff_observed: false,
-            finalized_fragment_bit_cursor: requirement.source_fragment_bits.bit_start,
-            packet_correlation: PacketCorrelation::ExactPayloadBytes,
-            ..exact
-        };
-        let verdict = requirement.correlate(Some(no_terminal_write));
-        assert_eq!(verdict, WriterVerdict::NoTerminalFragmentWrites);
-        assert!(!verdict.writer_handoff_observed());
-        assert!(!verdict.allows_exact_claim());
-    }
-
-    #[test]
     fn terminal_ee_final_claim_readiness_requires_exact_bits_and_cursors() {
         let requirement = writer_requirement();
         let exact = ee_final_claim_observation(requirement);
@@ -1222,6 +960,26 @@ mod tests {
         assert!(!verdict.authorizes_rewrite());
         assert!(!verdict.authorizes_cursor_advance());
         assert!(!verdict.authorizes_fragment_trim());
+
+        assert_eq!(
+            requirement.correlate_ee_final_claim(None),
+            EeFinalClaimVerdict::IncompleteTypedEeWriter
+        );
+        assert_eq!(
+            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+                exact_payload_validator_accepted: false,
+                ..exact
+            })),
+            EeFinalClaimVerdict::IncompleteTypedEeWriter
+        );
+        assert_eq!(
+            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+                read_buffer_cursor: 245,
+                read_buffer_end: 245,
+                ..exact
+            })),
+            EeFinalClaimVerdict::ReadBufferMismatch
+        );
 
         let mut changed_bits = exact.fragment_bits_written;
         changed_bits.packed_msb ^= 1 << 7;
@@ -1253,12 +1011,23 @@ mod tests {
             EeFinalClaimVerdict::TypedCursorOverrun
         );
 
+        let incomplete = requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
+            fragment_bits_written: PackedSpan {
+                bit_start: 71,
+                bit_end: 104,
+                packed_msb: 0,
+            },
+            ..exact
+        }));
+        assert_eq!(incomplete, EeFinalClaimVerdict::IncompleteTypedEeWriter);
+        assert!(!incomplete.final_claim_ready());
+
         assert_eq!(
             WriterRequirement {
                 emitted_fragment_bits_retained: 16,
                 ..requirement
             }
-            .correlate_ee_final_claim(Some(exact)),
+            .correlate_ee_final_claim(None),
             EeFinalClaimVerdict::InvalidEmittedRequirement
         );
         assert_eq!(
@@ -1270,19 +1039,8 @@ mod tests {
                 },
                 ..requirement
             }
-            .correlate_ee_final_claim(Some(exact)),
+            .correlate_ee_final_claim(None),
             EeFinalClaimVerdict::InvalidEmittedRequirement
-        );
-        assert_eq!(
-            requirement.correlate_ee_final_claim(Some(EeFinalClaimObservation {
-                fragment_bits_written: PackedSpan {
-                    bit_start: 71,
-                    bit_end: 104,
-                    packed_msb: 0,
-                },
-                ..exact
-            })),
-            EeFinalClaimVerdict::IncompleteTypedEeWriter
         );
     }
 

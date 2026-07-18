@@ -1,3 +1,4 @@
+use super::terminal_writer_trace::correlate_terminal_writer_trace;
 use super::{
     LiveObjectUpdatePackedFragmentBitSpanEvidence, LiveObjectUpdateRewriteFailure,
     format_live_object_byte, format_optional_bool, format_optional_u32_hex, format_optional_usize,
@@ -125,7 +126,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 "false".to_string(),
             ],
         );
-        let unavailable = requirement.correlate(None);
+        let unavailable = correlate_terminal_writer_trace(requirement, payload);
         write_tsv_line(
             &mut out,
             &[
@@ -140,7 +141,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 unavailable.allows_exact_claim().to_string(),
             ],
         );
-        let final_claim_readiness = requirement.correlate_ee_final_claim(None);
+        let final_claim_readiness = requirement.ee_final_claim_readiness_without_observation();
         write_tsv_line(
             &mut out,
             &[

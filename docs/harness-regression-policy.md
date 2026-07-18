@@ -48,28 +48,48 @@ flags, so it did not issue
 `Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
 interaction capture remains the regression evidence for that active packet.
 
-At the 2026-07-18 10:46 +10 check this artifact was about 12 hours 20 minutes
+At the 2026-07-18 13:21 +10 check this artifact was about 14 hours 56 minutes
 old and still met the 24-hour gameplay requirement, so another live login was
-not required. Current production evidence emits a version-8 typed terminal
-contract for sequence 95. A shared transactional byte plan proves the legacy
-nine-byte compact tail becomes the exact seven-byte EE scalar-orientation plus
-scale/state tail, then runs the typed EE reader over the staged candidate. The
-emitted read-buffer end is therefore `243..243`, independently of the immutable
-source `245..245`; reusing the old source end is rejected as a read-buffer
-mismatch. The fragment proof remains source `63..76` (13 MSB-first bits,
-`0x46`) and emitted `71..88` (17 bits, `00100000001000110`, packed `0x4046`).
-Even exact readiness authorizes no packet, fragment-cursor, trim, claim, or
-rewrite change, and sequence 95 remains quarantined.
+not required. Current production evidence retains the version-8 terminal
+contract for sequence 95: source read buffer `245..245` plus fragment `63..76`
+(13 MSB-first bits, `0x46`), and emitted read buffer `243..243` plus fragment
+`71..88` (17 bits, `00100000001000110`, packed `0x4046`).
+
+Writer evidence now enters through one sealed bounded factory instead of a
+caller-constructed observation. The only admissible trace order is
+owner-begin, owner-end, list-handoff, then finalizer. The factory validates the
+`P/05/01` envelope and little-endian declared split, binds byte/finalizer
+cursors to that split, decodes the CNW valid-bit end, and derives the bracketed
+`U/type/id/mask` plus terminal MSB-first bits from the same finalized payload.
+CNW writer byte counts include the seven-byte envelope and are normalized by
+exactly seven; fragment coordinates already include the initial three CNW bits
+and are not shifted. Exact packet correlation additionally requires the entire
+finalized payload to equal the quarantined packet byte-for-byte. A digest, the
+current probe's 32-byte `output_suffix`, or another partial match remains
+fingerprint-only. Malformed envelopes, reordered/missing events, cross-packet
+traces, identity/cursor/bit mismatches, different payload bytes, and inputs
+above the existing 512-KiB live-object bound reject. The HG operator trace must
+therefore persist the full finalized CNW message privately, not only the
+suffix, and pair it with the writer/list bracket at `0x445160`/`0x507FC0` and
+finalizer at `0x508B80`.
+
+The emitted final-claim observation is also subsystem-private. Sequence 95 no
+longer synthesizes a successful validator observation from its retained 17-bit
+preview; it remains `incomplete-typed-ee-writer`. No packet, fragment cursor,
+trim, claim, rewrite, or terminal-claim registration changed, and the packet
+remains quarantined until both exact source ownership and an exact EE writer
+claim exist.
 
 Strict replay
-`C:\nwnbridge\codex-proxy2-replay-terminal-read-cursors-20260718-104354`
+`C:\nwnbridge\codex-proxy2-replay-terminal-proof-20260718-141014`
 processed all 164 packets with 304 strict allows, zero strict/semantic
 quarantines or files, 97 exact live-object claims, 19 rewrites, zero rewrite
 failures, zero terminal residuals, both area contexts observed, and empty
-stderr. Focused terminal/tail9 tests, `cargo check`, and debug/full release
-builds pass. The next required live test is still the door `UseObject` probe,
-after an actual HG server writer/list trace has been correlated byte-for-byte
-and a typed EE writer produces a final exact claim.
+stderr. Seven writer-trace structural/cross-packet tests, the sealed emitted
+final-claim branch matrix, and 27 terminal/tail9 tests pass. The next required
+live test is still the door `UseObject` probe, after an actual HG server
+writer/list trace has been correlated byte-for-byte and a typed EE writer
+produces a final exact claim.
 
 Server sequence 95 remains the active connection/gameplay failure: two
 246-byte strict copies and one 270-byte diagnostic candidate were quarantined.
