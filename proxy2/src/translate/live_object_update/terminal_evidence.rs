@@ -707,40 +707,42 @@ pub struct LiveObjectUpdateTerminalReaderContinuationEvidence {
 
 impl LiveObjectUpdateTerminalReaderContinuationEvidence {
     pub(super) fn from_terminal_cursors(
-        read_buffer_cursor: usize,
-        read_buffer_end: usize,
+        source_read_buffer_cursor: usize,
+        source_read_buffer_end: usize,
         source_fragment_bit_cursor: usize,
         source_fragment_bit_end: usize,
+        emitted_read_buffer_cursor: usize,
+        emitted_read_buffer_end: usize,
         emitted_fragment_bit_cursor: usize,
         emitted_fragment_bit_end: usize,
     ) -> Self {
         let source_more_data_source = LiveObjectUpdateReaderContinuationSource::from_cursors(
-            read_buffer_cursor,
-            read_buffer_end,
+            source_read_buffer_cursor,
+            source_read_buffer_end,
             source_fragment_bit_cursor,
             source_fragment_bit_end,
         );
         let emitted_more_data_source = LiveObjectUpdateReaderContinuationSource::from_cursors(
-            read_buffer_cursor,
-            read_buffer_end,
+            emitted_read_buffer_cursor,
+            emitted_read_buffer_end,
             emitted_fragment_bit_cursor,
             emitted_fragment_bit_end,
         );
         Self {
-            source_read_buffer_cursor: read_buffer_cursor,
-            source_read_buffer_end: read_buffer_end,
+            source_read_buffer_cursor,
+            source_read_buffer_end,
             source_fragment_bit_cursor,
             source_fragment_bit_end,
             source_more_data_source,
             source_next_opcode_read_overflows: source_more_data_source.has_more_data()
-                && read_buffer_cursor >= read_buffer_end,
-            emitted_read_buffer_cursor: read_buffer_cursor,
-            emitted_read_buffer_end: read_buffer_end,
+                && source_read_buffer_cursor >= source_read_buffer_end,
+            emitted_read_buffer_cursor,
+            emitted_read_buffer_end,
             emitted_fragment_bit_cursor,
             emitted_fragment_bit_end,
             emitted_more_data_source,
             emitted_next_opcode_read_overflows: emitted_more_data_source.has_more_data()
-                && read_buffer_cursor >= read_buffer_end,
+                && emitted_read_buffer_cursor >= emitted_read_buffer_end,
         }
     }
 

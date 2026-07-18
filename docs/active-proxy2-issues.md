@@ -17,39 +17,43 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
-- 2026-07-18 live gate and typed writer-handoff contract: the newest gameplay
-  artifact remains
+- 2026-07-18 live gate and independent emitted-reader contract: the newest
+  gameplay artifact remains
   `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
-  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 8 hours 55 minutes old
-  at the 2026-07-18 07:20 +10 gate. It selected typed `starcore-druid60`,
+  timestamp `2026-07-17T22:25:49.3713181+10:00`, about 12 hours 20 minutes old
+  at the 2026-07-18 10:46 +10 check. It selected typed `starcore-druid60`,
   reached `Module_Loaded`, completed native `Area_AreaLoaded` for `voyage` and
   `docksofascension`, and sustained gameplay through 30 direct live-object
   claims and 45 exact-shape accepts. Stderr and quarantine/error counts were
-  zero. It is current gameplay evidence, so no refresh was required; it
-  contains no interaction flag and therefore does not replace the earlier
-  sequence-95 `UseObject` failure seed.
+  zero. It is current gameplay evidence, so no refresh was required; it has no
+  interaction flag and does not replace the earlier sequence-95 `UseObject`
+  failure seed.
 
-  Production version-7 terminal evidence retains the complete EE residual
-  `71..88`: 17 MSB-first bits `00100000001000110`, packed as `0x4046`. It also
-  pins the candidate source requirement `63..76` (13 bits, `0x46`) and the
-  stock Diamond walk `50..63` (`0x0AE2`). A typed final-EE-claim readiness join
-  now compares the exact emitted read buffer, fragment cursors, bit count, and
-  bit values. Invalid or incomplete evidence fails closed. Even an exact-ready
-  observation keeps every claim, rewrite, trim, packet, and cursor
-  authorization false; sequence 95 remains quarantined. The controlled stock
-  writer trace still proves a zero terminal fragment delta and therefore is
-  not the owner.
+  Production version-8 terminal evidence no longer copies the immutable
+  Diamond read-buffer end into the emitted EE side. A shared transactional byte
+  plan now drives both the normal compact-tail9 rewrite and the diagnostic
+  candidate: the legacy facing/state/scale/generic-state tail is nine bytes,
+  while the decompile-backed EE scalar-orientation plus scale/state tail is
+  seven. The staged typed EE reader therefore proves emitted `243..243`, not
+  source `245..245`, before the final-claim contract is created. The independent
+  MSB-first fragment proof is unchanged: source `63..76` (13 bits, `0x46`) and
+  emitted `71..88` (17 bits, `00100000001000110`, packed `0x4046`). An
+  observation that reuses `245..245` now fails with `read-buffer-mismatch`.
+  This corrects evidence and validation only; sequence 95 remains quarantined,
+  with every claim, rewrite, trim, packet, and cursor authorization false.
 
-  Focused writer-contract and sequence-95 integration tests, all 29 `tail9`
-  tests, `cargo check`, formatting, and strict replay
-  `C:\nwnbridge\codex-proxy2-replay-terminal-ee-exact-20260718-075509`
+  Focused terminal/tail9 tests, formatting, `cargo check`, debug and full
+  release builds, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-read-cursors-20260718-104354`
   pass. The replay processed 164 packets with 304 strict allows, zero strict or
   semantic quarantines/files, 97 exact live-object claims, 19 exact rewrites,
-  zero rewrite failures, zero terminal residuals, and empty stderr. Next:
-  obtain the deployed HG custom component or an operator-side trace around
-  `0x445160`, `0x507FC0`, and `0x508B80` tied byte-for-byte to the sequence-95
-  payload, establish ownership, implement the proven typed HG-owner/EE-writer
-  boundary, require a final exact EE claim, and rerun live door `UseObject`.
+  zero rewrite failures, zero terminal residuals, both area contexts observed,
+  and empty stderr. The controlled stock writer still has zero terminal
+  fragment delta and cannot own source bits `63..76`. Next: obtain the deployed
+  HG custom component or an operator-side trace around `0x445160`, `0x507FC0`,
+  and `0x508B80` tied byte-for-byte to sequence 95, establish ownership,
+  implement the proven typed HG-owner/EE-writer boundary, require a final exact
+  EE claim, and rerun live door `UseObject`.
 - 2026-07-17 live gate and terminal handoff classification: the prior gameplay
   capture crossed the 24-hour limit during the 22:21 +10 gate, so the newest
   real HG gameplay artifact is

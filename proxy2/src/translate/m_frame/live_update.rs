@@ -2224,7 +2224,8 @@ mod fixture_free_tests {
                 continuation.emitted_fragment_bit_cursor,
                 continuation.emitted_fragment_bit_end,
             ),
-            (245, 245, 71, 88)
+            (243, 243, 71, 88),
+            "emitted read-buffer cursors must come from the staged seven-byte EE tail"
         );
         assert_eq!(
             continuation.emitted_more_data_source,
@@ -2718,7 +2719,7 @@ mod fixture_free_tests {
                 writer_requirement.emitted_fragment_bit_count,
                 writer_requirement.emitted_fragment_bits_retained,
             ),
-            (245, 245, 71, 88, 17, 17),
+            (243, 243, 71, 88, 17, 17),
             "the emitted side must retain the complete compact final-claim obligation"
         );
         assert_eq!(
@@ -2749,6 +2750,18 @@ mod fixture_free_tests {
         assert!(!exact_ee_verdict.authorizes_rewrite());
         assert!(!exact_ee_verdict.authorizes_cursor_advance());
         assert!(!exact_ee_verdict.authorizes_fragment_trim());
+        assert_eq!(
+            writer_requirement.correlate_ee_final_claim(Some(
+                live_object_update::LiveObjectUpdateTerminalEeFinalClaimObservation {
+                    read_buffer_cursor: 245,
+                    read_buffer_end: 245,
+                    ..exact_ee_observation
+                }
+            )),
+            live_object_update::LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict::
+                ReadBufferMismatch,
+            "the immutable source end cannot stand in for the shorter emitted EE record"
+        );
 
         let mut changed_ee_bits = writer_requirement.emitted_fragment_bits;
         changed_ee_bits.packed_msb ^= 1 << 7;
@@ -2798,7 +2811,7 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t7\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t8\n"));
         let payload_md5_hint = format!("{:x}", md5::compute(&capture_payload));
         assert!(capture.contains(&format!("payload_md5_hint\t{payload_md5_hint}")));
         assert!(capture.contains(
@@ -2808,7 +2821,7 @@ mod fixture_free_tests {
             "writer_handoff_requirement\tobject_type\t0x09\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\tsource_read_buffer\t245..245\tsource_fragment\t63..76:"
         ));
         assert!(capture.contains(
-            "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment_obligation\t71..88\temitted_fragment_bits\t17\temitted_fragment_bits_retained\t17\temitted_fragment_exact\t71..88:00100000001000110"
+            "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_fragment_obligation\t71..88\temitted_fragment_bits\t17\temitted_fragment_bits_retained\t17\temitted_fragment_exact\t71..88:00100000001000110"
         ));
         assert!(capture.contains(
             "emitted_fragment_values_complete\ttrue\temitted_next_opcode_read_overflows\ttrue"
@@ -2826,7 +2839,7 @@ mod fixture_free_tests {
             "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"
         ));
         assert!(capture.contains(
-            "reader_continuation\tsource_read_buffer\t245..245\tsource_fragment\t63..76\tsource_more_data\tfragment-only\tsource_next_opcode_read_overflows\ttrue\temitted_read_buffer\t245..245\temitted_fragment\t71..88\temitted_more_data\tfragment-only\temitted_next_opcode_read_overflows\ttrue\tclaimable\tfalse"
+            "reader_continuation\tsource_read_buffer\t245..245\tsource_fragment\t63..76\tsource_more_data\tfragment-only\tsource_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_fragment\t71..88\temitted_more_data\tfragment-only\temitted_next_opcode_read_overflows\ttrue\tclaimable\tfalse"
         ));
         assert!(capture.contains(
             "reused_record_reader_summary\tcandidates\t1\tretained\t1\townership\tunknown\tclaimable\tfalse"

@@ -26,7 +26,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "7".to_string(),
+            "8".to_string(),
         ],
     );
     write_tsv_line(

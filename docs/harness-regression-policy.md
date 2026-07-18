@@ -48,26 +48,28 @@ flags, so it did not issue
 `Input_WalkToWaypoint` or reproduce sequence 95 / `UseObject`; the earlier
 interaction capture remains the regression evidence for that active packet.
 
-At the 2026-07-18 07:20 +10 gate this artifact was about 8 hours 55 minutes old
-and still met the 24-hour gameplay requirement, so another live login was not
-required. Current production evidence now emits a version-7 typed terminal
-contract for sequence 95. It retains the exact EE residual `71..88` as 17
-MSB-first bits `00100000001000110`, packed `0x4046`; the source requirement is
-`63..76` (13 bits, `0x46`), after the stock Diamond walk `50..63` (`0x0AE2`). A
-typed final-EE-claim readiness join compares the exact emitted read buffer,
-fragment cursors, bit count, and bit values. Invalid or incomplete observations
-fail closed. Even exact readiness authorizes no packet, fragment-cursor, trim,
-claim, or rewrite change, and sequence 95 remains quarantined.
+At the 2026-07-18 10:46 +10 check this artifact was about 12 hours 20 minutes
+old and still met the 24-hour gameplay requirement, so another live login was
+not required. Current production evidence emits a version-8 typed terminal
+contract for sequence 95. A shared transactional byte plan proves the legacy
+nine-byte compact tail becomes the exact seven-byte EE scalar-orientation plus
+scale/state tail, then runs the typed EE reader over the staged candidate. The
+emitted read-buffer end is therefore `243..243`, independently of the immutable
+source `245..245`; reusing the old source end is rejected as a read-buffer
+mismatch. The fragment proof remains source `63..76` (13 MSB-first bits,
+`0x46`) and emitted `71..88` (17 bits, `00100000001000110`, packed `0x4046`).
+Even exact readiness authorizes no packet, fragment-cursor, trim, claim, or
+rewrite change, and sequence 95 remains quarantined.
 
 Strict replay
-`C:\nwnbridge\codex-proxy2-replay-terminal-ee-exact-20260718-075509`
+`C:\nwnbridge\codex-proxy2-replay-terminal-read-cursors-20260718-104354`
 processed all 164 packets with 304 strict allows, zero strict/semantic
 quarantines or files, 97 exact live-object claims, 19 rewrites, zero rewrite
-failures, zero terminal residuals, and empty stderr. Focused contract and
-sequence-95 tests plus all 29 `tail9` tests pass. The next required live test is
-still the door `UseObject` probe, after an actual HG server writer/list trace
-has been correlated byte-for-byte and a typed EE writer produces a final exact
-claim.
+failures, zero terminal residuals, both area contexts observed, and empty
+stderr. Focused terminal/tail9 tests, `cargo check`, and debug/full release
+builds pass. The next required live test is still the door `UseObject` probe,
+after an actual HG server writer/list trace has been correlated byte-for-byte
+and a typed EE writer produces a final exact claim.
 
 Server sequence 95 remains the active connection/gameplay failure: two
 246-byte strict copies and one 270-byte diagnostic candidate were quarantined.
