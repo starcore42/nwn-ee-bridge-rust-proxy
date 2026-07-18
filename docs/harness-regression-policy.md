@@ -34,25 +34,40 @@ capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
 Latest known live HG proxy status: the current account-5 gameplay artifact is
-`C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351`,
+`C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223`,
 with structured log
-`C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`
-timestamped `2026-07-17T22:25:49.3713181+10:00`. It selected typed
+`C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`
+timestamped `2026-07-19T01:54:31.4350837+10:00`. It selected typed
 `starcore-druid60`, reached `Module_Loaded`, completed native
-`Area_AreaLoaded` for `voyage` and `docksofascension`, and sustained gameplay
-through 30 direct live-object claims and 45 exact-shape accepts. Proxy stderr,
-quarantine actions/files, WARN/ERROR, and `BNDP` were zero. It carried no
-interaction flags, so it did not issue `Input_WalkToWaypoint` or reproduce
-sequence 95 / `UseObject`; the earlier interaction capture remains the active
-failure seed.
+`Area_AreaLoaded` for `docksofascension`, and remained active for more than 90
+seconds past area completion with 52 exact live-object accepts and advancing
+client acknowledgements. Proxy stderr, quarantine files, error/termination
+rows, and `BNDP` disconnects were zero. The emitted Area packet was already
+normalized at width 11 / height 14, so this run proves sustained gameplay and
+no regression but did not directly exercise the combined height/sound repair.
+It carried no interaction flags and did not issue the sequence-95 `UseObject`;
+the earlier interaction capture remains that subsystem's active failure seed.
 
-At the 2026-07-18 22:18 +10 gate this artifact was 23 hours 52 minutes old and
-still met the 24-hour gameplay requirement, so another live login was not
-required. It crossed the limit during the run; the next automation run must
-refresh it unless a newer gameplay-reaching HG capture exists. Current
-production evidence retains the sequence-95 source contract at read buffer
-`245..245` plus fragment `63..76` (13 MSB-first bits, `0x46`) and the emitted
-contract at `243..243` plus `71..88` (17 bits,
+The refresh was mandatory because the prior gameplay-reaching artifact had
+aged past 26 hours. Its first attempt,
+`C:\nwnbridge\codex-live-freshness-20260719-0128\harness-proxy-20260719-012352\proxy.structured.log`
+(last write `2026-07-19T01:26:06.6136302+10:00`), reached typed character
+selection, module load, native `voyage` area completion, and exact live-object
+traffic, but then stalled on a second Area packet that combined missing height
+with three legacy zero-count/single-resref sound rows. After the height proof
+failed on the still-legacy tail, the sound normalization committed without a
+height retry; EE acknowledgement stopped and HG ended the run with
+`BNDP CE 16 00 00`. Production now composes those independently exact repairs
+transactionally, while the captured fixture and final EE reader prove the full
+byte and MSB-first fragment cursors. Strict replay
+`C:\nwnbridge\codex-proxy2-replay-area-compose-20260719-0155` retained the
+164-packet baseline with 304 allows, 97 exact live-object claims, 19 rewrites,
+ten area rewrites, both area contexts, 143 generated ACKs, empty stderr, and
+zero quarantine, rewrite failures, or terminal residuals.
+
+Current production evidence retains the sequence-95 source contract at read
+buffer `245..245` plus fragment `63..76` (13 MSB-first bits, `0x46`) and the
+emitted contract at `243..243` plus `71..88` (17 bits,
 `00100000001000110`, packed `0x4046`). The strongest reference remains that
 live failure combined with the controlled stock Diamond writer/decompile; the
 deployed HG custom owner/list/finalizer sidecar is still unavailable.
@@ -2240,6 +2255,7 @@ work.
 
 | Symptom | Likely cause | Response |
 | --- | --- | --- |
+| First-area gameplay succeeds, then a following `Area_ClientArea` reports width 11 / packet height 0 / inferred height 14 with three legacy zero-count/single-resref sound rows; EE ACK progress stops, HG retransmits the following window, and eventually sends `BNDP CE 16 00 00` without a quarantine file | The exact missing-height repair ran before sound-row normalization. It correctly rejected the still-legacy tail; the sound repair later committed, but no height retry rebuilt the final EE area shape | Fixed 2026-07-19: after a nonzero independently proven sound repair, retry only the exact missing-height repair once when height is still zero. Diagnose recurrences by comparing `packet_height`, `inferred_height`, `sound_count_zero_one_repairs`, client ACK progression, and the final EE cursor proof. The combined captured fixture proves both repairs and full fragment exhaustion; the post-fix live run sustained Docks gameplay with no disconnect/quarantine, although its source arrived already normalized. |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
 | A 735-byte `Area_ClientArea` unit with a stale 220-byte declared read window is logged or quarantined as a persistent-zlib continuation after `Module_Info` | Transport correctly proved the direct CNW window incomplete, but continuation ownership ran before the bounded typed Area repair and swallowed the real three-byte final fragment | Fixed 2026-07-13: before continuation ownership, the coalesced path tries only the strict incomplete-Area translator. It accepts a replacement boundary only when one bounded final-fragment candidate has an exact legacy parse and exact EE LoadArea cursor. Context-free candidate proof prevents repeated module-resource scans. The private stale-window fixture passes; require a live recurrence of the stale declaration for direct live confirmation. |

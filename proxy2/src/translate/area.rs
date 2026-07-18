@@ -1251,7 +1251,7 @@ fn rewrite_declared_area_client_area_payload_with_mode(
             resource_fragment_offset,
             &mut tile_scan,
         );
-    let height_repaired = square_dimensions_repaired
+    let mut height_repaired = square_dimensions_repaired
         || repair_missing_area_height(
             &mut working_payload,
             resource_fragment_offset,
@@ -1308,6 +1308,22 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         &tile_scan,
     )
     .unwrap_or(0);
+    if sound_count_zero_one_repairs != 0 && !height_repaired && tile_scan.packet_height == 0 {
+        // The missing-height repair requires the complete decompile-owned
+        // legacy post-tile cursor to validate before it changes the dimension
+        // DWORD. Some HG packets combine that missing DWORD with the proven
+        // legacy single-resref sound encoding (count zero followed by one
+        // CResRef). The first height attempt must fail closed on that source
+        // shape; after the independently bounded sound-row repair has proven
+        // the exact following lists, retry the height repair exactly once.
+        // This composes the two general legacy rules without weakening either
+        // cursor proof or accepting an inferred dimension by itself.
+        height_repaired = repair_missing_area_height(
+            &mut working_payload,
+            post_tail_fragment_offset,
+            &mut tile_scan,
+        );
+    }
     let static_placeable_trailing_rows_dropped = drop_legacy_zero_static_placeable_trailing_rows(
         &mut working_payload,
         post_tail_fragment_offset,
@@ -12151,7 +12167,7 @@ mod tests {
     }
 
     #[test]
-    fn docksofascension_rewrite_repairs_legacy_zero_sound_counts() {
+    fn docksofascension_rewrite_composes_missing_height_and_legacy_zero_sound_counts() {
         let _context_guard = module_context_test_guard();
         let _module_path_guard =
             EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", "__hgbridge_no_such_module__.mod");
@@ -12161,6 +12177,38 @@ mod tests {
             areas: Vec::new(),
         };
         let mut payload = DOCKS_OF_ASCENSION_LEGACY_ZERO_SOUND_COUNTS.to_vec();
+        let (_, _, source_fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("legacy combined read window");
+        let source_layout = area_static_layout(&payload, source_fragment_offset)
+            .expect("legacy combined static layout");
+        let source_scan = scan_area_tile_stream(&payload, source_fragment_offset);
+
+        assert_eq!(
+            read_area_u32(
+                &payload,
+                source_fragment_offset,
+                source_layout.height_read_offset
+            ),
+            Some(0)
+        );
+        assert!(source_scan.valid);
+        assert_eq!(source_scan.width, 11);
+        assert_eq!(source_scan.packet_height, 0);
+        assert_eq!(source_scan.inferred_height, 14);
+        assert_eq!(source_scan.tile_count, 154);
+
+        let mut height_only_candidate = payload.clone();
+        let mut height_only_scan = source_scan.clone();
+        assert!(
+            !repair_missing_area_height(
+                &mut height_only_candidate,
+                source_fragment_offset,
+                &mut height_only_scan
+            ),
+            "the missing height must remain unowned until the legacy zero sound counts are normalized"
+        );
+        assert_eq!(height_only_candidate, payload);
+
         let summary = rewrite_area_client_area_payload_with_module_context(
             &mut payload,
             Some(&empty_context),
@@ -12170,7 +12218,17 @@ mod tests {
             .expect("rewritten area should match EE LoadArea cursor proof");
 
         assert_eq!(summary.area_resref, "docksofascension");
+        assert!(summary.height_repaired);
+        assert_eq!(summary.width, 11);
+        assert_eq!(summary.packet_height, 14);
+        assert_eq!(summary.inferred_height, 14);
+        assert_eq!(summary.tile_count, 154);
         assert_eq!(summary.sound_count_zero_one_repairs, 3);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyHgMissingHeightRepair)
+        );
         assert!(
             summary
                 .rewrite_kinds

@@ -17,6 +17,45 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-19 fresh live gate and composable legacy Area tail repair: the prior
+  gameplay artifact was more than 26 hours old, so account 5 was refreshed at
+  `C:\nwnbridge\codex-live-freshness-20260719-0128\harness-proxy-20260719-012352\proxy.structured.log`
+  (last write `2026-07-19T01:26:06.6136302+10:00`). It reached typed character
+  selection, `Module_Loaded`, native `Area_AreaLoaded` for `voyage`, and ten
+  exact live-object accepts, but did not sustain the following area. The Docks
+  source packet supplied width 11, packet height 0, inferred height 14, 154
+  exact tiles, and three legacy zero-count/single-resref sound rows. The
+  missing-height proof correctly failed closed while those rows were still in
+  legacy shape; the sound repair then committed, but the height proof was not
+  retried. EE stopped acknowledging past the rewritten area window, HG
+  retransmitted the following reliable sequences, and the run ended with
+  `BNDP CE 16 00 00`. Stderr and quarantine files remained zero.
+
+  Production now retries only the exact missing-height repair, exactly once,
+  after a nonzero independently proven sound-row repair when height is still
+  zero. Each helper remains transactional and retains its whole-tail legacy
+  cursor proof; the outer rewrite still commits only after the final EE
+  `LoadArea` reader consumes the complete byte and MSB-first fragment windows.
+  The captured combined fixture proves the height-only attempt is non-mutating,
+  then proves width 11 / height 14 / 154 tiles, all three sound repairs, both
+  generalized repair kinds, and exact final fragment exhaustion.
+
+  A rebuilt account-5 rerun reached and sustained real Docks gameplay at
+  `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`
+  (last write `2026-07-19T01:54:31.4350837+10:00`). It selected typed
+  `starcore-druid60`, reached `Module_Loaded` and native `Area_AreaLoaded`, then
+  remained active more than 90 seconds past area completion with 52 exact
+  live-object accepts and advancing client acknowledgements. There were no
+  `BNDP` disconnects, termination/error rows, quarantine files, or stderr. This
+  server emission was already normalized at width 11 / height 14 and therefore
+  proves the composition change did not regress live gameplay; direct execution
+  of the combined branch remains grounded in the real captured fixture. The
+  standard strict replay at
+  `C:\nwnbridge\codex-proxy2-replay-area-compose-20260719-0155` processed all
+  164 packets with 304 allows, 97 exact live-object claims, 19 rewrites, ten
+  area rewrites, both area contexts, 143 generated ACKs, empty stderr, and zero
+  quarantines, rewrite failures, or terminal residuals. The next active
+  production path remains the sequence-95 typed terminal writer/proof join.
 - 2026-07-18 live gate and sealed two-sided terminal proof join: at the 22:18
   +10 gate the newest gameplay-reaching HG artifact was
   `C:\nwnbridge\codex-live-freshness-20260717-2224\harness-proxy-20260717-222351\proxy.structured.log`,
