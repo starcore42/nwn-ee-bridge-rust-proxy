@@ -1,11 +1,15 @@
-//! Diagnostic-only whole-packet audit for the terminal compact-tail9 EE stage.
+//! Diagnostic-only whole-packet audit and output plan for the terminal
+//! compact-tail9 EE stage.
 //!
 //! The normal translator already has a typed byte/bit plan for the terminal
 //! door/placeable row.  That row-local proof is weaker than an exact P/05/01
 //! claim: a fragment-only continuation can remain after the row reader stops.
-//! This module materializes the staged packet on the heap and runs the same
-//! exact validator used at the wire boundary.  Its result is evidence only and
-//! cannot authorize a claim, rewrite, cursor advance, or fragment trim.
+//! This module materializes both the unmodified staged packet and a sealed
+//! candidate ending at the exact typed EE cursor on the heap, then runs the
+//! same exact validator used at the wire boundary. The latter candidate proves
+//! only the EE output shape: the removed residual remains unowned until the HG
+//! writer/list trace independently proves its source contract. Neither result
+//! can authorize a claim, rewrite, cursor advance, or fragment trim.
 
 use super::record::TerminalDoorPlaceableTail9EeStage;
 use super::{
@@ -14,9 +18,10 @@ use super::{
     LiveObjectUpdateTerminalWriterHandoffRequirement,
 };
 
-/// Opaque proof that the typed EE stage consumed the complete candidate and
-/// that the existing whole-payload validator accepted those exact bytes and
-/// MSB-first fragment values. Only this module can construct the token.
+/// Opaque proof that the sealed EE output plan removed exactly the retained
+/// unconsumed MSB-first residual, ended at the typed reader cursor, and passed
+/// the existing whole-payload validator. Only this module can construct the
+/// token.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ExactTerminalEeFinalClaim {
     requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
@@ -24,7 +29,7 @@ pub(super) struct ExactTerminalEeFinalClaim {
     candidate_payload: Box<[u8]>,
     read_buffer_cursor: usize,
     read_buffer_end: usize,
-    fragment_bits_written: LiveObjectUpdatePackedFragmentBitSpanEvidence,
+    residual_fragment_bits_removed: LiveObjectUpdatePackedFragmentBitSpanEvidence,
     final_fragment_bit_cursor: usize,
     final_fragment_bit_end: usize,
 }
@@ -36,8 +41,14 @@ impl ExactTerminalEeFinalClaim {
         source_payload: &[u8],
     ) -> bool {
         self.requirement == requirement
+            && requirement.emitted_contract_is_valid()
             && self.source_payload.as_deref() == Some(source_payload)
             && self.candidate_payload.starts_with(&[b'P', 0x05, 0x01])
+            && self.read_buffer_cursor == requirement.emitted_read_buffer_cursor
+            && self.read_buffer_end == requirement.emitted_read_buffer_end
+            && self.residual_fragment_bits_removed == requirement.emitted_fragment_bits
+            && self.final_fragment_bit_cursor == requirement.emitted_fragment_bit_start
+            && self.final_fragment_bit_end == requirement.emitted_fragment_bit_start
     }
 
     pub(super) fn read_buffer_cursor(&self) -> usize {
@@ -48,8 +59,10 @@ impl ExactTerminalEeFinalClaim {
         self.read_buffer_end
     }
 
-    pub(super) fn fragment_bits_written(&self) -> LiveObjectUpdatePackedFragmentBitSpanEvidence {
-        self.fragment_bits_written
+    pub(super) fn residual_fragment_bits_removed(
+        &self,
+    ) -> LiveObjectUpdatePackedFragmentBitSpanEvidence {
+        self.residual_fragment_bits_removed
     }
 
     pub(super) fn final_fragment_bit_cursor(&self) -> usize {
@@ -72,9 +85,9 @@ pub(super) fn exact_terminal_ee_final_claim_for_test(
         candidate_payload: [b'P', 0x05, 0x01].into(),
         read_buffer_cursor: requirement.emitted_read_buffer_cursor,
         read_buffer_end: requirement.emitted_read_buffer_end,
-        fragment_bits_written: requirement.emitted_fragment_bits,
-        final_fragment_bit_cursor: requirement.emitted_fragment_bit_end,
-        final_fragment_bit_end: requirement.emitted_fragment_bit_end,
+        residual_fragment_bits_removed: requirement.emitted_fragment_bits,
+        final_fragment_bit_cursor: requirement.emitted_fragment_bit_start,
+        final_fragment_bit_end: requirement.emitted_fragment_bit_start,
     }
 }
 
@@ -83,11 +96,17 @@ pub(super) struct TerminalEeWholePacketAudit {
     pub(super) candidate_payload_length: usize,
     pub(super) candidate_read_buffer_end: usize,
     pub(super) candidate_fragment_bit_end: usize,
+    pub(super) candidate_fragment_final_bits: u8,
     pub(super) typed_row_read_buffer_cursor: usize,
     pub(super) typed_row_read_buffer_end: usize,
     pub(super) typed_row_fragment_cursor: usize,
     pub(super) exact_payload_validator_accepted: bool,
     pub(super) reject: Option<LiveObjectPayloadClaimReject>,
+    pub(super) residual_removal_candidate_payload_length: Option<usize>,
+    pub(super) residual_removal_candidate_fragment_bit_end: Option<usize>,
+    pub(super) residual_removal_candidate_fragment_final_bits: Option<u8>,
+    pub(super) residual_removal_exact_payload_validator_accepted: bool,
+    pub(super) residual_removal_reject: Option<LiveObjectPayloadClaimReject>,
     exact_final_claim: Option<ExactTerminalEeFinalClaim>,
 }
 
@@ -102,6 +121,22 @@ impl TerminalEeWholePacketAudit {
 
     pub(super) fn reject_stage(&self) -> Option<LiveObjectPayloadClaimRejectStage> {
         self.reject.map(|reject| reject.stage)
+    }
+
+    pub(super) fn residual_removal_status(&self) -> &'static str {
+        if self.residual_removal_exact_payload_validator_accepted {
+            "exact-residual-removal-accepted"
+        } else if self.residual_removal_candidate_payload_length.is_some() {
+            "exact-residual-removal-rejected"
+        } else {
+            "residual-removal-plan-unavailable"
+        }
+    }
+
+    pub(super) fn residual_removal_reject_stage(
+        &self,
+    ) -> Option<LiveObjectPayloadClaimRejectStage> {
+        self.residual_removal_reject.map(|reject| reject.stage)
     }
 
     pub(super) fn authorizes_claim(&self) -> bool {
@@ -161,59 +196,105 @@ pub(super) fn audit_staged_terminal_ee_candidate_for_requirement(
         Err(reject) => (false, Some(reject)),
     };
 
-    let exact_final_claim = if exact_payload_validator_accepted {
-        requirement
-            .and_then(|requirement| exact_final_claim_from_stage(stage, requirement, &candidate))
-    } else {
-        None
-    };
+    let residual_removal =
+        requirement.and_then(|requirement| audit_residual_removal_candidate(stage, requirement));
+    let residual_removal_candidate_payload_length = residual_removal
+        .as_ref()
+        .map(|plan| plan.candidate_payload_length);
+    let residual_removal_candidate_fragment_bit_end = residual_removal
+        .as_ref()
+        .map(|plan| plan.candidate_fragment_bit_end);
+    let residual_removal_candidate_fragment_final_bits = residual_removal
+        .as_ref()
+        .map(|plan| plan.candidate_fragment_final_bits);
+    let residual_removal_exact_payload_validator_accepted = residual_removal
+        .as_ref()
+        .is_some_and(|plan| plan.exact_payload_validator_accepted);
+    let residual_removal_reject = residual_removal.as_ref().and_then(|plan| plan.reject);
+    let exact_final_claim = residual_removal.and_then(|plan| plan.exact_final_claim);
 
     Some(TerminalEeWholePacketAudit {
         candidate_payload_length: candidate.len(),
         candidate_read_buffer_end: stage.live_bytes().len(),
         candidate_fragment_bit_end: stage.fragment_bits().len(),
+        candidate_fragment_final_bits: (stage.fragment_bits().len() % 8) as u8,
         typed_row_read_buffer_cursor: stage.typed_row_read_buffer_cursor(),
         typed_row_read_buffer_end: stage.typed_row_read_buffer_end(),
         typed_row_fragment_cursor: stage.typed_row_fragment_cursor(),
         exact_payload_validator_accepted,
         reject,
+        residual_removal_candidate_payload_length,
+        residual_removal_candidate_fragment_bit_end,
+        residual_removal_candidate_fragment_final_bits,
+        residual_removal_exact_payload_validator_accepted,
+        residual_removal_reject,
         exact_final_claim,
     })
 }
 
-fn exact_final_claim_from_stage(
+struct TerminalEeResidualRemovalAudit {
+    candidate_payload_length: usize,
+    candidate_fragment_bit_end: usize,
+    candidate_fragment_final_bits: u8,
+    exact_payload_validator_accepted: bool,
+    reject: Option<LiveObjectPayloadClaimReject>,
+    exact_final_claim: Option<ExactTerminalEeFinalClaim>,
+}
+
+fn audit_residual_removal_candidate(
     stage: &TerminalDoorPlaceableTail9EeStage,
     requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
-    candidate_payload: &[u8],
-) -> Option<ExactTerminalEeFinalClaim> {
+) -> Option<TerminalEeResidualRemovalAudit> {
     if !requirement.emitted_contract_is_valid()
         || !staged_record_identity_matches_requirement(stage, requirement)
         || stage.typed_row_read_buffer_cursor() != requirement.emitted_read_buffer_cursor
         || stage.typed_row_read_buffer_end() != requirement.emitted_read_buffer_end
-        || stage.typed_row_fragment_cursor() != stage.candidate_fragment_bit_end()
+        // EE sub_1405C3D40 consumes the translated door/placeable row only
+        // through this cursor. Bits after it are the exact unconsumed residual,
+        // not output written by that reader/writer contract.
+        || stage.typed_row_fragment_cursor() != requirement.emitted_fragment_bit_start
+        || stage.typed_row_fragment_cursor() < super::CNW_FRAGMENT_HEADER_BITS
         || stage.candidate_fragment_bit_end() != requirement.emitted_fragment_bit_end
         || requirement.emitted_fragment_bit_start > requirement.emitted_fragment_bit_end
         || requirement.emitted_fragment_bit_end > stage.fragment_bits().len()
     {
         return None;
     }
-    let fragment_bits_written = packed_fragment_span(
+    let residual_fragment_bits_removed = packed_fragment_span(
         stage.fragment_bits(),
         requirement.emitted_fragment_bit_start,
         requirement.emitted_fragment_bit_end,
     )?;
-    if fragment_bits_written != requirement.emitted_fragment_bits {
+    if residual_fragment_bits_removed != requirement.emitted_fragment_bits {
         return None;
     }
-    Some(ExactTerminalEeFinalClaim {
+    let final_fragment_bits = stage
+        .fragment_bits()
+        .get(..stage.typed_row_fragment_cursor())?;
+    let candidate = super::live_object_payload_from_parts(stage.live_bytes(), final_fragment_bits)?;
+    let validation = super::claim_payload_if_verified_with_reject(&candidate);
+    let (exact_payload_validator_accepted, reject) = match validation {
+        Ok(_) => (true, None),
+        Err(reject) => (false, Some(reject)),
+    };
+    let candidate_payload_length = candidate.len();
+    let exact_final_claim = exact_payload_validator_accepted.then(|| ExactTerminalEeFinalClaim {
         requirement,
         source_payload: None,
-        candidate_payload: candidate_payload.into(),
+        candidate_payload: candidate.into(),
         read_buffer_cursor: stage.typed_row_read_buffer_cursor(),
         read_buffer_end: stage.typed_row_read_buffer_end(),
-        fragment_bits_written,
+        residual_fragment_bits_removed,
         final_fragment_bit_cursor: stage.typed_row_fragment_cursor(),
-        final_fragment_bit_end: stage.candidate_fragment_bit_end(),
+        final_fragment_bit_end: stage.typed_row_fragment_cursor(),
+    });
+    Some(TerminalEeResidualRemovalAudit {
+        candidate_payload_length,
+        candidate_fragment_bit_end: stage.typed_row_fragment_cursor(),
+        candidate_fragment_final_bits: (stage.typed_row_fragment_cursor() % 8) as u8,
+        exact_payload_validator_accepted,
+        reject,
+        exact_final_claim,
     })
 }
 
@@ -316,15 +397,10 @@ fn audit_matches_requirement(
     audit: &TerminalEeWholePacketAudit,
     requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
 ) -> bool {
-    let expected_typed_fragment_cursor = if audit.exact_final_claim().is_some() {
-        requirement.emitted_fragment_bit_end
-    } else {
-        requirement.emitted_fragment_bit_start
-    };
     audit.candidate_read_buffer_end == requirement.emitted_read_buffer_end
         && audit.typed_row_read_buffer_cursor == requirement.emitted_read_buffer_cursor
         && audit.typed_row_read_buffer_end == requirement.emitted_read_buffer_end
-        && audit.typed_row_fragment_cursor == expected_typed_fragment_cursor
+        && audit.typed_row_fragment_cursor == requirement.emitted_fragment_bit_start
         && audit.candidate_fragment_bit_end == requirement.emitted_fragment_bit_end
 }
 
@@ -360,10 +436,10 @@ mod tests {
         let source_bits = super::super::live_object_rewrite_bit_slice_evidence(3, 3, &[]);
         let emitted_fragment_bits = packed_fragment_span(
             stage.fragment_bits(),
-            CNW_FRAGMENT_HEADER_BITS,
+            stage.typed_row_fragment_cursor(),
             stage.typed_row_fragment_cursor(),
         )
-        .expect("bounded exact emitted span");
+        .expect("bounded empty residual span");
         LiveObjectUpdateTerminalWriterHandoffRequirement {
             source_record_offset: 0,
             object_type: PLACEABLE_OBJECT_TYPE,
@@ -377,7 +453,7 @@ mod tests {
             emitted_mask: LEGACY_UPDATE_STATE_MASK,
             emitted_read_buffer_cursor: stage.typed_row_read_buffer_cursor(),
             emitted_read_buffer_end: stage.typed_row_read_buffer_end(),
-            emitted_fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+            emitted_fragment_bit_start: stage.typed_row_fragment_cursor(),
             emitted_fragment_bit_end: stage.typed_row_fragment_cursor(),
             emitted_fragment_bit_count: emitted_fragment_bits.bit_count(),
             emitted_fragment_bits_retained: emitted_fragment_bits.bit_count(),
@@ -400,48 +476,20 @@ mod tests {
     }
 
     #[test]
-    fn exact_whole_packet_and_requirement_mint_one_opaque_ee_claim() {
+    fn empty_residual_requirement_cannot_mint_an_ee_claim() {
         let stage = exact_state_only_placeable_stage();
         let requirement = exact_state_only_requirement(&stage);
-        let source_payload = b"exact source packet";
-        let mut audit =
-            audit_staged_terminal_ee_candidate_for_requirement(&stage, Some(requirement))
-                .expect("bounded exact EE stage");
-        audit.bind_source_payload(source_payload);
-        let claim = audit
-            .exact_final_claim()
-            .expect("exact typed reader and whole-payload validator should mint a sealed claim");
-        assert!(claim.matches(requirement, source_payload));
-        assert_eq!(claim.read_buffer_cursor(), stage.live_bytes().len());
+        assert!(!requirement.emitted_contract_is_valid());
+
+        let audit = audit_staged_terminal_ee_candidate_for_requirement(&stage, Some(requirement))
+            .expect("bounded exact EE stage");
+        assert!(audit.exact_payload_validator_accepted);
+        assert!(!audit.residual_removal_exact_payload_validator_accepted);
+        assert!(audit.exact_final_claim().is_none());
         assert_eq!(
-            claim.final_fragment_bit_cursor(),
-            stage.fragment_bits().len()
+            audit.residual_removal_status(),
+            "residual-removal-plan-unavailable"
         );
-        assert!(audit_matches_requirement(&audit, requirement));
-
-        let mut mismatched_requirement = requirement;
-        mismatched_requirement.emitted_fragment_bits.packed_msb ^= 1;
-        let mismatched = audit_staged_terminal_ee_candidate_for_requirement(
-            &stage,
-            Some(mismatched_requirement),
-        )
-        .expect("the candidate remains structurally auditable");
-        assert!(mismatched.exact_payload_validator_accepted);
-        assert!(mismatched.exact_final_claim().is_none());
-        assert!(!audit_matches_requirement(
-            &mismatched,
-            mismatched_requirement
-        ));
-
-        let mismatched_identity = LiveObjectUpdateTerminalWriterHandoffRequirement {
-            object_id: requirement.object_id ^ 1,
-            ..requirement
-        };
-        let mismatched =
-            audit_staged_terminal_ee_candidate_for_requirement(&stage, Some(mismatched_identity))
-                .expect("the candidate remains structurally auditable");
-        assert!(mismatched.exact_payload_validator_accepted);
-        assert!(mismatched.exact_final_claim().is_none());
     }
 
     #[test]
@@ -480,6 +528,163 @@ mod tests {
         assert!(!audit.authorizes_cursor_advance());
         assert!(!audit.authorizes_fragment_trim());
         assert!(audit.exact_final_claim().is_none());
+        assert_eq!(
+            audit.residual_removal_status(),
+            "residual-removal-plan-unavailable"
+        );
+    }
+
+    #[test]
+    fn exact_residual_removal_plan_mints_non_authorizing_ee_claim() {
+        let exact = exact_state_only_placeable_stage();
+        let typed_row_fragment_cursor = exact.typed_row_fragment_cursor();
+        let live_bytes = exact.live_bytes().to_vec();
+        let mut fragment_bits = exact.fragment_bits().to_vec();
+        // Sequence 95 leaves these exact 17 MSB-first bits after the typed EE
+        // placeable reader. The plan retains their value as removal evidence
+        // while the final packet ends at the typed cursor.
+        let residual_bits = (0..17)
+            .map(|bit| ((0x4046u32 >> (16 - bit)) & 1) != 0)
+            .collect::<Vec<_>>();
+        fragment_bits.extend_from_slice(&residual_bits);
+        let stage = TerminalDoorPlaceableTail9EeStage::for_terminal_ee_writer_test(
+            live_bytes,
+            fragment_bits.clone(),
+            exact.typed_row_read_buffer_cursor(),
+            exact.typed_row_read_buffer_end(),
+            typed_row_fragment_cursor,
+            fragment_bits.len(),
+        );
+        let mut requirement = exact_state_only_requirement(&exact);
+        requirement.emitted_fragment_bit_start = typed_row_fragment_cursor;
+        requirement.emitted_fragment_bit_end = fragment_bits.len();
+        requirement.emitted_fragment_bit_count = residual_bits.len();
+        requirement.emitted_fragment_bits_retained = residual_bits.len();
+        requirement.emitted_fragment_bits = packed_fragment_span(
+            &fragment_bits,
+            typed_row_fragment_cursor,
+            fragment_bits.len(),
+        )
+        .expect("17 exact residual bits");
+
+        let source_payload = b"immutable source packet";
+        let mut audit =
+            audit_staged_terminal_ee_candidate_for_requirement(&stage, Some(requirement))
+                .expect("bounded residual stage");
+        audit.bind_source_payload(source_payload);
+
+        assert!(!audit.exact_payload_validator_accepted);
+        assert_eq!(
+            audit.reject_stage(),
+            Some(LiveObjectPayloadClaimRejectStage::FragmentCursor)
+        );
+        assert!(audit.residual_removal_exact_payload_validator_accepted);
+        assert_eq!(
+            audit.residual_removal_candidate_fragment_bit_end,
+            Some(typed_row_fragment_cursor)
+        );
+        assert_eq!(audit.residual_removal_reject, None);
+        let claim = audit
+            .exact_final_claim()
+            .expect("whole-payload validation should seal the EE output plan");
+        assert!(claim.matches(requirement, source_payload));
+        assert_eq!(
+            claim.residual_fragment_bits_removed(),
+            requirement.emitted_fragment_bits
+        );
+        assert_eq!(claim.final_fragment_bit_cursor(), typed_row_fragment_cursor);
+        assert_eq!(claim.final_fragment_bit_end(), typed_row_fragment_cursor);
+        let fragment_offset = 7 + stage.live_bytes().len();
+        let original =
+            super::super::live_object_payload_from_parts(stage.live_bytes(), stage.fragment_bits())
+                .expect("bounded staged packet");
+        let original_fragment = &original[fragment_offset..];
+        let final_fragment = &claim.candidate_payload[fragment_offset..];
+        assert_eq!(
+            (original_fragment[0] & 0xE0) >> 5,
+            audit.candidate_fragment_final_bits
+        );
+        assert_eq!(
+            (final_fragment[0] & 0xE0) >> 5,
+            audit
+                .residual_removal_candidate_fragment_final_bits
+                .expect("sealed candidate valid-bit header")
+        );
+        let decoded_final =
+            super::super::bits::decode_msb_valid_bits(final_fragment, CNW_FRAGMENT_HEADER_BITS)
+                .expect("71-bit repacked final fragment");
+        assert_eq!(decoded_final.len(), typed_row_fragment_cursor);
+        assert_eq!(
+            &decoded_final[CNW_FRAGMENT_HEADER_BITS..],
+            &stage.fragment_bits()[CNW_FRAGMENT_HEADER_BITS..typed_row_fragment_cursor]
+        );
+        assert!(!audit.authorizes_claim());
+        assert!(!audit.authorizes_rewrite());
+        assert!(!audit.authorizes_cursor_advance());
+        assert!(!audit.authorizes_fragment_trim());
+
+        let mut changed_bits = requirement;
+        changed_bits.emitted_fragment_bits.packed_msb ^= 1;
+        let mismatched =
+            audit_staged_terminal_ee_candidate_for_requirement(&stage, Some(changed_bits))
+                .expect("the original candidate remains auditable");
+        assert!(mismatched.exact_final_claim().is_none());
+        assert_eq!(
+            mismatched.residual_removal_status(),
+            "residual-removal-plan-unavailable"
+        );
+
+        let mismatched_identity = LiveObjectUpdateTerminalWriterHandoffRequirement {
+            object_id: requirement.object_id ^ 1,
+            ..requirement
+        };
+        let mismatched =
+            audit_staged_terminal_ee_candidate_for_requirement(&stage, Some(mismatched_identity))
+                .expect("the original candidate remains auditable");
+        assert!(mismatched.exact_final_claim().is_none());
+    }
+
+    #[test]
+    fn malformed_residual_removal_candidate_is_reported_and_never_sealed() {
+        let exact = exact_state_only_placeable_stage();
+        let final_cursor = exact.typed_row_fragment_cursor() - 1;
+        let stage = TerminalDoorPlaceableTail9EeStage::for_terminal_ee_writer_test(
+            exact.live_bytes().to_vec(),
+            exact.fragment_bits().to_vec(),
+            exact.typed_row_read_buffer_cursor(),
+            exact.typed_row_read_buffer_end(),
+            final_cursor,
+            exact.fragment_bits().len(),
+        );
+        let mut requirement = exact_state_only_requirement(&exact);
+        requirement.emitted_fragment_bit_start = final_cursor;
+        requirement.emitted_fragment_bit_end = exact.fragment_bits().len();
+        requirement.emitted_fragment_bit_count = 1;
+        requirement.emitted_fragment_bits_retained = 1;
+        requirement.emitted_fragment_bits = packed_fragment_span(
+            exact.fragment_bits(),
+            final_cursor,
+            exact.fragment_bits().len(),
+        )
+        .expect("one bounded residual bit");
+
+        let audit = audit_staged_terminal_ee_candidate_for_requirement(&stage, Some(requirement))
+            .expect("bounded malformed final candidate");
+        assert_eq!(
+            audit.residual_removal_status(),
+            "exact-residual-removal-rejected"
+        );
+        assert!(!audit.residual_removal_exact_payload_validator_accepted);
+        assert_eq!(
+            audit.residual_removal_reject_stage(),
+            Some(LiveObjectPayloadClaimRejectStage::RecordValidator)
+        );
+        assert!(audit.residual_removal_reject.is_some());
+        assert!(audit.exact_final_claim().is_none());
+        assert!(!audit.authorizes_claim());
+        assert!(!audit.authorizes_rewrite());
+        assert!(!audit.authorizes_cursor_advance());
+        assert!(!audit.authorizes_fragment_trim());
     }
 
     #[test]

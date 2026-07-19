@@ -29,7 +29,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             "capture".to_string(),
             "live-object-terminal-tail9-handoff".to_string(),
             "version".to_string(),
-            "12".to_string(),
+            "13".to_string(),
         ],
     );
     write_tsv_line(
@@ -105,18 +105,18 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                     "{}..{}",
                     requirement.emitted_read_buffer_cursor, requirement.emitted_read_buffer_end
                 ),
-                "emitted_fragment_obligation".to_string(),
+                "emitted_unconsumed_fragment".to_string(),
                 format!(
                     "{}..{}",
                     requirement.emitted_fragment_bit_start, requirement.emitted_fragment_bit_end
                 ),
-                "emitted_fragment_bits".to_string(),
+                "emitted_unconsumed_fragment_bits".to_string(),
                 requirement.emitted_fragment_bit_count.to_string(),
-                "emitted_fragment_bits_retained".to_string(),
+                "emitted_unconsumed_fragment_bits_retained".to_string(),
                 requirement.emitted_fragment_bits_retained.to_string(),
-                "emitted_fragment_exact".to_string(),
+                "emitted_unconsumed_fragment_exact".to_string(),
                 format_packed_fragment_bit_span(requirement.emitted_fragment_bits),
-                "emitted_fragment_values_complete".to_string(),
+                "emitted_unconsumed_fragment_values_complete".to_string(),
                 (requirement.emitted_fragment_bits_retained
                     == requirement.emitted_fragment_bit_count)
                     .to_string(),
@@ -158,6 +158,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
         let exact_final_claim = audit.as_ref().and_then(|audit| audit.exact_final_claim());
         if let Some(audit) = audit.as_ref() {
             let reject = audit.reject;
+            let residual_removal_reject = audit.residual_removal_reject;
             write_tsv_line(
                 &mut out,
                 &[
@@ -185,6 +186,8 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                     ),
                     "candidate_fragment_end".to_string(),
                     audit.candidate_fragment_bit_end.to_string(),
+                    "candidate_fragment_final_bits".to_string(),
+                    audit.candidate_fragment_final_bits.to_string(),
                     "exact_payload_validator_accepted".to_string(),
                     audit.exact_payload_validator_accepted.to_string(),
                     "reject_stage".to_string(),
@@ -200,6 +203,43 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                         .unwrap_or_else(|| "none".to_string()),
                     "reject_fragment_cursor".to_string(),
                     reject
+                        .and_then(|reject| reject.bit_cursor)
+                        .map(|cursor| cursor.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    "residual_removal_status".to_string(),
+                    audit.residual_removal_status().to_string(),
+                    "residual_removal_candidate_payload_len".to_string(),
+                    audit
+                        .residual_removal_candidate_payload_length
+                        .map(|length| length.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    "residual_removal_candidate_fragment_end".to_string(),
+                    audit
+                        .residual_removal_candidate_fragment_bit_end
+                        .map(|cursor| cursor.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    "residual_removal_candidate_fragment_final_bits".to_string(),
+                    audit
+                        .residual_removal_candidate_fragment_final_bits
+                        .map(|bits| bits.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    "residual_removal_exact_payload_validator_accepted".to_string(),
+                    audit
+                        .residual_removal_exact_payload_validator_accepted
+                        .to_string(),
+                    "residual_removal_reject_stage".to_string(),
+                    audit
+                        .residual_removal_reject_stage()
+                        .map(|stage| stage.as_str())
+                        .unwrap_or("none")
+                        .to_string(),
+                    "residual_removal_reject_read_buffer".to_string(),
+                    residual_removal_reject
+                        .and_then(|reject| reject.offset.zip(reject.record_end))
+                        .map(|(cursor, end)| format!("{cursor}..{end}"))
+                        .unwrap_or_else(|| "none".to_string()),
+                    "residual_removal_reject_fragment_cursor".to_string(),
+                    residual_removal_reject
                         .and_then(|reject| reject.bit_cursor)
                         .map(|cursor| cursor.to_string())
                         .unwrap_or_else(|| "none".to_string()),
@@ -239,7 +279,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
                 "ee_final_claim_readiness".to_string(),
                 "observation".to_string(),
                 if exact_final_claim.is_some() {
-                    "sealed-exact-payload".to_string()
+                    "sealed-exact-residual-removal-payload".to_string()
                 } else {
                     "none".to_string()
                 },

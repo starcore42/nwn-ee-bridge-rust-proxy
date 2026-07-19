@@ -83,9 +83,11 @@ pub struct LiveObjectUpdateTerminalWriterHandoffRequirement {
     pub emitted_fragment_bit_end: usize,
     pub emitted_fragment_bit_count: usize,
     pub emitted_fragment_bits_retained: usize,
-    /// Exact staged EE-side fragment values in full MSB-first reader order.
-    /// This is an obligation for a future typed EE writer/final validator, not
-    /// permission to consume or trim the still-unowned source fragment.
+    /// Exact staged EE-side residual values after the typed reader stops, in
+    /// full MSB-first reader order. A sealed EE output plan may prove that an
+    /// exact final packet ends at `emitted_fragment_bit_start` after removing
+    /// this span, but that is not permission to consume or trim the separately
+    /// unowned HG source fragment.
     pub emitted_fragment_bits: LiveObjectUpdatePackedFragmentBitSpanEvidence,
     pub emitted_next_opcode_read_overflows: bool,
 }
@@ -134,8 +136,8 @@ impl LiveObjectUpdateTerminalWriterHandoffVerdict {
     }
 }
 
-/// One future typed EE-writer/final-validator observation for the emitted half
-/// of the terminal handoff contract.
+/// One typed EE-output/final-validator observation for the emitted half of the
+/// terminal handoff contract.
 ///
 /// This is deliberately separate from source-writer ownership. Matching these
 /// cursors and values only proves that the prospective EE output is exact; it
@@ -144,7 +146,7 @@ impl LiveObjectUpdateTerminalWriterHandoffVerdict {
 pub(super) struct LiveObjectUpdateTerminalEeFinalClaimObservation {
     read_buffer_cursor: usize,
     read_buffer_end: usize,
-    fragment_bits_written: LiveObjectUpdatePackedFragmentBitSpanEvidence,
+    residual_fragment_bits_removed: LiveObjectUpdatePackedFragmentBitSpanEvidence,
     final_fragment_bit_cursor: usize,
     final_fragment_bit_end: usize,
     exact_payload_validator_accepted: bool,
@@ -250,12 +252,14 @@ impl LiveObjectUpdateTerminalWriterHandoffRequirement {
     pub(super) fn source_contract_is_valid(self) -> bool {
         self.source_read_buffer_cursor == self.source_read_buffer_end
             && self.source_next_opcode_read_overflows
+            && self.source_fragment_bits.bit_count > 0
             && bit_slice_is_fully_retained(self.source_fragment_bits)
     }
 
     pub(super) fn emitted_contract_is_valid(self) -> bool {
         let emitted_bits = self.emitted_fragment_bits;
         emitted_bits.is_valid()
+            && emitted_bits.bit_count() > 0
             && self.emitted_read_buffer_cursor == self.emitted_read_buffer_end
             && self.emitted_fragment_bit_start == emitted_bits.bit_start
             && self.emitted_fragment_bit_end == emitted_bits.bit_end
@@ -284,7 +288,7 @@ impl LiveObjectUpdateTerminalWriterHandoffRequirement {
         let Some(observation) = observation else {
             return Verdict::IncompleteTypedEeWriter;
         };
-        if !observation.fragment_bits_written.is_valid() {
+        if !observation.residual_fragment_bits_removed.is_valid() {
             return Verdict::IncompleteTypedEeWriter;
         }
         if !observation.exact_payload_validator_accepted {
@@ -300,14 +304,18 @@ impl LiveObjectUpdateTerminalWriterHandoffRequirement {
         {
             return Verdict::ReadBufferMismatch;
         }
-        if observation.fragment_bits_written.bit_start != self.emitted_fragment_bits.bit_start
-            || observation.fragment_bits_written.bit_end != self.emitted_fragment_bits.bit_end
-            || observation.final_fragment_bit_cursor != self.emitted_fragment_bit_end
-            || observation.final_fragment_bit_end != self.emitted_fragment_bit_end
+        if observation.residual_fragment_bits_removed.bit_start
+            != self.emitted_fragment_bits.bit_start
+            || observation.residual_fragment_bits_removed.bit_end
+                != self.emitted_fragment_bits.bit_end
+            || observation.final_fragment_bit_cursor != self.emitted_fragment_bit_start
+            || observation.final_fragment_bit_end != self.emitted_fragment_bit_start
         {
             return Verdict::CursorGapOrOverlap;
         }
-        if observation.fragment_bits_written.packed_msb != self.emitted_fragment_bits.packed_msb {
+        if observation.residual_fragment_bits_removed.packed_msb
+            != self.emitted_fragment_bits.packed_msb
+        {
             return Verdict::BitMismatch;
         }
         Verdict::ExactTypedEeFinalClaimReady
@@ -323,7 +331,7 @@ impl LiveObjectUpdateTerminalWriterHandoffRequirement {
             .map(|claim| LiveObjectUpdateTerminalEeFinalClaimObservation {
                 read_buffer_cursor: claim.read_buffer_cursor(),
                 read_buffer_end: claim.read_buffer_end(),
-                fragment_bits_written: claim.fragment_bits_written(),
+                residual_fragment_bits_removed: claim.residual_fragment_bits_removed(),
                 final_fragment_bit_cursor: claim.final_fragment_bit_cursor(),
                 final_fragment_bit_end: claim.final_fragment_bit_end(),
                 exact_payload_validator_accepted: true,
@@ -419,8 +427,8 @@ pub struct LiveObjectUpdateTerminalReusedRecordReaderInterpretationEvidence {
 }
 
 impl LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
-    /// Build the exact source writer span plus the emitted final-claim
-    /// obligation for a future server-side writer or list-handoff trace.
+    /// Build the exact source writer span plus the staged EE unconsumed
+    /// residual for a future server-side writer or list-handoff trace.
     /// Return no contract when the bounded evidence did not retain every
     /// source MSB-first residual bit.
     pub fn writer_handoff_requirement(
@@ -885,7 +893,7 @@ impl LiveObjectUpdateDoorPlaceableFragmentFieldKind {
 /// evidence is copied through retry paths, so retaining at most 32 exact bits
 /// here avoids embedding a large bit-slice array for every individual field.
 /// Stock Diamond reader admission remains separately bounded to 16 bits; the
-/// wider capacity exists for the exact 17-bit staged EE final-claim obligation.
+/// wider capacity exists for the exact 17-bit staged EE unconsumed residual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdatePackedFragmentBitSpanEvidence {
     pub bit_start: usize,
@@ -1067,9 +1075,9 @@ mod tests {
         EeFinalClaimObservation {
             read_buffer_cursor: requirement.emitted_read_buffer_cursor,
             read_buffer_end: requirement.emitted_read_buffer_end,
-            fragment_bits_written: requirement.emitted_fragment_bits,
-            final_fragment_bit_cursor: requirement.emitted_fragment_bit_end,
-            final_fragment_bit_end: requirement.emitted_fragment_bit_end,
+            residual_fragment_bits_removed: requirement.emitted_fragment_bits,
+            final_fragment_bit_cursor: requirement.emitted_fragment_bit_start,
+            final_fragment_bit_end: requirement.emitted_fragment_bit_start,
             exact_payload_validator_accepted: true,
         }
     }
@@ -1132,11 +1140,11 @@ mod tests {
             EeFinalClaimVerdict::ReadBufferMismatch
         );
 
-        let mut changed_bits = exact.fragment_bits_written;
+        let mut changed_bits = exact.residual_fragment_bits_removed;
         changed_bits.packed_msb ^= 1 << 7;
         assert_eq!(
             requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
-                fragment_bits_written: changed_bits,
+                residual_fragment_bits_removed: changed_bits,
                 ..exact
             })),
             EeFinalClaimVerdict::BitMismatch
@@ -1144,11 +1152,19 @@ mod tests {
 
         assert_eq!(
             requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
-                fragment_bits_written: PackedSpan {
-                    bit_end: exact.fragment_bits_written.bit_end - 1,
-                    ..exact.fragment_bits_written
+                residual_fragment_bits_removed: PackedSpan {
+                    bit_end: exact.residual_fragment_bits_removed.bit_end - 1,
+                    ..exact.residual_fragment_bits_removed
                 },
-                final_fragment_bit_cursor: exact.final_fragment_bit_cursor - 1,
+                ..exact
+            })),
+            EeFinalClaimVerdict::CursorGapOrOverlap
+        );
+
+        assert_eq!(
+            requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
+                final_fragment_bit_cursor: requirement.emitted_fragment_bit_end,
+                final_fragment_bit_end: requirement.emitted_fragment_bit_end,
                 ..exact
             })),
             EeFinalClaimVerdict::CursorGapOrOverlap
@@ -1164,7 +1180,7 @@ mod tests {
 
         let incomplete =
             requirement.correlate_ee_final_claim_observation(Some(EeFinalClaimObservation {
-                fragment_bits_written: PackedSpan {
+                residual_fragment_bits_removed: PackedSpan {
                     bit_start: 71,
                     bit_end: 104,
                     packed_msb: 0,

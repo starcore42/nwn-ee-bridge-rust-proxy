@@ -49,6 +49,8 @@ normalized at width 11 / height 14, so this run proves sustained gameplay and
 no regression but did not directly exercise the combined height/sound repair.
 It carried no interaction flags and did not issue the sequence-95 `UseObject`;
 the earlier interaction capture remains that subsystem's active failure seed.
+At the 2026-07-19 10:20 +10 gate this artifact was about 8 hours 27 minutes old;
+no newer failed HG capture existed, so it satisfied the 24-hour gameplay gate.
 
 The refresh was mandatory because the prior gameplay-reaching artifact had
 aged past 26 hours. Its first attempt,
@@ -74,28 +76,44 @@ emitted contract at `243..243` plus `71..88` (17 bits,
 live failure combined with the controlled stock Diamond writer/decompile; the
 deployed HG custom owner/list/finalizer sidecar is still unavailable.
 
-Version 12 joins two opaque diagnostic proofs. The source token requires one
+Version 13 joins two opaque diagnostic proofs. The source token requires one
 uniquely selected ordered v1 trace block whose complete finalized `P/05/01`
 bytes exactly equal the source payload. The EE token can be minted only from
-the record parser's opaque
-typed stage after the full candidate validator accepts and its emitted record
-offset, `U/type/id/translated-mask`, MSB-first fragment span, and terminal
-cursors exactly match the requirement; it retains the exact candidate and
-source bytes. Invalid source/emitted contracts reject. Even an exact two-sided
-join remains non-authorizing until a dedicated typed writer is registered at
-the normal exact-claim boundary. Sequence 95 has neither token, reports
-`incomplete-source-and-ee-proof`, and remains rejected without changing wire
-bytes, claims, cursor movement, or fragment trimming.
+the record parser's opaque typed stage after a separately materialized output
+candidate ends at the typed cursor, repacks the CNW fragment MSB-first, and the
+full validator accepts. The token binds the emitted record offset,
+`U/type/id/translated-mask`, exact unconsumed residual values, final cursors,
+candidate bytes, and source bytes. Sequence 95's original 261-byte, 88-bit
+candidate still rejects at cursor 71; the sealed 259-byte candidate removes the
+exact `71..88` residual (`0x4046`), repacks the valid-count header from 0 to 7,
+ends at 71, and validates. It now has the EE token but not the source token, so
+the join reports `incomplete-source-proof`. Invalid or empty residual contracts
+reject, and claim, rewrite, cursor movement, fragment trimming, and wire bytes
+remain unchanged.
 
-All 61 terminal-focused tests, formatting, locked offline `cargo check`, the
-debug production build, full Release bridge build, diff checks, and independent
-fail-closed/wire review pass. Strict replay
+All 63 terminal-focused tests and formatting pass, including the exact
+sequence-95 88-to-71 valid-bit repack, rejected-plan, old-cursor, and
+non-authorizing branch regressions. Independent fail-closed/wire and API
+reviews found no correctness defect. The previous strict replay
 `C:\nwnbridge\codex-proxy2-replay-terminal-journal-20260719-045358` processed
 164 packets with 304 strict allows, 97 exact live-object claims, 19 exact-shape
 rewrites, ten Area rewrites, both Area contexts, and 143 generated ACKs. Stderr,
 WARN/ERROR/BNDP, strict/semantic quarantines and artifacts, rewrite failures,
-terminal residuals, and leftover replay ports were zero. A final claim still
-requires the deployed HG journal and a decompile-proven typed EE writer/handoff.
+terminal residuals, and leftover replay ports were zero. A controlled local
+producer run at `C:\nwnbridge\local-diamond-baseline-20260719-102653` wrote no
+journal because its owner snapshot did not match the later stock finalizer
+handoff. That interrupted producer is not safe to commit: its deduplication can
+hide ambiguity, loader-lock initialization can deadlock, and early file create
+can truncate evidence. A final claim still requires a loader-safe deployed HG
+journal plus the exact two-sided source/EE join.
+
+Fresh strict replay
+`C:\nwnbridge\codex-proxy2-replay-terminal-ee-v13-20260719-20260719-112353`
+processed all 164 source packets with 304 strict allows, 143 generated ACKs, 97
+exact claims, 19 exact rewrites, ten Area rewrites, and both Area contexts. It
+produced zero strict or semantic quarantines, quarantine files, rewrite
+failures, terminal residuals, output timeouts, stderr, or leftover replay
+processes/ports.
 
 Writer evidence enters through one sealed bounded factory instead of a
 caller-constructed observation. `--terminal-writer-trace` now accepts one
@@ -166,7 +184,7 @@ hgbridge_proxy2.exe --packet-dump --log C:\nwnbridge\<run>\proxy.structured.log 
 Alternatively pass `-TerminalWriterTracePath C:\secure\terminal-writer-v1.tsv`
 to `tools\test-hg-bridge.ps1`. A diagnostic destination is mandatory:
 `--packet-dump` plus `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`. Correlation is
-written to the version-12 `.terminal.tsv` rows with artifact status, selection
+written to the version-13 `.terminal.tsv` rows with artifact status, selection
 status, journal artifact count, payload match count, verdict, selected trace
 identity, and two-sided proof-join state. Journal selection and its opaque
 source token remain diagnostic evidence only: they cannot claim, rewrite,
@@ -175,12 +193,12 @@ operator evidence and must never be copied to the public repository. Current
 DiamondProbe logs do not satisfy this contract because they truncate output to
 a suffix and do not retain the substantive list handoff.
 
-The emitted final-claim observation is also subsystem-private. Sequence 95 no
-longer synthesizes a successful validator observation from its retained 17-bit
-preview; it remains `incomplete-typed-ee-writer`. No packet, fragment cursor,
-trim, claim, rewrite, or terminal-claim registration changed, and the packet
-remains quarantined until both exact source ownership and an exact EE writer
-claim exist.
+The emitted final-claim observation is also subsystem-private. Sequence 95 now
+earns one sealed EE token from the exact residual-removal candidate, but the
+source owner is still unproven and the join remains `incomplete-source-proof`.
+No packet, fragment cursor, trim, claim, rewrite, or terminal-claim registration
+changed; the packet remains quarantined until the exact source journal joins
+the EE proof and a dedicated writer is registered.
 
 Strict replay
 `C:\nwnbridge\codex-proxy2-replay-terminal-proof-20260718-141014`

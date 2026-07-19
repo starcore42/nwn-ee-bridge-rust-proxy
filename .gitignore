@@ -13,6 +13,7 @@ nwncdkey.ini
 /logs/
 *.log
 *.jsonl
+*.terminal-writer-v1.tsv
 *.bin
 *.cap
 *.pcap

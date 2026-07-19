@@ -2725,7 +2725,7 @@ mod fixture_free_tests {
                 writer_requirement.emitted_fragment_bits_retained,
             ),
             (243, 243, 71, 88, 17, 17),
-            "the emitted side must retain the complete compact final-claim obligation"
+            "the emitted side must retain the complete compact unconsumed residual"
         );
         assert_eq!(
             writer_requirement.emitted_fragment_bits,
@@ -2767,7 +2767,16 @@ mod fixture_free_tests {
             )
             .expect("the exact failure payload should support a bounded EE candidate audit");
         assert!(exact_candidate_capture.contains(
-            "terminal_ee_writer_candidate\tstatus\texact-payload-rejected\ttyped_row_exact\ttrue\tcandidate_payload_len\t261\tcandidate_read_buffer\t243..243\ttyped_row_read_buffer\t243..243\tunconsumed_fragment\t71..88\tcandidate_fragment_end\t88\texact_payload_validator_accepted\tfalse\treject_stage\tfragment-cursor\treject_read_buffer\t243..243\treject_fragment_cursor\t71\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
+            "terminal_ee_writer_candidate\tstatus\texact-payload-rejected\ttyped_row_exact\ttrue\tcandidate_payload_len\t261\tcandidate_read_buffer\t243..243\ttyped_row_read_buffer\t243..243\tunconsumed_fragment\t71..88\tcandidate_fragment_end\t88\tcandidate_fragment_final_bits\t0\texact_payload_validator_accepted\tfalse\treject_stage\tfragment-cursor\treject_read_buffer\t243..243\treject_fragment_cursor\t71"
+        ));
+        assert!(exact_candidate_capture.contains(
+            "residual_removal_status\texact-residual-removal-accepted\tresidual_removal_candidate_payload_len\t259\tresidual_removal_candidate_fragment_end\t71\tresidual_removal_candidate_fragment_final_bits\t7\tresidual_removal_exact_payload_validator_accepted\ttrue\tresidual_removal_reject_stage\tnone\tresidual_removal_reject_read_buffer\tnone\tresidual_removal_reject_fragment_cursor\tnone"
+        ));
+        assert!(exact_candidate_capture.contains(
+            "ee_final_claim_readiness\tobservation\tsealed-exact-residual-removal-payload\tverdict\texact-typed-ee-final-claim-ready\tready\ttrue\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
+        ));
+        assert!(exact_candidate_capture.contains(
+            "terminal_proof_join\tsource_handoff_token\tfalse\tee_final_claim_token\ttrue\tverdict\tincomplete-source-proof\tready\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         let mut capture_payload = payload.clone();
         // `failure.offset` belongs to the staged mutable read buffer after
@@ -2785,7 +2794,7 @@ mod fixture_free_tests {
         )
         .expect("terminal tail9 failure should emit a machine-readable artifact");
 
-        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t12\n"));
+        assert!(capture.starts_with("capture\tlive-object-terminal-tail9-handoff\tversion\t13\n"));
         let payload_md5_hint = format!("{:x}", md5::compute(&capture_payload));
         assert!(capture.contains(&format!("payload_md5_hint\t{payload_md5_hint}")));
         assert!(capture.contains(
@@ -2795,10 +2804,10 @@ mod fixture_free_tests {
             "writer_handoff_requirement\tobject_type\t0x09\tsource_record_offset\t166\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\temitted_record_offset\t182\temitted_mask\t0x00080017\tsource_read_buffer\t245..245\tsource_fragment\t63..76:"
         ), "capture omitted exact source record binding:\n{capture}");
         assert!(capture.contains(
-            "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_fragment_obligation\t71..88\temitted_fragment_bits\t17\temitted_fragment_bits_retained\t17\temitted_fragment_exact\t71..88:00100000001000110"
+            "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_unconsumed_fragment\t71..88\temitted_unconsumed_fragment_bits\t17\temitted_unconsumed_fragment_bits_retained\t17\temitted_unconsumed_fragment_exact\t71..88:00100000001000110"
         ));
         assert!(capture.contains(
-            "emitted_fragment_values_complete\ttrue\temitted_next_opcode_read_overflows\ttrue"
+            "emitted_unconsumed_fragment_values_complete\ttrue\temitted_next_opcode_read_overflows\ttrue"
         ));
         assert!(capture.contains(
             "packet_correlation_required\texact-payload-bytes\tfinal_ee_claim_required\ttrue\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"

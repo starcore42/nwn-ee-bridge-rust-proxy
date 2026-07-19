@@ -115,7 +115,7 @@ enum CompactDoorPlaceableTail9NameWrite {
 /// instead owns one scalar-orientation byte followed by the six-byte
 /// scale/state branch for masks carrying `0x2 | 0x4`. Keep this byte plan
 /// separate from the MSB-first fragment rewrite: both cursors must be proven
-/// independently before the terminal evidence can describe an emitted claim.
+/// independently before terminal evidence can describe a sealed EE output plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompactDoorPlaceableTail9EeWritePlan {
     source_record_end: usize,
@@ -2850,7 +2850,7 @@ fn packed_stock_reader_fragment_bit_span_evidence(
     // The widest decompile-owned Diamond door/placeable field walk is bounded
     // to 14 bits. Keep stock-reader provenance at its original <=16 admission
     // even though the shared compact representation can retain a 17-bit EE
-    // final-claim obligation.
+    // unconsumed residual.
     if bit_end.checked_sub(bit_start)? > u16::BITS as usize {
         return None;
     }

@@ -17,6 +17,47 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-19 sealed terminal EE residual-removal plan: at the 10:20 +10 gate,
+  the newest gameplay-reaching HG artifact remained
+  `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`.
+  Its native `Area_AreaLoaded` gameplay milestone was
+  `2026-07-19T01:53:00.120803+10:00`, its final structured row was
+  `2026-07-19T01:54:46.602975+10:00`, and it was about 8 hours 27 minutes old.
+  It reached and sustained real Docks gameplay; 394 allow rows followed login,
+  character selection, module load, area load, player-list, live-object,
+  quickbar, and party traffic. There were no drops, quarantines, rejects,
+  errors, timeouts, disconnects, or newer failed live HG captures, so no fresh
+  login was required.
+
+  Version-13 terminal diagnostics now materialize a separate heap-backed EE
+  output candidate ending at the exact typed reader cursor, repack the CNW
+  fragment MSB-first, and run the existing full `P/05/01` validator. Sequence
+  95's original 261-byte candidate still rejects at fragment cursor 71 with
+  valid-bit header 0 and the exact unconsumed `71..88` span (`0x4046`). The
+  sealed 259-byte candidate ends at bit 71 with valid-bit header 7 and validates
+  exactly; its opaque EE token is bound to the source payload, record identity,
+  cursor contract, and removed residual. Empty or incomplete residual contracts
+  fail closed. The source token is still absent, so the proof join reports
+  `incomplete-source-proof`; claim, rewrite, cursor advance, and fragment trim
+  remain false and wire behavior is unchanged.
+
+  A controlled local Diamond producer run at
+  `C:\nwnbridge\local-diamond-baseline-20260719-102653` reached gameplay packet
+  activity but wrote no terminal journal. The stock finalizer started after the
+  captured owner snapshot (`owner_snapshot_handoff_match=0`), so exact source
+  ownership remains unproven. The interrupted producer changes remain
+  uncommitted because payload deduplication could hide ambiguous matches,
+  loader-lock hashing/file creation is unsafe, and early destructive file-open
+  behavior could truncate evidence. All 63 terminal-focused tests, formatting,
+  `cargo check`, and independent wire/API reviews pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-ee-v13-20260719-20260719-112353`
+  processed all 164 source packets with 304 strict allows, 143 generated ACKs,
+  97 exact claims, 19 rewrites, ten Area rewrites, and zero quarantine,
+  rewrite failures, terminal residuals, timeouts, stderr, or leftover ports.
+  Next: implement a loader-safe, append-only
+  HG owner/list/finalizer producer, capture a unique complete sequence-95 block,
+  join its source token to the now-ready EE token, then register a typed writer
+  only after the exact two-sided proof is live-confirmed.
 - 2026-07-19 bounded terminal-writer trace journal: the newest live HG evidence
   remains
   `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`,
