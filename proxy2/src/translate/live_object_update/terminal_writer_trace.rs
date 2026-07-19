@@ -1,13 +1,14 @@
 //! Bounded ingestion of terminal server-writer trace evidence.
 //!
-//! A writer trace is diagnostic proof, not a live rewrite input. Exact proof
-//! is constructed only here from one ordered owner/list/finalizer trace and
-//! one complete finalized `P/05/01` payload. A configured journal may contain
+//! A writer trace is source-side proof, never live rewrite authority by itself.
+//! Exact proof is constructed only here from one ordered owner/list/finalizer
+//! trace and one complete finalized `P/05/01` payload. A configured journal may contain
 //! multiple independently sealed traces. Correlation first requires one unique
 //! full-payload selection, then applies the existing exact-requirement proof.
 //! The factory validates the CNW envelope, derives record identity and terminal
 //! MSB-first bits from those finalized bytes, and compares the entire payload
-//! with quarantine.
+//! with quarantine. Only a later opaque plan that also owns the independently
+//! exact-validated EE candidate may mutate the matching source payload.
 
 use std::{
     fs::File,
@@ -1426,6 +1427,138 @@ mod tests {
             correlation.exact_handoff.is_none(),
             "even one requirement-exact block cannot win an ambiguous payload selection"
         );
+    }
+
+    #[test]
+    fn journal_handoff_seam_commits_only_one_unique_matching_v2_trace() {
+        let (source, record_offset) = coherent_payload();
+        let unique = parse_terminal_writer_trace_journal(&artifact_text(&source, record_offset))
+            .expect("one sealed matching v2 trace");
+
+        let mut unrelated = source.clone();
+        unrelated[7] ^= 0x01;
+        let no_match = parse_terminal_writer_trace_journal(&artifact_text_for_identity(
+            &unrelated,
+            record_offset,
+            TerminalWriterTraceIdentity {
+                trace_id: 18,
+                message_id: 0x0000_0000_1234_ABCE,
+                component_sha256: [0xB6; 32],
+            },
+        ))
+        .expect("one sealed nonmatching v2 trace");
+
+        let ambiguous = parse_terminal_writer_trace_journal(&format!(
+            "{}{}",
+            artifact_text(&source, record_offset),
+            artifact_text_for_identity(
+                &source,
+                83,
+                TerminalWriterTraceIdentity {
+                    trace_id: 19,
+                    message_id: 0x0000_0000_1234_ABCF,
+                    component_sha256: [0xC7; 32],
+                },
+            )
+        ))
+        .expect("two sealed traces for the same payload");
+
+        let mut unique_payload = source.clone();
+        let unique_attempt = super::super::
+            rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                &mut unique_payload,
+                None,
+                |requirement, source_payload| {
+                    assert_eq!(
+                        (
+                            requirement.source_record_offset,
+                            requirement.source_read_buffer_cursor,
+                            requirement.source_read_buffer_end,
+                        ),
+                        (166, 229, 229),
+                        "source trace coordinates must remain bound to the immutable packet"
+                    );
+                    assert_eq!(
+                        (
+                            requirement.emitted_record_offset,
+                            requirement.emitted_read_buffer_cursor,
+                            requirement.emitted_read_buffer_end,
+                        ),
+                        (182, 243, 243),
+                        "EE plan coordinates remain in the independently staged work buffer"
+                    );
+                    let correlation = correlate_loaded_terminal_writer_trace_journal(
+                        requirement,
+                        source_payload,
+                        &unique,
+                    );
+                    assert_eq!(
+                        correlation.selection_status,
+                        TerminalWriterTraceSelectionStatus::UniquePayloadMatch
+                    );
+                    assert_eq!(
+                        correlation.verdict,
+                        LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff,
+                        "requirement={requirement:#?}"
+                    );
+                    assert!(correlation.exact_handoff.is_some());
+                    correlation.exact_handoff
+                },
+            );
+        let unique_summary = unique_attempt
+            .summary
+            .expect("the uniquely matched source proof should seal and apply the EE plan");
+        assert!(unique_attempt.failure.is_none());
+        assert_ne!(unique_payload, source);
+        assert_eq!(unique_summary.terminal_exact_writer_rewrites, 1);
+        assert_eq!(unique_summary.terminal_source_fragment_bits_owned, 13);
+        assert_eq!(
+            unique_summary.terminal_emitted_residual_fragment_bits_removed,
+            17
+        );
+        assert!(super::super::claim_payload_if_verified(&unique_payload).is_some());
+
+        for (journal, expected_status) in [
+            (
+                &no_match,
+                TerminalWriterTraceSelectionStatus::NoPayloadMatch,
+            ),
+            (
+                &ambiguous,
+                TerminalWriterTraceSelectionStatus::AmbiguousPayloadMatch,
+            ),
+        ] {
+            let mut candidate = source.clone();
+            let attempt = super::super::
+                rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                    &mut candidate,
+                    None,
+                    |requirement, source_payload| {
+                        let correlation = correlate_loaded_terminal_writer_trace_journal(
+                            requirement,
+                            source_payload,
+                            journal,
+                        );
+                        assert_eq!(correlation.selection_status, expected_status);
+                        correlation.exact_handoff
+                    },
+                );
+
+            assert!(attempt.summary.is_none());
+            let failure = attempt
+                .failure
+                .expect("unproven terminal source must retain its typed failure");
+            assert_eq!(
+                failure.kind,
+                super::super::LiveObjectUpdateRewriteFailureKind::
+                    DoorPlaceableTail9TerminalResidualFragmentBits
+            );
+            assert!(failure.terminal_door_placeable_tail9_residual.is_some());
+            assert_eq!(
+                candidate, source,
+                "zero or ambiguous payload matches must leave source transactional"
+            );
+        }
     }
 
     #[test]

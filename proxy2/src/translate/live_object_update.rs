@@ -18967,6 +18967,17 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub interleaved_fragment_spans_promoted: u32,
     pub interleaved_fragment_bytes_promoted: u32,
     pub interleaved_fragment_bits_promoted: u32,
+    /// Whole-packet terminal rewrites committed only after a unique configured
+    /// v2 source handoff and the sealed EE residual-removal claim join against
+    /// the same immutable payload.
+    pub terminal_exact_writer_rewrites: u32,
+    pub terminal_source_fragment_bits_owned: u32,
+    pub terminal_emitted_residual_fragment_bits_removed: u32,
+    /// A separately authorized exact-payload AreaPlaceableContext pass applied
+    /// to the sealed terminal candidate before the outer transaction commits.
+    /// Keeping the phase summary intact avoids a lossy merge across the large
+    /// placeable reconciliation counter surface.
+    pub(crate) post_terminal_area_context_rewrite: Option<Box<LiveObjectUpdateRewriteSummary>>,
 }
 
 impl LiveObjectUpdateRewriteSummary {
@@ -23698,14 +23709,199 @@ pub fn rewrite_update_records_payload_with_area_context_attempt(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
 ) -> LiveObjectUpdateRewriteAttempt {
+    if terminal_writer_trace_configured() {
+        return rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+            payload,
+            area_context,
+            |requirement, source_payload| {
+                terminal_writer_trace::correlate_terminal_writer_trace(requirement, source_payload)
+                    .exact_handoff
+            },
+        );
+    }
+
     let mut failure = None;
     let summary = rewrite_update_records_payload_with_area_context_inner(
         payload,
         area_context,
         &mut failure,
         None,
+        None,
     );
     LiveObjectUpdateRewriteAttempt { summary, failure }
+}
+
+fn rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff<F>(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+    resolve_handoff: F,
+) -> LiveObjectUpdateRewriteAttempt
+where
+    F: FnOnce(
+        LiveObjectUpdateTerminalWriterHandoffRequirement,
+        &[u8],
+    ) -> Option<terminal_writer_trace::ExactTerminalWriterHandoff>,
+{
+    let source_payload = payload.clone();
+    let mut failure = None;
+    let mut summary = rewrite_update_records_payload_with_area_context_inner(
+        payload,
+        area_context,
+        &mut failure,
+        None,
+        None,
+    );
+
+    if summary.is_none()
+        && payload.as_slice() == source_payload.as_slice()
+        && let Some(initial_requirement) = failure
+            .and_then(|failure| failure.terminal_door_placeable_tail9_residual)
+            .and_then(|evidence| evidence.writer_handoff_requirement())
+    {
+        // The ordinary pass keeps its historical AreaPlaceableContext behavior
+        // for every nonterminal success. A terminal failure is rerun from the
+        // immutable source without context so the sealed EE candidate contains
+        // only protocol translation. The independently exact context pass then
+        // runs once, after both terminal proofs join, and retains all of its
+        // own counters instead of baking earlier context edits into the plan.
+        let mut neutral_payload = source_payload.clone();
+        let mut neutral_failure = None;
+        let mut terminal_ee_writer_audit = None;
+        let mut terminal_staged_summary = None;
+        let neutral_summary = rewrite_update_records_payload_with_area_context_inner(
+            &mut neutral_payload,
+            None,
+            &mut neutral_failure,
+            Some(&mut terminal_ee_writer_audit),
+            Some(&mut terminal_staged_summary),
+        );
+        if neutral_summary.is_none()
+            && neutral_payload.as_slice() == source_payload.as_slice()
+            && let Some(terminal_failure) = neutral_failure
+            && let Some(requirement) = terminal_failure
+                .terminal_door_placeable_tail9_residual
+                .and_then(|evidence| evidence.writer_handoff_requirement())
+            && requirement == initial_requirement
+            && let Some(audit) = terminal_ee_writer_audit
+            && let Some(staged_summary) = terminal_staged_summary
+            && let Some(source_handoff) = resolve_handoff(requirement, &source_payload)
+            && let Some(plan) = terminal_ee_writer::seal_exact_terminal_rewrite_plan(
+                &source_payload,
+                terminal_failure,
+                audit,
+                staged_summary,
+                Some(&source_handoff),
+            )
+            && let Some((exact_payload, exact_summary)) =
+                apply_exact_terminal_rewrite_plan_with_area_context(
+                    &source_payload,
+                    area_context,
+                    &plan,
+                )
+        {
+            *payload = exact_payload;
+            summary = Some(exact_summary);
+            failure = None;
+        }
+    }
+
+    LiveObjectUpdateRewriteAttempt { summary, failure }
+}
+
+fn apply_exact_terminal_rewrite_plan_with_area_context(
+    source_payload: &[u8],
+    area_context: Option<&AreaPlaceableContext>,
+    plan: &terminal_ee_writer::ExactTerminalRewritePlan,
+) -> Option<(Vec<u8>, LiveObjectUpdateRewriteSummary)> {
+    // Keep both authorizers inside one outer transaction. The terminal plan
+    // first proves the exact source/candidate pair; the existing exact-payload
+    // AreaPlaceableContext reconciler may then apply its independently typed
+    // position/appearance/orientation/state rules to that candidate. The real
+    // payload is replaced only after the composed result exact-claims again.
+    let mut candidate = source_payload.to_vec();
+    let mut summary = plan.apply_to(&mut candidate)?;
+    let terminal_candidate_dimensions = (
+        summary.new_declared,
+        summary.new_payload_length,
+        summary.new_live_bytes_length,
+        summary.new_fragment_bytes,
+    );
+    let context_summary = match area_context {
+        None => None,
+        Some(context) => {
+            match rewrite_verified_placeable_states_with_area_context_attempt(
+                &mut candidate,
+                context,
+            ) {
+                VerifiedPlaceableAreaContextRewriteAttempt::Changed(summary) => Some(summary),
+                VerifiedPlaceableAreaContextRewriteAttempt::Unchanged => None,
+                VerifiedPlaceableAreaContextRewriteAttempt::Rejected => return None,
+            }
+        }
+    };
+    if let Some(context_summary) = context_summary.as_ref()
+        && (
+            context_summary.old_declared,
+            context_summary.old_payload_length,
+            context_summary.old_live_bytes_length,
+            context_summary.old_fragment_bytes,
+        ) != terminal_candidate_dimensions
+    {
+        return None;
+    }
+
+    let final_claim = claim_payload_if_verified(&candidate)?;
+    let final_declared = u32::try_from(final_claim.declared).ok()?;
+    summary.new_declared = final_declared;
+    summary.new_payload_length = candidate.len();
+    summary.new_live_bytes_length = final_claim.live_bytes_length;
+    summary.new_fragment_bytes = final_claim.fragment_bytes;
+    summary.post_terminal_area_context_rewrite = context_summary.map(Box::new);
+    Some((candidate, summary))
+}
+
+#[cfg(test)]
+pub(crate) fn rewrite_update_records_payload_with_area_context_exact_terminal_test_attempt(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+) -> LiveObjectUpdateRewriteAttempt {
+    rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+        payload,
+        area_context,
+        |requirement, source_payload| {
+            Some(
+                terminal_writer_trace::exact_terminal_writer_handoff_for_test(
+                    requirement,
+                    source_payload,
+                ),
+            )
+        },
+    )
+}
+
+fn record_update_record_rewrite_summary(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    record_rewrite: record::RecordRewrite,
+) {
+    if !record_rewrite.rewritten {
+        return;
+    }
+    summary.update_records_rewritten = summary.update_records_rewritten.saturating_add(1);
+    if record_rewrite.mask_changed {
+        summary.masks_translated = summary.masks_translated.saturating_add(1);
+    }
+    summary.bytes_inserted = summary
+        .bytes_inserted
+        .saturating_add(record_rewrite.bytes_inserted);
+    summary.bytes_removed = summary
+        .bytes_removed
+        .saturating_add(record_rewrite.bytes_removed);
+    summary.bits_inserted = summary
+        .bits_inserted
+        .saturating_add(record_rewrite.bits_inserted);
+    summary.bits_removed = summary
+        .bits_removed
+        .saturating_add(record_rewrite.bits_removed);
 }
 
 fn rewrite_update_records_payload_with_area_context_inner(
@@ -23715,6 +23911,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
     mut terminal_ee_writer_audit: Option<
         &mut Option<terminal_ee_writer::TerminalEeWholePacketAudit>,
     >,
+    mut terminal_staged_summary: Option<&mut Option<LiveObjectUpdateRewriteSummary>>,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
         eprintln!(
@@ -27070,14 +27267,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
             retain_terminal_ee_stage,
         )
         .map(|mut analysis| {
-            analysis.evidence.source_record_offset = unique_source_update_header_offset(
+            let source_record_offset = unique_source_update_header_offset(
                 source_live_bytes,
                 analysis.evidence.object_type,
                 analysis.evidence.object_id,
                 analysis.evidence.raw_mask,
-            )
-            .and_then(|offset| u32::try_from(offset).ok())
-            .unwrap_or(terminal_evidence::UNKNOWN_SOURCE_RECORD_OFFSET);
+            );
+            if let Some(source_record_offset) = source_record_offset {
+                let _ = bind_terminal_tail9_immutable_source_coordinates(
+                    &mut analysis.evidence,
+                    source_live_bytes,
+                    source_record_offset,
+                    &live_bytes,
+                    offset,
+                    record_end,
+                );
+            }
             analysis.evidence.precursor_tail =
                 rewrite_bit_ledger.contiguous_tail_evidence(&fragment_bits, bit_cursor);
             analysis.evidence.terminal_fragment_handoff_correlation =
@@ -27112,12 +27317,24 @@ fn rewrite_update_records_payload_with_area_context_inner(
             if let Some(analysis) = terminal_tail9_analysis {
                 if let Some(audit) = terminal_ee_writer_audit.as_deref_mut() {
                     let requirement = analysis.evidence.writer_handoff_requirement();
-                    *audit = analysis.ee_stage.as_ref().and_then(|stage| {
+                    let staged_record_rewrite = analysis.staged_record_rewrite;
+                    let whole_packet_audit = analysis.ee_stage.as_ref().and_then(|stage| {
                         terminal_ee_writer::audit_staged_terminal_ee_candidate_for_requirement(
                             stage,
                             requirement,
                         )
                     });
+                    if whole_packet_audit.is_some()
+                        && let Some(staged_summary) = terminal_staged_summary.as_deref_mut()
+                    {
+                        let mut completed_summary = summary.clone();
+                        record_update_record_rewrite_summary(
+                            &mut completed_summary,
+                            staged_record_rewrite,
+                        );
+                        *staged_summary = Some(completed_summary);
+                    }
+                    *audit = whole_packet_audit;
                 }
                 let evidence = analysis.evidence;
                 let kind = LiveObjectUpdateRewriteFailureKind::
@@ -27219,22 +27436,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 );
             }
             changed = true;
-            summary.update_records_rewritten = summary.update_records_rewritten.saturating_add(1);
-            if record_rewrite.mask_changed {
-                summary.masks_translated = summary.masks_translated.saturating_add(1);
-            }
-            summary.bytes_inserted = summary
-                .bytes_inserted
-                .saturating_add(record_rewrite.bytes_inserted);
-            summary.bytes_removed = summary
-                .bytes_removed
-                .saturating_add(record_rewrite.bytes_removed);
-            summary.bits_inserted = summary
-                .bits_inserted
-                .saturating_add(record_rewrite.bits_inserted);
-            summary.bits_removed = summary
-                .bits_removed
-                .saturating_add(record_rewrite.bits_removed);
+            record_update_record_rewrite_summary(&mut summary, record_rewrite);
         }
         if let Some(item_claim) = record_rewrite.item_update_claim {
             let current_mask = read_u32_le(&live_bytes, offset + 6);
@@ -27618,10 +27820,71 @@ fn unique_source_update_header_offset(
     matches.next().is_none().then_some(offset)
 }
 
-fn rewrite_verified_placeable_states_with_area_context_if_possible(
+fn bind_terminal_tail9_immutable_source_coordinates(
+    evidence: &mut LiveObjectUpdateDoorPlaceableTail9ResidualEvidence,
+    source_live_bytes: &[u8],
+    source_record_offset: usize,
+    work_live_bytes: &[u8],
+    work_record_offset: usize,
+    work_record_end: usize,
+) -> Option<()> {
+    // Earlier record translations can move the terminal row and grow the
+    // speculative work buffer. A server writer trace, however, reports the
+    // immutable finalized source packet. Bind byte coordinates only when the
+    // uniquely identified source row is the exact terminal suffix currently
+    // being analyzed; otherwise leave the requirement unavailable.
+    if work_record_end != work_live_bytes.len()
+        || source_live_bytes.get(source_record_offset..)?
+            != work_live_bytes.get(work_record_offset..work_record_end)?
+        || evidence.emitted_record_offset != work_record_offset
+        || evidence
+            .terminal_reader_continuation
+            .source_read_buffer_cursor
+            != work_record_end
+        || evidence.terminal_reader_continuation.source_read_buffer_end != work_record_end
+        || evidence
+            .stock_diamond_source
+            .is_some_and(|source| source.read_end != work_record_end)
+        || evidence
+            .end_aligned_diamond_reader_candidates
+            .iter()
+            .flatten()
+            .any(|candidate| candidate.read_end != work_record_end)
+    {
+        return None;
+    }
+
+    let source_record_offset = u32::try_from(source_record_offset).ok()?;
+    let source_record_end = source_live_bytes.len();
+    evidence.source_record_offset = source_record_offset;
+    evidence
+        .terminal_reader_continuation
+        .source_read_buffer_cursor = source_record_end;
+    evidence.terminal_reader_continuation.source_read_buffer_end = source_record_end;
+    if let Some(source) = evidence.stock_diamond_source.as_mut() {
+        source.read_end = source_record_end;
+    }
+    for candidate in evidence
+        .end_aligned_diamond_reader_candidates
+        .iter_mut()
+        .flatten()
+    {
+        candidate.read_end = source_record_end;
+    }
+    Some(())
+}
+
+enum VerifiedPlaceableAreaContextRewriteAttempt {
+    Changed(LiveObjectUpdateRewriteSummary),
+    Unchanged,
+    Rejected,
+}
+
+fn rewrite_verified_placeable_states_with_area_context_attempt(
     payload: &mut Vec<u8>,
     area_context: &AreaPlaceableContext,
-) -> Option<LiveObjectUpdateRewriteSummary> {
+) -> VerifiedPlaceableAreaContextRewriteAttempt {
+    (|| -> Option<VerifiedPlaceableAreaContextRewriteAttempt> {
     let claim = claim_payload_if_verified(payload)?;
     let old_payload_length = payload.len();
     let old_declared = u32::try_from(claim.declared).ok()?;
@@ -28729,7 +28992,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
     }
     if summary.add_records_rewritten == 0 && summary.update_records_rewritten == 0 {
         trace_exact_placeable_reconciliation_summary(area_context, &summary, false);
-        return None;
+        return Some(VerifiedPlaceableAreaContextRewriteAttempt::Unchanged);
     }
 
     let rewritten = live_object_payload_from_parts(&live_bytes, &fragment_bits)?;
@@ -28743,7 +29006,20 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
 
     *payload = rewritten;
     trace_exact_placeable_reconciliation_summary(area_context, &summary, true);
-    Some(summary)
+    Some(VerifiedPlaceableAreaContextRewriteAttempt::Changed(summary))
+    })()
+    .unwrap_or(VerifiedPlaceableAreaContextRewriteAttempt::Rejected)
+}
+
+fn rewrite_verified_placeable_states_with_area_context_if_possible(
+    payload: &mut Vec<u8>,
+    area_context: &AreaPlaceableContext,
+) -> Option<LiveObjectUpdateRewriteSummary> {
+    match rewrite_verified_placeable_states_with_area_context_attempt(payload, area_context) {
+        VerifiedPlaceableAreaContextRewriteAttempt::Changed(summary) => Some(summary),
+        VerifiedPlaceableAreaContextRewriteAttempt::Unchanged
+        | VerifiedPlaceableAreaContextRewriteAttempt::Rejected => None,
+    }
 }
 
 fn record_exact_placeable_reconciliation_target(

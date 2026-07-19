@@ -107,8 +107,10 @@ pub struct Config {
     /// quarantined `P/05/01` live-object evidence. Requires `--packet-dump`
     /// with `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`, for correlation output.
     ///
-    /// This diagnostic input can prove source-writer ownership only. It never
-    /// authorizes a packet claim, rewrite, cursor advance, or fragment trim.
+    /// Source-writer ownership alone never authorizes mutation. One unique
+    /// full-payload v2 match may enable only the terminal rewrite candidate
+    /// independently sealed by the typed EE reader and exact final validator;
+    /// every incomplete or mismatched proof remains diagnostic-only.
     #[arg(long, value_name = "PATH")]
     pub terminal_writer_trace: Option<PathBuf>,
 

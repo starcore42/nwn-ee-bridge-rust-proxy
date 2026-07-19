@@ -58,10 +58,10 @@ pub struct LiveObjectUpdateDoorPlaceableTail9ResidualEvidence {
 /// The exact join contract that a server-side writer/list trace must satisfy
 /// before the terminal fragment can be attributed to a writer.
 ///
-/// This remains diagnostic evidence. Even an exact writer observation does
-/// not authorize a cursor advance, rewrite, or trim: proxy2 still needs a
-/// typed EE writer and a final exact EE payload claim before wire behavior can
-/// change.
+/// This remains source-side evidence. Even an exact writer observation does
+/// not authorize a cursor advance, rewrite, or trim. Only the separate opaque
+/// whole-packet plan may act after the typed EE writer/final validator seals a
+/// candidate against this same source payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateTerminalWriterHandoffRequirement {
     /// Immutable source record offset inside the declared `P/05/01` body. A
@@ -170,9 +170,9 @@ pub enum LiveObjectUpdateTerminalEeFinalClaimReadinessVerdict {
     ExactTypedEeFinalClaimReady,
 }
 
-/// State of the sealed source-writer/typed-EE proof join. Even a complete join
-/// remains non-authorizing until a dedicated terminal writer is implemented
-/// and registered at the normal exact-claim boundary.
+/// State of the sealed source-writer/typed-EE proof join. The enum remains
+/// non-authorizing even when complete: only `terminal_ee_writer` can combine
+/// the two opaque tokens with their bound payloads into an actionable plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectUpdateTerminalProofJoinVerdict {
     InvalidRequirement,

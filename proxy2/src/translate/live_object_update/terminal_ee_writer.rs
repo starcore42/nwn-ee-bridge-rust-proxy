@@ -1,4 +1,4 @@
-//! Diagnostic-only whole-packet audit and output plan for the terminal
+//! Two-sided whole-packet audit and exact output plan for the terminal
 //! compact-tail9 EE stage.
 //!
 //! The normal translator already has a typed byte/bit plan for the terminal
@@ -9,13 +9,15 @@
 //! same exact validator used at the wire boundary. The latter candidate proves
 //! only the EE output shape: the removed residual remains unowned until the HG
 //! writer/list trace independently proves its source contract. Neither result
-//! can authorize a claim, rewrite, cursor advance, or fragment trim.
+//! authorizes mutation alone; their opaque, byte-identical join can mint the
+//! transactional whole-packet plan implemented below.
 
 use super::record::TerminalDoorPlaceableTail9EeStage;
+use super::terminal_writer_trace::ExactTerminalWriterHandoff;
 use super::{
     LEGACY_UPDATE_HEADER_BYTES, LiveObjectPayloadClaimReject, LiveObjectPayloadClaimRejectStage,
     LiveObjectUpdatePackedFragmentBitSpanEvidence, LiveObjectUpdateRewriteFailure,
-    LiveObjectUpdateTerminalWriterHandoffRequirement,
+    LiveObjectUpdateRewriteSummary, LiveObjectUpdateTerminalWriterHandoffRequirement,
 };
 
 /// Opaque proof that the sealed EE output plan removed exactly the retained
@@ -72,6 +74,155 @@ impl ExactTerminalEeFinalClaim {
     pub(super) fn final_fragment_bit_end(&self) -> usize {
         self.final_fragment_bit_end
     }
+}
+
+/// Opaque, whole-packet terminal rewrite authority.
+///
+/// The configured v2 writer journal is deliberately insufficient on its own:
+/// this plan is minted only after the sealed source handoff and the sealed EE
+/// residual-removal claim join against the same immutable `P/05/01` bytes.
+/// The candidate is never exposed to sibling modules; the only operation is a
+/// transactional apply that checks the bound source again and reruns the exact
+/// EE payload validator immediately before replacement.
+#[derive(Debug)]
+pub(super) struct ExactTerminalRewritePlan {
+    requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+    source_payload: Box<[u8]>,
+    candidate_payload: Box<[u8]>,
+    staged_summary: LiveObjectUpdateRewriteSummary,
+}
+
+impl ExactTerminalRewritePlan {
+    pub(super) fn apply_to(&self, payload: &mut Vec<u8>) -> Option<LiveObjectUpdateRewriteSummary> {
+        if payload.as_slice() != self.source_payload.as_ref()
+            || self.candidate_payload.as_ref() == self.source_payload.as_ref()
+            || !staged_summary_matches_bound_source(
+                &self.staged_summary,
+                self.source_payload.as_ref(),
+            )
+        {
+            return None;
+        }
+
+        // Do not rely on the earlier audit alone. The exact validator runs on
+        // the retained candidate again at the mutation boundary, after the
+        // current source bytes have also been checked byte-for-byte.
+        let claim = super::claim_payload_if_verified(self.candidate_payload.as_ref())?;
+        let old_declared = declared_length(self.source_payload.as_ref())?;
+        let new_declared = declared_length(self.candidate_payload.as_ref())?;
+        let old_declared_usize = usize::try_from(old_declared).ok()?;
+        let new_declared_usize = usize::try_from(new_declared).ok()?;
+        if old_declared_usize > self.source_payload.len()
+            || new_declared_usize > self.candidate_payload.len()
+            || claim.declared != new_declared_usize
+            || self.staged_summary.records_examined != claim.records_examined
+        {
+            return None;
+        }
+
+        let mut summary = self.staged_summary.clone();
+        summary.old_declared = old_declared;
+        summary.new_declared = new_declared;
+        summary.old_payload_length = self.source_payload.len();
+        summary.new_payload_length = self.candidate_payload.len();
+        summary.old_live_bytes_length = old_declared_usize
+            .saturating_sub(super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES);
+        summary.new_live_bytes_length = new_declared_usize
+            .saturating_sub(super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES);
+        summary.old_fragment_bytes = self.source_payload.len().saturating_sub(old_declared_usize);
+        summary.new_fragment_bytes = self
+            .candidate_payload
+            .len()
+            .saturating_sub(new_declared_usize);
+        summary.terminal_exact_writer_rewrites = 1;
+        summary.terminal_source_fragment_bits_owned =
+            u32::try_from(self.requirement.source_fragment_bits.bit_count).unwrap_or(u32::MAX);
+        summary.terminal_emitted_residual_fragment_bits_removed =
+            u32::try_from(self.requirement.emitted_fragment_bit_count).unwrap_or(u32::MAX);
+        // Preserve the earlier committed record counters exactly. The terminal
+        // whole-packet proof has dedicated counters because representing source
+        // 76 -> staged 88 -> final 71 as one generic net bit edit would lie
+        // about both the Diamond and EE cursor contracts.
+        *payload = self.candidate_payload.to_vec();
+        Some(summary)
+    }
+}
+
+fn declared_length(payload: &[u8]) -> Option<u32> {
+    if payload.get(..3) != Some(&[b'P', 0x05, 0x01]) {
+        return None;
+    }
+    payload.get(3..7)?.try_into().ok().map(u32::from_le_bytes)
+}
+
+/// Seal the one actionable terminal plan from two independently opaque proofs.
+/// `LiveObjectUpdateTerminalProofJoinVerdict` intentionally remains generally
+/// non-authorizing; only this payload-owning plan may cross the wire boundary.
+pub(super) fn seal_exact_terminal_rewrite_plan(
+    source_payload: &[u8],
+    failure: LiveObjectUpdateRewriteFailure,
+    mut audit: TerminalEeWholePacketAudit,
+    staged_summary: LiveObjectUpdateRewriteSummary,
+    source_handoff: Option<&ExactTerminalWriterHandoff>,
+) -> Option<ExactTerminalRewritePlan> {
+    if !staged_summary_matches_bound_source(&staged_summary, source_payload) {
+        return None;
+    }
+    let requirement = failure
+        .terminal_door_placeable_tail9_residual?
+        .writer_handoff_requirement()?;
+    if !audit_matches_requirement(&audit, requirement) {
+        return None;
+    }
+    audit.bind_source_payload(source_payload);
+    let exact_final_claim = audit.exact_final_claim.take()?;
+    if !requirement
+        .terminal_proof_join(source_payload, source_handoff, Some(&exact_final_claim))
+        .proof_join_ready()
+    {
+        return None;
+    }
+    let ExactTerminalEeFinalClaim {
+        requirement: claim_requirement,
+        source_payload: claim_source_payload,
+        candidate_payload,
+        ..
+    } = exact_final_claim;
+    let bound_source_payload = claim_source_payload?;
+    if claim_requirement != requirement || bound_source_payload.as_ref() != source_payload {
+        return None;
+    }
+    Some(ExactTerminalRewritePlan {
+        requirement,
+        source_payload: bound_source_payload,
+        candidate_payload,
+        staged_summary,
+    })
+}
+
+fn staged_summary_matches_bound_source(
+    summary: &LiveObjectUpdateRewriteSummary,
+    source_payload: &[u8],
+) -> bool {
+    let Some(old_declared) = declared_length(source_payload) else {
+        return false;
+    };
+    let Ok(old_declared_usize) = usize::try_from(old_declared) else {
+        return false;
+    };
+    old_declared_usize >= super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES
+        && old_declared_usize <= source_payload.len()
+        && summary.old_declared == old_declared
+        && summary.old_payload_length == source_payload.len()
+        && summary.old_live_bytes_length
+            == old_declared_usize
+                .saturating_sub(super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES)
+        && summary.old_fragment_bytes == source_payload.len().saturating_sub(old_declared_usize)
+        && summary.records_examined != 0
+        && summary.terminal_exact_writer_rewrites == 0
+        && summary.terminal_source_fragment_bits_owned == 0
+        && summary.terminal_emitted_residual_fragment_bits_removed == 0
+        && summary.post_terminal_area_context_rewrite.is_none()
 }
 
 #[cfg(test)]
@@ -368,6 +519,7 @@ pub(super) fn audit_terminal_ee_writer_candidate(
         None,
         &mut replay_failure,
         Some(&mut audit),
+        None,
     );
     if summary.is_some() {
         return None;
@@ -473,6 +625,69 @@ mod tests {
         assert!(!audit.authorizes_rewrite());
         assert!(!audit.authorizes_cursor_advance());
         assert!(!audit.authorizes_fragment_trim());
+    }
+
+    #[test]
+    fn exact_terminal_plan_applies_transactionally_and_revalidates_candidate() {
+        let stage = exact_state_only_placeable_stage();
+        let requirement = exact_state_only_requirement(&stage);
+        let candidate =
+            super::super::live_object_payload_from_parts(stage.live_bytes(), stage.fragment_bits())
+                .expect("exact EE candidate");
+        let candidate_claim =
+            super::super::claim_payload_if_verified(&candidate).expect("exact EE candidate claim");
+
+        // The source binding deliberately differs from the exact candidate.
+        // Plan construction is private; this direct construction tests only
+        // the final transactional boundary used after both proofs are sealed.
+        let mut source = candidate.clone();
+        source.push(0);
+        let source_declared = declared_length(&source).expect("source declared length");
+        let source_declared_usize =
+            usize::try_from(source_declared).expect("source declared usize");
+        let staged_summary = LiveObjectUpdateRewriteSummary {
+            old_declared: source_declared,
+            old_payload_length: source.len(),
+            old_live_bytes_length: source_declared_usize
+                - super::super::HIGH_LEVEL_HEADER_BYTES
+                - super::super::CNW_LENGTH_BYTES,
+            old_fragment_bytes: source.len() - source_declared_usize,
+            records_examined: candidate_claim.records_examined,
+            ..LiveObjectUpdateRewriteSummary::default()
+        };
+        let plan = ExactTerminalRewritePlan {
+            requirement,
+            source_payload: source.clone().into(),
+            candidate_payload: candidate.clone().into(),
+            staged_summary: staged_summary.clone(),
+        };
+
+        let mut mismatched_source = source.clone();
+        mismatched_source[7] ^= 1;
+        let mismatched_before = mismatched_source.clone();
+        assert!(plan.apply_to(&mut mismatched_source).is_none());
+        assert_eq!(mismatched_source, mismatched_before);
+
+        let mut exact_source = source.clone();
+        let summary = plan
+            .apply_to(&mut exact_source)
+            .expect("bound source plus exact candidate should apply");
+        assert_eq!(exact_source, candidate);
+        assert_eq!(summary.old_payload_length, source.len());
+        assert_eq!(summary.new_payload_length, candidate.len());
+        assert_eq!(summary.terminal_exact_writer_rewrites, 1);
+
+        let mut invalid_candidate = candidate;
+        invalid_candidate[7] = b'X';
+        let invalid_plan = ExactTerminalRewritePlan {
+            requirement,
+            source_payload: source.clone().into(),
+            candidate_payload: invalid_candidate.into(),
+            staged_summary,
+        };
+        let mut exact_source = source.clone();
+        assert!(invalid_plan.apply_to(&mut exact_source).is_none());
+        assert_eq!(exact_source, source);
     }
 
     #[test]

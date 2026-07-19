@@ -385,6 +385,9 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_update_appearance_exact_rejected: u32,
     pub exact_placeable_update_orientation_rewritten: u32,
     pub exact_placeable_update_state_rewritten: u32,
+    pub terminal_exact_writer_rewrites: u32,
+    pub terminal_source_fragment_bits_owned: u32,
+    pub terminal_emitted_residual_fragment_bits_removed: u32,
 }
 
 impl ExactLiveObjectRewriteSummary {
@@ -522,6 +525,10 @@ impl ExactLiveObjectRewriteSummary {
         let Some(rewrite) = rewrite else {
             return false;
         };
+        let post_terminal_area_context_rewrite = rewrite
+            .post_terminal_area_context_rewrite
+            .as_deref()
+            .cloned();
         self.record_update(true);
         self.exact_placeable_add_unique_targets = self
             .exact_placeable_add_unique_targets
@@ -1743,6 +1750,22 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_update_state_rewritten = self
             .exact_placeable_update_state_rewritten
             .saturating_add(rewrite.exact_placeable_update_state_rewritten);
+        self.terminal_exact_writer_rewrites = self
+            .terminal_exact_writer_rewrites
+            .saturating_add(rewrite.terminal_exact_writer_rewrites);
+        self.terminal_source_fragment_bits_owned = self
+            .terminal_source_fragment_bits_owned
+            .saturating_add(rewrite.terminal_source_fragment_bits_owned);
+        self.terminal_emitted_residual_fragment_bits_removed = self
+            .terminal_emitted_residual_fragment_bits_removed
+            .saturating_add(rewrite.terminal_emitted_residual_fragment_bits_removed);
+        if let Some(followup) = post_terminal_area_context_rewrite {
+            // The terminal and exact AreaPlaceableContext stages have separate
+            // typed authorizers and phase dimensions. Absorb the bounded child
+            // as a second committed update pass instead of flattening hundreds
+            // of counters by hand and silently losing one of the phases.
+            let _ = self.record_update_summary(Some(followup));
+        }
         true
     }
 
@@ -2048,6 +2071,31 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn exact_summary_absorbs_terminal_area_context_followup_once() {
+        let followup = RewriteSummary {
+            exact_placeable_update_orientation_rewritten: 1,
+            exact_placeable_update_state_rewritten: 1,
+            ..RewriteSummary::default()
+        };
+        let primary = RewriteSummary {
+            terminal_exact_writer_rewrites: 1,
+            terminal_source_fragment_bits_owned: 13,
+            terminal_emitted_residual_fragment_bits_removed: 17,
+            post_terminal_area_context_rewrite: Some(Box::new(followup)),
+            ..RewriteSummary::default()
+        };
+        let mut summary = ExactLiveObjectRewriteSummary::default();
+
+        assert!(summary.record_update_summary(Some(primary)));
+        assert_eq!(summary.update_passes_changed, 2);
+        assert_eq!(summary.terminal_exact_writer_rewrites, 1);
+        assert_eq!(summary.terminal_source_fragment_bits_owned, 13);
+        assert_eq!(summary.terminal_emitted_residual_fragment_bits_removed, 17);
+        assert_eq!(summary.exact_placeable_update_orientation_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
+    }
+
+    #[test]
     fn alternating_legacy_door_placeable_pairs_report_exact_terminal_residual() {
         let mut payload = alternating_legacy_door_placeable_payload();
         let original = payload.clone();
@@ -2184,7 +2232,7 @@ mod fixture_free_tests {
         assert_eq!(stock_source.raw_mask, 0xFFFF_FFF7);
         assert_eq!(stock_source.effective_mask, 0x0008_0037);
         assert_eq!(stock_source.ignored_mask, 0xFFF7_FFC0);
-        assert_eq!(stock_source.read_end, 245);
+        assert_eq!(stock_source.read_end, 229);
         assert_eq!(stock_source.source_bit_cursor, 50);
         assert_eq!(stock_source.source_reader_bit_cursor, 63);
         assert_eq!(stock_source.source_reader_bits_consumed, 13);
@@ -2210,7 +2258,7 @@ mod fixture_free_tests {
                 continuation.source_fragment_bit_cursor,
                 continuation.source_fragment_bit_end,
             ),
-            (245, 245, 63, 76)
+            (229, 229, 63, 76)
         );
         assert_eq!(
             continuation.source_more_data_source,
@@ -2336,7 +2384,7 @@ mod fixture_free_tests {
         assert_eq!(end_aligned.raw_mask, 0xFFFF_FFF7);
         assert_eq!(end_aligned.effective_mask, 0x0008_0037);
         assert_eq!(end_aligned.ignored_mask, 0xFFF7_FFC0);
-        assert_eq!(end_aligned.read_end, 245);
+        assert_eq!(end_aligned.read_end, 229);
         assert_eq!(end_aligned.source_bit_cursor, 63);
         assert_eq!(end_aligned.source_reader_bit_cursor, 76);
         assert_eq!(end_aligned.source_reader_bits_consumed, 13);
@@ -2400,10 +2448,10 @@ mod fixture_free_tests {
             .reused_record_reader_interpretation()
             .expect("contiguous equal-topology walk should retain reused-record evidence");
         assert_eq!(reused.candidate_index, 0);
-        assert_eq!(reused.record_end, 245);
+        assert_eq!(reused.record_end, 229);
         assert_eq!(
             (reused.read_buffer_cursor, reused.read_buffer_end),
-            (245, 245)
+            (229, 229)
         );
         assert_eq!(reused.required_second_row_header_bytes, 10);
         assert_eq!(reused.available_second_row_header_bytes, 0);
@@ -2544,6 +2592,259 @@ mod fixture_free_tests {
             payload, original,
             "exact orchestration must not commit a partial alternating rewrite"
         );
+    }
+
+    #[test]
+    fn alternating_legacy_door_placeable_pairs_apply_only_with_exact_terminal_proofs() {
+        let original = alternating_legacy_door_placeable_payload();
+        let mut no_context_payload = original.clone();
+        let no_context_attempt = live_object_update::
+            rewrite_update_records_payload_with_area_context_exact_terminal_test_attempt(
+                &mut no_context_payload,
+                None,
+            );
+        assert!(no_context_attempt.failure.is_none());
+        let no_context_summary = no_context_attempt
+            .summary
+            .expect("the injected opaque source token should complete the exact EE plan");
+        assert_eq!(no_context_summary.records_examined, 6);
+        assert_eq!(no_context_summary.update_records_examined, 3);
+        assert_eq!(no_context_summary.update_records_rewritten, 3);
+        assert_eq!(no_context_summary.masks_translated, 3);
+        assert!(no_context_summary.bytes_inserted > 0);
+        assert!(no_context_summary.bytes_removed > 0);
+        assert!(no_context_summary.bits_inserted > 0);
+        assert_eq!(no_context_summary.terminal_exact_writer_rewrites, 1);
+        assert_eq!(no_context_summary.terminal_source_fragment_bits_owned, 13);
+        assert_eq!(
+            no_context_summary.terminal_emitted_residual_fragment_bits_removed,
+            17
+        );
+        assert!(
+            no_context_summary
+                .post_terminal_area_context_rewrite
+                .is_none()
+        );
+        assert_eq!(no_context_summary.old_payload_length, original.len());
+        assert_eq!(
+            no_context_summary.new_payload_length,
+            no_context_payload.len()
+        );
+        assert_eq!(no_context_payload.len(), 259);
+
+        let no_overlap_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "terminal-context-no-overlap".to_string(),
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+        let mut no_overlap_payload = original.clone();
+        let no_overlap_attempt = live_object_update::
+            rewrite_update_records_payload_with_area_context_exact_terminal_test_attempt(
+                &mut no_overlap_payload,
+                Some(&no_overlap_context),
+            );
+        assert!(no_overlap_attempt.failure.is_none());
+        let no_overlap_summary = no_overlap_attempt
+            .summary
+            .expect("a present context with no matching rows must not block the terminal plan");
+        assert_eq!(no_overlap_summary.terminal_exact_writer_rewrites, 1);
+        assert_eq!(no_overlap_summary.terminal_source_fragment_bits_owned, 13);
+        assert_eq!(
+            no_overlap_summary.terminal_emitted_residual_fragment_bits_removed,
+            17
+        );
+        assert!(
+            no_overlap_summary
+                .post_terminal_area_context_rewrite
+                .is_none(),
+            "a verified but unchanged context pass must not manufacture a child summary"
+        );
+        assert_eq!(
+            no_overlap_payload, no_context_payload,
+            "a no-overlap context must preserve the exact terminal candidate"
+        );
+
+        let no_context_claim = claim_payload_if_verified(&no_context_payload)
+            .expect("terminal plan output should exact-claim");
+        let build_context_row = |object_id| {
+            let update = no_context_claim
+                .mentions
+                .iter()
+                .find(|mention| {
+                    mention.opcode == b'U'
+                        && mention.object_type == 0x09
+                        && mention.object_id == object_id
+                })
+                .expect("placeable update mention");
+            let position = update.position.expect("fixture position claim");
+            let orientation = update.orientation.expect("fixture scalar orientation");
+            let state = update.placeable_state.expect("fixture lock-state claim");
+            let appearance = no_context_claim
+                .mentions
+                .iter()
+                .find(|mention| {
+                    mention.opcode == b'A'
+                        && mention.object_type == 0x09
+                        && mention.object_id == object_id
+                })
+                .and_then(|mention| mention.placeable_appearance)
+                .expect("preceding placeable appearance claim")
+                .appearance;
+            let mut row = crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance,
+                x: position.x,
+                y: position.y,
+                z: position.z,
+                has_direction: true,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: !state.lockable.expect("placeable lockable state"),
+                    locked: !state.locked.expect("placeable locked state"),
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            };
+            let desired_orientation = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]
+                .into_iter()
+                .find_map(|(dir_x, dir_y)| {
+                    row.dir_x = dir_x;
+                    row.dir_y = dir_y;
+                    let encoded = live_object_update::area_static_row_scalar_orientation(&row)?;
+                    (encoded != orientation.scalar_tenths_degrees).then_some(encoded)
+                })
+                .expect("one cardinal bearing must differ from the source orientation");
+            let desired_state = row.module_state.expect("module state");
+            (row, desired_orientation, desired_state)
+        };
+        let first_object_id = 0x8000_1002;
+        let terminal_object_id = 0x8000_1003;
+        let (first_context_row, first_desired_orientation, first_desired_state) =
+            build_context_row(first_object_id);
+        let (terminal_context_row, terminal_desired_orientation, terminal_desired_state) =
+            build_context_row(terminal_object_id);
+        let mut invalid_terminal_context_row = terminal_context_row.clone();
+        invalid_terminal_context_row.object_id_confidence =
+            crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique;
+        invalid_terminal_context_row.x = f32::NAN;
+        let invalid_area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "terminal-context-invalid-selected-row".to_string(),
+            static_rows: vec![invalid_terminal_context_row],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+        let mut invalid_context_payload = original.clone();
+        let invalid_context_attempt = live_object_update::
+            rewrite_update_records_payload_with_area_context_exact_terminal_test_attempt(
+                &mut invalid_context_payload,
+                Some(&invalid_area_context),
+            );
+        assert!(
+            invalid_context_attempt.summary.is_none(),
+            "an invalid selected row must reject the composed transaction"
+        );
+        let invalid_context_failure = invalid_context_attempt
+            .failure
+            .expect("rejected context reconciliation must retain the typed terminal failure");
+        assert_eq!(
+            invalid_context_failure.kind,
+            live_object_update::LiveObjectUpdateRewriteFailureKind::
+                DoorPlaceableTail9TerminalResidualFragmentBits
+        );
+        assert!(
+            invalid_context_failure
+                .terminal_door_placeable_tail9_residual
+                .is_some()
+        );
+        assert_eq!(
+            invalid_context_payload, original,
+            "rejected context reconciliation must leave the source payload untouched"
+        );
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "terminal-context-regression".to_string(),
+            static_rows: vec![first_context_row, terminal_context_row],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let mut context_payload = original.clone();
+        let context_attempt = live_object_update::
+            rewrite_update_records_payload_with_area_context_exact_terminal_test_attempt(
+                &mut context_payload,
+                Some(&area_context),
+            );
+        assert!(context_attempt.failure.is_none());
+        let context_summary = context_attempt
+            .summary
+            .expect("exact terminal and area-context authorities should compose");
+        assert_eq!(context_summary.records_examined, 6);
+        assert_eq!(context_summary.update_records_examined, 3);
+        assert_eq!(context_summary.update_records_rewritten, 3);
+        assert_eq!(context_summary.masks_translated, 3);
+        assert_eq!(context_summary.terminal_exact_writer_rewrites, 1);
+        let context_followup = context_summary
+            .post_terminal_area_context_rewrite
+            .as_deref()
+            .expect("non-empty context should commit a separately summarized exact pass");
+        assert_eq!(
+            context_followup.exact_placeable_update_orientation_rewritten,
+            2
+        );
+        assert_eq!(context_followup.exact_placeable_update_state_rewritten, 2);
+        assert_ne!(context_payload, no_context_payload);
+        assert_eq!(context_payload.len(), 259);
+
+        for (payload, summary) in [
+            (&no_context_payload, &no_context_summary),
+            (&context_payload, &context_summary),
+        ] {
+            let declared = usize::try_from(u32::from_le_bytes(
+                payload[3..7].try_into().expect("declared length bytes"),
+            ))
+            .expect("declared length");
+            assert_eq!(declared, summary.new_declared as usize);
+            assert_eq!(
+                (payload[declared] & 0xE0) >> 5,
+                7,
+                "the exact EE candidate must end at fragment cursor 71"
+            );
+            assert!(claim_payload_if_verified(payload).is_some());
+        }
+
+        let context_claim = claim_payload_if_verified(&context_payload)
+            .expect("context-adjusted terminal payload should exact-claim");
+        for (object_id, desired_orientation, desired_state) in [
+            (
+                first_object_id,
+                first_desired_orientation,
+                first_desired_state,
+            ),
+            (
+                terminal_object_id,
+                terminal_desired_orientation,
+                terminal_desired_state,
+            ),
+        ] {
+            let context_update = context_claim
+                .mentions
+                .iter()
+                .find(|mention| {
+                    mention.opcode == b'U'
+                        && mention.object_type == 0x09
+                        && mention.object_id == object_id
+                })
+                .expect("context-adjusted placeable update mention");
+            assert_eq!(
+                context_update
+                    .orientation
+                    .expect("context-adjusted scalar orientation")
+                    .scalar_tenths_degrees,
+                desired_orientation
+            );
+            let context_state = context_update
+                .placeable_state
+                .expect("context-adjusted lock-state claim");
+            assert_eq!(context_state.lockable, Some(desired_state.lockable));
+            assert_eq!(context_state.locked, Some(desired_state.locked));
+        }
     }
 
     #[test]
@@ -2703,7 +3004,7 @@ mod fixture_free_tests {
                 writer_requirement.source_read_buffer_cursor,
                 writer_requirement.source_read_buffer_end,
             ),
-            (245, 245)
+            (229, 229)
         );
         assert_eq!(
             (
@@ -2801,7 +3102,7 @@ mod fixture_free_tests {
             "ownership\tstatus\tunproven-source-owner\tsource_fragment_ownership\tfragment-writer-owner-unproven\temitted_fragment_ownership\tfragment-writer-owner-unproven\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse\trequired_proof\tsource-writer-or-list-handoff"
         ));
         assert!(capture.contains(
-            "writer_handoff_requirement\tobject_type\t0x09\tsource_record_offset\t166\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\temitted_record_offset\t182\temitted_mask\t0x00080017\tsource_read_buffer\t245..245\tsource_fragment\t63..76:"
+            "writer_handoff_requirement\tobject_type\t0x09\tsource_record_offset\t166\tobject_id\t0x80001003\traw_mask\t0xFFFFFFF7\temitted_record_offset\t182\temitted_mask\t0x00080017\tsource_read_buffer\t229..229\tsource_fragment\t63..76:"
         ), "capture omitted exact source record binding:\n{capture}");
         assert!(capture.contains(
             "source_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_unconsumed_fragment\t71..88\temitted_unconsumed_fragment_bits\t17\temitted_unconsumed_fragment_bits_retained\t17\temitted_unconsumed_fragment_exact\t71..88:00100000001000110"
@@ -2825,16 +3126,16 @@ mod fixture_free_tests {
             "terminal_proof_join\tsource_handoff_token\tfalse\tee_final_claim_token\tfalse\tverdict\tincomplete-source-and-ee-proof\tready\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         assert!(capture.contains(
-            "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t245\tstart\t50\tend\t63\tconsumed\t13"
+            "stock_diamond_reader\traw_mask\t0xFFFFFFF7\teffective_mask\t0x00080037\tignored_mask\t0xFFF7FFC0\tread_end\t229\tstart\t50\tend\t63\tconsumed\t13"
         ));
         assert!(capture.contains(
-            "reader_continuation\tsource_read_buffer\t245..245\tsource_fragment\t63..76\tsource_more_data\tfragment-only\tsource_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_fragment\t71..88\temitted_more_data\tfragment-only\temitted_next_opcode_read_overflows\ttrue\tclaimable\tfalse"
+            "reader_continuation\tsource_read_buffer\t229..229\tsource_fragment\t63..76\tsource_more_data\tfragment-only\tsource_next_opcode_read_overflows\ttrue\temitted_read_buffer\t243..243\temitted_fragment\t71..88\temitted_more_data\tfragment-only\temitted_next_opcode_read_overflows\ttrue\tclaimable\tfalse"
         ));
         assert!(capture.contains(
             "reused_record_reader_summary\tcandidates\t1\tretained\t1\townership\tunknown\tclaimable\tfalse"
         ));
         assert!(capture.contains(
-            "reused_record_reader_interpretation\t0\tdialect\tdiamond\trecord_end\t245\tread_buffer\t245..245\trequired_second_row_header_bytes\t10\tavailable_second_row_header_bytes\t0\tstock_fragment\t50..63\tcandidate_fragment\t63..76\tfragment_gap_bits\t0\treader_shape_bits\t13\tsame_ordered_field_topology\ttrue\tsecond_stock_row_dispatch_possible\tfalse\twriter_replay_proven\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"
+            "reused_record_reader_interpretation\t0\tdialect\tdiamond\trecord_end\t229\tread_buffer\t229..229\trequired_second_row_header_bytes\t10\tavailable_second_row_header_bytes\t0\tstock_fragment\t50..63\tcandidate_fragment\t63..76\tfragment_gap_bits\t0\treader_shape_bits\t13\tsame_ordered_field_topology\ttrue\tsecond_stock_row_dispatch_possible\tfalse\twriter_replay_proven\tfalse\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         let expected_stock_fields = [
             ("position-z-low", 50, 52),

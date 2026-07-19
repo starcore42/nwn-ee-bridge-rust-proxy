@@ -34,7 +34,7 @@ const DIAMOND_DOOR_PLACEABLE_MAX_SOURCE_READER_BITS: usize = LEGACY_UPDATE_POSIT
     + LEGACY_UPDATE_STATE_FRAGMENT_BITS
     + 2;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RecordRewrite {
     pub(super) rewritten: bool,
     pub(super) mask_changed: bool,
@@ -190,6 +190,11 @@ impl TerminalDoorPlaceableTail9EeStage {
 pub(super) struct TerminalDoorPlaceableTail9Analysis {
     pub(super) evidence: super::LiveObjectUpdateDoorPlaceableTail9ResidualEvidence,
     pub(super) ee_stage: Option<TerminalDoorPlaceableTail9EeStage>,
+    /// The typed terminal row rewrite already materialized in `ee_stage`.
+    /// The outer whole-packet plan merges this delta into its retained summary;
+    /// the separately authorized residual removal remains terminal-only
+    /// accounting and is deliberately absent here.
+    pub(super) staged_record_rewrite: RecordRewrite,
 }
 
 impl CompactDoorPlaceableTail9EeWritePlan {
@@ -2489,7 +2494,7 @@ pub(super) fn terminal_door_placeable_tail9_analysis(
     // authorization to erase the residual.
     let mut rewritten_bits = emitted_fragment_bits.to_vec();
     let mut rewritten_bit_cursor = emitted_bit_cursor;
-    rewrite_legacy_live_object_update_bits(
+    let fragment_rewrite = rewrite_legacy_live_object_update_bits(
         object_type,
         claim.fragment_source_mask,
         claim.translated_mask,
@@ -2500,12 +2505,13 @@ pub(super) fn terminal_door_placeable_tail9_analysis(
     )?;
 
     // Stage the exact byte writer used by the production rewrite and run the
-    // EE typed reader over that staged record. The immutable source record is
-    // 245 bytes in the sequence-95 regression, while replacing its nine-byte
-    // legacy tail with EE's one-byte scalar plus six-byte scale/state tail
-    // makes the emitted record 243 bytes. Reusing the source byte cursor here
-    // would create an impossible final-claim contract even if the fragment
-    // values happened to match.
+    // EE typed reader over that staged record. Earlier row rewrites may have
+    // grown this work buffer relative to the immutable source; replacing the
+    // terminal nine-byte legacy tail with EE's one-byte scalar plus six-byte
+    // scale/state tail then removes two bytes from the staged EE side. The
+    // outer transaction independently binds source byte coordinates back to
+    // an exact, unique immutable terminal suffix before any writer requirement
+    // can be minted.
     let write_plan = CompactDoorPlaceableTail9EeWritePlan::build(
         live_bytes,
         record_offset,
@@ -2521,6 +2527,29 @@ pub(super) fn terminal_door_placeable_tail9_analysis(
         record_offset + 6,
         claim.translated_mask,
     )?;
+    let mask_changed = claim.translated_mask != raw_mask;
+    let source_bits_consumed = u32::try_from(claim.source_bits_consumed()).ok()?;
+    let staged_record_rewrite = RecordRewrite {
+        rewritten: mask_changed
+            || fragment_rewrite.bits_changed
+            || write_plan.bytes_inserted != 0
+            || write_plan.bytes_removed != 0
+            || fragment_rewrite.bits_inserted != 0
+            || fragment_rewrite.bits_removed != 0,
+        mask_changed,
+        bits_changed: fragment_rewrite.bits_changed,
+        bytes_inserted: write_plan.bytes_inserted,
+        bytes_removed: write_plan.bytes_removed,
+        bits_inserted: fragment_rewrite.bits_inserted,
+        bits_removed: fragment_rewrite.bits_removed,
+        bit_claim: Some(RecordRewriteBitClaim {
+            source_mask: claim.fragment_source_mask,
+            translated_mask: claim.translated_mask,
+            source_bits_consumed,
+            family: "update-compact-tail9-rewrite",
+        }),
+        ..RecordRewrite::default()
+    };
     let emitted_typed_claim = reader::parse_verified_ee_door_placeable_update_record(
         &emitted_live_bytes,
         record_offset,
@@ -2704,7 +2733,11 @@ pub(super) fn terminal_door_placeable_tail9_analysis(
         typed_row_fragment_cursor: emitted_typed_claim.next_bit_cursor,
         candidate_fragment_bit_end: evidence.rewritten_fragment_bit_count,
     });
-    Some(TerminalDoorPlaceableTail9Analysis { evidence, ee_stage })
+    Some(TerminalDoorPlaceableTail9Analysis {
+        evidence,
+        ee_stage,
+        staged_record_rewrite,
+    })
 }
 
 fn terminal_end_aligned_diamond_reader_candidates(

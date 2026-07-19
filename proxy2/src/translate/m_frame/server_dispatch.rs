@@ -2150,6 +2150,17 @@ fn trace_live_object_exact_rewrite_summary(
             "server exact placeable fixed-output custom carrier source-carried synthesis resolution"
         );
     }
+    if summary.terminal_exact_writer_rewrites != 0 {
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            terminal_exact_writer_rewrites = summary.terminal_exact_writer_rewrites,
+            terminal_source_fragment_bits_owned = summary.terminal_source_fragment_bits_owned,
+            terminal_emitted_residual_fragment_bits_removed =
+                summary.terminal_emitted_residual_fragment_bits_removed,
+            "server live-object terminal rewrite applied from exact two-sided writer proof"
+        );
+    }
     tracing::info!(
         source = exact_rewrite.source,
         family = family_name,
