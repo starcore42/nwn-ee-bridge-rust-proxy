@@ -71,8 +71,13 @@ pub struct LiveObjectUpdateTerminalWriterHandoffRequirement {
     pub object_type: u8,
     pub object_id: u32,
     pub raw_mask: u32,
+    /// Read window at the list handoff/finalizer boundary, excluding the
+    /// fixed seven-byte CNW writer envelope. The typed owner's earlier return
+    /// cursor is diagnostic context and is not the source reader cursor.
     pub source_read_buffer_cursor: usize,
     pub source_read_buffer_end: usize,
+    /// Exact MSB-first fragment interval written after the typed owner returns
+    /// and before the update list hands the message to the finalizer.
     pub source_fragment_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub source_next_opcode_read_overflows: bool,
     pub emitted_record_offset: usize,

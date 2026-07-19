@@ -1,35 +1,46 @@
-# Rust build output.
+# Local research inputs: large, binary, proprietary, or machine-specific.
+/NWN Diamond/
+/Neverwinter Nights EE/
+/Sinfar EE bridge/
+/NWN Decompile/
+/NWN Utils/
+
+# Build outputs.
+/build/
+/dist/
+/out/
+/bin/
+/obj/
 /target/
 /proxy2/target/
+/.vs/
+/.vscode/
+/.idea/
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.dll
+*.exe
+*.idb
+*.i64
 
-# Local secrets and machine-specific paths.
-.env
-*.env
-hg-bridge-*.env
-nwncdkey.ini
-*.nwncdkey.ini
+# Archives and packages.
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
 
-# Runtime logs and dumps.
+# Logs and generated runtime data.
 /logs/
 *.log
 *.jsonl
 *.terminal-writer-v1.tsv
-*.bin
-*.cap
-*.pcap
-*.dmp
-
-# Private capture fixtures.
-/proxy2/fixtures/
-/proxy2/src/fixtures/
-
-# Local game assets and generated content.
-/hg-bridge-assets/
-/nwsync/
-/assets/sources/
-/assets/staged/
-/assets/builds/
-/assets/fixes/
+*.terminal-writer-v2.tsv
+__pycache__/
+*.py[cod]
 
 # OS/editor noise.
 Thumbs.db

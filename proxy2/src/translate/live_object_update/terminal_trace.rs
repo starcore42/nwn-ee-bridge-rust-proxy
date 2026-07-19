@@ -153,6 +153,7 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             correlation.verdict.allows_exact_claim().to_string(),
         ];
         correlation_columns.extend(terminal_writer_trace_identity_columns(&correlation));
+        correlation_columns.extend(terminal_writer_trace_cursor_columns(&correlation));
         write_tsv_line(&mut out, &correlation_columns);
         let audit = super::terminal_ee_writer::audit_terminal_ee_writer_candidate(payload, failure);
         let exact_final_claim = audit.as_ref().and_then(|audit| audit.exact_final_claim());
@@ -848,6 +849,39 @@ fn terminal_writer_trace_identity_columns(
     ]
 }
 
+fn terminal_writer_trace_cursor_columns(
+    correlation: &TerminalWriterTraceCorrelation,
+) -> [String; 20] {
+    let evidence = correlation.cursor_evidence;
+    let format_cursor = |cursor: Option<usize>| {
+        cursor
+            .map(|cursor| cursor.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    };
+    [
+        "owner_begin_read_cursor".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.owner_begin_read_cursor)),
+        "owner_end_read_cursor".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.owner_end_read_cursor)),
+        "list_handoff_read_cursor".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.list_handoff_read_cursor)),
+        "final_read_end".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.final_read_end)),
+        "post_owner_read_bytes".to_string(),
+        format_cursor(evidence.and_then(|evidence| evidence.post_owner_read_bytes())),
+        "owner_begin_fragment_cursor".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.owner_begin_fragment_cursor)),
+        "owner_end_fragment_cursor".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.owner_end_fragment_cursor)),
+        "list_handoff_fragment_cursor".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.list_handoff_fragment_cursor)),
+        "final_fragment_cursor".to_string(),
+        format_cursor(evidence.map(|evidence| evidence.final_fragment_cursor)),
+        "post_owner_fragment_bits".to_string(),
+        format_cursor(evidence.and_then(|evidence| evidence.post_owner_fragment_bits())),
+    ]
+}
+
 fn format_packed_fragment_bit_span(
     evidence: LiveObjectUpdatePackedFragmentBitSpanEvidence,
 ) -> String {
@@ -988,13 +1022,14 @@ fn write_diamond_fragment_field_rows<F>(
 mod tests {
     use super::{
         LiveObjectUpdatePackedFragmentBitSpanEvidence as PackedSpan,
-        format_packed_fragment_bit_span, terminal_writer_trace_identity_columns,
+        format_packed_fragment_bit_span, terminal_writer_trace_cursor_columns,
+        terminal_writer_trace_identity_columns,
     };
     use crate::translate::live_object_update::{
         LiveObjectUpdateTerminalWriterHandoffVerdict,
         terminal_writer_trace::{
             TerminalWriterTraceArtifactStatus, TerminalWriterTraceCorrelation,
-            TerminalWriterTraceSelectionStatus,
+            TerminalWriterTraceCursorEvidence, TerminalWriterTraceSelectionStatus,
         },
     };
 
@@ -1029,6 +1064,7 @@ mod tests {
             trace_id: Some(17),
             message_id: Some(0x1234_ABCD),
             component_sha256: Some([0xA5; 32]),
+            cursor_evidence: None,
             exact_handoff: None,
         });
         assert_eq!(
@@ -1037,5 +1073,56 @@ mod tests {
         );
         assert_eq!(columns[4], "component_sha256");
         assert_eq!(columns[5], "A5".repeat(32));
+    }
+
+    #[test]
+    fn terminal_writer_trace_cursor_columns_preserve_phase_boundaries_and_deltas() {
+        let columns = terminal_writer_trace_cursor_columns(&TerminalWriterTraceCorrelation {
+            artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
+            selection_status: TerminalWriterTraceSelectionStatus::UniquePayloadMatch,
+            artifact_count: 1,
+            payload_match_count: 1,
+            verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::NoTerminalFragmentWrites,
+            trace_id: Some(17),
+            message_id: Some(0x1234_ABCD),
+            component_sha256: Some([0xA5; 32]),
+            cursor_evidence: Some(TerminalWriterTraceCursorEvidence {
+                owner_begin_read_cursor: 173,
+                owner_end_read_cursor: 233,
+                list_handoff_read_cursor: 236,
+                final_read_end: 236,
+                owner_begin_fragment_cursor: 50,
+                owner_end_fragment_cursor: 63,
+                list_handoff_fragment_cursor: 63,
+                final_fragment_cursor: 63,
+            }),
+            exact_handoff: None,
+        });
+        assert_eq!(
+            columns,
+            [
+                "owner_begin_read_cursor",
+                "173",
+                "owner_end_read_cursor",
+                "233",
+                "list_handoff_read_cursor",
+                "236",
+                "final_read_end",
+                "236",
+                "post_owner_read_bytes",
+                "3",
+                "owner_begin_fragment_cursor",
+                "50",
+                "owner_end_fragment_cursor",
+                "63",
+                "list_handoff_fragment_cursor",
+                "63",
+                "final_fragment_cursor",
+                "63",
+                "post_owner_fragment_bits",
+                "0",
+            ]
+            .map(str::to_string)
+        );
     }
 }

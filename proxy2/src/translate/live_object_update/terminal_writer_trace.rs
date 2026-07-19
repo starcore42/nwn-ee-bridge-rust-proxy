@@ -25,7 +25,7 @@ use super::{
 const LIVE_OBJECT_CNW_WRITER_HEADER_BYTES: usize = 7;
 const LIVE_OBJECT_UPDATE_HEADER_BYTES: usize = 10;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
-const TERMINAL_WRITER_TRACE_ARTIFACT_VERSION: &str = "1";
+const TERMINAL_WRITER_TRACE_ARTIFACT_VERSION: &str = "2";
 const TERMINAL_WRITER_TRACE_ARTIFACT_OVERHEAD_BYTES: usize = 4 * 1024;
 const MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES: usize =
     MAX_REASONABLE_LIVE_PAYLOAD_BYTES * 2 + TERMINAL_WRITER_TRACE_ARTIFACT_OVERHEAD_BYTES;
@@ -86,7 +86,36 @@ pub(super) struct TerminalWriterTraceCorrelation {
     pub(super) trace_id: Option<u64>,
     pub(super) message_id: Option<u64>,
     pub(super) component_sha256: Option<[u8; 32]>,
+    pub(super) cursor_evidence: Option<TerminalWriterTraceCursorEvidence>,
     pub(super) exact_handoff: Option<ExactTerminalWriterHandoff>,
+}
+
+/// Absolute writer cursors retained for diagnostics after a unique artifact
+/// selection. The deltas distinguish work performed by the typed owner from
+/// the post-owner list/finalizer handoff without granting either phase wire
+/// authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TerminalWriterTraceCursorEvidence {
+    pub(super) owner_begin_read_cursor: usize,
+    pub(super) owner_end_read_cursor: usize,
+    pub(super) list_handoff_read_cursor: usize,
+    pub(super) final_read_end: usize,
+    pub(super) owner_begin_fragment_cursor: usize,
+    pub(super) owner_end_fragment_cursor: usize,
+    pub(super) list_handoff_fragment_cursor: usize,
+    pub(super) final_fragment_cursor: usize,
+}
+
+impl TerminalWriterTraceCursorEvidence {
+    pub(super) fn post_owner_read_bytes(self) -> Option<usize> {
+        self.list_handoff_read_cursor
+            .checked_sub(self.owner_end_read_cursor)
+    }
+
+    pub(super) fn post_owner_fragment_bits(self) -> Option<usize> {
+        self.list_handoff_fragment_cursor
+            .checked_sub(self.owner_end_fragment_cursor)
+    }
 }
 
 /// Opaque proof that one ordered operator trace matched the complete source
@@ -251,11 +280,12 @@ struct TerminalWriterObservation {
     object_type: u8,
     object_id: u32,
     raw_mask: u32,
-    replayed_read_buffer_cursor: usize,
-    replayed_read_buffer_end: usize,
-    fragment_bits_written: LiveObjectUpdateRewriteBitSliceEvidence,
+    handoff_read_buffer_cursor: usize,
+    final_read_buffer_end: usize,
+    post_owner_fragment_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     finalized_fragment_bit_cursor: usize,
     packet_correlation: TerminalWriterPacketCorrelation,
+    cursor_evidence: TerminalWriterTraceCursorEvidence,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -302,6 +332,7 @@ pub(super) fn correlate_terminal_writer_trace(
             trace_id: None,
             message_id: None,
             component_sha256: None,
+            cursor_evidence: None,
             exact_handoff: None,
         };
     };
@@ -334,6 +365,7 @@ fn correlate_loaded_terminal_writer_trace_journal(
             trace_id: None,
             message_id: None,
             component_sha256: None,
+            cursor_evidence: None,
             exact_handoff: None,
         };
     }
@@ -347,6 +379,7 @@ fn correlate_loaded_terminal_writer_trace_journal(
             trace_id: None,
             message_id: None,
             component_sha256: None,
+            cursor_evidence: None,
             exact_handoff: None,
         };
     }
@@ -366,11 +399,8 @@ fn correlate_loaded_terminal_writer_trace(
     quarantined_payload: &[u8],
     artifact: &OwnedTerminalWriterTraceArtifact,
 ) -> TerminalWriterTraceCorrelation {
-    let verdict = correlate_bounded_terminal_writer_trace(
-        requirement,
-        quarantined_payload,
-        Some(artifact.as_trace()),
-    );
+    let observation = build_terminal_writer_observation(quarantined_payload, artifact.as_trace());
+    let verdict = correlate_optional_observation(requirement, observation);
     let exact_handoff = (verdict
         == LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff)
         .then(|| ExactTerminalWriterHandoff {
@@ -387,6 +417,7 @@ fn correlate_loaded_terminal_writer_trace(
         trace_id: Some(artifact.identity.trace_id),
         message_id: Some(artifact.identity.message_id),
         component_sha256: Some(artifact.identity.component_sha256),
+        cursor_evidence: observation.map(|observation| observation.cursor_evidence),
         exact_handoff,
     }
 }
@@ -421,7 +452,7 @@ fn load_terminal_writer_trace_journal(
         .ok_or(TerminalWriterTraceArtifactStatus::InvalidFormat)
 }
 
-/// Parse one or more consecutive private v1 trace blocks. Every six-line block
+/// Parse one or more consecutive private v2 trace blocks. Every six-line block
 /// remains independently sealed: each ordered event repeats the trace id,
 /// message id, and component fingerprint so separately captured rows cannot be
 /// spliced into one observation. Cursor coordinates are absolute writer byte
@@ -470,13 +501,13 @@ fn terminal_writer_trace_artifact_is_structurally_valid(
         && artifact
             .absolute_record_offset
             .checked_add(LIVE_OBJECT_UPDATE_HEADER_BYTES)
-            .is_some_and(|end| end <= layout.declared)
-        && artifact.owner_end_read_cursor == layout.declared
-        && artifact.list_handoff_read_cursor == artifact.owner_end_read_cursor
+            .is_some_and(|end| end <= artifact.owner_end_read_cursor)
+        && artifact.owner_end_read_cursor <= artifact.list_handoff_read_cursor
+        && artifact.list_handoff_read_cursor == artifact.final_read_end
         && artifact.final_read_end == layout.declared
         && artifact.owner_begin_fragment_cursor <= artifact.owner_end_fragment_cursor
-        && artifact.list_handoff_fragment_cursor == artifact.owner_end_fragment_cursor
-        && artifact.final_fragment_cursor == artifact.owner_end_fragment_cursor
+        && artifact.owner_end_fragment_cursor <= artifact.list_handoff_fragment_cursor
+        && artifact.list_handoff_fragment_cursor == artifact.final_fragment_cursor
         && artifact.final_fragment_cursor == layout.fragment_valid_bits
         && layout.payload.get(artifact.absolute_record_offset).copied() == Some(b'U')
 }
@@ -687,13 +718,23 @@ fn correlate_bounded_terminal_writer_trace(
     quarantined_payload: &[u8],
     trace: Option<TerminalWriterTrace<'_>>,
 ) -> LiveObjectUpdateTerminalWriterHandoffVerdict {
-    if !requirement.source_contract_is_valid() {
-        return LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace;
-    }
     let Some(trace) = trace else {
         return LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace;
     };
-    let Some(observation) = build_terminal_writer_observation(quarantined_payload, trace) else {
+    correlate_optional_observation(
+        requirement,
+        build_terminal_writer_observation(quarantined_payload, trace),
+    )
+}
+
+fn correlate_optional_observation(
+    requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+    observation: Option<TerminalWriterObservation>,
+) -> LiveObjectUpdateTerminalWriterHandoffVerdict {
+    if !requirement.source_contract_is_valid() {
+        return LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace;
+    }
+    let Some(observation) = observation else {
         return LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace;
     };
     correlate_observation(requirement, observation)
@@ -744,13 +785,14 @@ fn build_terminal_writer_observation(
         || owner_begin_identity != finalizer_identity
         || absolute_record_offset != owner_begin_read_cursor
         || absolute_record_offset < LIVE_OBJECT_CNW_WRITER_HEADER_BYTES
-        || absolute_record_offset.checked_add(LIVE_OBJECT_UPDATE_HEADER_BYTES)? > layout.declared
-        || owner_end_read_cursor != layout.declared
-        || list_handoff_read_cursor != owner_end_read_cursor
+        || absolute_record_offset.checked_add(LIVE_OBJECT_UPDATE_HEADER_BYTES)?
+            > owner_end_read_cursor
+        || owner_end_read_cursor > list_handoff_read_cursor
+        || list_handoff_read_cursor != final_read_end
         || final_read_end != layout.declared
         || owner_begin_fragment_cursor > owner_end_fragment_cursor
-        || list_handoff_fragment_cursor != owner_end_fragment_cursor
-        || owner_end_fragment_cursor != final_fragment_cursor
+        || owner_end_fragment_cursor > list_handoff_fragment_cursor
+        || list_handoff_fragment_cursor != final_fragment_cursor
         || final_fragment_cursor != layout.fragment_valid_bits
     {
         return None;
@@ -766,24 +808,40 @@ fn build_terminal_writer_observation(
     let object_type = record[1];
     let object_id = u32::from_le_bytes(record[2..6].try_into().ok()?);
     let raw_mask = u32::from_le_bytes(record[6..10].try_into().ok()?);
-    let fragment_bits_written = rewrite_bit_slice_from_payload(
+    // The typed owner may itself consume fragment bits. Only the interval
+    // written after that owner returns and before the list hands the message to
+    // the finalizer can satisfy the terminal handoff requirement.
+    let post_owner_fragment_bits = rewrite_bit_slice_from_payload(
         layout.fragment,
+        owner_end_fragment_cursor,
+        list_handoff_fragment_cursor,
+    )?;
+    let cursor_evidence = TerminalWriterTraceCursorEvidence {
+        owner_begin_read_cursor,
+        owner_end_read_cursor,
+        list_handoff_read_cursor,
+        final_read_end,
         owner_begin_fragment_cursor,
         owner_end_fragment_cursor,
-    )?;
+        list_handoff_fragment_cursor,
+        final_fragment_cursor,
+    };
 
     Some(TerminalWriterObservation {
         absolute_record_offset,
         object_type,
         object_id,
         raw_mask,
-        replayed_read_buffer_cursor: owner_end_read_cursor
+        // Source reader coordinates exclude the fixed CNW writer envelope and
+        // describe the list handoff/finalized read window, not the earlier
+        // typed-owner return point.
+        handoff_read_buffer_cursor: list_handoff_read_cursor
             .checked_sub(LIVE_OBJECT_CNW_WRITER_HEADER_BYTES)?,
-        replayed_read_buffer_end: final_read_end
-            .checked_sub(LIVE_OBJECT_CNW_WRITER_HEADER_BYTES)?,
-        fragment_bits_written,
+        final_read_buffer_end: final_read_end.checked_sub(LIVE_OBJECT_CNW_WRITER_HEADER_BYTES)?,
+        post_owner_fragment_bits,
         finalized_fragment_bit_cursor: final_fragment_cursor,
         packet_correlation,
+        cursor_evidence,
     })
 }
 
@@ -892,13 +950,13 @@ fn correlate_observation(
     {
         return Verdict::IdentityMismatch;
     }
-    if observation.replayed_read_buffer_cursor != requirement.source_read_buffer_cursor
-        || observation.replayed_read_buffer_end != requirement.source_read_buffer_end
+    if observation.handoff_read_buffer_cursor != requirement.source_read_buffer_cursor
+        || observation.final_read_buffer_end != requirement.source_read_buffer_end
     {
         return Verdict::ReadBufferMismatch;
     }
 
-    let observed_bits = observation.fragment_bits_written;
+    let observed_bits = observation.post_owner_fragment_bits;
     if observed_bits.bit_count == 0 && observed_bits.bit_start == observed_bits.bit_end {
         if observed_bits.bit_start != requirement.source_fragment_bits.bit_start
             || observation.finalized_fragment_bit_cursor != observed_bits.bit_end
@@ -1120,12 +1178,12 @@ mod tests {
                     identity,
                     absolute_record_offset: record_offset,
                     absolute_read_buffer_cursor: record_offset,
-                    fragment_bit_cursor: 63,
+                    fragment_bit_cursor: 50,
                 },
                 TerminalWriterTraceEvent::OwnerEnd {
                     identity,
                     absolute_read_buffer_cursor: declared,
-                    fragment_bit_cursor,
+                    fragment_bit_cursor: 63,
                 },
                 TerminalWriterTraceEvent::ListHandoff {
                     identity,
@@ -1167,26 +1225,32 @@ mod tests {
             "trace_id\t{}\tmessage_id\t{:016X}\tcomponent_sha256\t{}",
             identity.trace_id, identity.message_id, component_sha256
         );
+        let declared = usize::try_from(u32::from_le_bytes(
+            payload[3..7].try_into().expect("declared bytes"),
+        ))
+        .expect("declared length");
+        let fragment_bit_cursor =
+            cnw_fragment_valid_bits(&payload[declared..]).expect("coherent fragment bit count");
         format!(
-            "terminal-writer-trace\tversion\t1\t{identity}\n\
-             owner-begin\t{identity}\tabsolute_record_offset\t{record_offset}\tabsolute_read_buffer_cursor\t{record_offset}\tfragment_bit_cursor\t63\n\
-             owner-end\t{identity}\tabsolute_read_buffer_cursor\t236\tfragment_bit_cursor\t76\n\
-             list-handoff\t{identity}\tabsolute_read_buffer_cursor\t236\tfragment_bit_cursor\t76\n\
-             finalize\t{identity}\tabsolute_read_buffer_end\t236\tfragment_bit_cursor\t76\n\
+            "terminal-writer-trace\tversion\t2\t{identity}\n\
+             owner-begin\t{identity}\tabsolute_record_offset\t{record_offset}\tabsolute_read_buffer_cursor\t{record_offset}\tfragment_bit_cursor\t50\n\
+             owner-end\t{identity}\tabsolute_read_buffer_cursor\t{declared}\tfragment_bit_cursor\t63\n\
+             list-handoff\t{identity}\tabsolute_read_buffer_cursor\t{declared}\tfragment_bit_cursor\t{fragment_bit_cursor}\n\
+             finalize\t{identity}\tabsolute_read_buffer_end\t{declared}\tfragment_bit_cursor\t{fragment_bit_cursor}\n\
              finalized-payload\t{identity}\thex\t{payload_hex}\n"
         )
     }
 
     #[test]
-    fn strict_v1_artifact_parses_and_reaches_exact_diagnostic_correlation() {
+    fn strict_v2_artifact_parses_and_reaches_exact_diagnostic_correlation() {
         let (payload, record_offset) = coherent_payload();
         let artifact =
             parse_terminal_writer_trace_artifact(&artifact_text(&payload, record_offset))
                 .expect("strict operator artifact");
         assert_eq!(artifact.identity, trace_identity());
         assert_eq!(artifact.absolute_record_offset, record_offset);
-        assert_eq!(artifact.owner_begin_fragment_cursor, 63);
-        assert_eq!(artifact.owner_end_fragment_cursor, 76);
+        assert_eq!(artifact.owner_begin_fragment_cursor, 50);
+        assert_eq!(artifact.owner_end_fragment_cursor, 63);
         assert_eq!(artifact.list_handoff_fragment_cursor, 76);
         assert_eq!(artifact.final_fragment_cursor, 76);
         assert_eq!(artifact.finalized_payload, payload);
@@ -1212,6 +1276,19 @@ mod tests {
             .exact_handoff
             .expect("byte-for-byte exact trace should mint one opaque source token");
         assert!(exact_handoff.matches(requirement(), &artifact.finalized_payload));
+        assert_eq!(
+            correlation.cursor_evidence,
+            Some(TerminalWriterTraceCursorEvidence {
+                owner_begin_read_cursor: 173,
+                owner_end_read_cursor: 236,
+                list_handoff_read_cursor: 236,
+                final_read_end: 236,
+                owner_begin_fragment_cursor: 50,
+                owner_end_fragment_cursor: 63,
+                list_handoff_fragment_cursor: 76,
+                final_fragment_cursor: 76,
+            })
+        );
         let mut different_payload = artifact.finalized_payload.clone();
         different_payload[7] ^= 1;
         assert!(!exact_handoff.matches(requirement(), &different_payload));
@@ -1360,6 +1437,13 @@ mod tests {
         let partial = exact.lines().take(5).collect::<Vec<_>>().join("\n");
         assert!(parse_terminal_writer_trace_journal(&partial).is_none());
 
+        let poisoned =
+            format!("{exact}terminal-writer-trace\tincomplete\ttrace_id\t65\tstatus\t8\n");
+        assert!(
+            parse_terminal_writer_trace_journal(&poisoned).is_none(),
+            "an omitted producer trace must invalidate every earlier unique-looking block"
+        );
+
         let second_identity = TerminalWriterTraceIdentity {
             trace_id: 18,
             message_id: 0x0000_0000_1234_ABCE,
@@ -1421,8 +1505,8 @@ mod tests {
         );
 
         let malformed_cursor = artifact_text(&payload, record_offset).replacen(
-            "\tabsolute_read_buffer_cursor\t236\tfragment_bit_cursor\t76\n",
-            "\tabsolute_read_buffer_cursor\t235\tfragment_bit_cursor\t76\n",
+            "\tabsolute_read_buffer_cursor\t236\tfragment_bit_cursor\t63\n",
+            "\tabsolute_read_buffer_cursor\t237\tfragment_bit_cursor\t63\n",
             1,
         );
         assert!(parse_terminal_writer_trace_journal(&malformed_cursor).is_none());
@@ -1462,6 +1546,16 @@ mod tests {
 
         let unknown_event = format!("{exact}unknown-event\n");
         assert!(parse_terminal_writer_trace_artifact(&unknown_event).is_none());
+
+        let legacy_v1 = exact.replacen(
+            "terminal-writer-trace\tversion\t2",
+            "terminal-writer-trace\tversion\t1",
+            1,
+        );
+        assert!(
+            parse_terminal_writer_trace_artifact(&legacy_v1).is_none(),
+            "v1 conflated owner return and list handoff, so it must fail closed"
+        );
     }
 
     #[test]
@@ -1502,10 +1596,15 @@ mod tests {
         assert_eq!(observation.absolute_record_offset, 173);
         assert_eq!(observation.object_id, 0x8000_1003);
         assert_eq!(observation.raw_mask, 0xFFFF_FFF7);
-        assert_eq!(observation.replayed_read_buffer_cursor, 229);
-        assert_eq!(observation.replayed_read_buffer_end, 229);
-        assert_eq!(observation.fragment_bits_written.bit_start, 63);
-        assert_eq!(observation.fragment_bits_written.bit_end, 76);
+        assert_eq!(observation.handoff_read_buffer_cursor, 229);
+        assert_eq!(observation.final_read_buffer_end, 229);
+        assert_eq!(observation.post_owner_fragment_bits.bit_start, 63);
+        assert_eq!(observation.post_owner_fragment_bits.bit_end, 76);
+        assert_eq!(observation.cursor_evidence.post_owner_read_bytes(), Some(0));
+        assert_eq!(
+            observation.cursor_evidence.post_owner_fragment_bits(),
+            Some(13)
+        );
         assert_eq!(
             correlate_bounded_terminal_writer_trace(requirement(), &payload, Some(trace)),
             LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff
@@ -1513,34 +1612,36 @@ mod tests {
     }
 
     #[test]
-    fn stock_zero_delta_requires_a_coherent_63_bit_finalized_packet() {
+    fn stock_three_byte_zero_bit_postlude_parses_but_cannot_mint_a_token() {
         let (mut payload, record_offset) = coherent_payload();
         let declared = 236;
         payload.truncate(declared + 8);
         payload[declared] = (payload[declared] & 0x1F) | 0xE0;
         payload[declared + 7] &= 0xFE;
         assert_eq!(cnw_fragment_valid_bits(&payload[declared..]), Some(63));
-        let mut trace = exact_trace(&payload, record_offset);
-        trace.events[1] = TerminalWriterTraceEvent::OwnerEnd {
-            identity: trace_identity(),
-            absolute_read_buffer_cursor: declared,
-            fragment_bit_cursor: 63,
-        };
-        trace.events[2] = TerminalWriterTraceEvent::ListHandoff {
-            identity: trace_identity(),
-            absolute_read_buffer_cursor: declared,
-            fragment_bit_cursor: 63,
-        };
-        trace.events[3] = TerminalWriterTraceEvent::Finalize {
-            identity: trace_identity(),
-            absolute_read_buffer_end: declared,
-            fragment_bit_cursor: 63,
-            packet_evidence: TerminalWriterTracePacketEvidence::FullFinalizedPayload(&payload),
-        };
+        let stock_text = artifact_text(&payload, record_offset).replacen(
+            "absolute_read_buffer_cursor\t236\tfragment_bit_cursor\t63\n",
+            "absolute_read_buffer_cursor\t233\tfragment_bit_cursor\t63\n",
+            1,
+        );
+        let artifact = parse_terminal_writer_trace_artifact(&stock_text)
+            .expect("v2 permits a byte-only post-owner list postlude");
+        assert_eq!(artifact.owner_end_read_cursor, 233);
+        assert_eq!(artifact.list_handoff_read_cursor, 236);
+        assert_eq!(artifact.owner_end_fragment_cursor, 63);
+        assert_eq!(artifact.list_handoff_fragment_cursor, 63);
+        let correlation =
+            correlate_loaded_terminal_writer_trace(requirement(), &payload, &artifact);
         assert_eq!(
-            correlate_bounded_terminal_writer_trace(requirement(), &payload, Some(trace)),
+            correlation.verdict,
             LiveObjectUpdateTerminalWriterHandoffVerdict::NoTerminalFragmentWrites
         );
+        assert!(correlation.exact_handoff.is_none());
+        let cursor_evidence = correlation
+            .cursor_evidence
+            .expect("unique structurally valid stock trace retains diagnostics");
+        assert_eq!(cursor_evidence.post_owner_read_bytes(), Some(3));
+        assert_eq!(cursor_evidence.post_owner_fragment_bits(), Some(0));
     }
 
     #[test]
@@ -1594,10 +1695,26 @@ mod tests {
         let mut read_cursor = exact_trace(&payload, record_offset);
         read_cursor.events[1] = TerminalWriterTraceEvent::OwnerEnd {
             identity: trace_identity(),
-            absolute_read_buffer_cursor: 235,
-            fragment_bit_cursor: 76,
+            absolute_read_buffer_cursor: 237,
+            fragment_bit_cursor: 63,
         };
         assert!(build_terminal_writer_observation(&payload, read_cursor).is_none());
+
+        let mut owner_ends_before_header = exact_trace(&payload, record_offset);
+        owner_ends_before_header.events[1] = TerminalWriterTraceEvent::OwnerEnd {
+            identity: trace_identity(),
+            absolute_read_buffer_cursor: record_offset + LIVE_OBJECT_UPDATE_HEADER_BYTES - 1,
+            fragment_bit_cursor: 63,
+        };
+        assert!(build_terminal_writer_observation(&payload, owner_ends_before_header).is_none());
+
+        let mut fragment_order = exact_trace(&payload, record_offset);
+        fragment_order.events[1] = TerminalWriterTraceEvent::OwnerEnd {
+            identity: trace_identity(),
+            absolute_read_buffer_cursor: 236,
+            fragment_bit_cursor: 77,
+        };
+        assert!(build_terminal_writer_observation(&payload, fragment_order).is_none());
 
         let mut fragment_cursor = exact_trace(&payload, record_offset);
         fragment_cursor.events[3] = TerminalWriterTraceEvent::Finalize {
@@ -1613,7 +1730,7 @@ mod tests {
             identity: trace_identity(),
             absolute_record_offset: record_offset + 1,
             absolute_read_buffer_cursor: record_offset + 1,
-            fragment_bit_cursor: 63,
+            fragment_bit_cursor: 50,
         };
         assert!(build_terminal_writer_observation(&payload, record_token).is_none());
     }
@@ -1734,20 +1851,21 @@ mod tests {
                 trace_id: None,
                 message_id: None,
                 component_sha256: None,
+                cursor_evidence: None,
                 exact_handoff: None,
             }
         );
     }
 
     #[test]
-    fn artifact_loader_maps_filesystem_boundary_statuses_and_accepts_valid_v1() {
+    fn artifact_loader_maps_filesystem_boundary_statuses_and_accepts_valid_v2() {
         let (payload, record_offset) = coherent_payload();
 
         let valid_path = temp_artifact_path("valid");
         std::fs::write(&valid_path, artifact_text(&payload, record_offset))
             .expect("write valid terminal writer artifact");
         let loaded = load_terminal_writer_trace_journal(&valid_path)
-            .expect("valid single-block v1 terminal writer journal should load");
+            .expect("valid single-block v2 terminal writer journal should load");
         assert_eq!(loaded.artifacts.len(), 1);
         assert_eq!(loaded.artifacts[0].identity, trace_identity());
         assert_eq!(loaded.artifacts[0].finalized_payload, payload);
@@ -1769,7 +1887,7 @@ mod tests {
         )
         .expect("write valid terminal writer journal");
         let loaded = load_terminal_writer_trace_journal(&journal_path)
-            .expect("valid consecutive v1 trace blocks should load");
+            .expect("valid consecutive v2 trace blocks should load");
         assert_eq!(loaded.artifacts.len(), 2);
         assert_eq!(loaded.artifacts[0].identity, trace_identity());
         assert_eq!(loaded.artifacts[1].identity, second_identity);
@@ -1784,7 +1902,7 @@ mod tests {
         std::fs::remove_file(&invalid_utf8_path).expect("remove invalid UTF-8 artifact");
 
         let invalid_format_path = temp_artifact_path("invalid-format");
-        std::fs::write(&invalid_format_path, b"terminal-writer-trace\tversion\t2\n")
+        std::fs::write(&invalid_format_path, b"terminal-writer-trace\tversion\t1\n")
             .expect("write invalid format artifact");
         assert!(matches!(
             load_terminal_writer_trace_journal(&invalid_format_path),
