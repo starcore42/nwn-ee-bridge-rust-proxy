@@ -126,14 +126,15 @@ impl MFrameView {
     }
 }
 
-/// A queued CNetLayerWindow record appended after the primary M payload.
+/// A queued CNetLayerWindow record appended in a single-frame storage window.
 ///
-/// EE's `CNetLayerWindow::FrameReceive` stores and drains individual window
-/// frames through `CExoNetExtendableBuffer` / `LoadWindowWithFrames`, so a
-/// single datagram can carry a primary high-level message followed by one or
-/// more fixed-header packetized records. This parser is intentionally pure: it
-/// only describes the record shape and leaves all allow/quarantine policy to
-/// `strict`.
+/// EE's `CNetLayerWindow::UnpacketizeFullMessages` count-one path walks queued
+/// records by their fixed header and declared length. Its count-greater-than-one
+/// path is different: it copies each continuation's complete stored datagram
+/// after the 12-byte header into one compressed member. Therefore this parser
+/// must never be used to classify bytes behind an active multi-frame deflated
+/// predecessor. It is intentionally pure and leaves that ownership decision,
+/// plus all allow/quarantine policy, to the dispatcher.
 #[derive(Debug, Clone)]
 pub struct PacketizedSpanView {
     pub offset: usize,

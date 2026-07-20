@@ -17,6 +17,49 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-21 packetized deflate storage correction: the newest gameplay-reaching
+  HG artifact remains
+  `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`,
+  last written `2026-07-20T07:02:15.5117962+10:00` and about 21 hours old at the
+  `04:01+10` gate. It reached typed character selection, `Module_Loaded`, native
+  `Area_AreaLoaded`, and 108.71 seconds of sustained gameplay with 68 exact
+  live-object accepts and no stderr, quarantine/drop, `BNDP`, rewrite rejection,
+  or errors. No fresh HG login was required.
+
+  The previously suspected "primary continuation plus coalesced trailing
+  records" shape was false. Diamond `sub_5F3FC0` (decompile lines
+  752182-752453) and EE `CNetLayerWindow::UnpacketizeFullMessages` (lines
+  914423-914649) both use bytes 10..11 as a record boundary only when the
+  packetized count is one. For count greater than one, they copy the complete
+  first stored datagram and every continuation's complete bytes after the
+  12-byte header, then decompress once. Diamond's recvfrom-backed storage path
+  (`sub_5C93E0`, lines 674732-674889) proves that this is the exact received
+  datagram length, not a padded allocation boundary.
+
+  Proxy2 now gives count-greater-than-one storage exclusive ownership before
+  coalesced routing, derives the compressed member from every complete stored
+  frame despite short nonzero declared lengths, and retains those exact bytes
+  in pending/completed route identity. Count-zero appended storage fails closed;
+  only count-one windows can enter the declared-length queued-record walker.
+  Early status capture no longer observes a narrowed compressed prefix, and an
+  incomplete reassembly preflight no longer removes the pending transaction.
+  Tests cover short first and continuation declarations, a stored suffix that
+  also parses as a queued record, and count-zero appended-record rejection.
+
+  Focused dispatch, reassembly, and coalesced tests pass (29, 13, and 21 tests),
+  as do formatting, diff checks, the native Release build, and the Rust Release
+  build. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-full-storage-final-20260721-0501` processed
+  all 164 packet files with 304 strict allows, 143 generated ACKs, 97 exact
+  live-object claims, 19 exact rewrites, ten Area rewrites, and one stable sealed
+  journal load. Strict/semantic quarantine, quarantine files, rewrite failures,
+  terminal residuals, output timeouts, and stderr were zero.
+
+  The false primary/trailing split item is resolved. The next production path
+  is the session-owned raw successor queue for recognized quickbar, live-object,
+  and zero-fill stream helpers, so their retransmissions can wait behind an
+  incomplete predecessor and commit typed state exactly once in source order.
+  Final-output validation still needs a staged semantic rollback boundary.
 - 2026-07-20 ordered interleaved direct-event transaction: the newest
   gameplay-reaching artifact is still
   `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`,

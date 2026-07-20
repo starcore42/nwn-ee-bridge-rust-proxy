@@ -621,14 +621,6 @@ fn translate_server_to_client_inner(
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
     let view = MFrameView::parse(&inbound).unwrap_or(view);
     if state.deflate.server_reassembly.is_some() {
-        if view.trailing_payload_length != 0 {
-            tracing::warn!(
-                sequence = view.sequence,
-                trailing_payload_length = view.trailing_payload_length,
-                "coalesced server M withheld while a deflated predecessor is pending; primary/trailing transactional split is not yet implemented"
-            );
-            return Ok(Emit::Drop);
-        }
         let emit = reassembly::continue_server_deflated_reassembly(
             &inbound,
             &view,
@@ -639,61 +631,75 @@ fn translate_server_to_client_inner(
         return finalize_server_to_client_emit(state, emit, pending_count_before);
     }
 
-    deferred_module_resources::capture_early_server_status_if_needed(
-        &inbound,
-        &view,
-        &state.module_resources,
-        &mut state.deferred_module_resources.pending,
-    );
-
-    if let Some(rewrite) = coalesced::rewrite_server_window_spans_if_needed(
-        &inbound,
-        &view,
-        state,
-        server_peer_ack_sequence,
-        server_origin_generation,
-    )? {
-        reassembly::remember_completed_server_reliable_stream_slot(
-            state,
-            view.sequence,
-            server_origin_generation,
+    let packetized_multi_frame = view.packetized_sequence > 1;
+    if !packetized_multi_frame {
+        deferred_module_resources::capture_early_server_status_if_needed(
             &inbound,
-            CompletedServerReliableStreamRoute::CoalescedWindow,
+            &view,
+            &state.module_resources,
+            &mut state.deferred_module_resources.pending,
         );
-        return match rewrite {
-            coalesced::CoalescedRewrite::Single { proof, packet } => {
-                finalize_server_to_client_emit(
-                    state,
-                    Emit::VerifiedProofPackets {
-                        proof,
-                        packets: vec![packet],
-                    },
-                    pending_count_before,
-                )
-            }
-            coalesced::CoalescedRewrite::Split { packets } => finalize_server_to_client_emit(
+    }
+    let starts_server_deflated_reassembly =
+        reassembly::should_start_server_deflated_reassembly(&inbound, &view);
+    // Diamond and EE only walk declared-length queued records in the count-one
+    // branch. A count-greater-than-one datagram owns a single compressed member
+    // assembled from complete stored frames, so it must never enter coalesced
+    // span routing even when bytes 10..11 under-claim the stored first frame.
+    if view.packetized_sequence == 1 {
+        if let Some(rewrite) = coalesced::rewrite_server_window_spans_if_needed(
+            &inbound,
+            &view,
+            state,
+            server_peer_ack_sequence,
+            server_origin_generation,
+        )? {
+            reassembly::remember_completed_server_reliable_stream_slot(
                 state,
-                Emit::MixedVerifiedProofPackets(packets),
-                pending_count_before,
-            ),
-            coalesced::CoalescedRewrite::SplitPreShifted { packets } => {
-                finalize_server_to_client_emit(
+                view.sequence,
+                server_origin_generation,
+                &inbound,
+                CompletedServerReliableStreamRoute::CoalescedWindow,
+            );
+            return match rewrite {
+                coalesced::CoalescedRewrite::Single { proof, packet } => {
+                    finalize_server_to_client_emit(
+                        state,
+                        Emit::VerifiedProofPackets {
+                            proof,
+                            packets: vec![packet],
+                        },
+                        pending_count_before,
+                    )
+                }
+                coalesced::CoalescedRewrite::Split { packets } => finalize_server_to_client_emit(
                     state,
-                    Emit::MixedVerifiedProofPacketsPreShifted(packets),
+                    Emit::MixedVerifiedProofPackets(packets),
                     pending_count_before,
-                )
-            }
-        };
+                ),
+                coalesced::CoalescedRewrite::SplitPreShifted { packets } => {
+                    finalize_server_to_client_emit(
+                        state,
+                        Emit::MixedVerifiedProofPacketsPreShifted(packets),
+                        pending_count_before,
+                    )
+                }
+            };
+        }
     }
 
-    let emit = if view.trailing_payload_length != 0 {
+    let emit = if packetized_multi_frame && !starts_server_deflated_reassembly {
         tracing::warn!(
             sequence = view.sequence,
-            trailing_payload_length = view.trailing_payload_length,
-            "server M packet with unclaimed trailing records dropped before deflated or direct semantic dispatch"
+            packetized_sequence = view.packetized_sequence,
+            declared_payload_length = view.declared_payload_length,
+            stored_payload_length = view.available_payload_length,
+            "multi-frame server M dropped before dispatch because its full stored first frame has no plausible deflated envelope"
         );
         Emit::Drop
-    } else if reassembly::should_start_server_deflated_reassembly(&view) {
+    } else if starts_server_deflated_reassembly
+        && (packetized_multi_frame || view.trailing_payload_length == 0)
+    {
         reassembly::start_server_deflated_reassembly(
             &inbound,
             &view,
@@ -701,6 +707,13 @@ fn translate_server_to_client_inner(
             server_peer_ack_sequence,
             server_origin_generation,
         )?
+    } else if view.trailing_payload_length != 0 {
+        tracing::warn!(
+            sequence = view.sequence,
+            trailing_payload_length = view.trailing_payload_length,
+            "server M packet with unclaimed trailing records dropped before deflated or direct semantic dispatch"
+        );
+        Emit::Drop
     } else if let Some(verified) = replay_completed_direct_server_semantic_rewrite(
         &inbound,
         &view,
@@ -2775,6 +2788,110 @@ mod tests {
         assert!(state.deflate.server_reassembly.is_none());
         assert!(state.deflate.server_zlib_inflater.is_none());
         assert!(state.deflate.completed_server_stream_windows.is_empty());
+    }
+
+    #[test]
+    fn count_zero_trailing_storage_cannot_enter_count_one_coalesced_routing() {
+        let inflated = crate::translate::loadbar::start_payload(2);
+        let compressed = deflate_zlib(&inflated).expect("test payload should deflate");
+        let mut primary_payload = (inflated.len() as u32).to_le_bytes().to_vec();
+        primary_payload.extend_from_slice(&compressed);
+        let mut frame = reliable_server_m_frame(135, 73, 0x0C, 0, &primary_payload);
+        let queued = reliable_server_m_frame(
+            136,
+            73,
+            0x08,
+            1,
+            &crate::translate::loadbar::start_payload(3),
+        );
+        frame.extend_from_slice(&queued);
+        assert!(encode_legacy_m_crc(&mut frame));
+        let view = MFrameView::parse(&frame).expect("count-zero trailing frame");
+        assert_eq!(view.packetized_sequence, 0);
+        assert_ne!(view.trailing_payload_length, 0);
+
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        assert!(matches!(
+            translate_server_to_client(&frame, &mut state)
+                .expect("orphan count-zero trailing storage should fail closed"),
+            Emit::Drop
+        ));
+        assert!(state.deflate.server_reassembly.is_none());
+        assert!(state.coalesced_replay.completed_deflated_records.is_empty());
+        assert!(state.coalesced_replay.completed_direct_records.is_empty());
+        assert!(
+            state
+                .deflate
+                .completed_server_reliable_stream_slots
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn packetized_deflate_uses_full_stored_frames_despite_short_declared_lengths() {
+        let inflated = crate::translate::loadbar::start_payload(2);
+        let (mut first, mut continuation) = two_frame_deflated_window(140, 73, &inflated);
+        let payload_offset = crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+        let first_available = first.len() - payload_offset;
+        let continuation_available = continuation.len() - payload_offset;
+        assert!(first_available > 4);
+        assert!(continuation_available > 1);
+
+        // Both original count>1 readers ignore these declarations. A one-byte
+        // first declaration also proves routing does not depend on the generic
+        // MFrameView's narrowed deflated-envelope probe.
+        assert!(write_be_u16(&mut first, 10, 1));
+        assert!(encode_legacy_m_crc(&mut first));
+        assert!(write_be_u16(
+            &mut continuation,
+            10,
+            (continuation_available - 1) as u16
+        ));
+        assert!(encode_legacy_m_crc(&mut continuation));
+        let first_view = MFrameView::parse(&first).expect("short-declared first frame");
+        assert!(first_view.deflated.is_none());
+        assert_eq!(first_view.packetized_sequence, 2);
+        assert_eq!(first_view.payload_length, 1);
+        assert_eq!(first_view.available_payload_length, first_available);
+        let continuation_view =
+            MFrameView::parse(&continuation).expect("short-declared continuation");
+        assert_eq!(continuation_view.payload_length, continuation_available - 1);
+        assert_eq!(
+            continuation_view.available_payload_length,
+            continuation_available
+        );
+        assert_eq!(continuation_view.trailing_payload_length, 1);
+
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        assert!(matches!(
+            translate_server_to_client(&first, &mut state).expect("first frame should buffer"),
+            Emit::Consumed
+        ));
+        let pending = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("full stored first frame should start reassembly");
+        assert_eq!(pending.frames.len(), 1);
+        assert_eq!(pending.frames[0].payload_length, first_available);
+        assert_eq!(
+            pending.frames[0].compressed_chunk,
+            first[payload_offset + 4..]
+        );
+
+        let packets = proof_packets(
+            translate_server_to_client(&continuation, &mut state)
+                .expect("full stored continuation should complete reassembly"),
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::LoadBar))
+        );
+        assert!(state.deflate.server_reassembly.is_none());
+        assert!(state.coalesced_replay.completed_deflated_records.is_empty());
     }
 
     #[test]
@@ -5119,12 +5236,15 @@ fn retarget_completed_reassembly_packets_after_progress_shells(
 }
 
 fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow::Result<Emit> {
+    let Some(pending) = state.deflate.server_reassembly.as_ref() else {
+        return Ok(Emit::Consumed);
+    };
+    if pending.frames.is_empty() || pending.frames.len() < pending.expected_frames {
+        return Ok(Emit::Consumed);
+    }
     let Some(mut reassembly) = state.deflate.server_reassembly.take() else {
         return Ok(Emit::Consumed);
     };
-    if reassembly.frames.is_empty() || reassembly.frames.len() < reassembly.expected_frames {
-        return Ok(Emit::Consumed);
-    }
 
     let compressed = reassembly
         .frames

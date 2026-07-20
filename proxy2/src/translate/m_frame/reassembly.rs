@@ -193,11 +193,41 @@ pub(super) fn emit_proof_packets_with_interleaved(
     Emit::MixedVerifiedProofPackets(mixed)
 }
 
-pub(super) fn should_start_server_deflated_reassembly(view: &MFrameView) -> bool {
-    view.deflated
-        .as_ref()
-        .map(|deflated| deflated.plausible && view.payload_length >= 4)
-        .unwrap_or(false)
+/// Return the exact inflated length and compressed byte count owned by a
+/// packetized deflated first frame.
+///
+/// Both original readers have a deliberate two-mode contract. Diamond
+/// `sub_5F3FC0` (decompile lines 752182-752453) and EE
+/// `CNetLayerWindow::UnpacketizeFullMessages` (lines 914423-914649) use the
+/// declared length at bytes 10..11 only when the frame count is one. When the
+/// count is greater than one, each reader copies the complete stored first
+/// datagram and every continuation's complete stored bytes after the fixed
+/// 12-byte header, then decompresses once. Diamond `sub_5C93E0` returns the
+/// exact recvfrom-backed stored length (lines 674732-674889). Therefore a
+/// short nonzero declaration in a multi-frame window is not a trailing-record
+/// boundary.
+fn server_deflated_storage_shape(bytes: &[u8], view: &MFrameView) -> Option<(usize, usize)> {
+    if (view.flags & 0x04) == 0 {
+        return None;
+    }
+    if view.packetized_sequence <= 1 {
+        return view.deflated.as_ref().and_then(|deflated| {
+            (deflated.plausible && view.payload_length >= 4)
+                .then_some((deflated.inflated_length, deflated.compressed_length))
+        });
+    }
+
+    let payload = bytes.get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..)?;
+    let inflated_length = u32::from_le_bytes(payload.get(..4)?.try_into().ok()?) as usize;
+    let compressed_length = payload.len().checked_sub(4)?;
+    (inflated_length != 0
+        && inflated_length <= MAX_REASONABLE_GAMEPLAY_PAYLOAD
+        && compressed_length <= MAX_REASONABLE_GAMEPLAY_PAYLOAD)
+        .then_some((inflated_length, compressed_length))
+}
+
+pub(super) fn should_start_server_deflated_reassembly(bytes: &[u8], view: &MFrameView) -> bool {
+    server_deflated_storage_shape(bytes, view).is_some()
 }
 
 pub(super) fn start_server_deflated_reassembly(
@@ -207,10 +237,6 @@ pub(super) fn start_server_deflated_reassembly(
     server_peer_ack_sequence: u16,
     server_origin_generation: u64,
 ) -> anyhow::Result<Emit> {
-    let deflated = view
-        .deflated
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("missing deflated envelope"))?;
     let expected_frames = if view.packetized_sequence > 1 {
         usize::from(view.packetized_sequence)
     } else {
@@ -225,10 +251,19 @@ pub(super) fn start_server_deflated_reassembly(
         );
         return Ok(Emit::Drop);
     }
+    let (inflated_length, compressed_length) = server_deflated_storage_shape(bytes, view)
+        .ok_or_else(|| anyhow::anyhow!("missing plausible deflated storage envelope"))?;
+    let full_stored_frame = expected_frames > 1;
 
-    let frame = buffered_frame_from_view(bytes, view, server_peer_ack_sequence, true)?;
+    let frame = buffered_frame_from_view(
+        bytes,
+        view,
+        server_peer_ack_sequence,
+        true,
+        full_stored_frame,
+    )?;
     let mut reassembly = ServerDeflatedReassembly {
-        inflated_length: deflated.inflated_length,
+        inflated_length,
         expected_frames,
         first_sequence: view.sequence,
         server_origin_generation,
@@ -242,10 +277,14 @@ pub(super) fn start_server_deflated_reassembly(
     state.deflate.server_reassembly = Some(reassembly);
 
     tracing::info!(
-        inflated_length = deflated.inflated_length,
+        inflated_length,
+        compressed_length,
         expected_frames,
         sequence = view.sequence,
         packetized_sequence = view.packetized_sequence,
+        declared_payload_length = view.declared_payload_length,
+        stored_payload_length = view.available_payload_length,
+        full_stored_frame,
         zlib_stream = (view.flags & 0x01) != 0,
         "server deflated M reassembly started"
     );
@@ -409,6 +448,7 @@ pub(super) fn continue_server_deflated_reassembly(
     let Some(reassembly) = state.deflate.server_reassembly.as_mut() else {
         return Ok(Emit::Drop);
     };
+    let full_stored_frame = reassembly.expected_frames > 1;
 
     if let Some(index) = reassembly
         .frames
@@ -420,6 +460,7 @@ pub(super) fn continue_server_deflated_reassembly(
             view,
             server_peer_ack_sequence,
             view.sequence == reassembly.first_sequence,
+            full_stored_frame,
         )?;
         if buffered_frame_transport_identity(&reassembly.frames[index])
             != buffered_frame_transport_identity(&refreshed)
@@ -460,7 +501,13 @@ pub(super) fn continue_server_deflated_reassembly(
         return Ok(Emit::Consumed);
     }
 
-    let frame = buffered_frame_from_view(bytes, view, server_peer_ack_sequence, false)?;
+    let frame = buffered_frame_from_view(
+        bytes,
+        view,
+        server_peer_ack_sequence,
+        false,
+        full_stored_frame,
+    )?;
     let insert_index = reassembly
         .frames
         .iter()
@@ -540,15 +587,21 @@ fn buffered_frame_from_view(
     view: &MFrameView,
     server_peer_ack_sequence: u16,
     first_frame: bool,
+    full_stored_frame: bool,
 ) -> anyhow::Result<BufferedFrame> {
-    if view.payload_length > bytes.len().saturating_sub(LEGACY_GAMEPLAY_PAYLOAD_OFFSET) {
+    let payload_length = if full_stored_frame {
+        view.available_payload_length
+    } else {
+        view.payload_length
+    };
+    if payload_length > bytes.len().saturating_sub(LEGACY_GAMEPLAY_PAYLOAD_OFFSET) {
         anyhow::bail!("M payload length exceeds datagram");
     }
 
     let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
-    let payload_end = payload_start + view.payload_length;
+    let payload_end = payload_start + payload_length;
     let compressed_start = if first_frame {
-        if view.payload_length < 4 {
+        if payload_length < 4 {
             anyhow::bail!("first deflated M frame is too short for inflated length");
         }
         payload_start + 4
@@ -558,7 +611,7 @@ fn buffered_frame_from_view(
 
     Ok(BufferedFrame {
         packet: bytes.to_vec(),
-        payload_length: view.payload_length,
+        payload_length,
         sequence: view.sequence,
         server_peer_ack_sequence,
         ack_sequence: view.ack_sequence,
@@ -734,13 +787,13 @@ fn deflated_output_frame_count(
 
 fn deflated_output_frame_capacity(reassembly: &ServerDeflatedReassembly, index: usize) -> usize {
     if index < reassembly.frames.len() {
-        // The source frame's legacy datagram size is not a reader-owned
-        // boundary in EE.  EE `CNetLayerWindow::FrameReceive` accepts the
-        // incoming datagram and advances the reliable window by sequence, while
-        // the packetized length field bounds the copied gameplay bytes.  Use
-        // the proven EE-safe datagram cap for rewritten server->client frames
-        // so a small semantic expansion does not manufacture extra reliable
-        // frames and sequence shifts.  New spill frames use the same cap.
+        // The source frame's legacy datagram size is not an output-capacity
+        // contract. In count>1 windows Diamond and EE copy every stored byte
+        // after the 12-byte header; each rebuilt datagram is resized to exactly
+        // its emitted chunk, and its declaration mirrors that size for replay
+        // identity and count-one compatibility. Use the proven EE-safe cap so
+        // a small semantic expansion does not manufacture extra reliable
+        // frames and sequence shifts. New spill frames use the same cap.
         EE_SAFE_M_FRAME_PAYLOAD_BYTES
     } else {
         EE_SAFE_M_FRAME_PAYLOAD_BYTES
@@ -845,11 +898,85 @@ mod tests {
         assert!(encode_legacy_m_crc(&mut packet));
         let client_view = MFrameView::parse(&packet).expect("unshifted frame should parse");
 
-        let frame = buffered_frame_from_view(&packet, &client_view, 82, true)
+        let frame = buffered_frame_from_view(&packet, &client_view, 82, true, false)
             .expect("reassembly frame should retain both ACK spaces");
 
         assert_eq!(frame.server_peer_ack_sequence, 82);
         assert_eq!(frame.ack_sequence, 80);
+    }
+
+    #[test]
+    fn packetized_member_storage_ignores_the_declared_record_length() {
+        let mut packet = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, 41));
+        assert!(write_be_u16(&mut packet, 5, 80));
+        packet[7] = 0x48;
+        assert!(write_be_u16(&mut packet, 8, 0));
+        assert!(write_be_u16(&mut packet, 10, 1));
+        packet.extend_from_slice(&[8, 7, 6, 5, 4, 3, 2, 1]);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("short-declared packetized member");
+        assert_eq!(view.payload_length, 1);
+        assert_eq!(view.available_payload_length, 8);
+
+        let continuation = buffered_frame_from_view(&packet, &view, 80, false, true)
+            .expect("multi-frame continuation storage");
+        assert_eq!(continuation.payload_length, 8);
+        assert_eq!(continuation.compressed_chunk, packet[12..]);
+
+        let first = buffered_frame_from_view(&packet, &view, 80, true, true)
+            .expect("multi-frame first storage");
+        assert_eq!(first.payload_length, 8);
+        assert_eq!(first.compressed_chunk, packet[16..]);
+
+        let count_one = buffered_frame_from_view(&packet, &view, 80, false, false)
+            .expect("count-one declared record storage");
+        assert_eq!(count_one.payload_length, 1);
+        assert_eq!(count_one.compressed_chunk, packet[12..13]);
+    }
+
+    #[test]
+    fn multi_frame_route_identity_keeps_parseable_stored_suffix_exact() {
+        let mut packet = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, 42));
+        assert!(write_be_u16(&mut packet, 5, 80));
+        packet[7] = 0x0C;
+        assert!(write_be_u16(&mut packet, 8, 2));
+        assert!(write_be_u16(&mut packet, 10, 1));
+        // Inflated length 256 followed by nine compressed bytes. Starting at
+        // the narrowed primary end, the last 12 bytes deliberately also parse
+        // as a zero-length queued record. Count>1 ownership must win.
+        packet.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("short-declared multi-frame first member");
+        assert_eq!(view.packetized_sequence, 2);
+        assert_eq!(view.trailing_payload_length, 12);
+        assert!(parse_packetized_spans(&packet, 13).is_some());
+
+        let identity = completed_reliable_stream_transport_identity(&packet)
+            .expect("multi-frame route identity");
+        assert_eq!(identity, packet[7..]);
+        let mut state = SessionState::default();
+        state.deflate.completed_server_reliable_stream_slots.push(
+            CompletedServerReliableStreamSlot {
+                sequence: 42,
+                server_origin_generation: 0,
+                transport_identity: identity,
+                route: CompletedServerReliableStreamRoute::StreamWindow,
+            },
+        );
+
+        let mut conflict = packet.clone();
+        conflict[16] ^= 0x01;
+        assert!(encode_legacy_m_crc(&mut conflict));
+        assert!(matches!(
+            completed_server_reliable_stream_slot(&state, 42, 0, &conflict),
+            CompletedServerReliableStreamSlotMatch::Conflict(
+                CompletedServerReliableStreamRoute::StreamWindow
+            )
+        ));
     }
 
     #[test]
@@ -1537,7 +1664,7 @@ pub(super) fn remember_completed_server_reliable_stream_slot(
 fn completed_reliable_stream_transport_identity(packet: &[u8]) -> Option<Vec<u8>> {
     let mut identity = packet.get(7..)?.to_vec();
     let view = MFrameView::parse(packet)?;
-    if view.trailing_payload_length == 0 {
+    if view.packetized_sequence != 1 || view.trailing_payload_length == 0 {
         return Some(identity);
     }
 

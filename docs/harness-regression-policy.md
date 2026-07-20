@@ -52,6 +52,24 @@ door `UseObject` or configure a private v2 terminal-writer journal, so the exact
 terminal proof path remains to be exercised against the live sequence-95
 interaction failure.
 
+The `2026-07-21T04:01+10:00` gate inspected that artifact at about 21 hours old;
+it remained the newest live HG attempt and still satisfied the gameplay
+freshness requirement. Exact Diamond and EE reader tracing disproved the prior
+"primary deflated continuation plus packetized trailing records" hypothesis.
+Their count-greater-than-one paths assemble one compressed member from the
+complete stored first frame and every continuation's complete bytes after the
+12-byte header; only count-one storage walks bytes 10..11 as queued-record
+lengths. Proxy2 now follows that two-mode contract, keeps multi-frame stored
+bytes out of coalesced parsing and exact in route identity, and fails closed on
+count-zero appended storage. Focused dispatch/reassembly/coalesced tests pass.
+Current-code strict replay is
+`C:\nwnbridge\codex-proxy2-replay-full-storage-final-20260721-0501`: all 164
+packet files produced 304 strict allows, 143 generated ACKs, 97 exact live-object
+claims, 19 exact rewrites, ten Area rewrites, and one stable sealed-journal load.
+Strict/semantic quarantine, quarantine files, rewrite failures, terminal
+residuals, output timeouts, and stderr were zero. The next transport slice is the
+session-owned raw successor queue for recognized stream helper families.
+
 The `2026-07-20T21:59+10:00` gate inspected that artifact directly at about
 14.98 hours old and found no newer failed live HG attempt. The current
 production slice orders a direct reliable successor behind its incomplete
