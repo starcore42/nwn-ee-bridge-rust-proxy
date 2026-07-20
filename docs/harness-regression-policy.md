@@ -33,23 +33,22 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG proxy status: the previous gameplay capture had aged to
-about 29 hours, so account 5 was refreshed at
-`C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922`,
+Latest known live HG proxy status: after the prior artifact crossed 24 hours,
+the first current-code refresh exposed and then fixed a completed-stream
+ACK-control route collision. The qualifying rerun is
+`C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045`,
 with structured log
-`C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`
-(last write `2026-07-20T07:02:15.5117962+10:00`). It selected typed
-`starcore-druid60`, reached `Module_Loaded`, and produced the native
-`Area_AreaLoaded` claim at `2026-07-20T07:00:22.784869+10:00`. Exact live-object
-traffic continued through `2026-07-20T07:02:11.499121+10:00`, 108.71 seconds
-after native area completion, for 68 exact live-object accepts with advancing
-gameplay and quickbar traffic. Proxy stderr, ERROR, `BNDP`, quarantine/drop,
-rewrite-rejection, termination, and disconnect rows were zero. The two WARNs
-were the declared pre-seeded NWSync cache and the expected socket reset after
-the harness-owned EE client was stopped. This capture reached and sustained
-gameplay, so it is current evidence for the 24-hour gate. It did not issue a
-door `UseObject` or configure a private v2 terminal-writer journal, so the exact
-terminal proof path remains to be exercised against the live sequence-95
+`C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`
+(last write `2026-07-21T07:23:58.6405077+10:00`). It selected typed
+`starcore-druid60`, claimed `Module_Loaded`, produced two native
+`Area_AreaLoaded` messages, and sustained 76 exact live-object accepts through
+137.813 seconds after the final native area load. The run recorded 449 strict
+allows with zero completed-route conflicts, strict/datagram quarantine,
+quarantine files, `BNDP`, ERROR, or stderr. Its only WARN is the declared
+pre-seeded NWSync cache. This is current gameplay evidence for the 24-hour gate.
+It did not issue a door `UseObject` or configure a private v2 terminal-writer
+journal, so the exact terminal proof path remains to be exercised against the
+live sequence-95
 interaction failure.
 
 The `2026-07-21T04:01+10:00` gate inspected that artifact at about 21 hours old;
@@ -2408,6 +2407,7 @@ work.
 
 | Symptom | Likely cause | Response |
 | --- | --- | --- |
+| After a deflated character list commits at server sequence zero, proxy2 repeatedly logs `reliable slot already committed different immutable transport bytes`; pre-module traffic repeats and gameplay is never reached | A completed type-0 stream route was incorrectly allowed to claim the independent type-1 ACK-control lane because both carry sequence zero | Fixed 2026-07-21: completed stream/coalesced route identity accepts only decompile-backed frame type 0. Diamond `sub_5F3940` and EE `FrameReceive` both keep type-1 ACK controls out of receive-data storage. Require the next run to pass typed `Module_Loaded`, native `Area_AreaLoaded`, sustained live-object traffic, and zero route-conflict/quarantine rows. |
 | First-area gameplay succeeds, then a following `Area_ClientArea` reports width 11 / packet height 0 / inferred height 14 with three legacy zero-count/single-resref sound rows; EE ACK progress stops, HG retransmits the following window, and eventually sends `BNDP CE 16 00 00` without a quarantine file | The exact missing-height repair ran before sound-row normalization. It correctly rejected the still-legacy tail; the sound repair later committed, but no height retry rebuilt the final EE area shape | Fixed 2026-07-19: after a nonzero independently proven sound repair, retry only the exact missing-height repair once when height is still zero. Diagnose recurrences by comparing `packet_height`, `inferred_height`, `sound_count_zero_one_repairs`, client ACK progression, and the final EE cursor proof. The combined captured fixture proves both repairs and full fragment exhaustion; the post-fix live run sustained Docks gameplay with no disconnect/quarantine, although its source arrived already normalized. |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |

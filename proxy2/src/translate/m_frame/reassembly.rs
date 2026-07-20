@@ -1307,6 +1307,50 @@ mod tests {
             CompletedServerReliableStreamSlotMatch::Miss
         );
 
+        let mut sequence_zero_state = SessionState::default();
+        let sequence_zero_data = make_reassembly(0, &[5]).frames.remove(0).packet;
+        remember_completed_server_reliable_stream_slot(
+            &mut sequence_zero_state,
+            0,
+            0,
+            &sequence_zero_data,
+            CompletedServerReliableStreamRoute::StreamWindow,
+        );
+        let mut ack_control = vec![0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        ack_control[0] = b'M';
+        assert!(write_be_u16(&mut ack_control, 3, 0));
+        assert!(write_be_u16(&mut ack_control, 5, 45));
+        ack_control[7] = 0x10;
+        assert!(write_be_u16(&mut ack_control, 8, 0));
+        assert!(write_be_u16(&mut ack_control, 10, 0));
+        assert!(encode_legacy_m_crc(&mut ack_control));
+        assert_eq!(
+            completed_server_reliable_stream_slot(&sequence_zero_state, 0, 0, &ack_control),
+            CompletedServerReliableStreamSlotMatch::Miss,
+            "type-1 ACK controls never occupy or conflict with type-0 reliable data slots"
+        );
+        remember_completed_server_reliable_stream_slot(
+            &mut sequence_zero_state,
+            0,
+            0,
+            &ack_control,
+            CompletedServerReliableStreamRoute::CoalescedWindow,
+        );
+        assert_eq!(
+            sequence_zero_state
+                .deflate
+                .completed_server_reliable_stream_slots
+                .len(),
+            1,
+            "remembering the control lane must not disturb the committed data route"
+        );
+        assert_eq!(
+            completed_server_reliable_stream_slot(&sequence_zero_state, 0, 0, &sequence_zero_data,),
+            CompletedServerReliableStreamSlotMatch::Exact(
+                CompletedServerReliableStreamRoute::StreamWindow
+            )
+        );
+
         let mut coalesced_first = SessionState::default();
         let mut coalesced_packet = packet.clone();
         let span_offset = coalesced_packet.len();
@@ -1662,8 +1706,20 @@ pub(super) fn remember_completed_server_reliable_stream_slot(
 }
 
 fn completed_reliable_stream_transport_identity(packet: &[u8]) -> Option<Vec<u8>> {
-    let mut identity = packet.get(7..)?.to_vec();
     let view = MFrameView::parse(packet)?;
+    // Reliable route slots belong only to type-0 data frames. Diamond
+    // `sub_5F3940` decodes `(flags >> 4) & 3` at decompile lines
+    // 751460-751484 and enters receive-window storage only for the type-0
+    // constant; type 2 takes the resend path and type 1 falls through to
+    // outbound ACK cleanup.
+    // EE `CNetLayerWindow::FrameReceive` does the same at lines
+    // 878825-878855 and 878889-879146 (constants 0/1/2 are at
+    // 5018006-5018010). A type-1 control therefore cannot conflict with a
+    // type-0 stream that happens to carry the same sequence field.
+    if view.frame_type != 0 {
+        return None;
+    }
+    let mut identity = packet.get(7..)?.to_vec();
     if view.packetized_sequence != 1 || view.trailing_payload_length == 0 {
         return Some(identity);
     }

@@ -2895,6 +2895,68 @@ mod tests {
     }
 
     #[test]
+    fn completed_sequence_zero_stream_does_not_claim_ack_control_lane() {
+        let inflated = crate::translate::loadbar::start_payload(2);
+        let compressed = deflate_zlib(&inflated).expect("test payload should deflate");
+        let mut source_payload = (inflated.len() as u32).to_le_bytes().to_vec();
+        source_payload.extend_from_slice(&compressed);
+        let source = reliable_server_m_frame(0, 1, 0x0D, 1, &source_payload);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        let first = proof_packets(
+            translate_server_to_client(&source, &mut state)
+                .expect("sequence-zero stream should translate"),
+        );
+        assert!(
+            first
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::LoadBar))
+        );
+        assert_eq!(
+            state.deflate.completed_server_reliable_stream_slots.len(),
+            1,
+            "the translated type-0 stream should pin one reliable route"
+        );
+
+        for ack_sequence in [2, 3] {
+            let ack_control = reliable_server_m_frame(0, ack_sequence, 0x10, 0, &[]);
+            let ack_packets = proof_packets(
+                translate_server_to_client(&ack_control, &mut state)
+                    .expect("type-1 ACK control should bypass the type-0 route ledger"),
+            );
+            assert_eq!(ack_packets.len(), 1);
+            assert!(
+                ack_packets[0]
+                    .0
+                    .contains_family(VerifiedFamily::ConsumedEmptyMFrame)
+            );
+            let ack_view = MFrameView::parse(&ack_packets[0].1).expect("ACK control should parse");
+            assert_eq!(ack_view.sequence, 0);
+            assert_eq!(ack_view.ack_sequence, ack_sequence);
+            assert_eq!(ack_view.frame_type, 1);
+            assert_eq!(ack_view.payload_length, 0);
+            assert!(ack_view.crc_valid);
+        }
+        assert_eq!(
+            state.deflate.completed_server_reliable_stream_slots.len(),
+            1,
+            "the independent ACK lane must not replace the stream route"
+        );
+
+        let retransmit = reliable_server_m_frame(0, 4, 0x0D, 1, &source_payload);
+        let replay = proof_packets(
+            translate_server_to_client(&retransmit, &mut state)
+                .expect("exact stream retransmit should still replay"),
+        );
+        assert!(
+            replay
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::LoadBar))
+        );
+    }
+
+    #[test]
     fn header_bearing_stream_retransmit_preserves_inflater_for_raw_continuation() {
         fn compress_stream_chunk(compressor: &mut flate2::Compress, payload: &[u8]) -> Vec<u8> {
             let before_out = compressor.total_out();

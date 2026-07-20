@@ -17,6 +17,41 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-21 completed-stream ACK-control lane repair and fresh live gate: the
+  prior gameplay artifact crossed 24 hours, and the first refresh attempt at
+  `C:\nwnbridge\codex-live-freshness-20260721-0706\harness-proxy-20260721-070535`
+  did not reach gameplay. After the sequence-zero deflated character list
+  committed, the completed-route ledger treated each following type-1
+  sequence-zero ACK control as conflicting type-0 stream data. HG therefore
+  repeated pre-module traffic while proxy2 logged
+  `reliable slot already committed different immutable transport bytes` and
+  quarantined the controls.
+
+  Diamond `sub_5F3940` (decompile lines 751460-751763) and EE
+  `CNetLayerWindow::FrameReceive` (lines 878825-879146; constants 0/1/2 at
+  5018006-5018010) prove that only frame type 0 enters reliable receive-data
+  storage. Type 2 takes the resend path and type 1 bypasses both paths into
+  outbound ACK cleanup. Completed stream/coalesced route identity is now
+  restricted to type-0 frames, independent of the reusable sequence field.
+  Focused regressions commit a type-0 sequence-zero stream, accept multiple
+  type-1 controls with advancing ACKs without changing its route, and still
+  replay the original exact stream.
+
+  The fixed rerun reached sustained gameplay at
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00`. It claimed typed
+  `Module_Loaded`, two native `Area_AreaLoaded` messages, and 76 exact
+  live-object packets through 137.813 seconds after the final area load. It
+  recorded 449 strict allows and zero route conflicts, strict/datagram
+  quarantine, quarantine files, `BNDP`, errors, or stderr. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-ack-control-lane-final-20260721-0725`
+  processed all 164 packets with 304 allows, 143 generated ACK controls, 97
+  exact live-object claims, 19 exact rewrites, ten Area rewrites, one stable
+  sealed-journal load, and zero strict/semantic quarantine, files, rewrite
+  failures, terminal residuals, output timeouts, warnings, errors, or stderr.
+  The next production path returns to the session-owned raw successor queue for
+  quickbar/live-object/zero-fill stream helpers, with dequeue/fence state staged
+  across final strict emit validation.
 - 2026-07-21 packetized deflate storage correction: the newest gameplay-reaching
   HG artifact remains
   `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`,
