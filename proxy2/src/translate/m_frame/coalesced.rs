@@ -87,6 +87,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
     view: &MFrameView,
     state: &mut SessionState,
     server_peer_ack_sequence: u16,
+    server_origin_generation: u64,
 ) -> anyhow::Result<Option<CoalescedRewrite>> {
     if view.trailing_payload_length == 0 {
         return Ok(None);
@@ -116,6 +117,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         view.payload_length,
         state,
         view.sequence,
+        server_origin_generation,
         view.ack_sequence,
         server_peer_ack_sequence,
         0,
@@ -160,6 +162,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
             span.payload_length,
             state,
             view.sequence,
+            server_origin_generation,
             view.ack_sequence,
             server_peer_ack_sequence,
             span.offset,
@@ -484,6 +487,7 @@ fn split_oversized_deflated_coalesced_record(
         inflated_length: deflated.inflated_length,
         expected_frames: 1,
         first_sequence: view.sequence,
+        server_origin_generation: 0,
         packetized_sequence: view.packetized_sequence,
         zlib_stream: (view.flags & 0x01) != 0,
         frames: vec![BufferedFrame {
@@ -570,6 +574,7 @@ fn replay_completed_coalesced_deflated_record(
     state: &SessionState,
     record: &[u8],
     sequence: u16,
+    server_origin_generation: u64,
     offset: usize,
     payload_length: usize,
     inflated_length: usize,
@@ -581,6 +586,7 @@ fn replay_completed_coalesced_deflated_record(
         .iter()
         .find(|entry| {
             entry.sequence == sequence
+                && entry.server_origin_generation == server_origin_generation
                 && entry.offset == offset
                 && entry.payload_length == payload_length
                 && entry.inflated_length == inflated_length
@@ -589,6 +595,7 @@ fn replay_completed_coalesced_deflated_record(
 
     tracing::info!(
         sequence,
+        server_origin_generation,
         offset,
         payload_length,
         inflated_length,
@@ -626,6 +633,7 @@ fn replay_completed_coalesced_deflated_record(
 fn remember_completed_coalesced_deflated_record(
     state: &mut SessionState,
     sequence: u16,
+    server_origin_generation: u64,
     offset: usize,
     payload_length: usize,
     inflated_length: usize,
@@ -634,6 +642,7 @@ fn remember_completed_coalesced_deflated_record(
 ) {
     let entry = CompletedCoalescedDeflatedRecord {
         sequence,
+        server_origin_generation,
         offset,
         payload_length,
         inflated_length,
@@ -651,6 +660,7 @@ fn remember_completed_coalesced_deflated_record(
         .iter_mut()
         .find(|existing| {
             existing.sequence == sequence
+                && existing.server_origin_generation == server_origin_generation
                 && existing.offset == offset
                 && existing.payload_length == payload_length
                 && existing.inflated_length == inflated_length
@@ -682,6 +692,7 @@ fn replay_completed_coalesced_direct_record(
     state: &SessionState,
     record: &[u8],
     sequence: u16,
+    server_origin_generation: u64,
     offset: usize,
     payload: &[u8],
 ) -> Option<CoalescedRecordRewrite> {
@@ -691,6 +702,7 @@ fn replay_completed_coalesced_direct_record(
         .iter()
         .find(|entry| {
             entry.sequence == sequence
+                && entry.server_origin_generation == server_origin_generation
                 && entry.offset == offset
                 && entry.payload.as_slice() == payload
         })?;
@@ -707,6 +719,7 @@ fn replay_completed_coalesced_direct_record(
     }
     tracing::info!(
         sequence,
+        server_origin_generation,
         offset,
         payload_length = payload.len(),
         proof = entry.proof.as_str(),
@@ -726,12 +739,14 @@ fn replay_completed_coalesced_direct_record(
 fn remember_completed_coalesced_direct_record(
     state: &mut SessionState,
     sequence: u16,
+    server_origin_generation: u64,
     offset: usize,
     payload: &[u8],
     outcome: &CoalescedRecordRewrite,
 ) {
     let entry = CompletedCoalescedDirectRecord {
         sequence,
+        server_origin_generation,
         offset,
         payload: payload.to_vec(),
         proof: outcome.proof.clone(),
@@ -745,6 +760,7 @@ fn remember_completed_coalesced_direct_record(
         .iter_mut()
         .find(|existing| {
             existing.sequence == sequence
+                && existing.server_origin_generation == server_origin_generation
                 && existing.offset == offset
                 && existing.payload.as_slice() == payload
         })
@@ -775,6 +791,7 @@ fn rewrite_coalesced_record_for_ee(
     payload_length: usize,
     state: &mut SessionState,
     sequence: u16,
+    server_origin_generation: u64,
     ack_sequence: u16,
     server_peer_ack_sequence: u16,
     offset: usize,
@@ -799,9 +816,14 @@ fn rewrite_coalesced_record_for_ee(
         .map(|deflated| deflated.plausible && payload_length >= CNW_LENGTH_BYTES)
         .unwrap_or(false);
     if !prefer_deflated && let Some(high) = high {
-        if let Some(replay) =
-            replay_completed_coalesced_direct_record(state, record, sequence, offset, payload)
-        {
+        if let Some(replay) = replay_completed_coalesced_direct_record(
+            state,
+            record,
+            sequence,
+            server_origin_generation,
+            offset,
+            payload,
+        ) {
             return Ok(replay);
         }
         let source_payload = payload.to_vec();
@@ -834,6 +856,7 @@ fn rewrite_coalesced_record_for_ee(
                 remember_completed_coalesced_direct_record(
                     state,
                     sequence,
+                    server_origin_generation,
                     offset,
                     &source_payload,
                     &outcome,
@@ -868,6 +891,7 @@ fn rewrite_coalesced_record_for_ee(
             remember_completed_coalesced_direct_record(
                 state,
                 sequence,
+                server_origin_generation,
                 offset,
                 &source_payload,
                 &outcome,
@@ -950,6 +974,7 @@ fn rewrite_coalesced_record_for_ee(
         remember_completed_coalesced_direct_record(
             state,
             sequence,
+            server_origin_generation,
             offset,
             &source_payload,
             &outcome,
@@ -983,6 +1008,7 @@ fn rewrite_coalesced_record_for_ee(
         state,
         record,
         sequence,
+        server_origin_generation,
         offset,
         payload_length,
         deflated.inflated_length,
@@ -1051,6 +1077,7 @@ fn rewrite_coalesced_record_for_ee(
             remember_completed_coalesced_deflated_record(
                 state,
                 sequence,
+                server_origin_generation,
                 offset,
                 payload_length,
                 deflated.inflated_length,
@@ -1077,6 +1104,7 @@ fn rewrite_coalesced_record_for_ee(
         remember_completed_coalesced_deflated_record(
             state,
             sequence,
+            server_origin_generation,
             offset,
             payload_length,
             deflated.inflated_length,
@@ -1113,6 +1141,7 @@ fn rewrite_coalesced_record_for_ee(
         remember_completed_coalesced_deflated_record(
             state,
             sequence,
+            server_origin_generation,
             offset,
             payload_length,
             deflated.inflated_length,
@@ -1137,6 +1166,7 @@ fn rewrite_coalesced_record_for_ee(
         remember_completed_coalesced_deflated_record(
             state,
             sequence,
+            server_origin_generation,
             offset,
             payload_length,
             deflated.inflated_length,
@@ -1204,6 +1234,7 @@ fn rewrite_coalesced_record_for_ee(
         remember_completed_coalesced_deflated_record(
             state,
             sequence,
+            server_origin_generation,
             offset,
             payload_length,
             deflated.inflated_length,
@@ -1242,6 +1273,7 @@ fn rewrite_coalesced_record_for_ee(
     remember_completed_coalesced_deflated_record(
         state,
         sequence,
+        server_origin_generation,
         offset,
         payload_length,
         deflated.inflated_length,
@@ -1532,6 +1564,7 @@ mod tests {
         remember_completed_coalesced_deflated_record(
             &mut state,
             34,
+            0,
             67,
             381,
             604,
@@ -1548,6 +1581,7 @@ mod tests {
             &state,
             &current_record,
             34,
+            0,
             67,
             381,
             604,
@@ -1563,6 +1597,20 @@ mod tests {
         assert_eq!(replay.record[7] & 0x01, 0);
         assert_eq!(&replay.record[10..12], &outcome.record[10..12]);
         assert_eq!(replay.proof, proof);
+        assert!(
+            replay_completed_coalesced_deflated_record(
+                &state,
+                &current_record,
+                34,
+                1,
+                67,
+                381,
+                604,
+                &compressed,
+            )
+            .is_none(),
+            "a reused sequence in a later reliable generation is not a replay"
+        );
     }
 
     #[test]
@@ -1587,13 +1635,13 @@ mod tests {
             abort_window_if_primary_consumed: false,
         };
         let mut state = SessionState::default();
-        remember_completed_coalesced_direct_record(&mut state, 53, 132, &payload, &outcome);
+        remember_completed_coalesced_direct_record(&mut state, 53, 0, 132, &payload, &outcome);
 
         let mut current_record = cached_record;
         current_record[5..7].copy_from_slice(&83u16.to_be_bytes());
         current_record[8..10].copy_from_slice(&2u16.to_be_bytes());
         let replay =
-            replay_completed_coalesced_direct_record(&state, &current_record, 53, 132, &payload)
+            replay_completed_coalesced_direct_record(&state, &current_record, 53, 0, 132, &payload)
                 .expect("matching direct reliable retransmit should replay typed output");
 
         assert_eq!(&replay.record[3..10], &current_record[3..10]);
@@ -1603,6 +1651,18 @@ mod tests {
         );
         assert!(!replay.dropped);
         assert!(!replay.rewritten_deflated);
+        assert!(
+            replay_completed_coalesced_direct_record(
+                &state,
+                &current_record,
+                53,
+                1,
+                132,
+                &payload,
+            )
+            .is_none(),
+            "direct semantic replay must also be generation-scoped"
+        );
     }
 
     #[test]
@@ -1629,6 +1689,7 @@ mod tests {
             source_payload.len(),
             &mut state,
             32,
+            0,
             75,
             75,
             203,
@@ -1732,6 +1793,7 @@ mod tests {
             3,
             &mut state,
             21,
+            0,
             72,
             72,
             0,
@@ -1776,6 +1838,7 @@ mod tests {
             3,
             &mut state,
             21,
+            0,
             72,
             72,
             202,
@@ -2096,6 +2159,7 @@ mod tests {
             span.payload_length,
             &mut state,
             view.sequence,
+            0,
             view.ack_sequence,
             view.ack_sequence,
             span.offset,
@@ -2153,7 +2217,7 @@ mod tests {
         );
         let view = MFrameView::parse(packet).expect("XP2 Chapter3 coalesced packet should parse");
         let rewrite =
-            rewrite_server_window_spans_if_needed(packet, &view, &mut state, view.ack_sequence)
+            rewrite_server_window_spans_if_needed(packet, &view, &mut state, view.ack_sequence, 0)
                 .expect("XP2 Chapter3 coalesced packet should rewrite")
                 .expect("XP2 Chapter3 coalesced packet should split for module resources");
 
@@ -2194,7 +2258,7 @@ mod tests {
         assert_eq!(view.ack_sequence, 72);
 
         let rewrite =
-            rewrite_server_window_spans_if_needed(packet, &view, &mut state, view.ack_sequence)
+            rewrite_server_window_spans_if_needed(packet, &view, &mut state, view.ack_sequence, 0)
                 .expect("ShadowGuard Module_Info coalesced packet should rewrite")
                 .expect("ShadowGuard Module_Info window should split for resource insertion");
 

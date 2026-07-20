@@ -24,6 +24,8 @@ pub(super) struct DeflateState {
     pub(super) server_reassembly: Option<ServerDeflatedReassembly>,
     pub(super) server_zlib_inflater: Option<Decompress>,
     pub(super) completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
+    pub(super) completed_server_reliable_stream_slots:
+        Vec<super::reassembly::CompletedServerReliableStreamSlot>,
     pub(super) server_zlib_stream_proxy_owned: bool,
     pub(super) server_zlib_stream_owner: Option<ContinuationOwner>,
     pub(super) server_zlib_stream_epoch: u64,
@@ -46,6 +48,10 @@ pub(super) struct CoalescedReplayState {
 #[derive(Debug, Clone)]
 pub(super) struct CompletedCoalescedDeflatedRecord {
     pub(super) sequence: u16,
+    /// Wrap-safe reliable-window generation. A reused `u16` sequence must not
+    /// inherit a prior record's semantic disposition or persistent-inflater
+    /// replay result.
+    pub(super) server_origin_generation: u64,
     pub(super) offset: usize,
     pub(super) payload_length: usize,
     pub(super) inflated_length: usize,
@@ -60,6 +66,7 @@ pub(super) struct CompletedCoalescedDeflatedRecord {
 #[derive(Debug, Clone)]
 pub(super) struct CompletedCoalescedDirectRecord {
     pub(super) sequence: u16,
+    pub(super) server_origin_generation: u64,
     pub(super) offset: usize,
     pub(super) payload: Vec<u8>,
     pub(super) proof: VerifiedProof,

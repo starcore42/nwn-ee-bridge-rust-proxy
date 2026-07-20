@@ -8,7 +8,10 @@ use flate2::{Decompress, FlushDecompress};
 
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
-    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD, MFrameView},
+    packet::m::{
+        LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD, MFrameView,
+        parse_packetized_spans,
+    },
     translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedPacket, VerifiedProof},
 };
 
@@ -37,6 +40,11 @@ pub(super) struct ServerDeflatedReassembly {
     pub(super) inflated_length: usize,
     pub(super) expected_frames: usize,
     pub(super) first_sequence: u16,
+    /// Wrap-safe generation of `first_sequence` in the server-origin reliable
+    /// window. Sequence numbers alone are reusable after `u16` wrap, so a
+    /// completed persistent-stream disposition must never match without this
+    /// transport epoch.
+    pub(super) server_origin_generation: u64,
     pub(super) packetized_sequence: u16,
     pub(super) zlib_stream: bool,
     pub(super) frames: Vec<BufferedFrame>,
@@ -74,11 +82,34 @@ pub(super) struct BufferedFrame {
 #[derive(Debug, Clone)]
 pub(super) struct CompletedDeflatedStreamWindow {
     pub(super) first_sequence: u16,
+    pub(super) server_origin_generation: u64,
     pub(super) expected_frames: usize,
     pub(super) packetized_sequence: u16,
     pub(super) inflated_length: usize,
-    pub(super) compressed_length: usize,
+    /// Exact immutable compressed bytes from every source frame, in reliable
+    /// order. A length-only match is unsafe because a different payload in the
+    /// same reliable slot must not inherit cached semantics or skip inflation.
+    pub(super) compressed: Vec<u8>,
+    /// Per-frame immutable transport bytes from flags through the exact
+    /// datagram tail. CRC, sequence, and ACK are deliberately excluded:
+    /// retransmit ACKs may advance, but flags, packetized lengths, chunk
+    /// boundaries, payload, and any trailing bytes may not change within one
+    /// reliable generation.
+    pub(super) frame_transport_identities: Vec<Vec<u8>>,
+    /// Expanded replacements are shifted before their future source-sequence
+    /// shift is recorded. Remember that disposition so retransmission cannot
+    /// pass through the ordinary finalizer and apply the same shift twice.
+    pub(super) pre_shifted: bool,
     pub(super) replay: CompletedDeflatedReplay,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum CompletedDeflatedStreamWindowMatch {
+    Miss,
+    Exact(CompletedDeflatedStreamWindow),
+    /// The reliable slot/generation was already committed, but the immutable
+    /// source shape or compressed bytes differ. This is not a replay.
+    Conflict,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +128,36 @@ pub(super) enum CompletedDeflatedReplay {
         proof: VerifiedProof,
         packets: Vec<Vec<u8>>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletedServerReliableStreamRoute {
+    StreamWindow,
+    CoalescedWindow,
+}
+
+impl CompletedServerReliableStreamRoute {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::StreamWindow => "stream-window",
+            Self::CoalescedWindow => "coalesced-window",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CompletedServerReliableStreamSlot {
+    pub(super) sequence: u16,
+    pub(super) server_origin_generation: u64,
+    pub(super) transport_identity: Vec<u8>,
+    pub(super) route: CompletedServerReliableStreamRoute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletedServerReliableStreamSlotMatch {
+    Miss,
+    Exact(CompletedServerReliableStreamRoute),
+    Conflict(CompletedServerReliableStreamRoute),
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +205,7 @@ pub(super) fn start_server_deflated_reassembly(
     view: &MFrameView,
     state: &mut SessionState,
     server_peer_ack_sequence: u16,
+    server_origin_generation: u64,
 ) -> anyhow::Result<Emit> {
     let deflated = view
         .deflated
@@ -169,6 +231,7 @@ pub(super) fn start_server_deflated_reassembly(
         inflated_length: deflated.inflated_length,
         expected_frames,
         first_sequence: view.sequence,
+        server_origin_generation,
         packetized_sequence: view.packetized_sequence,
         zlib_stream: (view.flags & 0x01) != 0,
         frames: Vec::with_capacity(expected_frames),
@@ -286,9 +349,8 @@ pub(super) fn continue_server_deflated_reassembly(
                     sequence = view.sequence,
                     first_sequence = reassembly.first_sequence,
                     server_origin_generation,
-                    "conflicting server M retransmit aborted pending deflated reassembly"
+                    "conflicting interleaved server M retransmit rejected while retaining the first accepted reliable identity"
                 );
-                state.deflate.server_reassembly = None;
                 return Ok(Emit::Drop);
             }
             reassembly.interleaved_events[index].packet = bytes.to_vec();
@@ -348,20 +410,40 @@ pub(super) fn continue_server_deflated_reassembly(
         return Ok(Emit::Drop);
     };
 
-    if reassembly
+    if let Some(index) = reassembly
         .frames
         .iter()
-        .any(|frame| frame.sequence == view.sequence)
+        .position(|frame| frame.sequence == view.sequence)
     {
+        let refreshed = buffered_frame_from_view(
+            bytes,
+            view,
+            server_peer_ack_sequence,
+            view.sequence == reassembly.first_sequence,
+        )?;
+        if buffered_frame_transport_identity(&reassembly.frames[index])
+            != buffered_frame_transport_identity(&refreshed)
+        {
+            tracing::warn!(
+                sequence = view.sequence,
+                first_sequence = reassembly.first_sequence,
+                server_origin_generation,
+                "conflicting server deflated M window member rejected while retaining the first accepted reliable identity"
+            );
+            return Ok(Emit::Drop);
+        }
+        reassembly.frames[index] = refreshed;
         let buffered_frames = reassembly.frames.len();
         let expected_frames = reassembly.expected_frames;
         let first_sequence = reassembly.first_sequence;
-        tracing::warn!(
+        tracing::info!(
             sequence = view.sequence,
             first_sequence,
             buffered_frames,
             expected_frames,
-            "duplicate server deflated M frame dropped"
+            ack_sequence = view.ack_sequence,
+            server_peer_ack_sequence,
+            "duplicate server deflated M frame refreshed without changing immutable payload"
         );
         if buffered_frames + 1 >= expected_frames {
             if let Some(emit) = super::try_emit_salvaged_incomplete_server_deflated_reassembly(
@@ -482,6 +564,20 @@ fn buffered_frame_from_view(
         ack_sequence: view.ack_sequence,
         compressed_chunk: bytes[compressed_start..payload_end].to_vec(),
     })
+}
+
+fn buffered_frame_transport_identity(frame: &BufferedFrame) -> Option<Vec<u8>> {
+    frame.packet.get(7..).map(<[u8]>::to_vec)
+}
+
+fn completed_stream_frame_transport_identities(
+    reassembly: &ServerDeflatedReassembly,
+) -> Option<Vec<Vec<u8>>> {
+    reassembly
+        .frames
+        .iter()
+        .map(buffered_frame_transport_identity)
+        .collect()
 }
 
 pub(super) fn build_server_deflated_output_frames(
@@ -728,6 +824,7 @@ mod tests {
             inflated_length: 4096,
             expected_frames: payload_lengths.len(),
             first_sequence,
+            server_origin_generation: 0,
             packetized_sequence: payload_lengths.len() as u16,
             zlib_stream: true,
             frames,
@@ -753,6 +850,119 @@ mod tests {
 
         assert_eq!(frame.server_peer_ack_sequence, 82);
         assert_eq!(frame.ack_sequence, 80);
+    }
+
+    #[test]
+    fn pending_window_duplicates_refresh_ack_and_retain_first_identity() {
+        let full = make_reassembly(120, &[8, 6, 5, 7]);
+        let mut pending = full.clone();
+        pending.frames = vec![full.frames[0].clone(), full.frames[3].clone()];
+        let mut state = SessionState::default();
+        state.deflate.server_reassembly = Some(pending);
+
+        let mut retransmit = full.frames[3].packet.clone();
+        assert!(write_be_u16(&mut retransmit, 5, 96));
+        assert!(encode_legacy_m_crc(&mut retransmit));
+        let retransmit_view = MFrameView::parse(&retransmit).expect("valid retransmit frame");
+        assert!(matches!(
+            continue_server_deflated_reassembly(&retransmit, &retransmit_view, &mut state, 101, 0,)
+                .expect("exact pending duplicate should refresh"),
+            Emit::Consumed
+        ));
+        let refreshed = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .and_then(|reassembly| reassembly.frames.iter().find(|frame| frame.sequence == 123))
+            .expect("pending duplicate should remain buffered");
+        assert_eq!(refreshed.ack_sequence, 96);
+        assert_eq!(refreshed.server_peer_ack_sequence, 101);
+        assert_eq!(refreshed.packet, retransmit);
+
+        let mut conflicting = retransmit.clone();
+        conflicting[LEGACY_GAMEPLAY_PAYLOAD_OFFSET] ^= 0x80;
+        assert!(encode_legacy_m_crc(&mut conflicting));
+        let conflicting_view = MFrameView::parse(&conflicting).expect("valid conflicting frame");
+        assert!(matches!(
+            continue_server_deflated_reassembly(
+                &conflicting,
+                &conflicting_view,
+                &mut state,
+                102,
+                0,
+            )
+            .expect("conflicting pending duplicate should fail closed"),
+            Emit::Drop
+        ));
+        let retained = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .and_then(|reassembly| reassembly.frames.iter().find(|frame| frame.sequence == 123))
+            .expect("conflict must retain the first accepted pending member");
+        assert_eq!(retained.ack_sequence, 96);
+        assert_eq!(retained.server_peer_ack_sequence, 101);
+        assert_eq!(retained.packet, retransmit);
+
+        let mut interleaved = full.frames[1].packet.clone();
+        assert!(write_be_u16(&mut interleaved, 3, 130));
+        assert!(write_be_u16(&mut interleaved, 5, 97));
+        assert!(encode_legacy_m_crc(&mut interleaved));
+        let interleaved_view = MFrameView::parse(&interleaved).expect("valid interleaved frame");
+        assert!(matches!(
+            continue_server_deflated_reassembly(
+                &interleaved,
+                &interleaved_view,
+                &mut state,
+                103,
+                0,
+            )
+            .expect("first interleaved event should buffer"),
+            Emit::Consumed
+        ));
+
+        let mut interleaved_retransmit = interleaved.clone();
+        assert!(write_be_u16(&mut interleaved_retransmit, 5, 98));
+        assert!(encode_legacy_m_crc(&mut interleaved_retransmit));
+        let interleaved_retransmit_view =
+            MFrameView::parse(&interleaved_retransmit).expect("valid interleaved retransmit");
+        assert!(matches!(
+            continue_server_deflated_reassembly(
+                &interleaved_retransmit,
+                &interleaved_retransmit_view,
+                &mut state,
+                104,
+                0,
+            )
+            .expect("exact interleaved retransmit should refresh"),
+            Emit::Consumed
+        ));
+
+        let mut interleaved_conflict = interleaved_retransmit.clone();
+        interleaved_conflict[LEGACY_GAMEPLAY_PAYLOAD_OFFSET] ^= 0x40;
+        assert!(encode_legacy_m_crc(&mut interleaved_conflict));
+        let interleaved_conflict_view =
+            MFrameView::parse(&interleaved_conflict).expect("valid interleaved conflict");
+        assert!(matches!(
+            continue_server_deflated_reassembly(
+                &interleaved_conflict,
+                &interleaved_conflict_view,
+                &mut state,
+                105,
+                0,
+            )
+            .expect("conflicting interleaved retransmit should fail closed"),
+            Emit::Drop
+        ));
+        let retained_interleaved = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .and_then(|reassembly| reassembly.interleaved_events.first())
+            .expect("interleaved conflict must retain the first accepted event");
+        assert_eq!(retained_interleaved.packet, interleaved_retransmit);
+        assert_eq!(retained_interleaved.server_peer_ack_sequence, 104);
+        assert!(state.deflate.server_zlib_inflater.is_none());
     }
 
     #[test]
@@ -883,6 +1093,188 @@ mod tests {
     }
 
     #[test]
+    fn completed_stream_cache_requires_exact_bytes_and_reliable_generation() {
+        let mut state = SessionState::default();
+        let mut reassembly = make_reassembly(91, &[4, 3]);
+        reassembly.server_origin_generation = 7;
+        reassembly.inflated_length = 23;
+        reassembly.frames[0].compressed_chunk = vec![0x78, 0x9C, 0x10, 0x20];
+        reassembly.frames[1].compressed_chunk = vec![0x30, 0x40, 0x50];
+        let compressed = [0x78, 0x9C, 0x10, 0x20, 0x30, 0x40, 0x50];
+        let replay = CompletedDeflatedReplay::VerifiedPackets {
+            family: VerifiedFamily::LoadBar,
+            packets: build_consumed_server_deflated_frames(&reassembly)
+                .expect("cache replay shells"),
+        };
+
+        remember_completed_server_stream_window_with_disposition(
+            &mut state,
+            &reassembly,
+            compressed.len(),
+            true,
+            replay,
+        );
+
+        let CompletedDeflatedStreamWindowMatch::Exact(exact) =
+            completed_server_stream_window(&state, &reassembly, &compressed)
+        else {
+            panic!("exact bytes in the same reliable generation must replay");
+        };
+        assert!(exact.pre_shifted);
+        assert_eq!(exact.server_origin_generation, 7);
+        assert_eq!(exact.compressed, compressed);
+
+        let mut conflicting = compressed;
+        conflicting[4] ^= 0x80;
+        assert!(matches!(
+            completed_server_stream_window(&state, &reassembly, &conflicting),
+            CompletedDeflatedStreamWindowMatch::Conflict
+        ));
+
+        let mut reshaped = make_reassembly(91, &[3, 4]);
+        reshaped.server_origin_generation = 7;
+        reshaped.inflated_length = 23;
+        reshaped.frames[0].compressed_chunk = compressed[..3].to_vec();
+        reshaped.frames[1].compressed_chunk = compressed[3..].to_vec();
+        assert!(matches!(
+            completed_server_stream_window(&state, &reshaped, &compressed),
+            CompletedDeflatedStreamWindowMatch::Conflict
+        ));
+
+        reassembly.server_origin_generation = 8;
+        assert!(matches!(
+            completed_server_stream_window(&state, &reassembly, &compressed),
+            CompletedDeflatedStreamWindowMatch::Miss
+        ));
+    }
+
+    #[test]
+    fn completed_reliable_stream_slot_pins_identity_and_route_per_generation() {
+        let mut state = SessionState::default();
+        let packet = make_reassembly(44, &[5]).frames.remove(0).packet;
+
+        remember_completed_server_reliable_stream_slot(
+            &mut state,
+            44,
+            7,
+            &packet,
+            CompletedServerReliableStreamRoute::StreamWindow,
+        );
+        assert_eq!(
+            completed_server_reliable_stream_slot(&state, 44, 7, &packet),
+            CompletedServerReliableStreamSlotMatch::Exact(
+                CompletedServerReliableStreamRoute::StreamWindow
+            )
+        );
+
+        let mut conflicting_tail = packet.clone();
+        conflicting_tail.push(0xA5);
+        assert_eq!(
+            completed_server_reliable_stream_slot(&state, 44, 7, &conflicting_tail),
+            CompletedServerReliableStreamSlotMatch::Conflict(
+                CompletedServerReliableStreamRoute::StreamWindow
+            )
+        );
+        assert_eq!(
+            completed_server_reliable_stream_slot(&state, 44, 8, &conflicting_tail),
+            CompletedServerReliableStreamSlotMatch::Miss
+        );
+
+        let mut coalesced_first = SessionState::default();
+        let mut coalesced_packet = packet.clone();
+        let span_offset = coalesced_packet.len();
+        coalesced_packet.extend_from_slice(&[0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET]);
+        coalesced_packet[span_offset + 7] = 0x0A;
+        assert!(write_be_u16(&mut coalesced_packet, span_offset + 8, 1));
+        assert!(write_be_u16(&mut coalesced_packet, span_offset + 10, 3));
+        coalesced_packet.extend_from_slice(&[b'P', 0x09, 0x05]);
+        assert!(encode_legacy_m_crc(&mut coalesced_packet));
+        remember_completed_server_reliable_stream_slot(
+            &mut coalesced_first,
+            44,
+            7,
+            &coalesced_packet,
+            CompletedServerReliableStreamRoute::CoalescedWindow,
+        );
+        let mut refreshed_embedded_transport = coalesced_packet;
+        assert!(write_be_u16(
+            &mut refreshed_embedded_transport,
+            span_offset + 3,
+            45
+        ));
+        assert!(write_be_u16(
+            &mut refreshed_embedded_transport,
+            span_offset + 5,
+            99
+        ));
+        assert!(write_be_u16(
+            &mut refreshed_embedded_transport,
+            span_offset + 8,
+            2
+        ));
+        assert!(encode_legacy_m_crc(&mut refreshed_embedded_transport));
+        assert_eq!(
+            completed_server_reliable_stream_slot(
+                &coalesced_first,
+                44,
+                7,
+                &refreshed_embedded_transport,
+            ),
+            CompletedServerReliableStreamSlotMatch::Exact(
+                CompletedServerReliableStreamRoute::CoalescedWindow
+            ),
+            "queued-record storage transport fields may refresh on retransmit"
+        );
+        assert_eq!(
+            completed_server_reliable_stream_slot(&coalesced_first, 44, 7, &packet),
+            CompletedServerReliableStreamSlotMatch::Conflict(
+                CompletedServerReliableStreamRoute::CoalescedWindow
+            )
+        );
+    }
+
+    #[test]
+    fn completed_stream_replay_refreshes_each_current_ack_and_crc() {
+        let mut reassembly = make_reassembly(120, &[4, 3]);
+        reassembly.frames[0].ack_sequence = 81;
+        reassembly.frames[1].ack_sequence = 82;
+        let mut packets = build_consumed_server_deflated_frames(&reassembly)
+            .expect("current replay packet templates");
+        let mut spill = packets[1].clone();
+        assert!(write_be_u16(&mut spill, 3, 122));
+        assert!(write_be_u16(&mut spill, 5, 70));
+        assert!(encode_legacy_m_crc(&mut spill));
+        packets.push(spill);
+        for packet in &mut packets[..2] {
+            assert!(write_be_u16(packet, 5, 70));
+            assert!(encode_legacy_m_crc(packet));
+        }
+        let mut replay = CompletedDeflatedReplay::VerifiedProofPackets {
+            proof: VerifiedProof::family(VerifiedFamily::LoadBar),
+            packets,
+        };
+
+        retarget_completed_server_stream_replay(&mut replay, &reassembly)
+            .expect("ACK retargeting should succeed");
+
+        let CompletedDeflatedReplay::VerifiedProofPackets { packets, .. } = replay else {
+            panic!("replay variant must remain stable");
+        };
+        let views = packets
+            .iter()
+            .map(|packet| MFrameView::parse(packet).expect("retargeted packet should parse"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            views
+                .iter()
+                .map(|view| view.ack_sequence)
+                .collect::<Vec<_>>(),
+            vec![81, 82, 82]
+        );
+        assert!(views.iter().all(|view| view.crc_valid));
+    }
+
+    #[test]
     fn stream_bit_prefers_persistent_raw_deflate_contract() {
         fn raw_sync_deflate(bytes: &[u8]) -> Vec<u8> {
             let mut compressor = flate2::Compress::new(flate2::Compression::default(), false);
@@ -987,22 +1379,189 @@ pub(super) fn inflate_gameplay_payload(
     )
 }
 
-pub(super) fn completed_server_stream_window<'a>(
-    state: &'a SessionState,
+pub(super) fn completed_server_stream_window(
+    state: &SessionState,
     reassembly: &ServerDeflatedReassembly,
-    compressed_length: usize,
-) -> Option<&'a CompletedDeflatedStreamWindow> {
-    state
+    compressed: &[u8],
+) -> CompletedDeflatedStreamWindowMatch {
+    let frame_transport_identities = completed_stream_frame_transport_identities(reassembly);
+    let exact = state
         .deflate
         .completed_server_stream_windows
         .iter()
         .find(|window| {
             window.first_sequence == reassembly.first_sequence
+                && window.server_origin_generation == reassembly.server_origin_generation
                 && window.expected_frames == reassembly.expected_frames
                 && window.packetized_sequence == reassembly.packetized_sequence
                 && window.inflated_length == reassembly.inflated_length
-                && window.compressed_length == compressed_length
+                && window.compressed.as_slice() == compressed
+                && frame_transport_identities
+                    .as_ref()
+                    .is_some_and(|identities| {
+                        window.frame_transport_identities.as_slice() == identities.as_slice()
+                    })
+        });
+    if let Some(window) = exact {
+        return CompletedDeflatedStreamWindowMatch::Exact(window.clone());
+    }
+
+    if state
+        .deflate
+        .completed_server_stream_windows
+        .iter()
+        .any(|window| {
+            window.first_sequence == reassembly.first_sequence
+                && window.server_origin_generation == reassembly.server_origin_generation
         })
+    {
+        CompletedDeflatedStreamWindowMatch::Conflict
+    } else {
+        CompletedDeflatedStreamWindowMatch::Miss
+    }
+}
+
+pub(super) fn completed_server_reliable_stream_slot(
+    state: &SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+    packet: &[u8],
+) -> CompletedServerReliableStreamSlotMatch {
+    let Some(transport_identity) = completed_reliable_stream_transport_identity(packet) else {
+        return CompletedServerReliableStreamSlotMatch::Miss;
+    };
+    let Some(slot) = state
+        .deflate
+        .completed_server_reliable_stream_slots
+        .iter()
+        .find(|slot| {
+            slot.sequence == sequence && slot.server_origin_generation == server_origin_generation
+        })
+    else {
+        return CompletedServerReliableStreamSlotMatch::Miss;
+    };
+    if slot.transport_identity == transport_identity {
+        CompletedServerReliableStreamSlotMatch::Exact(slot.route)
+    } else {
+        CompletedServerReliableStreamSlotMatch::Conflict(slot.route)
+    }
+}
+
+pub(super) fn remember_completed_server_reliable_stream_slot(
+    state: &mut SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+    packet: &[u8],
+    route: CompletedServerReliableStreamRoute,
+) {
+    let Some(transport_identity) = completed_reliable_stream_transport_identity(packet) else {
+        return;
+    };
+    // Cache families have independent record limits. Remove ledger-only stale
+    // entries before applying the aggregate cap so every disposition that can
+    // still replay remains protected from an ordinary/coalesced route switch.
+    let protected_stream_slots = state
+        .deflate
+        .completed_server_stream_windows
+        .iter()
+        .map(|window| (window.first_sequence, window.server_origin_generation))
+        .chain(
+            state
+                .coalesced_replay
+                .completed_deflated_records
+                .iter()
+                .map(|entry| (entry.sequence, entry.server_origin_generation)),
+        )
+        .chain(
+            state
+                .coalesced_replay
+                .completed_direct_records
+                .iter()
+                .map(|entry| (entry.sequence, entry.server_origin_generation)),
+        )
+        .collect::<std::collections::HashSet<_>>();
+    state
+        .deflate
+        .completed_server_reliable_stream_slots
+        .retain(|slot| {
+            protected_stream_slots.contains(&(slot.sequence, slot.server_origin_generation))
+        });
+    if let Some(slot) = state
+        .deflate
+        .completed_server_reliable_stream_slots
+        .iter_mut()
+        .find(|slot| {
+            slot.sequence == sequence && slot.server_origin_generation == server_origin_generation
+        })
+    {
+        if slot.transport_identity == transport_identity && slot.route == route {
+            return;
+        }
+        tracing::warn!(
+            sequence,
+            server_origin_generation,
+            existing_route = slot.route.as_str(),
+            attempted_route = route.as_str(),
+            "conflicting completed reliable stream slot was not allowed to replace its first accepted identity"
+        );
+        return;
+    }
+
+    state
+        .deflate
+        .completed_server_reliable_stream_slots
+        .push(CompletedServerReliableStreamSlot {
+            sequence,
+            server_origin_generation,
+            transport_identity,
+            route,
+        });
+    // At most 16 ordinary windows, 64 coalesced deflated records, and 128
+    // coalesced direct records can remain cached. One outer slot can own
+    // several records, so 208 bounds protected identities; one additional
+    // slot retains the current fail-closed route even when it produced no
+    // replay-cache entry.
+    const MAX_COMPLETED_SERVER_RELIABLE_STREAM_SLOTS: usize = 209;
+    if state.deflate.completed_server_reliable_stream_slots.len()
+        > MAX_COMPLETED_SERVER_RELIABLE_STREAM_SLOTS
+    {
+        let overflow = state.deflate.completed_server_reliable_stream_slots.len()
+            - MAX_COMPLETED_SERVER_RELIABLE_STREAM_SLOTS;
+        state
+            .deflate
+            .completed_server_reliable_stream_slots
+            .drain(0..overflow);
+    }
+}
+
+fn completed_reliable_stream_transport_identity(packet: &[u8]) -> Option<Vec<u8>> {
+    let mut identity = packet.get(7..)?.to_vec();
+    let view = MFrameView::parse(packet)?;
+    if view.trailing_payload_length == 0 {
+        return Some(identity);
+    }
+
+    let primary_end = LEGACY_GAMEPLAY_PAYLOAD_OFFSET.checked_add(view.payload_length)?;
+    let Some(spans) = parse_packetized_spans(packet, primary_end) else {
+        // A committed coalesced route is always parseable. Keeping malformed
+        // incoming tail bytes exact makes them conflict with that disposition.
+        return Some(identity);
+    };
+    for span in spans {
+        // Queued records inherit the primary window when these storage-header
+        // fields are zero, and retransmission may refresh them. They are not
+        // semantic or route identity. Preserve flags and payload/length bytes.
+        for absolute in (span.offset + 3..span.offset + 7).chain(span.offset + 8..span.offset + 10)
+        {
+            if let Some(byte) = absolute
+                .checked_sub(7)
+                .and_then(|offset| identity.get_mut(offset))
+            {
+                *byte = 0;
+            }
+        }
+    }
+    Some(identity)
 }
 
 pub(super) fn remember_completed_server_stream_window(
@@ -1011,19 +1570,86 @@ pub(super) fn remember_completed_server_stream_window(
     compressed_length: usize,
     replay: CompletedDeflatedReplay,
 ) {
+    remember_completed_server_stream_window_with_disposition(
+        state,
+        reassembly,
+        compressed_length,
+        false,
+        replay,
+    );
+}
+
+pub(super) fn remember_completed_server_stream_window_with_disposition(
+    state: &mut SessionState,
+    reassembly: &ServerDeflatedReassembly,
+    compressed_length: usize,
+    pre_shifted: bool,
+    replay: CompletedDeflatedReplay,
+) {
+    let compressed = reassembly
+        .frames
+        .iter()
+        .flat_map(|frame| frame.compressed_chunk.iter().copied())
+        .collect::<Vec<_>>();
+    if compressed.len() != compressed_length {
+        tracing::warn!(
+            first_sequence = reassembly.first_sequence,
+            server_origin_generation = reassembly.server_origin_generation,
+            expected_compressed_length = compressed_length,
+            actual_compressed_length = compressed.len(),
+            "completed server stream replay not cached because source identity length changed"
+        );
+        return;
+    }
+    let Some(frame_transport_identities) = completed_stream_frame_transport_identities(reassembly)
+    else {
+        tracing::warn!(
+            first_sequence = reassembly.first_sequence,
+            server_origin_generation = reassembly.server_origin_generation,
+            "completed server stream replay not cached because a source frame identity was truncated"
+        );
+        return;
+    };
+
     if let Some(window) = state
         .deflate
         .completed_server_stream_windows
         .iter_mut()
         .find(|window| {
             window.first_sequence == reassembly.first_sequence
+                && window.server_origin_generation == reassembly.server_origin_generation
                 && window.expected_frames == reassembly.expected_frames
                 && window.packetized_sequence == reassembly.packetized_sequence
                 && window.inflated_length == reassembly.inflated_length
-                && window.compressed_length == compressed_length
+                && window.compressed == compressed
+                && window.frame_transport_identities.as_slice()
+                    == frame_transport_identities.as_slice()
         })
     {
         window.replay = replay;
+        window.pre_shifted = pre_shifted;
+        remember_completed_server_stream_reassembly_slot(state, reassembly);
+        return;
+    }
+
+    if state
+        .deflate
+        .completed_server_stream_windows
+        .iter()
+        .any(|window| {
+            window.first_sequence == reassembly.first_sequence
+                && window.server_origin_generation == reassembly.server_origin_generation
+        })
+    {
+        tracing::warn!(
+            first_sequence = reassembly.first_sequence,
+            server_origin_generation = reassembly.server_origin_generation,
+            expected_frames = reassembly.expected_frames,
+            packetized_sequence = reassembly.packetized_sequence,
+            inflated_length = reassembly.inflated_length,
+            compressed_length,
+            "conflicting completed server stream disposition was not allowed to replace exact cache identity"
+        );
         return;
     }
 
@@ -1033,10 +1659,13 @@ pub(super) fn remember_completed_server_stream_window(
         .completed_server_stream_windows
         .push(CompletedDeflatedStreamWindow {
             first_sequence: reassembly.first_sequence,
+            server_origin_generation: reassembly.server_origin_generation,
             expected_frames: reassembly.expected_frames,
             packetized_sequence: reassembly.packetized_sequence,
             inflated_length: reassembly.inflated_length,
-            compressed_length,
+            compressed,
+            frame_transport_identities,
+            pre_shifted,
             replay,
         });
     if state.deflate.completed_server_stream_windows.len() > MAX_COMPLETED_STREAM_WINDOWS {
@@ -1047,4 +1676,45 @@ pub(super) fn remember_completed_server_stream_window(
             .completed_server_stream_windows
             .drain(0..overflow);
     }
+    remember_completed_server_stream_reassembly_slot(state, reassembly);
+}
+
+fn remember_completed_server_stream_reassembly_slot(
+    state: &mut SessionState,
+    reassembly: &ServerDeflatedReassembly,
+) {
+    let Some(first_frame) = reassembly.frames.first() else {
+        return;
+    };
+    remember_completed_server_reliable_stream_slot(
+        state,
+        reassembly.first_sequence,
+        reassembly.server_origin_generation,
+        &first_frame.packet,
+        CompletedServerReliableStreamRoute::StreamWindow,
+    );
+}
+
+pub(super) fn retarget_completed_server_stream_replay(
+    replay: &mut CompletedDeflatedReplay,
+    reassembly: &ServerDeflatedReassembly,
+) -> anyhow::Result<()> {
+    let packets = match replay {
+        CompletedDeflatedReplay::Packets(packets)
+        | CompletedDeflatedReplay::VerifiedPackets { packets, .. }
+        | CompletedDeflatedReplay::VerifiedProofPackets { packets, .. } => packets,
+    };
+    let Some(last_source_frame) = reassembly.frames.last() else {
+        anyhow::bail!("completed server stream replay has no current source frame");
+    };
+    for (index, packet) in packets.iter_mut().enumerate() {
+        let source_frame = reassembly.frames.get(index).unwrap_or(last_source_frame);
+        write_be_u16(packet, 5, source_frame.ack_sequence)
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("failed to retarget completed stream replay ACK"))?;
+        encode_legacy_m_crc(packet)
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("failed to repair completed stream replay CRC"))?;
+    }
+    Ok(())
 }

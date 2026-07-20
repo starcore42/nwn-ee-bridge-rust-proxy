@@ -20,6 +20,7 @@ use super::{
     reassembly::{
         CompletedDeflatedReplay, ServerDeflatedReassembly, build_server_deflated_output_frames,
         emit_family_packets_with_interleaved, remember_completed_server_stream_window,
+        remember_completed_server_stream_window_with_disposition,
     },
 };
 
@@ -122,8 +123,6 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
     if !used_server_stream || !state.deflate.server_zlib_stream_proxy_owned {
         return Ok(None);
     }
-    claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
-
     if state.quickbar.pending_stream.is_none() {
         let mut fragment_wait = false;
         let target_length = quickbar::full_set_all_buttons_target_length(bytes);
@@ -188,6 +187,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                 }
             }
         }
+        claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
         state.quickbar.pending_stream = Some(PendingQuickbarStream {
             payload: bytes.to_vec(),
             target_length,
@@ -222,6 +222,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         )));
     }
 
+    claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
     let pending = state
         .quickbar
         .pending_stream
@@ -323,13 +324,23 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
     reassembly: &ServerDeflatedReassembly,
     source_compressed_length: usize,
 ) -> anyhow::Result<Option<Emit>> {
-    claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
-    let Some(pending) = state.quickbar.pending_stream.as_mut() else {
+    let Some(pending_first_sequence) = state
+        .quickbar
+        .pending_stream
+        .as_ref()
+        .map(|pending| pending.first_sequence)
+    else {
         return Ok(None);
     };
-    if pending.first_sequence != reassembly.first_sequence {
+    if pending_first_sequence != reassembly.first_sequence {
         return Ok(None);
     }
+    claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
+    let pending = state
+        .quickbar
+        .pending_stream
+        .as_mut()
+        .expect("pending quickbar stream checked above");
     pending.duplicate_replays = pending.duplicate_replays.saturating_add(1);
     let duplicate_probe_summary = if pending.chunks >= 3
         && pending.duplicate_replays >= MAX_PENDING_QUICKBAR_DUPLICATE_REPLAYS_BEFORE_CLAIM
@@ -495,10 +506,11 @@ fn flush_pending_server_quickbar_stream(
         super::record_extra_deflated_output_sequence_shift(state, reassembly, outputs.len())?;
     }
     observe_committed_quickbar_stream_payload(state, &quickbar_payload);
-    remember_completed_server_stream_window(
+    remember_completed_server_stream_window_with_disposition(
         state,
         reassembly,
         source_compressed_length,
+        inserted_extra_output_frames,
         CompletedDeflatedReplay::VerifiedPackets {
             family: VerifiedFamily::GuiQuickbar,
             packets: outputs.clone(),
@@ -627,7 +639,13 @@ fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::translate::module_resources;
+    use crate::{
+        crc::{encode_legacy_m_crc, write_be_u16},
+        packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET,
+        translate::module_resources,
+    };
+
+    use super::super::reassembly::BufferedFrame;
 
     #[test]
     fn committed_quickbar_stream_payload_updates_semantic_profile() {
@@ -665,5 +683,81 @@ mod tests {
                 .quickbar_item_refresh_harness_idle_reason(),
             "no_post_committed_item_context"
         );
+    }
+
+    #[test]
+    fn expanded_quickbar_flush_caches_pre_shifted_replay_disposition() {
+        let mut read_buffer = Vec::with_capacity(4_160);
+        read_buffer.push(11);
+        read_buffer.extend_from_slice(b"long_general_ref");
+        read_buffer.extend_from_slice(&4096u32.to_le_bytes());
+        let mut value = 0xC0DE_1234u32;
+        for _ in 0..4096 {
+            value = value.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            read_buffer.push((value >> 24) as u8);
+        }
+        read_buffer.extend(std::iter::repeat(0).take(35));
+        let declared = 3usize + 4 + read_buffer.len();
+        let mut payload = vec![b'P', 0x1E, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&read_buffer);
+        // General slots consume no shared BOOLs, so the fragment buffer only
+        // carries its three-bit valid-length prefix.
+        payload.push(0x60);
+        assert!(quickbar::ee_set_all_buttons_payload_shape_valid(&payload));
+
+        let compressed_chunk = vec![0x78, 0x9C, 0x01, 0x02];
+        let mut packet = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + compressed_chunk.len()];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, 200));
+        assert!(write_be_u16(&mut packet, 5, 90));
+        packet[7] = 0x0D;
+        assert!(write_be_u16(&mut packet, 8, 1));
+        assert!(write_be_u16(&mut packet, 10, compressed_chunk.len() as u16));
+        assert!(encode_legacy_m_crc(&mut packet));
+        let reassembly = ServerDeflatedReassembly {
+            inflated_length: payload.len(),
+            expected_frames: 1,
+            first_sequence: 200,
+            server_origin_generation: 3,
+            packetized_sequence: 1,
+            zlib_stream: true,
+            frames: vec![BufferedFrame {
+                packet,
+                payload_length: compressed_chunk.len(),
+                sequence: 200,
+                server_peer_ack_sequence: 90,
+                ack_sequence: 90,
+                compressed_chunk: compressed_chunk.clone(),
+            }],
+            interleaved_packets: Vec::new(),
+            interleaved_events: Vec::new(),
+        };
+        let mut state = SessionState::default();
+        state.quickbar.pending_stream = Some(PendingQuickbarStream {
+            payload: payload.clone(),
+            target_length: Some(payload.len()),
+            fragment_wait: false,
+            first_sequence: reassembly.first_sequence,
+            chunks: 1,
+            duplicate_replays: 0,
+        });
+
+        let emit =
+            flush_pending_server_quickbar_stream(&mut state, &reassembly, compressed_chunk.len())
+                .expect("large typed quickbar should flush")
+                .expect("quickbar flush should emit");
+        let Emit::VerifiedPacketsPreShifted { family, packets } = emit else {
+            panic!("expanded quickbar flush must report pre-shifted output");
+        };
+        assert_eq!(family, VerifiedFamily::GuiQuickbar);
+        assert!(packets.len() > reassembly.frames.len());
+        let cached = state
+            .deflate
+            .completed_server_stream_windows
+            .last()
+            .expect("quickbar flush should cache its replay disposition");
+        assert!(cached.pre_shifted);
+        assert_eq!(cached.compressed, compressed_chunk);
     }
 }

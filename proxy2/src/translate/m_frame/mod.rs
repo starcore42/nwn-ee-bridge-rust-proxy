@@ -49,7 +49,11 @@ mod transport_identity;
 mod zlib_zero_fill;
 
 use deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate};
-use reassembly::{CompletedDeflatedReplay, InflatedGameplayPayload, ServerDeflatedReassembly};
+use reassembly::{
+    CompletedDeflatedReplay, CompletedDeflatedStreamWindowMatch,
+    CompletedServerReliableStreamRoute, CompletedServerReliableStreamSlotMatch,
+    InflatedGameplayPayload, ServerDeflatedReassembly,
+};
 use sequence::{
     SequenceElision, SequenceShift, record_forward_progress, sequence_at_or_after,
     shift_sequence_for_peer, shift_sequence_for_peer_with_elisions, trim_sequence_elisions,
@@ -584,6 +588,23 @@ fn translate_server_to_client_inner(
         return Ok(Emit::Drop);
     }
     let server_origin_generation = observe_server_origin_reliable_generation(state, view.sequence);
+    if let CompletedServerReliableStreamSlotMatch::Conflict(committed_route) =
+        reassembly::completed_server_reliable_stream_slot(
+            state,
+            view.sequence,
+            server_origin_generation,
+            bytes,
+        )
+    {
+        tracing::warn!(
+            sequence = view.sequence,
+            server_origin_generation,
+            committed_route = committed_route.as_str(),
+            trailing_payload_length = view.trailing_payload_length,
+            "server M frame rejected before route selection because its reliable slot already committed different immutable transport bytes"
+        );
+        return Ok(Emit::Drop);
+    }
     let server_peer_ack_sequence = view.ack_sequence;
     // Preserve the peer-facing ACK before synthetic client-sequence intervals
     // are hidden from EE. Inventory response ownership opens only once the
@@ -630,7 +651,15 @@ fn translate_server_to_client_inner(
         &view,
         state,
         server_peer_ack_sequence,
+        server_origin_generation,
     )? {
+        reassembly::remember_completed_server_reliable_stream_slot(
+            state,
+            view.sequence,
+            server_origin_generation,
+            &inbound,
+            CompletedServerReliableStreamRoute::CoalescedWindow,
+        );
         return match rewrite {
             coalesced::CoalescedRewrite::Single { proof, packet } => {
                 finalize_server_to_client_emit(
@@ -657,20 +686,21 @@ fn translate_server_to_client_inner(
         };
     }
 
-    let emit = if reassembly::should_start_server_deflated_reassembly(&view) {
+    let emit = if view.trailing_payload_length != 0 {
+        tracing::warn!(
+            sequence = view.sequence,
+            trailing_payload_length = view.trailing_payload_length,
+            "server M packet with unclaimed trailing records dropped before deflated or direct semantic dispatch"
+        );
+        Emit::Drop
+    } else if reassembly::should_start_server_deflated_reassembly(&view) {
         reassembly::start_server_deflated_reassembly(
             &inbound,
             &view,
             state,
             server_peer_ack_sequence,
+            server_origin_generation,
         )?
-    } else if view.trailing_payload_length != 0 {
-        tracing::warn!(
-            sequence = view.sequence,
-            trailing_payload_length = view.trailing_payload_length,
-            "server M packet with unclaimed trailing records dropped before direct semantic dispatch"
-        );
-        Emit::Drop
     } else if let Some(verified) = replay_completed_direct_server_semantic_rewrite(
         &inbound,
         &view,
@@ -2670,6 +2700,203 @@ mod tests {
                 .collect(),
             other => panic!("expected verified packet batch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pre_shifted_completed_stream_replay_is_not_shifted_twice() {
+        let compressed = vec![0x10, 0x20, 0x30, 0x40];
+        let mut source_payload = 16u32.to_le_bytes().to_vec();
+        source_payload.extend_from_slice(&compressed);
+        let source = reliable_server_m_frame(10, 82, 0x0D, 1, &source_payload);
+        let cached_packet = reliable_server_m_frame(
+            11,
+            70,
+            0x08,
+            1,
+            &crate::translate::loadbar::start_payload(2),
+        );
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        state
+            .sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 10, delta: 1 });
+        state.deflate.completed_server_stream_windows.push(
+            reassembly::CompletedDeflatedStreamWindow {
+                first_sequence: 10,
+                server_origin_generation: 0,
+                expected_frames: 1,
+                packetized_sequence: 1,
+                inflated_length: 16,
+                compressed,
+                frame_transport_identities: vec![source[7..].to_vec()],
+                pre_shifted: true,
+                replay: CompletedDeflatedReplay::VerifiedProofPackets {
+                    proof: VerifiedProof::family(VerifiedFamily::LoadBar),
+                    packets: vec![cached_packet],
+                },
+            },
+        );
+
+        let packets = proof_packets(
+            translate_server_to_client(&source, &mut state)
+                .expect("exact completed stream replay should succeed"),
+        );
+
+        assert_eq!(packets.len(), 1);
+        let replayed = MFrameView::parse(&packets[0].1).expect("replayed packet should parse");
+        assert_eq!(
+            replayed.sequence, 11,
+            "cached shift must not be applied again"
+        );
+        assert_eq!(replayed.ack_sequence, 82);
+        assert!(replayed.crc_valid);
+    }
+
+    #[test]
+    fn deflated_frame_with_unclaimed_trailing_bytes_fails_before_stream_state() {
+        let inflated = crate::translate::loadbar::start_payload(2);
+        let compressed = deflate_zlib(&inflated).expect("test payload should deflate");
+        let mut payload = (inflated.len() as u32).to_le_bytes().to_vec();
+        payload.extend_from_slice(&compressed);
+        let mut frame = reliable_server_m_frame(130, 73, 0x0D, 1, &payload);
+        frame.push(0xFF);
+        assert!(encode_legacy_m_crc(&mut frame));
+        let view = MFrameView::parse(&frame).expect("trailing test frame should parse");
+        assert_eq!(view.trailing_payload_length, 1);
+
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        assert!(matches!(
+            translate_server_to_client(&frame, &mut state)
+                .expect("unclaimed trailing data should fail closed"),
+            Emit::Drop
+        ));
+        assert!(state.deflate.server_reassembly.is_none());
+        assert!(state.deflate.server_zlib_inflater.is_none());
+        assert!(state.deflate.completed_server_stream_windows.is_empty());
+    }
+
+    #[test]
+    fn header_bearing_stream_retransmit_preserves_inflater_for_raw_continuation() {
+        fn compress_stream_chunk(compressor: &mut flate2::Compress, payload: &[u8]) -> Vec<u8> {
+            let before_out = compressor.total_out();
+            let mut output = vec![0u8; payload.len().saturating_mul(2).saturating_add(128)];
+            compressor
+                .compress(payload, &mut output, flate2::FlushCompress::Sync)
+                .expect("persistent stream compression should succeed");
+            let produced = (compressor.total_out() - before_out) as usize;
+            output.truncate(produced);
+            output
+        }
+
+        fn stream_frame(
+            sequence: u16,
+            ack_sequence: u16,
+            inflated: &[u8],
+            compressed: &[u8],
+        ) -> Vec<u8> {
+            let mut payload = (inflated.len() as u32).to_le_bytes().to_vec();
+            payload.extend_from_slice(compressed);
+            reliable_server_m_frame(sequence, ack_sequence, 0x0D, 1, &payload)
+        }
+
+        let first_inflated = crate::translate::loadbar::start_payload(2);
+        let second_inflated = crate::translate::loadbar::start_payload(3);
+        let mut compressor = flate2::Compress::new(flate2::Compression::default(), true);
+        let first_compressed = compress_stream_chunk(&mut compressor, &first_inflated);
+        let second_compressed = compress_stream_chunk(&mut compressor, &second_inflated);
+        assert!(looks_like_zlib_wrapped_deflate(&first_compressed));
+        assert!(!looks_like_zlib_wrapped_deflate(&second_compressed));
+
+        let first = stream_frame(140, 74, &first_inflated, &first_compressed);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        let first_emit =
+            translate_server_to_client(&first, &mut state).expect("seed stream should translate");
+        assert!(!matches!(first_emit, Emit::Drop));
+        assert_eq!(state.deflate.completed_server_stream_windows.len(), 1);
+        let inflater = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .expect("stream-bit header must seed persistent inflater");
+        let totals_after_first = (inflater.total_in(), inflater.total_out());
+        let owner_after_first = state.deflate.server_zlib_stream_owner;
+        let owner_epoch_after_first = state.deflate.server_zlib_stream_epoch;
+
+        let first_retransmit = stream_frame(140, 79, &first_inflated, &first_compressed);
+        let replay_emit = translate_server_to_client(&first_retransmit, &mut state)
+            .expect("header-bearing retransmit should replay");
+        assert!(!matches!(replay_emit, Emit::Drop));
+        let inflater = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .expect("replay must retain persistent inflater");
+        assert_eq!(
+            (inflater.total_in(), inflater.total_out()),
+            totals_after_first
+        );
+        assert_eq!(state.deflate.server_zlib_stream_owner, owner_after_first);
+        assert_eq!(
+            state.deflate.server_zlib_stream_epoch,
+            owner_epoch_after_first
+        );
+
+        let mut wrong_stream_disposition = first_retransmit.clone();
+        wrong_stream_disposition[7] &= !0x01;
+        assert!(encode_legacy_m_crc(&mut wrong_stream_disposition));
+        assert!(matches!(
+            translate_server_to_client(&wrong_stream_disposition, &mut state)
+                .expect("changed stream disposition should fail closed"),
+            Emit::Drop
+        ));
+        let inflater = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .expect("stream-disposition conflict must retain persistent inflater");
+        assert_eq!(
+            (inflater.total_in(), inflater.total_out()),
+            totals_after_first
+        );
+
+        let mut conflicting = first_retransmit;
+        let compressed_offset = crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 4;
+        conflicting[compressed_offset + 2] ^= 0x40;
+        assert!(encode_legacy_m_crc(&mut conflicting));
+        assert!(matches!(
+            translate_server_to_client(&conflicting, &mut state)
+                .expect("conflicting reliable slot should fail closed"),
+            Emit::Drop
+        ));
+        let inflater = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .expect("conflict must retain persistent inflater");
+        assert_eq!(
+            (inflater.total_in(), inflater.total_out()),
+            totals_after_first
+        );
+
+        let second = stream_frame(141, 80, &second_inflated, &second_compressed);
+        let second_emit = translate_server_to_client(&second, &mut state)
+            .expect("raw continuation should still use seeded inflater");
+        assert!(!matches!(second_emit, Emit::Drop));
+        let inflater = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .expect("continuation must retain persistent inflater");
+        assert!(inflater.total_in() > totals_after_first.0);
+        assert!(inflater.total_out() > totals_after_first.1);
+        assert_eq!(state.deflate.server_zlib_stream_owner, owner_after_first);
+        assert_eq!(
+            state.deflate.server_zlib_stream_epoch,
+            owner_epoch_after_first
+        );
     }
 
     #[test]
@@ -4906,16 +5133,20 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         .collect::<Vec<_>>();
     let source_compressed_length = compressed.len();
 
-    let stream_payload = reassembly.zlib_stream && !looks_like_zlib_wrapped_deflate(&compressed);
-    if stream_payload {
-        if let Some(window) =
-            reassembly::completed_server_stream_window(state, &reassembly, source_compressed_length)
-        {
+    // The stream bit, not the presence or absence of a zlib header, owns the
+    // persistent inflater contract. Diamond's first stream window may carry a
+    // zlib header and still seed history for later raw continuations. Probe the
+    // exact completed-window cache before every stream-bit inflate so neither
+    // shape can advance that history twice on retransmission.
+    match reassembly::completed_server_stream_window(state, &reassembly, &compressed) {
+        CompletedDeflatedStreamWindowMatch::Exact(window) => {
             let window_first_sequence = window.first_sequence;
+            let window_server_origin_generation = window.server_origin_generation;
             let window_expected_frames = window.expected_frames;
             let window_packetized_sequence = window.packetized_sequence;
             let window_inflated_length = window.inflated_length;
-            let replay = window.replay.clone();
+            let window_pre_shifted = window.pre_shifted;
+            let mut replay = window.replay;
             let mut helper_reassembly = reassembly.clone();
             helper_reassembly.interleaved_packets.clear();
             helper_reassembly.interleaved_events.clear();
@@ -4934,6 +5165,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 arm_withheld_reassembly_successors(state, &reassembly);
                 return Ok(emit);
             }
+            reassembly::retarget_completed_server_stream_replay(&mut replay, &reassembly)?;
             arm_withheld_reassembly_successors(state, &reassembly);
             return match replay {
                 CompletedDeflatedReplay::Packets(packets) => {
@@ -4941,42 +5173,77 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                         frames = packets.len(),
                         withheld_interleaved = reassembly.interleaved_events.len(),
                         first_sequence = window_first_sequence,
+                        server_origin_generation = window_server_origin_generation,
+                        expected_frames = window_expected_frames,
                         packetized_sequence = window_packetized_sequence,
                         inflated_length = window_inflated_length,
                         compressed = source_compressed_length,
+                        pre_shifted = window_pre_shifted,
                         replay = "packets",
                         "server deflated M stream duplicate replayed without advancing inflater"
                     );
-                    Ok(Emit::Packets(packets))
+                    Ok(if window_pre_shifted {
+                        Emit::PacketsPreShifted(packets)
+                    } else {
+                        Emit::Packets(packets)
+                    })
                 }
                 CompletedDeflatedReplay::VerifiedPackets { family, packets } => {
                     tracing::info!(
                         frames = packets.len(),
                         withheld_interleaved = reassembly.interleaved_events.len(),
                         first_sequence = window_first_sequence,
+                        server_origin_generation = window_server_origin_generation,
+                        expected_frames = window_expected_frames,
                         packetized_sequence = window_packetized_sequence,
                         inflated_length = window_inflated_length,
                         compressed = source_compressed_length,
+                        pre_shifted = window_pre_shifted,
                         replay = "verified-packets",
                         "server deflated M stream duplicate replayed without advancing inflater"
                     );
-                    Ok(Emit::VerifiedPackets { family, packets })
+                    Ok(if window_pre_shifted {
+                        Emit::VerifiedPacketsPreShifted { family, packets }
+                    } else {
+                        Emit::VerifiedPackets { family, packets }
+                    })
                 }
                 CompletedDeflatedReplay::VerifiedProofPackets { proof, packets } => {
                     tracing::info!(
                         frames = packets.len(),
                         withheld_interleaved = reassembly.interleaved_events.len(),
                         first_sequence = window_first_sequence,
+                        server_origin_generation = window_server_origin_generation,
+                        expected_frames = window_expected_frames,
                         packetized_sequence = window_packetized_sequence,
                         inflated_length = window_inflated_length,
                         compressed = source_compressed_length,
+                        pre_shifted = window_pre_shifted,
                         replay = "verified-proof-packets",
                         "server deflated M stream duplicate replayed without advancing inflater"
                     );
-                    Ok(Emit::VerifiedProofPackets { proof, packets })
+                    Ok(if window_pre_shifted {
+                        Emit::VerifiedProofPacketsPreShifted { proof, packets }
+                    } else {
+                        Emit::VerifiedProofPackets { proof, packets }
+                    })
                 }
             };
         }
+        CompletedDeflatedStreamWindowMatch::Conflict => {
+            arm_withheld_reassembly_successors(state, &reassembly);
+            tracing::warn!(
+                first_sequence = reassembly.first_sequence,
+                server_origin_generation = reassembly.server_origin_generation,
+                expected_frames = reassembly.expected_frames,
+                packetized_sequence = reassembly.packetized_sequence,
+                inflated_length = reassembly.inflated_length,
+                compressed = source_compressed_length,
+                "server deflated M stream rejected because a committed reliable slot carried different immutable compressed bytes"
+            );
+            return Ok(Emit::Drop);
+        }
+        CompletedDeflatedStreamWindowMatch::Miss => {}
     }
 
     let InflatedGameplayPayload {
@@ -5284,10 +5551,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         );
     }
     if used_server_stream {
-        reassembly::remember_completed_server_stream_window(
+        reassembly::remember_completed_server_stream_window_with_disposition(
             state,
             &reassembly,
             source_compressed_length,
+            inserted_extra_output_frames,
             CompletedDeflatedReplay::VerifiedProofPackets {
                 proof: verified_proof.clone(),
                 packets: outputs.clone(),

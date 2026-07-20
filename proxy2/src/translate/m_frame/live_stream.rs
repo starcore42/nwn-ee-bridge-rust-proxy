@@ -92,7 +92,6 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
     used_server_stream: bool,
     bytes: &mut Vec<u8>,
 ) -> anyhow::Result<Option<Emit>> {
-    claim_server_zlib_stream_owner(state, ContinuationOwner::GameObjUpdateLiveObject);
     if !used_server_stream {
         return Ok(None);
     }
@@ -109,6 +108,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
             .as_ref()
             .map(|pending| pending.kind)
         {
+            claim_server_zlib_stream_owner(state, ContinuationOwner::GameObjUpdateLiveObject);
             match kind {
                 PendingLiveObjectStreamKind::LegacyHighLevelFragmentPrefix => {
                     append_pending_live_object_continuation(
@@ -175,6 +175,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
         }
 
         if let Some(split) = live_object::raw_prefixed_live_object_split(bytes) {
+            claim_server_zlib_stream_owner(state, ContinuationOwner::GameObjUpdateLiveObject);
             append_pending_live_object_prefixed_fragment(
                 state,
                 reassembly.first_sequence,
@@ -256,6 +257,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
         // every valid P/05/01 packet through speculative split searches before
         // the bounded typed dispatcher can own it.
         if looks_like_clean_legacy_live_object_fragment(bytes) {
+            claim_server_zlib_stream_owner(state, ContinuationOwner::GameObjUpdateLiveObject);
             append_pending_live_object_clean_fragment(state, reassembly.first_sequence, bytes);
             let area_context = state.area_context.latest_area_placeables.clone();
             if flush_pending_live_object_stream_if_verified(state, bytes, Some(&area_context)) {
@@ -978,6 +980,7 @@ mod tests {
             inflated_length: 579,
             expected_frames: 1,
             first_sequence: 38,
+            server_origin_generation: 0,
             packetized_sequence: 1,
             zlib_stream: true,
             frames: Vec::new(),
@@ -1021,6 +1024,7 @@ mod tests {
             inflated_length: 579,
             expected_frames: 1,
             first_sequence: 24,
+            server_origin_generation: 0,
             packetized_sequence: 1,
             zlib_stream: true,
             frames: Vec::new(),
@@ -1083,6 +1087,7 @@ mod tests {
             inflated_length: 411,
             expected_frames: 1,
             first_sequence: 17,
+            server_origin_generation: 0,
             packetized_sequence: 1,
             zlib_stream: true,
             frames: Vec::new(),
