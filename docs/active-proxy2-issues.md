@@ -17,6 +17,157 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-20 direct Area state handoff and sealed terminal evidence replay:
+  the newest gameplay-reaching artifact remains
+  `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`,
+  last written `2026-07-20T07:02:15.5117962+10:00` and about 2.90 hours old at
+  the `09:56+10` gate. It reached typed character selection, `Module_Loaded`,
+  native `Area_AreaLoaded`, and 108.71 seconds of exact live-object/gameplay
+  traffic after area completion with zero stderr, quarantine, `BNDP`, ERROR,
+  rewrite rejection, or unexpected disconnect rows. No fresh login was
+  required.
+
+  Direct reliable `Area_ClientArea` semantic rewrites previously returned only
+  the verified packet and discarded their typed `AreaRewriteSummary`.
+  Deflated and coalesced routes already installed that summary. The direct path
+  now preserves it, replaces stale prior Area placeables, and queues the same
+  single-window LoadBar/AreaLoaded hold side effects. A bounded exact direct
+  replay cache keys the original reliable sequence plus complete source
+  payload and reliable-origin generation, refreshes only the current transport
+  header/CRC, and skips both duplicate semantic observation and duplicate Area
+  side effects even after a transient hold gate has closed. Frames with trailing
+  records cannot enter or hit this cache. This is a generalized reliable
+  transport/state rule; no area, resref, object id, coordinate, or packet sample
+  is hardcoded in production.
+
+  Interleaved direct `Area_ClientArea` remains an active state-transaction
+  blocker. The current reassembly route now explicitly consumes that Area
+  instead of emitting rewritten bytes while retaining stale context. The next
+  production slice is an ordered typed reassembly transaction that preserves
+  the Area summary with the buffered packet and commits context, semantic
+  observation, side effects, and replay identity only after the preceding
+  deflated window translates successfully.
+
+  Private v2 terminal journals now load through a Windows deny-write/delete
+  snapshot. Proxy startup reports `writer-still-open` while the producer's
+  append handle is alive, preventing a complete-looking unique prefix from
+  authorizing before a later duplicate or poison row is appended. The replay
+  harness accepts `-TerminalWriterTracePath`, quotes all native proxy arguments
+  so paths containing spaces remain one value, records stable before/after
+  path/length/time/SHA-256 metadata plus terminal proof/rewrite counters, and
+  aborts if the stopped journal changes during replay. The exact MSB-first
+  terminal contracts are unchanged: immutable source record end `229` with
+  fragment `63..76` (`0x46`), and emitted byte cursor `243` with residual
+  `71..88` (`0x4046`) removed only behind the sealed two-sided proof.
+
+  Verification passed for the direct-Area state/replay regressions, including
+  trailing-record rejection and reliable generation wrap, all 20 terminal-
+  writer-filter tests, the closed-producer journal test, formatting, production
+  `cargo check`, PowerShell parsing, diff checks, and the full Release bridge
+  build. Strict replay
+  `C:\nwnbridge\codex proxy2 replay direct sealed final 20260720-1122` used a
+  stopped 5,825-byte v2 journal and deliberately spaced run/journal paths. It
+  processed all 164 packet files with 304 strict allows, 143 generated ACKs,
+  97 exact live-object claims, 19 exact rewrites, ten Area rewrites, one journal
+  load, and stable before/after journal metadata. Strict/semantic quarantine,
+  quarantine files, rewrite failures, output timeouts, terminal residuals, and
+  stderr were zero. The baseline contains no terminal quarantine artifact, so
+  the loaded private journal correctly had no payload-selection opportunity.
+
+  The remaining external blocker is unchanged: deploy the v2 producer on the
+  actual HG server component, stop and transfer one complete sequence-95
+  journal, prove one exact source match offline, then rerun the live door
+  `UseObject` interaction through the final EE claim.
+- 2026-07-20 exact terminal plan activation and fresh live gate: the preceding
+  gameplay evidence was about 29 hours old, so account 5 was refreshed at
+  `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`
+  (last write `2026-07-20T07:02:15.5117962+10:00`). The run selected typed
+  `starcore-druid60`, reached `Module_Loaded`, claimed native
+  `Area_AreaLoaded` at `2026-07-20T07:00:22.784869+10:00`, and continued exact
+  live-object/gameplay traffic for 108.71 seconds with 68 exact live-object
+  accepts. Stderr, ERROR, `BNDP`, quarantine/drop, rewrite rejection,
+  termination, and disconnect rows were zero. The final socket-reset WARN was
+  caused by stopping the harness-owned EE client after the capture.
+
+  A configured v2 journal can now authorize one transactional terminal rewrite
+  only when exactly one immutable source payload matches, its owner/list trace
+  proves the exact 13-bit MSB-first source handoff, and the separately sealed EE
+  candidate proves removal of the exact 17-bit emitted residual and validates
+  at its final cursor. The terminal retry starts again from immutable source
+  bytes without Area context; the exact context reconciler runs once only after
+  both opaque proofs seal the candidate. Its full child summary is retained,
+  the terminal row's typed rewrite delta is included in ordinary record/mask
+  counters, and a rejected context aborts the outer transaction. A real-journal
+  seam test caught and fixed a prior source-coordinate error: preceding record
+  rewrites had moved the work-buffer terminal row and incorrectly supplied its
+  enlarged byte end to the immutable Diamond trace contract. Source byte
+  coordinates are now rebound only when the uniquely identified immutable row
+  is byte-for-byte the same terminal suffix; zero, ambiguous, mismatched, or
+  malformed source evidence remains non-mutating.
+
+  The 68 terminal-focused and 29 tail9 tests pass, including unique/no-match/
+  ambiguous real-journal selection plus changed/unchanged/rejected Area-context
+  composition. Formatting, diff checks, `cargo check`, and the full Release
+  bridge build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-exact-plan-20260720-20260720-074342`
+  processed all 164 source packets with 304 strict allows, 143 generated ACKs,
+  97 exact live-object claims, 19 rewrites, ten Area rewrites, and zero strict
+  or semantic quarantine, quarantine files, rewrite failures, terminal
+  residuals, output timeouts, or stderr. The broad suite reached 1,538 passing
+  tests and reproduced 22 pre-existing fixture/resource and parallel timing
+  failures from the already documented cluster beginning with
+  `local_to_heir_compact_area_uses_module_resource_dimensions`; no terminal
+  test failed.
+
+  The fresh HG run used no private journal and issued no door `UseObject`, so it
+  proves the default path still sustains gameplay but does not exercise this
+  opt-in terminal plan. Remaining external blocker: deploy the v2
+  owner/list/finalizer producer on the actual HG server component, capture a
+  unique sequence-95 `UseObject` block, and rerun that interaction through the
+  exact source/EE proof join.
+- 2026-07-19 phased v2 terminal-writer producer: at the 16:23 +10 gate, the
+  newest gameplay-reaching HG artifact remained
+  `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`,
+  last written `2026-07-19T01:54:46.6027963+10:00` and about 14 hours 29
+  minutes old. It reached native Docks `Area_AreaLoaded`, then sustained 106.48
+  seconds of gameplay with 61 exact live-object accepts and advancing ACKs.
+  Drops, quarantine, rejects, ERROR, timeout, termination, `BNDP`, disconnect,
+  and stderr were zero; no newer failed HG run existed, so the 24-hour gate did
+  not require another login.
+
+  Direct stock `nwserver.exe` disassembly and runtime tracing disproved the v1
+  owner/list equality assumption. After the last typed owner returned at
+  `353/143`, the outer writer emitted three bytes (`0x57`, selector, `0x0E`) and
+  handed off at `356/143`; no fragment bit was added. Type-5 owners can also
+  emit a variable prelude before their canonical row. The opt-in producer now
+  captures owner-begin at the exact guarded `WriteBYTE('U', 8)` return
+  `0x4451E7`, validates Diamond's decompile-backed wire OBJECTID rule
+  (`0x7F000000` preserved, otherwise OR `0x80000000`), snapshots distinct
+  owner-end/list-handoff/finalizer phases, and compares every cursor-owned
+  MSB-first fragment bit while ignoring only unread final padding.
+
+  Journal initialization is lazy after `DllMain`; SHA-256 verification and
+  `CREATE_NEW` never run under loader lock. Evidence is append-only and is not
+  deduplicated. A relevant omitted trace, append failure, or cap hit disables
+  capture and attempts an invalid `incomplete` marker through the retained
+  `CREATE_NEW` handle, so there is no path-reopen race and Rust cannot mistake
+  an earlier prefix for a unique match; `poison marker failed` makes the stopped
+  journal unusable. Rust ingestion now requires v2, derives
+  source residual bits only from owner-end to list-handoff, retains all four
+  cursor phases and post-owner deltas for diagnostics, and remains entirely
+  non-authorizing.
+
+  Final controlled artifact
+  `C:\nwnbridge\local-diamond-baseline-20260719-174343\terminal-writer-v2.tsv`
+  is 5,825 bytes / 18 lines / three complete blocks with no poison marker.
+  Trace 1 is `309/129 -> 353/143 -> 356/143 -> 356/143`; two type-5 variants
+  also append from their exact post-prelude `U` boundaries. Proxy2 loaded the
+  stopped journal successfully at
+  `C:\nwnbridge\codex-terminal-v2-load-20260719-1746`. This supersedes the
+  no-journal stock-producer blocker below. Remaining blocker: deploy the same
+  v2 owner/list/finalizer producer on the actual HG server component, capture a
+  unique sequence-95 source block, join it to the ready EE v13 token, then
+  implement/register the bounded typed writer and rerun live door `UseObject`.
 - 2026-07-19 sealed terminal EE residual-removal plan: at the 10:20 +10 gate,
   the newest gameplay-reaching HG artifact remained
   `C:\nwnbridge\codex-live-area-compose-20260719-0152\harness-proxy-20260719-015223\proxy.structured.log`.

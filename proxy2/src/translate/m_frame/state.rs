@@ -104,6 +104,26 @@ pub(super) struct ClientReliableSemanticEffectState {
     pub(super) duplicate_effects_suppressed: u64,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct CompletedDirectServerSemanticRewrite {
+    pub(super) sequence: u16,
+    pub(super) origin_generation: u64,
+    pub(super) source_payload: Vec<u8>,
+    pub(super) rewritten_payload: Vec<u8>,
+    pub(super) proof: VerifiedProof,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct DirectServerSemanticReplayState {
+    /// Direct server `M` retransmissions are keyed by the reliable source slot
+    /// and exact source gameplay bytes. ACK/header changes are transport state,
+    /// so a replay refreshes them without running semantic effects again.
+    pub(super) completed: VecDeque<CompletedDirectServerSemanticRewrite>,
+    pub(super) duplicates_replayed: u64,
+    pub(super) latest_origin_sequence: Option<u16>,
+    pub(super) origin_generation: u64,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ClientAckSessionState {
     pub(super) pending: client_ack::ClientAckState,
@@ -627,6 +647,7 @@ pub struct SessionState {
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
     pub(super) client_reliable_semantic_effects: ClientReliableSemanticEffectState,
+    pub(super) direct_server_semantic_replays: DirectServerSemanticReplayState,
     pub(super) client_ack: ClientAckSessionState,
     pub(super) login_waypoint: LoginWaypointState,
     pub(super) inventory_equipment: InventoryEquipmentBridgeState,
@@ -652,6 +673,7 @@ impl SessionState {
             live_object: LiveObjectStreamState::default(),
             sequence: SequenceState::default(),
             client_reliable_semantic_effects: ClientReliableSemanticEffectState::default(),
+            direct_server_semantic_replays: DirectServerSemanticReplayState::default(),
             client_ack: ClientAckSessionState::default(),
             login_waypoint: LoginWaypointState::default(),
             inventory_equipment: InventoryEquipmentBridgeState::default(),

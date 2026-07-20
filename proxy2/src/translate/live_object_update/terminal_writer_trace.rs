@@ -17,6 +17,9 @@ use std::{
     sync::OnceLock,
 };
 
+#[cfg(windows)]
+use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+
 use super::{
     LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT, LiveObjectUpdateRewriteBitSliceEvidence,
     LiveObjectUpdateTerminalWriterHandoffRequirement, LiveObjectUpdateTerminalWriterHandoffVerdict,
@@ -32,6 +35,8 @@ const MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES: usize =
     MAX_REASONABLE_LIVE_PAYLOAD_BYTES * 2 + TERMINAL_WRITER_TRACE_ARTIFACT_OVERHEAD_BYTES;
 const MAX_TERMINAL_WRITER_TRACE_JOURNAL_ARTIFACTS: usize = 64;
 const MAX_TERMINAL_WRITER_TRACE_JOURNAL_BYTES: usize = MAX_TERMINAL_WRITER_TRACE_ARTIFACT_BYTES * 8;
+#[cfg(windows)]
+const WINDOWS_FILE_SHARE_READ: u32 = 0x0000_0001;
 
 static TERMINAL_WRITER_TRACE_JOURNAL: OnceLock<OwnedTerminalWriterTraceJournal> = OnceLock::new();
 
@@ -39,6 +44,7 @@ static TERMINAL_WRITER_TRACE_JOURNAL: OnceLock<OwnedTerminalWriterTraceJournal> 
 pub(super) enum TerminalWriterTraceArtifactStatus {
     NotConfigured,
     ReadFailed,
+    WriterStillOpen,
     TooLarge,
     InvalidUtf8,
     InvalidFormat,
@@ -50,6 +56,7 @@ impl TerminalWriterTraceArtifactStatus {
         match self {
             Self::NotConfigured => "not-configured",
             Self::ReadFailed => "read-failed",
+            Self::WriterStillOpen => "writer-still-open",
             Self::TooLarge => "too-large",
             Self::InvalidUtf8 => "invalid-utf8",
             Self::InvalidFormat => "invalid-format",
@@ -298,8 +305,9 @@ struct ValidatedPacketLayout<'a> {
 }
 
 /// Configure and eagerly validate the private operator journal that terminal
-/// diagnostics may ingest. Eager loading prevents a partial or transient
-/// first diagnostic read from becoming the process-wide result.
+/// diagnostics may ingest. The loader first acquires a closed, deny-write
+/// snapshot, so a complete-looking prefix cannot become process-wide proof
+/// while the producer can still append a conflicting block or poison marker.
 pub(crate) fn configure_terminal_writer_trace_path(path: PathBuf) -> Result<(), &'static str> {
     if TERMINAL_WRITER_TRACE_JOURNAL.get().is_some() {
         return Err("already-configured");
@@ -426,9 +434,10 @@ fn correlate_loaded_terminal_writer_trace(
 fn load_terminal_writer_trace_journal(
     path: &Path,
 ) -> Result<OwnedTerminalWriterTraceJournal, TerminalWriterTraceArtifactStatus> {
-    let file = File::open(path).map_err(|_| TerminalWriterTraceArtifactStatus::ReadFailed)?;
+    let file = open_terminal_writer_trace_journal_snapshot(path)?;
     // Inspect and read the same open handle. `take(MAX + 1)` bounds allocation
-    // even if a producer grows or replaces the path between metadata and read.
+    // independently of metadata. On Windows the handle denies writes and
+    // deletion for this complete metadata/read/parse snapshot.
     let metadata = file
         .metadata()
         .map_err(|_| TerminalWriterTraceArtifactStatus::ReadFailed)?;
@@ -451,6 +460,33 @@ fn load_terminal_writer_trace_journal(
         std::str::from_utf8(&bytes).map_err(|_| TerminalWriterTraceArtifactStatus::InvalidUtf8)?;
     parse_terminal_writer_trace_journal(text)
         .ok_or(TerminalWriterTraceArtifactStatus::InvalidFormat)
+}
+
+fn open_terminal_writer_trace_journal_snapshot(
+    path: &Path,
+) -> Result<File, TerminalWriterTraceArtifactStatus> {
+    #[cfg(windows)]
+    {
+        // Rust's default Windows File::open share mode permits concurrent
+        // writes and deletion. The v2 producer intentionally retains an
+        // append handle until capture stops, and a later duplicate or poison
+        // row invalidates every earlier unique-looking prefix. Sharing only
+        // reads makes CreateFile fail while that writer is alive and prevents
+        // any new writer/replacer until this bounded snapshot is complete.
+        return OpenOptions::new()
+            .read(true)
+            .share_mode(WINDOWS_FILE_SHARE_READ)
+            .open(path)
+            .map_err(|error| match error.raw_os_error() {
+                Some(32) | Some(33) => TerminalWriterTraceArtifactStatus::WriterStillOpen,
+                _ => TerminalWriterTraceArtifactStatus::ReadFailed,
+            });
+    }
+
+    #[cfg(not(windows))]
+    {
+        File::open(path).map_err(|_| TerminalWriterTraceArtifactStatus::ReadFailed)
+    }
 }
 
 /// Parse one or more consecutive private v2 trace blocks. Every six-line block
@@ -1988,6 +2024,37 @@ mod tests {
                 exact_handoff: None,
             }
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn journal_loader_requires_the_append_producer_to_close() {
+        use std::{io::Write, os::windows::fs::OpenOptionsExt};
+
+        let (payload, record_offset) = coherent_payload();
+        let path = temp_artifact_path("active-writer");
+        let mut producer = std::fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .share_mode(WINDOWS_FILE_SHARE_READ)
+            .open(&path)
+            .expect("open retained append-only producer handle");
+        producer
+            .write_all(artifact_text(&payload, record_offset).as_bytes())
+            .expect("append complete journal block");
+        producer.sync_all().expect("flush complete journal block");
+
+        assert!(matches!(
+            load_terminal_writer_trace_journal(&path),
+            Err(TerminalWriterTraceArtifactStatus::WriterStillOpen)
+        ));
+
+        drop(producer);
+        let loaded = load_terminal_writer_trace_journal(&path)
+            .expect("closed producer must expose one immutable journal snapshot");
+        assert_eq!(loaded.artifacts.len(), 1);
+        assert_eq!(loaded.artifacts[0].finalized_payload, payload);
+        std::fs::remove_file(&path).expect("remove closed-writer journal");
     }
 
     #[test]

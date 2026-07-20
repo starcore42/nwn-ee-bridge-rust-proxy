@@ -48,6 +48,16 @@ pub(super) struct InflatedPayloadRewrite {
         Option<semantic::InventoryItemContextSummary>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct DirectFrameRewrite {
+    pub(super) verified: VerifiedPacket,
+    pub(super) area_rewrite: Option<area::AreaRewriteSummary>,
+    /// Exact pre-rewrite gameplay bytes for bounded reliable replay ownership.
+    /// Transport-only/status normalization and quarantined frames are not
+    /// semantic rewrite cache entries.
+    pub(super) source_payload: Option<Vec<u8>>,
+}
+
 impl InflatedPayloadRewrite {
     pub(super) fn note_rewrite(&mut self, family_name: &'static str, family: VerifiedFamily) {
         self.quarantine_reason = None;
@@ -5111,15 +5121,19 @@ pub(super) fn rewrite_direct_frame_if_needed(
     module_resource_runtime: &module_resources::ModuleResourceRuntime,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     object_registry: Option<&semantic::ObjectRegistry>,
-) -> anyhow::Result<Option<VerifiedPacket>> {
+) -> anyhow::Result<Option<DirectFrameRewrite>> {
     if let Some(rewritten) = rewrite_server_status_module_resources_frame_if_needed(
         bytes,
         view,
         module_resource_runtime,
     )? {
-        return Ok(Some(VerifiedPacket {
-            proof: VerifiedProof::family(VerifiedFamily::ServerStatusModuleResources),
-            packet: rewritten,
+        return Ok(Some(DirectFrameRewrite {
+            verified: VerifiedPacket {
+                proof: VerifiedProof::family(VerifiedFamily::ServerStatusModuleResources),
+                packet: rewritten,
+            },
+            area_rewrite: None,
+            source_payload: None,
         }));
     }
     if let Some(consumed) = consume_deferred_server_status_module_running_frame_if_needed(
@@ -5127,9 +5141,13 @@ pub(super) fn rewrite_direct_frame_if_needed(
         view,
         module_resource_runtime,
     )? {
-        return Ok(Some(VerifiedPacket {
-            proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
-            packet: consumed,
+        return Ok(Some(DirectFrameRewrite {
+            verified: VerifiedPacket {
+                proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+                packet: consumed,
+            },
+            area_rewrite: None,
+            source_payload: None,
         }));
     }
     // Keep direct `GameObjUpdate_LiveObject` frames on the same strict path as
@@ -5151,9 +5169,13 @@ pub(super) fn rewrite_direct_frame_if_needed(
         }
         let reason = untranslated_semantic_quarantine_reason(high);
         return consume_untranslated_direct_frame(bytes, view, high, reason).map(|packet| {
-            Some(VerifiedPacket {
-                proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
-                packet,
+            Some(DirectFrameRewrite {
+                verified: VerifiedPacket {
+                    proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+                    packet,
+                },
+                area_rewrite: None,
+                source_payload: None,
             })
         });
     }
@@ -5167,7 +5189,7 @@ fn rewrite_direct_semantic_frame_if_claimed(
     module_resource_runtime: &module_resources::ModuleResourceRuntime,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     object_registry: Option<&semantic::ObjectRegistry>,
-) -> anyhow::Result<Option<VerifiedPacket>> {
+) -> anyhow::Result<Option<DirectFrameRewrite>> {
     let Some(payload) = parse_window::primary_payload(bytes, view) else {
         return Ok(None);
     };
@@ -5201,10 +5223,58 @@ fn rewrite_direct_semantic_frame_if_claimed(
         new_payload_length = rewritten_payload.len(),
         "server direct M high-level payload semantically claimed for EE"
     );
-    Ok(Some(VerifiedPacket {
-        proof: semantic_rewrite_summary.verified_proof(),
-        packet: rewritten,
+    Ok(Some(DirectFrameRewrite {
+        verified: VerifiedPacket {
+            proof: semantic_rewrite_summary.verified_proof(),
+            packet: rewritten,
+        },
+        area_rewrite: semantic_rewrite_summary.area_rewrite,
+        source_payload: Some(payload.to_vec()),
     }))
+}
+
+#[cfg(test)]
+mod direct_area_dispatch_tests {
+    use super::*;
+    use crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+
+    #[test]
+    fn direct_dispatch_retains_area_rewrite_summary_and_source_identity() {
+        let area_payload =
+            include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
+        let mut packet = vec![0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, 30));
+        assert!(write_be_u16(&mut packet, 5, 74));
+        packet[7] = 0x0A;
+        assert!(write_be_u16(&mut packet, 8, 1));
+        assert!(write_be_u16(&mut packet, 10, area_payload.len() as u16));
+        packet.extend_from_slice(area_payload);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("direct M frame should parse");
+        assert_eq!(view.trailing_payload_length, 0);
+
+        let runtime = module_resources::ModuleResourceRuntime::default();
+        let rewrite = rewrite_direct_frame_if_needed(&packet, &view, &runtime, None, None)
+            .expect("direct dispatcher should not fail")
+            .expect("direct Area_ClientArea should be claimed");
+
+        assert!(
+            rewrite
+                .verified
+                .proof
+                .contains_family(VerifiedFamily::AreaClientArea)
+        );
+        assert_eq!(
+            rewrite.source_payload.as_deref(),
+            Some(area_payload.as_slice())
+        );
+        let summary = rewrite
+            .area_rewrite
+            .expect("direct area claim must retain its area rewrite summary");
+        assert_eq!(summary.placeable_context.area_resref, "voyage");
+        assert_eq!(summary.placeable_context.static_rows.len(), 3);
+    }
 }
 
 #[cfg(test)]

@@ -21,8 +21,8 @@ use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
     packet::m::{HighLevel, MFrameView},
     translate::{
-        ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area, client_gui_inventory,
-        semantic,
+        ContinuationOwner, Emit, VerifiedFamily, VerifiedPacket, VerifiedProof, area,
+        client_gui_inventory, semantic,
     },
 };
 
@@ -59,6 +59,7 @@ use sequence::{
 const MAX_REASSEMBLY_FRAMES: usize = 256;
 const MAX_INTERLEAVED_PACKETS: usize = 32;
 const MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS: usize = 64;
+const MAX_COMPLETED_DIRECT_SERVER_SEMANTIC_REWRITES: usize = 64;
 const CNW_LENGTH_BYTES: usize = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -476,6 +477,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("server M frame failed reliable-window parse");
     };
+    let server_origin_generation = observe_server_origin_reliable_generation(state, view.sequence);
     let server_peer_ack_sequence = view.ack_sequence;
     // Preserve the peer-facing ACK before synthetic client-sequence intervals
     // are hidden from EE. Inventory response ownership opens only once the
@@ -544,13 +546,40 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             state,
             server_peer_ack_sequence,
         )?
-    } else if let Some(verified) = server_dispatch::rewrite_direct_frame_if_needed(
+    } else if view.trailing_payload_length != 0 {
+        tracing::warn!(
+            sequence = view.sequence,
+            trailing_payload_length = view.trailing_payload_length,
+            "server M packet with unclaimed trailing records dropped before direct semantic dispatch"
+        );
+        Emit::Drop
+    } else if let Some(verified) = replay_completed_direct_server_semantic_rewrite(
+        &inbound,
+        &view,
+        server_origin_generation,
+        state,
+    )? {
+        Emit::VerifiedProofPackets {
+            proof: verified.proof,
+            packets: vec![verified.packet],
+        }
+    } else if let Some(rewrite) = server_dispatch::rewrite_direct_frame_if_needed(
         &inbound,
         &view,
         &state.module_resources,
         Some(&state.area_context.latest_area_placeables),
         Some(&state.semantic.objects),
     )? {
+        apply_direct_area_rewrite_side_effects(
+            state,
+            view.sequence,
+            view.ack_sequence,
+            rewrite.area_rewrite.as_ref(),
+        )?;
+        let cache_source_payload = exact_direct_semantic_source_payload(&inbound, &view)
+            .filter(|payload| rewrite.source_payload.as_deref() == Some(*payload))
+            .map(|payload| payload.to_vec());
+        let verified = rewrite.verified;
         login_waypoint::maybe_queue_empty_waypoint_response(state, &inbound, &view)?;
         observe_verified_server_m_packet(
             state,
@@ -558,6 +587,15 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             &verified.packet,
             server_peer_ack_sequence,
         );
+        if let Some(source_payload) = cache_source_payload {
+            remember_completed_direct_server_semantic_rewrite(
+                state,
+                view.sequence,
+                server_origin_generation,
+                source_payload,
+                &verified,
+            );
+        }
         Emit::VerifiedProofPackets {
             proof: verified.proof,
             packets: vec![verified.packet],
@@ -1680,6 +1718,149 @@ fn queue_area_client_area_side_effects_for_window(
     Ok(())
 }
 
+fn apply_direct_area_rewrite_side_effects(
+    state: &mut SessionState,
+    sequence: u16,
+    ack_sequence: u16,
+    summary: Option<&area::AreaRewriteSummary>,
+) -> anyhow::Result<()> {
+    let Some(summary) = summary else {
+        return Ok(());
+    };
+    state.area_context.latest_area_placeables = summary.placeable_context.clone();
+    queue_area_client_area_side_effects_for_window(state, sequence, sequence, ack_sequence, summary)
+}
+
+fn exact_direct_semantic_source_payload<'a>(
+    bytes: &'a [u8],
+    view: &MFrameView,
+) -> Option<&'a [u8]> {
+    if view.sequence == 0
+        || view.trailing_payload_length != 0
+        || view.packetized_sequence != 1
+        || view.deflated.is_some()
+        || view.high.is_none()
+    {
+        return None;
+    }
+    parse_window::primary_payload(bytes, view)
+}
+
+fn observe_server_origin_reliable_generation(state: &mut SessionState, sequence: u16) -> u64 {
+    let replay = &mut state.direct_server_semantic_replays;
+    if sequence == 0 {
+        return replay.origin_generation;
+    }
+    let Some(latest) = replay.latest_origin_sequence else {
+        replay.latest_origin_sequence = Some(sequence);
+        return replay.origin_generation;
+    };
+    if sequence == latest {
+        return replay.origin_generation;
+    }
+    let forward_distance = sequence.wrapping_sub(latest);
+    if forward_distance < 0x8000 {
+        if sequence < latest {
+            replay.origin_generation = replay.origin_generation.saturating_add(1);
+        }
+        replay.latest_origin_sequence = Some(sequence);
+        replay.origin_generation
+    } else if sequence > latest && replay.origin_generation > 0 {
+        replay.origin_generation - 1
+    } else {
+        replay.origin_generation
+    }
+}
+
+fn replay_completed_direct_server_semantic_rewrite(
+    bytes: &[u8],
+    view: &MFrameView,
+    origin_generation: u64,
+    state: &mut SessionState,
+) -> anyhow::Result<Option<VerifiedPacket>> {
+    let Some(source_payload) = exact_direct_semantic_source_payload(bytes, view) else {
+        return Ok(None);
+    };
+    let Some(entry) = state
+        .direct_server_semantic_replays
+        .completed
+        .iter()
+        .find(|entry| {
+            entry.sequence == view.sequence
+                && entry.origin_generation == origin_generation
+                && entry.source_payload.as_slice() == source_payload
+        })
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let packet = parse_window::replace_primary_payload_and_repair(
+        bytes,
+        view,
+        &entry.rewritten_payload,
+        "cached direct semantic high-level payload",
+    )?;
+    state.direct_server_semantic_replays.duplicates_replayed = state
+        .direct_server_semantic_replays
+        .duplicates_replayed
+        .saturating_add(1);
+    tracing::info!(
+        sequence = view.sequence,
+        origin_generation,
+        ack_sequence = view.ack_sequence,
+        source_payload_len = source_payload.len(),
+        rewritten_payload_len = entry.rewritten_payload.len(),
+        proof = entry.proof.as_str(),
+        "server direct M semantic rewrite replayed from exact bounded cache without semantic effects"
+    );
+    Ok(Some(VerifiedPacket {
+        proof: entry.proof,
+        packet,
+    }))
+}
+
+fn remember_completed_direct_server_semantic_rewrite(
+    state: &mut SessionState,
+    sequence: u16,
+    origin_generation: u64,
+    source_payload: Vec<u8>,
+    verified: &VerifiedPacket,
+) {
+    let Some(view) = MFrameView::parse(&verified.packet) else {
+        return;
+    };
+    let Some(rewritten_payload) = exact_direct_semantic_source_payload(&verified.packet, &view)
+    else {
+        return;
+    };
+    if state
+        .direct_server_semantic_replays
+        .completed
+        .iter()
+        .any(|entry| {
+            entry.sequence == sequence
+                && entry.origin_generation == origin_generation
+                && entry.source_payload == source_payload
+        })
+    {
+        return;
+    }
+    state.direct_server_semantic_replays.completed.push_back(
+        state::CompletedDirectServerSemanticRewrite {
+            sequence,
+            origin_generation,
+            source_payload,
+            rewritten_payload: rewritten_payload.to_vec(),
+            proof: verified.proof.clone(),
+        },
+    );
+    while state.direct_server_semantic_replays.completed.len()
+        > MAX_COMPLETED_DIRECT_SERVER_SEMANTIC_REWRITES
+    {
+        state.direct_server_semantic_replays.completed.pop_front();
+    }
+}
+
 fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> anyhow::Result<()> {
     if state.sequence.server_sequence_shifts.is_empty() {
         return Ok(());
@@ -2044,6 +2225,121 @@ mod tests {
         packet.extend_from_slice(payload);
         assert!(encode_legacy_m_crc(&mut packet));
         packet
+    }
+
+    #[test]
+    fn direct_area_retransmission_applies_state_and_side_effects_once() {
+        let payload =
+            include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
+        let mut state = SessionState::default();
+
+        translate_server_to_client(&client_reliable_m_frame(30, 74, payload), &mut state)
+            .expect("first direct Area_ClientArea should translate");
+        assert_eq!(
+            state.area_context.latest_area_placeables.area_resref,
+            "voyage"
+        );
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        let shifts = state
+            .sequence
+            .server_sequence_shifts
+            .iter()
+            .map(|shift| (shift.base, shift.delta))
+            .collect::<Vec<_>>();
+        let pending_packets = state.synthetic_area.pending_server_to_client_packets.len();
+
+        translate_server_to_client(&client_reliable_m_frame(30, 75, payload), &mut state)
+            .expect("direct Area_ClientArea retransmission should replay");
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        assert_eq!(
+            state
+                .sequence
+                .server_sequence_shifts
+                .iter()
+                .map(|shift| (shift.base, shift.delta))
+                .collect::<Vec<_>>(),
+            shifts
+        );
+        assert_eq!(
+            state.synthetic_area.pending_server_to_client_packets.len(),
+            pending_packets
+        );
+        assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 1);
+
+        state.synthetic_area.server_hold_gate = None;
+        state.synthetic_area.pending_area_loaded = None;
+        state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .clear();
+        translate_server_to_client(&client_reliable_m_frame(30, 76, payload), &mut state)
+            .expect("post-gate direct retransmission should still replay");
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        assert!(state.synthetic_area.server_hold_gate.is_none());
+        assert!(state.synthetic_area.pending_area_loaded.is_none());
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 2);
+    }
+
+    #[test]
+    fn direct_semantic_replay_rejects_trailing_records_and_wrapped_generation() {
+        let payload =
+            include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
+        let packet = client_reliable_m_frame(5, 74, payload);
+        let view = MFrameView::parse(&packet).expect("direct Area frame");
+        let mut state = SessionState::default();
+        let rewrite = server_dispatch::rewrite_direct_frame_if_needed(
+            &packet,
+            &view,
+            &state.module_resources,
+            None,
+            None,
+        )
+        .expect("dispatch")
+        .expect("Area claim");
+        remember_completed_direct_server_semantic_rewrite(
+            &mut state,
+            5,
+            0,
+            payload.to_vec(),
+            &rewrite.verified,
+        );
+
+        let mut trailing = packet.clone();
+        trailing.push(0xAA);
+        assert!(encode_legacy_m_crc(&mut trailing));
+        let trailing_view = MFrameView::parse(&trailing).expect("trailing frame");
+        assert_ne!(trailing_view.trailing_payload_length, 0);
+        assert!(
+            replay_completed_direct_server_semantic_rewrite(
+                &trailing,
+                &trailing_view,
+                0,
+                &mut state,
+            )
+            .expect("trailing replay probe")
+            .is_none()
+        );
+
+        state.direct_server_semantic_replays.latest_origin_sequence = Some(0xFFFE);
+        assert_eq!(observe_server_origin_reliable_generation(&mut state, 5), 1);
+        let wrapped = client_reliable_m_frame(5, 75, payload);
+        let wrapped_view = MFrameView::parse(&wrapped).expect("wrapped frame");
+        assert!(
+            replay_completed_direct_server_semantic_rewrite(
+                &wrapped,
+                &wrapped_view,
+                1,
+                &mut state,
+            )
+            .expect("wrapped replay probe")
+            .is_none()
+        );
     }
 
     #[test]

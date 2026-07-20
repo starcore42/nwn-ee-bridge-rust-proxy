@@ -3,6 +3,7 @@ param(
     [string]$PacketDir,
     [string]$RunRoot = '',
     [string]$ProxyExe = '',
+    [string]$TerminalWriterTracePath = '',
     [int]$ListenPort = 55121,
     [int]$ServerPort = 55133,
     [int]$PacketDelayMilliseconds = 25,
@@ -38,6 +39,45 @@ function Resolve-RequiredDirectory {
         throw "$Label not found: $Path"
     }
     return (Resolve-Path -LiteralPath $Path).Path
+}
+
+function Get-RequiredFileSnapshot {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label not found: $Path"
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    $itemBeforeHash = Get-Item -LiteralPath $resolved -ErrorAction Stop
+    $sha256 = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256 -ErrorAction Stop).Hash
+    $itemAfterHash = Get-Item -LiteralPath $resolved -ErrorAction Stop
+    if ($itemBeforeHash.Length -ne $itemAfterHash.Length -or
+        $itemBeforeHash.LastWriteTimeUtc.Ticks -ne $itemAfterHash.LastWriteTimeUtc.Ticks) {
+        throw "$Label changed while its SHA-256 was being captured: $resolved"
+    }
+
+    return [pscustomobject]@{
+        Path = $resolved
+        Length = [Int64]$itemAfterHash.Length
+        LastWriteTimeUtc = [DateTime]$itemAfterHash.LastWriteTimeUtc
+        Sha256 = $sha256.ToUpperInvariant()
+    }
+}
+
+function Quote-CommandArguments {
+    param([string[]]$Values)
+
+    return ($Values | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"' + ($_ -replace '"', '\"') + '"'
+        } else {
+            $_
+        }
+    }) -join ' '
 }
 
 function Resolve-Proxy2Executable {
@@ -1139,6 +1179,20 @@ if ($ProxyOutputWaitMilliseconds -lt 0) {
 
 $packetDirResolved = Resolve-RequiredDirectory -Path $PacketDir -Label 'Diamond packet dump directory'
 $proxyResolved = Resolve-Proxy2Executable -ExplicitPath $ProxyExe -RepositoryRoot $repositoryRoot -SkipBuild:$SkipBuild
+$terminalWriterTraceResolved = $null
+$terminalWriterTraceBefore = $null
+$terminalWriterTraceAfter = $null
+$terminalWriterTraceStable = $null
+if (-not [string]::IsNullOrWhiteSpace($TerminalWriterTracePath)) {
+    $terminalWriterTraceBefore = Get-RequiredFileSnapshot `
+        -Path $TerminalWriterTracePath `
+        -Label 'Terminal writer trace journal'
+    $terminalWriterTraceResolved = $terminalWriterTraceBefore.Path
+    $proxyHelp = & $proxyResolved --help 2>&1 | Out-String
+    if (-not $proxyHelp.Contains('--terminal-writer-trace')) {
+        throw "Proxy executable does not support --terminal-writer-trace: $proxyResolved"
+    }
+}
 
 if ([string]::IsNullOrWhiteSpace($RunRoot)) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -1172,6 +1226,10 @@ if (-not $NoStrictTranslate) {
 if (-not $EnableNwsync) {
     $proxyArgs += '--disable-nwsync'
 }
+if ($null -ne $terminalWriterTraceResolved) {
+    $proxyArgs += @('--terminal-writer-trace', $terminalWriterTraceResolved)
+}
+$proxyArgumentLine = Quote-CommandArguments -Values $proxyArgs
 
 $proxy = $null
 $client = $null
@@ -1179,7 +1237,7 @@ $server = $null
 try {
     $proxy = Start-Process `
         -FilePath $proxyResolved `
-        -ArgumentList $proxyArgs `
+        -ArgumentList $proxyArgumentLine `
         -WorkingDirectory $repositoryRoot `
         -RedirectStandardOutput $proxyStdout `
         -RedirectStandardError $proxyStderr `
@@ -1355,6 +1413,27 @@ try {
         Drain-DummyServer -Server $server -ProxyServerEndpoint ([ref]$proxyServerEndpoint) -ReceivedCount ([ref]$proxyPacketsReceivedByDummyServer) -DeadlineUtc $deadlineUtc -TimeoutSeconds $TimeoutSeconds -Stage "final drain dummy server round $i"
     }
 
+    if ($null -ne $terminalWriterTraceResolved) {
+        $terminalWriterTraceAfter = Get-RequiredFileSnapshot `
+            -Path $terminalWriterTraceResolved `
+            -Label 'Terminal writer trace journal'
+        $terminalWriterTraceStable =
+            $terminalWriterTraceBefore.Length -eq $terminalWriterTraceAfter.Length -and
+            $terminalWriterTraceBefore.LastWriteTimeUtc.Ticks -eq
+                $terminalWriterTraceAfter.LastWriteTimeUtc.Ticks -and
+            $terminalWriterTraceBefore.Sha256 -eq $terminalWriterTraceAfter.Sha256
+        if (-not $terminalWriterTraceStable) {
+            throw ("Terminal writer trace journal changed during replay: " +
+                "path=$terminalWriterTraceResolved " +
+                "before_length=$($terminalWriterTraceBefore.Length) " +
+                "after_length=$($terminalWriterTraceAfter.Length) " +
+                "before_last_write=$($terminalWriterTraceBefore.LastWriteTimeUtc.ToString('o')) " +
+                "after_last_write=$($terminalWriterTraceAfter.LastWriteTimeUtc.ToString('o')) " +
+                "before_sha256=$($terminalWriterTraceBefore.Sha256) " +
+                "after_sha256=$($terminalWriterTraceAfter.Sha256)")
+        }
+    }
+
     $quarantineDir = Join-Path $RunRoot 'quarantine'
     $proxyLogText = ''
     if (Test-Path -LiteralPath $proxyLog -PathType Leaf) {
@@ -1367,6 +1446,20 @@ try {
     $proxyStderrText = ''
     if (Test-Path -LiteralPath $proxyStderr -PathType Leaf) {
         $proxyStderrText = Get-Content -LiteralPath $proxyStderr -Raw -ErrorAction SilentlyContinue
+    }
+    $terminalTraceFiles = @()
+    $terminalTraceText = ''
+    if (Test-Path -LiteralPath $quarantineDir -PathType Container) {
+        $terminalTraceFiles = @(Get-ChildItem `
+            -LiteralPath $quarantineDir `
+            -Recurse `
+            -File `
+            -Filter '*.terminal.tsv' `
+            -ErrorAction SilentlyContinue)
+        $terminalTraceRows = foreach ($terminalTraceFile in $terminalTraceFiles) {
+            Get-Content -LiteralPath $terminalTraceFile.FullName -Raw -ErrorAction SilentlyContinue
+        }
+        $terminalTraceText = $terminalTraceRows -join "`n"
     }
     $terminalResidualSummary = Get-TerminalFragmentResidualSummary -Text $proxyStderrText
     $terminalResidualReport = Export-TerminalFragmentResidualEvidence `
@@ -2416,6 +2509,26 @@ try {
         PacketDir = $packetDirResolved
         ProxyExe = $proxyResolved
         ProxyLog = $proxyLog
+        TerminalWriterTraceConfigured = $null -ne $terminalWriterTraceResolved
+        TerminalWriterTracePath = $terminalWriterTraceResolved
+        TerminalWriterTraceLengthBefore = if ($null -ne $terminalWriterTraceBefore) { $terminalWriterTraceBefore.Length } else { $null }
+        TerminalWriterTraceLastWriteTimeUtcBefore = if ($null -ne $terminalWriterTraceBefore) { $terminalWriterTraceBefore.LastWriteTimeUtc } else { $null }
+        TerminalWriterTraceSha256Before = if ($null -ne $terminalWriterTraceBefore) { $terminalWriterTraceBefore.Sha256 } else { $null }
+        TerminalWriterTraceLengthAfter = if ($null -ne $terminalWriterTraceAfter) { $terminalWriterTraceAfter.Length } else { $null }
+        TerminalWriterTraceLastWriteTimeUtcAfter = if ($null -ne $terminalWriterTraceAfter) { $terminalWriterTraceAfter.LastWriteTimeUtc } else { $null }
+        TerminalWriterTraceSha256After = if ($null -ne $terminalWriterTraceAfter) { $terminalWriterTraceAfter.Sha256 } else { $null }
+        TerminalWriterTraceStable = $terminalWriterTraceStable
+        TerminalWriterTraceJournalLoadMatches = Get-TextMatchCount -Text $proxyLogText -Pattern 'loaded bounded private terminal writer trace journal'
+        TerminalWriterTraceArtifactFiles = $terminalTraceFiles.Count
+        TerminalWriterTraceUniquePayloadMatches = Get-TextMatchCount -Text $terminalTraceText -Pattern 'writer_handoff_correlation\tartifact_status\tloaded\tselection_status\tunique-payload-match\b'
+        TerminalWriterTraceNoPayloadMatches = Get-TextMatchCount -Text $terminalTraceText -Pattern 'writer_handoff_correlation\tartifact_status\tloaded\tselection_status\tno-payload-match\b'
+        TerminalWriterTraceAmbiguousPayloadMatches = Get-TextMatchCount -Text $terminalTraceText -Pattern 'writer_handoff_correlation\tartifact_status\tloaded\tselection_status\tambiguous-payload-match\b'
+        TerminalWriterTraceExactObservedHandoffMatches = Get-TextMatchCount -Text $terminalTraceText -Pattern 'writer_handoff_correlation[^\r\n]*\tverdict\texact-observed-handoff\b'
+        TerminalWriterTraceExactTwoSidedProofReadyMatches = Get-TextMatchCount -Text $terminalTraceText -Pattern 'terminal_proof_join[^\r\n]*\tverdict\texact-two-sided-proof-ready\tready\ttrue\b'
+        LiveObjectTerminalExactWriterRewriteMatches = Get-TextMatchCount -Text $proxyLogText -Pattern 'server live-object terminal rewrite applied from exact two-sided writer proof'
+        LiveObjectTerminalExactWriterRewrites = Get-TraceFieldSum -Text $proxyLogText -Message 'server live-object terminal rewrite applied from exact two-sided writer proof' -Field 'terminal_exact_writer_rewrites'
+        LiveObjectTerminalSourceFragmentBitsOwned = Get-TraceFieldSum -Text $proxyLogText -Message 'server live-object terminal rewrite applied from exact two-sided writer proof' -Field 'terminal_source_fragment_bits_owned'
+        LiveObjectTerminalEmittedResidualFragmentBitsRemoved = Get-TraceFieldSum -Text $proxyLogText -Message 'server live-object terminal rewrite applied from exact two-sided writer proof' -Field 'terminal_emitted_residual_fragment_bits_removed'
         QuickbarItemRefreshHint = $quickbarItemRefreshHint
         QuickbarItemRefreshHintExists = $quickbarHintExists
         QuickbarItemRefreshHintParseError = $quickbarHintParseError

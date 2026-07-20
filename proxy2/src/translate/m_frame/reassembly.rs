@@ -319,6 +319,20 @@ fn claim_or_consume_interleaved_server_packet(
         Some(&state.area_context.latest_area_placeables),
         Some(&state.semantic.objects),
     )? {
+        if rewritten.area_rewrite.is_some() {
+            tracing::warn!(
+                sequence = view.sequence,
+                ack_sequence = view.ack_sequence,
+                flags = view.flags,
+                packetized_sequence = view.packetized_sequence,
+                payload_len = view.payload_length,
+                "interleaved Area_ClientArea consumed: ordered typed state commit is not yet implemented"
+            );
+            return Ok(VerifiedPacket {
+                proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+                packet: consume_interleaved_unclaimed_server_packet(bytes)?,
+            });
+        }
         tracing::info!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -327,7 +341,7 @@ fn claim_or_consume_interleaved_server_packet(
             payload_len = view.payload_length,
             "interleaved server M packet semantically claimed while deflated reassembly is pending"
         );
-        return Ok(rewritten);
+        return Ok(rewritten.verified);
     }
 
     if let Some(summary) = transport_identity::claim_server_frame_if_verified(view) {
