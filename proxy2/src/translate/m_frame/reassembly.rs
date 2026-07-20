@@ -29,7 +29,7 @@ pub(super) const EE_SAFE_M_FRAME_PAYLOAD_BYTES: usize =
 use super::{
     MAX_INTERLEAVED_PACKETS, MAX_REASSEMBLY_FRAMES, SessionState,
     deflate::{inflate_with_server_stream, inflate_with_window, looks_like_zlib_wrapped_deflate},
-    server_dispatch, transport_identity,
+    transport_identity,
 };
 
 #[derive(Debug, Clone)]
@@ -41,6 +41,24 @@ pub(super) struct ServerDeflatedReassembly {
     pub(super) zlib_stream: bool,
     pub(super) frames: Vec<BufferedFrame>,
     pub(super) interleaved_packets: Vec<VerifiedPacket>,
+    /// Exact reliable frames that arrived after this deflated window while one
+    /// of its packetized members was still missing. `interleaved_packets`
+    /// carries fail-closed empty data-frame placeholders until the predecessor
+    /// window has a successful typed disposition; only then may the parent
+    /// dispatcher translate these events in source-sequence order.
+    pub(super) interleaved_events: Vec<BufferedInterleavedServerPacket>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct BufferedInterleavedServerPacket {
+    pub(super) packet: Vec<u8>,
+    pub(super) sequence: u16,
+    pub(super) server_peer_ack_sequence: u16,
+    pub(super) server_origin_generation: u64,
+    /// Header bytes from flags through the exact payload/trailing window. CRC,
+    /// sequence, and ACK are intentionally excluded so a retransmit can refresh
+    /// transport state without becoming a second semantic event.
+    pub(super) transport_payload_identity: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +173,7 @@ pub(super) fn start_server_deflated_reassembly(
         zlib_stream: (view.flags & 0x01) != 0,
         frames: Vec::with_capacity(expected_frames),
         interleaved_packets: Vec::new(),
+        interleaved_events: Vec::new(),
     };
     reassembly.frames.push(frame);
     state.deflate.server_reassembly = Some(reassembly);
@@ -188,6 +207,7 @@ pub(super) fn continue_server_deflated_reassembly(
     view: &MFrameView,
     state: &mut SessionState,
     server_peer_ack_sequence: u16,
+    server_origin_generation: u64,
 ) -> anyhow::Result<Emit> {
     let Some(snapshot) = state.deflate.server_reassembly.as_ref() else {
         tracing::warn!(
@@ -201,15 +221,89 @@ pub(super) fn continue_server_deflated_reassembly(
         return Ok(Emit::Drop);
     };
 
+    // Sequence zero is the non-data reliable-window ACK/control lane. It does
+    // not participate in the source data cursor, so it may pass immediately
+    // while a packetized data predecessor is held. The exact empty-shell claim
+    // preserves the current unshifted ACK, control kind, and verified CRC.
+    if view.sequence == 0 {
+        let Some(claim) = transport_identity::claim_server_frame_if_verified(view) else {
+            return Ok(Emit::Drop);
+        };
+        let owner = state
+            .deflate
+            .server_zlib_stream_owner
+            .unwrap_or(ContinuationOwner::UnknownProxyOwned);
+        return Ok(
+            match transport_identity::verified_server_packet_for_claim(
+                bytes,
+                view,
+                claim,
+                owner,
+                state.deflate.server_zlib_stream_epoch,
+                state.deflate.server_zlib_stream_proxy_owned,
+            )? {
+                Some(verified) => Emit::VerifiedProofPackets {
+                    proof: verified.proof,
+                    packets: vec![verified.packet],
+                },
+                None => Emit::Drop,
+            },
+        );
+    }
+
     let first_sequence = snapshot.first_sequence;
     let expected_frames = snapshot.expected_frames;
     let distance = view.sequence.wrapping_sub(first_sequence) as usize;
     if distance >= expected_frames {
-        let interleaved_packet = claim_or_consume_interleaved_server_packet(bytes, view, state)?;
+        // A wrapping distance in the upper half of the sequence space is an
+        // older/stale frame, not a packet following the pending window. Never
+        // let it enter the ordered transaction under a future-looking alias.
+        if distance >= 0x8000 {
+            tracing::warn!(
+                sequence = view.sequence,
+                first_sequence,
+                expected_frames,
+                "stale server M frame rejected while deflated reassembly is pending"
+            );
+            return Ok(Emit::Drop);
+        }
+        let interleaved_packet = VerifiedPacket {
+            proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+            packet: consume_interleaved_unclaimed_server_packet(bytes)?,
+        };
+        let transport_payload_identity = bytes.get(7..).unwrap_or_default().to_vec();
         let Some(reassembly) = state.deflate.server_reassembly.as_mut() else {
             return Ok(Emit::Drop);
         };
-        if reassembly.interleaved_packets.len() >= MAX_INTERLEAVED_PACKETS {
+        if let Some(index) = reassembly.interleaved_events.iter().position(|event| {
+            event.server_origin_generation == server_origin_generation
+                && event.sequence == view.sequence
+        }) {
+            if reassembly.interleaved_events[index].transport_payload_identity
+                != transport_payload_identity
+            {
+                tracing::warn!(
+                    sequence = view.sequence,
+                    first_sequence = reassembly.first_sequence,
+                    server_origin_generation,
+                    "conflicting server M retransmit aborted pending deflated reassembly"
+                );
+                state.deflate.server_reassembly = None;
+                return Ok(Emit::Drop);
+            }
+            reassembly.interleaved_events[index].packet = bytes.to_vec();
+            reassembly.interleaved_events[index].server_peer_ack_sequence =
+                server_peer_ack_sequence;
+            reassembly.interleaved_packets[index] = interleaved_packet;
+            tracing::info!(
+                sequence = view.sequence,
+                first_sequence = reassembly.first_sequence,
+                server_origin_generation,
+                "duplicate interleaved server M frame refreshed without duplicating semantic state"
+            );
+            return Ok(Emit::Consumed);
+        }
+        if reassembly.interleaved_events.len() >= MAX_INTERLEAVED_PACKETS {
             tracing::warn!(
                 sequence = view.sequence,
                 first_sequence = reassembly.first_sequence,
@@ -219,7 +313,34 @@ pub(super) fn continue_server_deflated_reassembly(
             state.deflate.server_reassembly = None;
             return Ok(Emit::Drop);
         }
-        reassembly.interleaved_packets.push(interleaved_packet);
+        let insert_index = reassembly
+            .interleaved_events
+            .iter()
+            .position(|existing| {
+                existing.sequence.wrapping_sub(reassembly.first_sequence) > distance as u16
+            })
+            .unwrap_or(reassembly.interleaved_events.len());
+        reassembly.interleaved_events.insert(
+            insert_index,
+            BufferedInterleavedServerPacket {
+                packet: bytes.to_vec(),
+                sequence: view.sequence,
+                server_peer_ack_sequence,
+                server_origin_generation,
+                transport_payload_identity,
+            },
+        );
+        reassembly
+            .interleaved_packets
+            .insert(insert_index, interleaved_packet);
+        tracing::info!(
+            sequence = view.sequence,
+            first_sequence = reassembly.first_sequence,
+            expected_frames = reassembly.expected_frames,
+            buffered_interleaved = reassembly.interleaved_events.len(),
+            server_origin_generation,
+            "server M frame buffered behind pending deflated predecessor transaction"
+        );
         return Ok(Emit::Consumed);
     }
 
@@ -305,117 +426,6 @@ fn highest_contiguous_buffered_sequence(reassembly: &ServerDeflatedReassembly) -
         expected_distance = expected_distance.saturating_add(1);
     }
     ack_sequence
-}
-
-fn claim_or_consume_interleaved_server_packet(
-    bytes: &[u8],
-    view: &MFrameView,
-    state: &mut SessionState,
-) -> anyhow::Result<VerifiedPacket> {
-    if let Some(rewritten) = server_dispatch::rewrite_direct_frame_if_needed(
-        bytes,
-        view,
-        &state.module_resources,
-        Some(&state.area_context.latest_area_placeables),
-        Some(&state.semantic.objects),
-    )? {
-        if rewritten.area_rewrite.is_some() {
-            tracing::warn!(
-                sequence = view.sequence,
-                ack_sequence = view.ack_sequence,
-                flags = view.flags,
-                packetized_sequence = view.packetized_sequence,
-                payload_len = view.payload_length,
-                "interleaved Area_ClientArea consumed: ordered typed state commit is not yet implemented"
-            );
-            return Ok(VerifiedPacket {
-                proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
-                packet: consume_interleaved_unclaimed_server_packet(bytes)?,
-            });
-        }
-        tracing::info!(
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
-            flags = view.flags,
-            packetized_sequence = view.packetized_sequence,
-            payload_len = view.payload_length,
-            "interleaved server M packet semantically claimed while deflated reassembly is pending"
-        );
-        return Ok(rewritten.verified);
-    }
-
-    if let Some(summary) = transport_identity::claim_server_frame_if_verified(view) {
-        tracing::info!(
-            packet = summary.packet_name,
-            reason = summary.reason,
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
-            flags = view.flags,
-            packetized_sequence = view.packetized_sequence,
-            payload_len = view.payload_length,
-            "interleaved server M transport-only packet claimed as verified no-op"
-        );
-        return claim_interleaved_transport_packet(bytes, view, state);
-    }
-
-    tracing::warn!(
-        sequence = view.sequence,
-        ack_sequence = view.ack_sequence,
-        flags = view.flags,
-        packetized_sequence = view.packetized_sequence,
-        payload_len = view.payload_length,
-        "interleaved server M packet consumed: no semantic translator or transport identity owner"
-    );
-    Ok(VerifiedPacket {
-        proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
-        packet: consume_interleaved_unclaimed_server_packet(bytes)?,
-    })
-}
-
-fn claim_interleaved_transport_packet(
-    bytes: &[u8],
-    view: &MFrameView,
-    state: &SessionState,
-) -> anyhow::Result<VerifiedPacket> {
-    if view.payload_length == 0 && view.trailing_payload_length == 0 {
-        return Ok(VerifiedPacket {
-            proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
-            packet: bytes.to_vec(),
-        });
-    }
-
-    let owner = state
-        .deflate
-        .server_zlib_stream_owner
-        .unwrap_or(ContinuationOwner::UnknownProxyOwned);
-    let stream_epoch = state.deflate.server_zlib_stream_epoch;
-    let family = if state.deflate.server_zlib_stream_proxy_owned
-        && owner != ContinuationOwner::UnknownProxyOwned
-        && stream_epoch != 0
-    {
-        VerifiedFamily::ServerZlibStreamContinuation {
-            owner,
-            stream_epoch,
-            first_sequence: view.sequence,
-        }
-    } else {
-        tracing::warn!(
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
-            flags = view.flags,
-            packetized_sequence = view.packetized_sequence,
-            payload_len = view.payload_length,
-            owner = owner.as_str(),
-            stream_epoch,
-            "interleaved server M transport-only payload consumed without known semantic stream owner"
-        );
-        VerifiedFamily::ConsumedEmptyMFrame
-    };
-
-    Ok(VerifiedPacket {
-        proof: VerifiedProof::family(family),
-        packet: consume_interleaved_unclaimed_server_packet(bytes)?,
-    })
 }
 
 fn consume_interleaved_unclaimed_server_packet(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -722,6 +732,7 @@ mod tests {
             zlib_stream: true,
             frames,
             interleaved_packets: Vec::new(),
+            interleaved_events: Vec::new(),
         }
     }
 

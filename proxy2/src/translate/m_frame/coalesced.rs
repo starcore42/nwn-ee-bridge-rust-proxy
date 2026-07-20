@@ -495,6 +495,7 @@ fn split_oversized_deflated_coalesced_record(
             compressed_chunk,
         }],
         interleaved_packets: Vec::new(),
+        interleaved_events: Vec::new(),
     };
     let outputs = reassembly::build_server_deflated_output_frames(
         &reassembly,

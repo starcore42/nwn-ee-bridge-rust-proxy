@@ -52,6 +52,33 @@ door `UseObject` or configure a private v2 terminal-writer journal, so the exact
 terminal proof path remains to be exercised against the live sequence-95
 interaction failure.
 
+The `2026-07-20T21:59+10:00` gate inspected that artifact directly at about
+14.98 hours old and found no newer failed live HG attempt. The current
+production slice orders a direct reliable successor behind its incomplete
+deflated predecessor: raw bytes and transport identity remain staged with zero
+semantic effects, and only the first contiguous exact direct event commits
+after an ordinary successful predecessor. Failed predecessors commit no Area
+state; gaps, later/full-pipeline events, stream-helper events, and cache replay
+successors remain unacknowledged for reliable retransmission. A bounded source
+fence prevents a repeated future direct event overtaking a missing sequence and
+skips reserved sequence zero at wrap. Source CRC is now verified before any
+reliable/semantic state mutation, active reassembly gates
+coalesced dispatch, and sequence-zero ACK/control frames continue immediately
+with kind `0x10`, current ACK, and valid CRC. Focused Area, CRC, gap/retry,
+control-lane, direct replay, reassembly, and coalesced regressions pass. The
+remaining stream-family successor queue, exact completed-window cache identity,
+primary-continuation/coalesced-trailing split, expanded primary-Area sequence
+placement, and final-validation rollback are
+tracked in `docs/active-proxy2-issues.md`.
+
+Strict replay
+`C:\nwnbridge\codex proxy2 replay ordered final 20260720-2327`
+processed 164 files with 304 strict allows, 143 generated ACKs, 97 exact
+live-object claims, 19 exact rewrites, ten Area rewrites, and zero quarantine,
+rewrite failures, terminal residuals, output timeouts, or stderr. The configured
+5,825-byte terminal journal loaded once and its length, timestamp, and SHA-256
+were unchanged before and after replay.
+
 The `2026-07-20T09:56+10:00` follow-up gate inspected that artifact directly;
 its structured log was about 2.90 hours old and no newer live HG attempt
 existed. Production now preserves an `Area_ClientArea` rewrite summary across

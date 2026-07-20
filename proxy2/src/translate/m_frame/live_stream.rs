@@ -982,6 +982,7 @@ mod tests {
             zlib_stream: true,
             frames: Vec::new(),
             interleaved_packets: Vec::new(),
+            interleaved_events: Vec::new(),
         };
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
@@ -1024,6 +1025,7 @@ mod tests {
             zlib_stream: true,
             frames: Vec::new(),
             interleaved_packets: Vec::new(),
+            interleaved_events: Vec::new(),
         };
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
@@ -1085,6 +1087,7 @@ mod tests {
             zlib_stream: true,
             frames: Vec::new(),
             interleaved_packets: Vec::new(),
+            interleaved_events: Vec::new(),
         };
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_cepv23_starter_seq17_lance_lute_patron_liveobject_20260523_unclaimed.bin"

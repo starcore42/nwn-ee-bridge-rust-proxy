@@ -17,6 +17,67 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-20 ordered interleaved direct-event transaction: the newest
+  gameplay-reaching artifact is still
+  `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`,
+  last written `2026-07-20T07:02:15.5117962+10:00` and about 14.98 hours old at
+  the `21:59+10` gate. It reached typed character selection, `Module_Loaded`,
+  native `Area_AreaLoaded`, and 108.71 seconds of gameplay with 68 exact
+  live-object accepts. Stderr, quarantine/drop, `BNDP`, rewrite rejection,
+  errors, and unexpected disconnects were zero, so no fresh HG login was
+  required.
+
+  Reliable events arriving behind an incomplete deflated predecessor are now
+  retained as exact raw events rather than translated against stale state.
+  After an ordinary predecessor receives an exact successful disposition, at
+  most its first contiguous direct semantic successor is replayed through the
+  shared direct commit path. This installs `Area_ClientArea` context, semantic
+  reset/observation, one-shot side effects, and exact replay identity only at
+  commit. A failed predecessor retains the existing fail-closed shell and
+  commits no Area state. A gap, later buffered event, non-direct/coalesced or
+  stream-family event, and completed-stream cache replay remain unacknowledged
+  for reliable retransmission instead of being converted into a data shell.
+  Sequence-zero ACK/control frames use their independent control lane and are
+  forwarded immediately with the current ACK, kind, and CRC intact.
+  A bounded post-reassembly source fence survives after the predecessor is
+  emitted, blocks a repeated future event until each missing reliable sequence
+  dispatches successfully, and skips reserved control sequence zero at wrap.
+
+  The same audit moved the active-reassembly gate ahead of coalesced semantic
+  dispatch and added the decompile-backed `CRCVerifyFrame` source gate before
+  ACK, generation, or semantic state changes. Conflicting same-sequence raw
+  identities abort the pending window; exact retransmits refresh only current
+  transport state. Pending synthetic packet placement now retains original
+  queue indexes so a newly queued `AfterCurrentEmit` packet cannot be prefixed
+  merely because older delayed entries were filtered out.
+
+  Focused regressions prove pending state remains untouched, exact completion
+  commits Area once, retransmission refreshes ACK/CRC without duplicate state,
+  cursor-rejected predecessors and bad source CRCs cannot commit, gaps recover
+  through retransmission, later semantics retry only after Area state, and
+  sequence-zero controls preserve `0x10`. Direct-Area replay, seven reassembly,
+  and 21 coalesced tests also pass.
+
+  Formatting, production `cargo check`, diff checks, and the full Release
+  bridge build pass. Strict replay
+  `C:\nwnbridge\codex proxy2 replay ordered final 20260720-2327`
+  processed all 164 packet files with 304 strict allows, 143 generated ACKs,
+  97 exact live-object claims, 19 exact rewrites, ten Area rewrites, and one
+  stable 5,825-byte terminal-journal load. Strict/semantic quarantine,
+  quarantine files, rewrite failures, terminal residuals, output timeouts, and
+  stderr were zero.
+
+  Remaining ordered-window work is explicit: stream quickbar/live/zero-fill
+  helpers need a session-owned raw successor queue before their retransmissions
+  can be committed; completed stream replay needs exact compressed-byte plus
+  reliable-generation identity and current ACK retargeting; expanded primary
+  deflated Area output must derive synthetic placement from the actual final
+  replacement sequence; a primary continuation carrying coalesced trailing
+  spans is currently withheld and can stall until the primary/trailing
+  transaction is split; and semantic state still needs rollback if final emit
+  validation fails. The next production slice is that exact primary/trailing
+  split plus the persisted stream-success successor queue and completed-window
+  replay identity.
 - 2026-07-20 direct Area state handoff and sealed terminal evidence replay:
   the newest gameplay-reaching artifact remains
   `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`,

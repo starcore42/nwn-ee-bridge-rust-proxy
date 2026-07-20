@@ -27,6 +27,14 @@ pub(super) struct DeflateState {
     pub(super) server_zlib_stream_proxy_owned: bool,
     pub(super) server_zlib_stream_owner: Option<ContinuationOwner>,
     pub(super) server_zlib_stream_epoch: u64,
+    /// A bounded source-order fence armed when a post-reassembly event is
+    /// withheld for retransmission. Future reliable data cannot overtake the
+    /// first missing sequence merely because the predecessor transaction has
+    /// already left `server_reassembly`.
+    pub(super) ordered_successor_next_sequence: Option<u16>,
+    pub(super) ordered_successor_final_sequence: Option<u16>,
+    pub(super) ordered_successor_payload_identities: Vec<(u16, Vec<u8>)>,
+    pub(super) last_server_core_dispatch_accepted: bool,
 }
 
 #[derive(Debug, Default)]
