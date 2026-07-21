@@ -79,34 +79,39 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest gate audit (`2026-07-22T04:52:50+10:00`): the newest gameplay-reaching
+Latest gate audit (`2026-07-22T07:10:00+10:00`): the newest gameplay-reaching
 artifact remains
 `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
-last written `2026-07-21T07:23:58.6405077+10:00` and 21 hours 29 minutes old. No
-newer live proxy attempt exists. It selected typed `starcore-druid60`, reached
-`Module_Loaded`, produced two native `Area_AreaLoaded` messages, accepted 76
-exact live-object packets, and continued for 137.813 seconds after the final
-area load. It recorded 449 strict allows and zero route conflict, quarantine,
-`BNDP`, ERROR, quarantine files, or stderr; the single WARN declares the
-pre-seeded NWSync cache. It therefore remains current gameplay evidence and no
-fresh HG login was required.
+last written `2026-07-21T07:23:58.6405077+10:00` and exactly 23 hours, 46
+minutes, 1.359 seconds old. No newer live proxy attempt exists. It selected
+typed `starcore-druid60`, reached `Module_Loaded`, produced two native
+`Area_AreaLoaded` messages, accepted 76 exact live-object packets, and
+continued for 137.813 seconds after the final area load. It recorded 449 strict
+allows and zero route conflict, quarantine, `BNDP`, ERROR, quarantine files, or
+stderr; the single WARN declares the pre-seeded NWSync cache. It was still
+inside the 24-hour gate by 13 minutes, 58.641 seconds, so no fresh HG login was
+required at run start. It crossed 24 hours during this run; the next automation
+gate requires a fresh gameplay-reaching capture unless another qualifying
+capture is created first.
 
 Current-code strict replay is
-`C:\nwnbridge\codex-proxy2-replay-client-emit-atomic-20260722-0457`: all 164
-packet files produced 319 strict allows, including 155 direct client effect
-transaction commits and 15 typed pending-client batch commits, with zero
-strict/semantic quarantines, queue restorations, route conflicts, quarantine
-files, output timeouts, errors, or stderr. Test compilation, formatting, the
-Release build, the new transaction/wrap tests, and the focused sequence,
-synthetic-area, local-ACK, login-waypoint, inventory/equipment, coalesced, and
-53-test strict suites pass. Direct client translation and all four pending
-client producer families now commit effects only after final strict validation;
-rejection restores a retryable snapshot while retaining validated source
-transport progress. Top-level ACK zero is a real wrapped modulo-u16 value
-through observation, shift reversal, and ACK-gated release; only nested
-coalesced records retain their proven zero-inherits-base rule. The next
-production slice is immutable client reliable-slot identity plus deterministic
-first-translation replay.
+`C:\nwnbridge\codex-proxy2-replay-client-slot-canonical-20260722-0745`: all 164
+packet files produced 319 strict allows, 143 generated ACK controls, 97 exact
+live-object claims, 19 exact live-object rewrites, and ten Area rewrites, with
+zero strict/semantic quarantines, skipped server packets, route conflicts,
+quarantine files, output timeouts, warnings, errors, or stderr. Formatting,
+test compilation, both Release builds, 66 root M-frame tests, and 62
+strict-path tests pass. Client type-0 slots now use wrap-safe immutable source
+identity and deterministic first-translation replay: ACK, FrameSend bit 6, and
+CRC may refresh, while lane, source generation/sequence, exact length,
+immutable flags, packetized metadata, gameplay bytes, and trailing storage
+cannot change. Strict rejection retains the pinned transport slot but rolls
+back its semantic disposition for an exact retry. The canonical fixture has no
+exact client type-0 retransmit, so focused variants prove replay, conflict,
+strict rollback, wrap, control-lane exclusion, and bounded eviction while the
+replay proves unchanged real capture order. The next production slice is the
+same bit-6 identity normalization across server raw, stream, and coalesced
+reliable replay paths.
 
 Latest known live HG proxy status: after the prior artifact crossed 24 hours,
 the first current-code refresh exposed and then fixed a completed-stream
@@ -120,10 +125,11 @@ with structured log
 137.813 seconds after the final native area load. The run recorded 449 strict
 allows with zero completed-route conflicts, strict/datagram quarantine,
 quarantine files, `BNDP`, ERROR, or stderr. Its only WARN is the declared
-pre-seeded NWSync cache. This is current gameplay evidence for the 24-hour gate.
-It did not issue a door `UseObject` or configure a private v2 terminal-writer
-journal, so the exact terminal proof path remains to be exercised against the
-live sequence-95
+pre-seeded NWSync cache. It qualified at the `2026-07-22T07:10:00+10:00` gate
+but has since crossed 24 hours, so the next automation run requires a fresh
+gameplay-reaching capture. It did not issue a door `UseObject` or configure a
+private v2 terminal-writer journal, so the exact terminal proof path remains to
+be exercised against the live sequence-95
 interaction failure.
 
 The `2026-07-21T10:04+10:00` gate rechecked that structured log at about 2 hours

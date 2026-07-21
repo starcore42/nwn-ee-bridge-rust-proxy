@@ -28,6 +28,7 @@ use crate::{
 
 mod client_ack;
 mod client_filters;
+mod client_replay;
 mod coalesced;
 mod deferred_module_resources;
 mod deflate;
@@ -62,7 +63,6 @@ use sequence::{
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
 const MAX_INTERLEAVED_PACKETS: usize = 32;
-const MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS: usize = 64;
 const MAX_COMPLETED_DIRECT_SERVER_SEMANTIC_REWRITES: usize = 64;
 const CNW_LENGTH_BYTES: usize = 4;
 
@@ -208,7 +208,8 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         anyhow::bail!("client M frame failed reliable-window parse");
     };
     validate_source_transport(&view, "client")?;
-    let semantic_effect_identity = client_reliable_semantic_effect_identity(bytes, &view);
+    let prepared_source =
+        client_replay::prepare_source_slot(&mut state.client_reliable_replays, bytes, &view)?;
     let defer_module_loaded_until_released_packets_are_acked = is_client_module_loaded(view.high)
         && deferred_module_resources::client_ack_would_release_held_server_packets(
             &state.deferred_module_resources.pending,
@@ -224,6 +225,16 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         view.ack_sequence,
     );
 
+    if let client_replay::PreparedClientReliableSource::Conflict(key) = &prepared_source {
+        tracing::warn!(
+            sequence = key.sequence,
+            origin_generation = key.origin_generation,
+            ack_sequence = view.ack_sequence,
+            "client M frame dropped because its reliable slot already committed different immutable transport bytes"
+        );
+        return Ok(Emit::Drop);
+    }
+
     if defer_module_loaded_until_released_packets_are_acked {
         tracing::info!(
             sequence = view.sequence,
@@ -233,6 +244,29 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         return Ok(Emit::Consumed);
     }
 
+    let mut outbound = bytes.to_vec();
+    unshift_client_ack_for_server(state, &mut outbound, &view)?;
+    let ack_adjusted_view = MFrameView::parse(&outbound).unwrap_or_else(|| view.clone());
+    if let client_replay::PreparedClientReliableSource::Replay { key, replay } =
+        prepared_source.clone()
+    {
+        let replay = client_replay::replay_translation(
+            &mut state.client_reliable_replays,
+            key,
+            replay,
+            &outbound,
+        )?;
+        return if let Some(packet) = replay.packet {
+            Ok(Emit::VerifiedPackets {
+                family: replay.family,
+                packets: vec![packet],
+            })
+        } else {
+            Ok(Emit::Consumed)
+        };
+    }
+
+    let source_slot_key = prepared_source.key();
     let native_area_loaded = synthetic_area::is_native_area_loaded(view.high);
     // EE/Diamond decompiles identify 0x04/0x03 as the client
     // `Area_AreaLoaded` acknowledgement sent through
@@ -262,9 +296,6 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         );
     }
 
-    let mut outbound = bytes.to_vec();
-    unshift_client_ack_for_server(state, &mut outbound, &view)?;
-    let ack_adjusted_view = MFrameView::parse(&outbound).unwrap_or_else(|| view.clone());
     shift_client_sequence_for_server(state, &mut outbound, &ack_adjusted_view)?;
     let origin_client_ack_sequence = ack_adjusted_view.ack_sequence;
     let shifted_view = MFrameView::parse(&outbound).unwrap_or(ack_adjusted_view);
@@ -281,13 +312,7 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     let packet = if duplicate_native_area_loaded_after_synthetic {
         translate_duplicate_native_area_loaded_after_synthetic(state, outbound, &shifted_view)?
     } else {
-        translate_client_to_server_packet(
-            state,
-            outbound,
-            &shifted_view,
-            view.sequence,
-            semantic_effect_identity.as_ref(),
-        )?
+        translate_client_to_server_packet(state, outbound, &shifted_view, view.sequence)?
     };
     if let Some(synthetic) = synthetic_area_loaded {
         let synthetic_view = MFrameView::parse(&synthetic)
@@ -297,8 +322,15 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
             synthetic,
             &synthetic_view,
             synthetic_view.sequence,
-            None,
         )?;
+        if let Some(key) = source_slot_key {
+            client_replay::stage_translation(
+                &mut state.client_reliable_replays,
+                key,
+                packet.family,
+                packet.packet.clone(),
+            )?;
+        }
         let mut packets = Vec::new();
         if let Some(packet_bytes) = packet.packet {
             packets.push((packet.family, packet_bytes));
@@ -313,6 +345,14 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         };
     }
 
+    if let Some(key) = source_slot_key {
+        client_replay::stage_translation(
+            &mut state.client_reliable_replays,
+            key,
+            packet.family,
+            packet.packet.clone(),
+        )?;
+    }
     if let Some(packet_bytes) = packet.packet {
         Ok(Emit::VerifiedPackets {
             family: packet.family,
@@ -373,7 +413,6 @@ fn translate_client_to_server_packet(
     bytes: Vec<u8>,
     view: &MFrameView,
     origin_client_sequence: u16,
-    semantic_effect_identity: Option<&state::CompletedClientReliableSemanticEffect>,
 ) -> anyhow::Result<client_filters::ClientFrameTranslation> {
     let translated = client_filters::translate_client_frame(bytes, view, &mut state.semantic)?;
     let reliable_data_frame = view.frame_kind() == Some(MFrameType::ReliableData);
@@ -386,73 +425,13 @@ fn translate_client_to_server_packet(
     let observe_packet = translated.packet.is_some()
         && !(translated.family == VerifiedFamily::ConsumedEmptyMFrame
             && !translated.semantic_observations.is_empty());
-    let has_semantic_effect = observe_packet || !translated.semantic_observations.is_empty();
-    let apply_semantic_effect = !has_semantic_effect
-        || semantic_effect_identity
-            .map(|identity| claim_client_reliable_semantic_effect_once(state, identity))
-            .unwrap_or(true);
-    if apply_semantic_effect {
-        for observation in &translated.semantic_observations {
-            observe_verified_client_payload(state, observation.family, &observation.payload);
-        }
-        if observe_packet && let Some(packet) = translated.packet.as_ref() {
-            observe_verified_client_m_packet(state, translated.family, packet);
-        }
+    for observation in &translated.semantic_observations {
+        observe_verified_client_payload(state, observation.family, &observation.payload);
+    }
+    if observe_packet && let Some(packet) = translated.packet.as_ref() {
+        observe_verified_client_m_packet(state, translated.family, packet);
     }
     Ok(translated)
-}
-
-fn client_reliable_semantic_effect_identity(
-    packet: &[u8],
-    view: &MFrameView,
-) -> Option<state::CompletedClientReliableSemanticEffect> {
-    if view.frame_kind() != Some(MFrameType::ReliableData) {
-        return None;
-    }
-    let payload = parse_window::primary_payload(packet, view)?;
-    Some(state::CompletedClientReliableSemanticEffect {
-        sequence: view.sequence,
-        payload: payload.to_vec(),
-    })
-}
-
-fn claim_client_reliable_semantic_effect_once(
-    state: &mut SessionState,
-    identity: &state::CompletedClientReliableSemanticEffect,
-) -> bool {
-    if state
-        .client_reliable_semantic_effects
-        .completed
-        .iter()
-        .any(|completed| completed == identity)
-    {
-        state
-            .client_reliable_semantic_effects
-            .duplicate_effects_suppressed = state
-            .client_reliable_semantic_effects
-            .duplicate_effects_suppressed
-            .saturating_add(1);
-        tracing::info!(
-            sequence = identity.sequence,
-            payload_len = identity.payload.len(),
-            duplicate_effects_suppressed = state
-                .client_reliable_semantic_effects
-                .duplicate_effects_suppressed,
-            "client reliable M retransmission retained for transport with duplicate semantic and bridge effects suppressed"
-        );
-        return false;
-    }
-
-    if state.client_reliable_semantic_effects.completed.len()
-        >= MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS
-    {
-        state.client_reliable_semantic_effects.completed.pop_front();
-    }
-    state
-        .client_reliable_semantic_effects
-        .completed
-        .push_back(identity.clone());
-    true
 }
 
 fn record_client_sequence_elision(state: &mut SessionState, origin_client_sequence: u16) {
@@ -915,9 +894,16 @@ pub(super) fn begin_client_to_server_emit_validation(
         anyhow::bail!("M emit validation authority already active before client translation");
     }
 
+    // Pin the receive-window identity before the speculative gameplay
+    // snapshot. Diamond and EE retain the type-0 slot even when the later CNW
+    // reader rejects its reconstructed message; only the translated replay
+    // disposition is rolled back for an exact retry.
+    let prepared_source =
+        client_replay::prepare_source_slot(&mut state.client_reliable_replays, bytes, &view)?;
     let token = state::ClientEmitValidationToken {
         source_reliable_sequence: (view.frame_kind() == Some(MFrameType::ReliableData))
             .then_some(view.sequence),
+        source_origin_generation: prepared_source.key().map(|key| key.origin_generation),
         source_ack_sequence: view.ack_sequence,
     };
     let snapshot = capture_engine_facing_effect_snapshot(state);
@@ -925,6 +911,7 @@ pub(super) fn begin_client_to_server_emit_validation(
     state.client_emit_pending_validation = Some(token);
     tracing::trace!(
         source_sequence = token.source_reliable_sequence,
+        source_origin_generation = token.source_origin_generation,
         source_ack_sequence = token.source_ack_sequence,
         "client M began speculative engine-facing effect transaction"
     );
@@ -1034,7 +1021,7 @@ fn capture_engine_facing_effect_snapshot(
         quickbar: state.quickbar.clone(),
         live_object: state.live_object.clone(),
         sequence: state.sequence.clone(),
-        client_reliable_semantic_effects: state.client_reliable_semantic_effects.clone(),
+        client_reliable_replays: state.client_reliable_replays.clone(),
         client_ack: state.client_ack.pending.clone(),
         direct_server_semantic_replays: state.direct_server_semantic_replays.clone(),
         login_waypoint: state.login_waypoint.clone(),
@@ -1066,7 +1053,7 @@ fn restore_engine_facing_effect_snapshot(
     state.quickbar = snapshot.quickbar;
     state.live_object = snapshot.live_object;
     state.sequence = snapshot.sequence;
-    state.client_reliable_semantic_effects = snapshot.client_reliable_semantic_effects;
+    state.client_reliable_replays = snapshot.client_reliable_replays;
     state.client_ack.pending = snapshot.client_ack;
     state.direct_server_semantic_replays = snapshot.direct_server_semantic_replays;
     state.login_waypoint = snapshot.login_waypoint;
@@ -1136,6 +1123,7 @@ pub(super) fn finish_client_to_server_emit_validation(state: &mut SessionState, 
         commit_engine_facing_effect_transaction(state);
         tracing::trace!(
             source_sequence = token.source_reliable_sequence,
+            source_origin_generation = token.source_origin_generation,
             source_ack_sequence = token.source_ack_sequence,
             "strict-validated client M committed speculative engine-facing effects"
         );
@@ -1146,6 +1134,7 @@ pub(super) fn finish_client_to_server_emit_validation(state: &mut SessionState, 
     reapply_validated_client_source_transport(state, token);
     tracing::warn!(
         source_sequence = token.source_reliable_sequence,
+        source_origin_generation = token.source_origin_generation,
         source_ack_sequence = token.source_ack_sequence,
         "client M engine-facing effects rolled back after final strict emit validation rejected the complete batch"
     );
@@ -5936,7 +5925,7 @@ mod tests {
     }
 
     #[test]
-    fn reliable_client_retransmission_applies_semantic_and_bridge_effects_once() {
+    fn reliable_client_slot_replays_first_translation_and_rejects_conflicts() {
         let mut state = SessionState::default();
         let candidate = crate::translate::semantic::InventoryItemContextCandidate {
             object_id: 0x8001_5B01,
@@ -5963,8 +5952,13 @@ mod tests {
             true,
         );
 
-        translate_client_to_server(&client_reliable_m_frame(78, 31, &payload), &mut state)
-            .expect("first reliable ClientGuiInventory frame should translate");
+        let first =
+            translate_client_to_server(&client_reliable_m_frame(78, 31, &payload), &mut state)
+                .expect("first reliable ClientGuiInventory frame should translate");
+        let first_packet = match first {
+            Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+            other => panic!("expected first verified client packet, got {other:?}"),
+        };
         assert_eq!(state.semantic.ui.inventory_packets, 1);
         assert_eq!(
             state.semantic.ui.inventory_equipment_handoff_events, 1,
@@ -5976,8 +5970,23 @@ mod tests {
         );
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
 
-        translate_client_to_server(&client_reliable_m_frame(78, 32, &payload), &mut state)
-            .expect("transport retransmission with a newer ACK should still translate");
+        let mut retransmit = client_reliable_m_frame(78, 32, &payload);
+        retransmit[7] |= 0x40;
+        assert!(encode_legacy_m_crc(&mut retransmit));
+        let replay = translate_client_to_server(&retransmit, &mut state)
+            .expect("transport retransmission with a newer ACK should replay");
+        let replay_packet = match replay {
+            Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+            other => panic!("expected replayed verified client packet, got {other:?}"),
+        };
+        let replay_view = MFrameView::parse(&replay_packet).expect("replayed client frame");
+        let first_view = MFrameView::parse(&first_packet).expect("first client frame");
+        assert_eq!(replay_view.sequence, first_view.sequence);
+        assert_eq!(replay_view.ack_sequence, 32);
+        assert_eq!(replay_view.flags & 0x40, 0x40);
+        assert_eq!(replay_view.flags & 0x8f, first_view.flags & 0x8f);
+        assert_eq!(&replay_packet[8..], &first_packet[8..]);
+        assert!(replay_view.crc_valid);
         assert_eq!(
             state.semantic.ui.inventory_packets, 1,
             "ACK changes do not make the same reliable sequence/payload a new semantic event"
@@ -5988,30 +5997,117 @@ mod tests {
             "retransmission must not queue another synthetic status request"
         );
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
-        assert_eq!(
-            state
-                .client_reliable_semantic_effects
-                .duplicate_effects_suppressed,
-            1
-        );
+        assert_eq!(state.client_reliable_replays.exact_replays, 1);
+        assert_eq!(state.client_reliable_replays.slots.len(), 1);
+        assert!(state.client_reliable_replays.slots[0].replay.is_some());
 
         let distinct_payload = client_gui_inventory::build_status_payload(
             client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
             false,
         );
-        translate_client_to_server(
+        let conflict = translate_client_to_server(
             &client_reliable_m_frame(78, 32, &distinct_payload),
             &mut state,
         )
-        .expect("a reused sequence with a distinct exact payload should translate");
-        assert_eq!(state.semantic.ui.inventory_packets, 2);
-        assert_eq!(state.semantic.ui.inventory_equipment_handoff_events, 2);
+        .expect("immutable slot conflict should produce a fail-closed disposition");
+        assert!(matches!(conflict, Emit::Drop));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(state.semantic.ui.inventory_equipment_handoff_events, 1);
         assert_eq!(
             state.inventory_equipment.queued_client_gui_status_outputs,
-            2
+            1
         );
-        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 2);
-        assert_eq!(state.client_reliable_semantic_effects.completed.len(), 2);
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(state.client_reliable_replays.slots.len(), 1);
+    }
+
+    #[test]
+    fn reliable_client_slot_identity_covers_flags_metadata_tail_and_length() {
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+        let mut state = SessionState::default();
+        let first = client_reliable_m_frame(79, 30, &payload);
+        assert!(!matches!(
+            translate_client_to_server(&first, &mut state).expect("first client slot"),
+            Emit::Drop
+        ));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+
+        let mut immutable_flag_conflict = client_reliable_m_frame(79, 31, &payload);
+        immutable_flag_conflict[7] ^= 0x08;
+        assert!(encode_legacy_m_crc(&mut immutable_flag_conflict));
+
+        let mut packetized_metadata_conflict = client_reliable_m_frame(79, 32, &payload);
+        assert!(write_be_u16(&mut packetized_metadata_conflict, 8, 2));
+        assert!(encode_legacy_m_crc(&mut packetized_metadata_conflict));
+
+        let mut datagram_length_conflict = client_reliable_m_frame(79, 33, &payload);
+        datagram_length_conflict.push(0xAA);
+        assert!(encode_legacy_m_crc(&mut datagram_length_conflict));
+
+        for conflict in [
+            immutable_flag_conflict,
+            packetized_metadata_conflict,
+            datagram_length_conflict,
+        ] {
+            assert!(matches!(
+                translate_client_to_server(&conflict, &mut state)
+                    .expect("immutable source conflict should fail closed"),
+                Emit::Drop
+            ));
+        }
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(33));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(state.client_reliable_replays.slots.len(), 1);
+        assert_eq!(state.client_reliable_replays.exact_replays, 0);
+
+        let exact = client_reliable_m_frame(79, 34, &payload);
+        assert!(!matches!(
+            translate_client_to_server(&exact, &mut state).expect("exact source should replay"),
+            Emit::Drop
+        ));
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(34));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(state.client_reliable_replays.exact_replays, 1);
+    }
+
+    #[test]
+    fn consumed_empty_client_carrier_replays_its_first_accepted_disposition() {
+        let payload = [0x70, 0xFE, 0xFE, 0, 0, 0, 0];
+        let mut state = SessionState::default();
+        let first =
+            translate_client_to_server(&client_reliable_m_frame(80, 50, &payload), &mut state)
+                .expect("unclaimed client high-level should become an empty carrier");
+        let first_packet = match first {
+            Emit::VerifiedPackets { family, packets } => {
+                assert_eq!(family, VerifiedFamily::ConsumedEmptyMFrame);
+                packets.into_iter().next().unwrap()
+            }
+            other => panic!("expected consumed empty carrier, got {other:?}"),
+        };
+        assert_eq!(
+            first_packet.len(),
+            crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+        );
+
+        let replay =
+            translate_client_to_server(&client_reliable_m_frame(80, 51, &payload), &mut state)
+                .expect("empty carrier retransmit should replay");
+        let replay_packet = match replay {
+            Emit::VerifiedPackets { family, packets } => {
+                assert_eq!(family, VerifiedFamily::ConsumedEmptyMFrame);
+                packets.into_iter().next().unwrap()
+            }
+            other => panic!("expected replayed empty carrier, got {other:?}"),
+        };
+        let replay_view = MFrameView::parse(&replay_packet).expect("replayed empty carrier");
+        assert_eq!(replay_packet.len(), first_packet.len());
+        assert_eq!(replay_view.sequence, 80);
+        assert_eq!(replay_view.ack_sequence, 51);
+        assert!(replay_view.crc_valid);
+        assert_eq!(state.client_reliable_replays.exact_replays, 1);
     }
 
     #[test]
@@ -6057,7 +6153,8 @@ mod tests {
             1
         );
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
-        assert_eq!(state.client_reliable_semantic_effects.completed.len(), 1);
+        assert_eq!(state.client_reliable_replays.slots.len(), 1);
+        assert!(state.client_reliable_replays.slots[0].replay.is_some());
         assert!(state.client_emit_effect_snapshot.is_some());
 
         finish_client_to_server_emit_validation(&mut state, false);
@@ -6073,7 +6170,11 @@ mod tests {
             0
         );
         assert!(state.sequence.pending_client_to_server_packets.is_empty());
-        assert!(state.client_reliable_semantic_effects.completed.is_empty());
+        assert_eq!(state.client_reliable_replays.slots.len(), 1);
+        assert!(
+            state.client_reliable_replays.slots[0].replay.is_none(),
+            "strict rejection retains the raw slot fence but rolls back its translated replay"
+        );
         assert!(state.client_emit_effect_snapshot.is_none());
         assert!(state.client_emit_pending_validation.is_none());
 
@@ -6090,7 +6191,8 @@ mod tests {
             1
         );
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
-        assert_eq!(state.client_reliable_semantic_effects.completed.len(), 1);
+        assert_eq!(state.client_reliable_replays.slots.len(), 1);
+        assert!(state.client_reliable_replays.slots[0].replay.is_some());
         assert!(state.client_emit_effect_snapshot.is_none());
         assert!(state.client_emit_pending_validation.is_none());
     }
@@ -6128,22 +6230,42 @@ mod tests {
             translator.m_state.sequence.latest_client_ack_from_client,
             Some(41)
         );
+        assert_eq!(translator.m_state.client_reliable_replays.slots.len(), 1);
         assert!(
-            translator
-                .m_state
-                .client_reliable_semantic_effects
-                .completed
-                .is_empty()
+            translator.m_state.client_reliable_replays.slots[0]
+                .replay
+                .is_none()
         );
         assert!(translator.m_state.semantic.recent_events.is_empty());
         assert!(translator.m_state.client_emit_effect_snapshot.is_none());
         assert!(translator.m_state.client_emit_pending_validation.is_none());
+
+        let mut conflict = packet;
+        conflict[5..7].copy_from_slice(&42u16.to_be_bytes());
+        *conflict.last_mut().unwrap() = 0xAB;
+        assert!(encode_legacy_m_crc(&mut conflict));
+        assert!(matches!(
+            translator.translate(crate::packet::Direction::ClientToServer, &conflict),
+            Emit::Drop
+        ));
+        assert_eq!(
+            translator.m_state.sequence.latest_client_ack_from_client,
+            Some(42),
+            "occupied-slot conflict still reaches the common ACK retirement path"
+        );
+        assert_eq!(translator.m_state.client_reliable_replays.slots.len(), 1);
+        assert!(
+            translator.m_state.client_reliable_replays.slots[0]
+                .replay
+                .is_none()
+        );
     }
 
     #[test]
-    fn client_type_zero_sequence_zero_wraps_shifts_and_deduplicates_retransmit() {
+    fn client_type_zero_sequence_zero_wraps_generation_and_replays_retransmit() {
         let mut state = SessionState::default();
         state.sequence.latest_client_sequence_from_client = Some(u16::MAX);
+        state.client_reliable_replays.latest_origin_sequence = Some(u16::MAX);
         state
             .sequence
             .client_sequence_shifts
@@ -6165,6 +6287,11 @@ mod tests {
         assert_eq!(first_view.sequence, 1);
         assert!(first_view.crc_valid);
         assert_eq!(state.sequence.latest_client_sequence_from_client, Some(0));
+        assert_eq!(state.client_reliable_replays.origin_generation, 1);
+        assert_eq!(
+            state.client_reliable_replays.slots[0].key.origin_generation,
+            1
+        );
         assert_eq!(state.semantic.ui.inventory_packets, 1);
 
         let retransmit =
@@ -6180,12 +6307,72 @@ mod tests {
         assert_eq!(retransmit_view.ack_sequence, 32);
         assert!(retransmit_view.crc_valid);
         assert_eq!(state.semantic.ui.inventory_packets, 1);
-        assert_eq!(
-            state
-                .client_reliable_semantic_effects
-                .duplicate_effects_suppressed,
-            1
+        assert_eq!(state.client_reliable_replays.exact_replays, 1);
+    }
+
+    #[test]
+    fn delayed_pre_wrap_client_slot_replays_from_previous_generation() {
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(u16::MAX - 1);
+        state.client_reliable_replays.latest_origin_sequence = Some(u16::MAX - 1);
+        let first_payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
         );
+        let wrapped_payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            false,
+        );
+
+        let first = translate_client_to_server(
+            &client_reliable_m_frame(u16::MAX, 40, &first_payload),
+            &mut state,
+        )
+        .expect("pre-wrap client slot");
+        let first_packet = match first {
+            Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+            other => panic!("expected pre-wrap verified packet, got {other:?}"),
+        };
+        assert!(!matches!(
+            translate_client_to_server(
+                &client_reliable_m_frame(0, 41, &wrapped_payload),
+                &mut state,
+            )
+            .expect("post-wrap client slot"),
+            Emit::Drop
+        ));
+        assert_eq!(state.client_reliable_replays.origin_generation, 1);
+        assert_eq!(state.client_reliable_replays.slots.len(), 2);
+        assert_eq!(state.semantic.ui.inventory_packets, 2);
+
+        let delayed = translate_client_to_server(
+            &client_reliable_m_frame(u16::MAX, 42, &first_payload),
+            &mut state,
+        )
+        .expect("delayed pre-wrap retransmit");
+        let delayed_packet = match delayed {
+            Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+            other => panic!("expected delayed replay packet, got {other:?}"),
+        };
+        let delayed_view = MFrameView::parse(&delayed_packet).expect("delayed replay view");
+        assert_eq!(delayed_view.ack_sequence, 42);
+        assert_eq!(&delayed_packet[8..], &first_packet[8..]);
+        assert_eq!(state.client_reliable_replays.origin_generation, 1);
+        assert_eq!(
+            state.client_reliable_replays.latest_origin_sequence,
+            Some(0)
+        );
+        assert_eq!(state.semantic.ui.inventory_packets, 2);
+        assert_eq!(state.client_reliable_replays.exact_replays, 1);
+
+        let control = reliable_server_m_frame(u16::MAX, 43, 0x10, 0, &[]);
+        assert!(!matches!(
+            translate_client_to_server(&control, &mut state).expect("independent ACK lane"),
+            Emit::Drop
+        ));
+        assert_eq!(state.client_reliable_replays.slots.len(), 2);
+        assert_eq!(state.sequence.latest_client_sequence_from_client, Some(0));
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(43));
     }
 
     #[test]
@@ -6263,7 +6450,7 @@ mod tests {
 
         assert_eq!(state.sequence.latest_client_sequence_from_client, Some(10));
         assert_eq!(state.sequence.latest_client_ack_from_client, Some(23));
-        assert!(state.client_reliable_semantic_effects.completed.is_empty());
+        assert!(state.client_reliable_replays.slots.is_empty());
         assert_eq!(state.semantic.ui.inventory_packets, 0);
     }
 
@@ -6284,7 +6471,7 @@ mod tests {
         assert_eq!(state.sequence.latest_client_sequence_from_client, None);
         assert_eq!(state.sequence.latest_client_ack_from_client, None);
         assert_eq!(state.semantic.ui.inventory_packets, 0);
-        assert!(state.client_reliable_semantic_effects.completed.is_empty());
+        assert!(state.client_reliable_replays.slots.is_empty());
 
         let strict = crate::strict::decide_verified_translated(
             crate::packet::Direction::ClientToServer,
@@ -6349,13 +6536,7 @@ mod tests {
             None
         );
         assert_eq!(translator.m_state.semantic.ui.inventory_packets, 0);
-        assert!(
-            translator
-                .m_state
-                .client_reliable_semantic_effects
-                .completed
-                .is_empty()
-        );
+        assert!(translator.m_state.client_reliable_replays.slots.is_empty());
         assert!(
             translator
                 .m_state
@@ -6395,34 +6576,72 @@ mod tests {
     }
 
     #[test]
-    fn reliable_client_semantic_effect_window_is_bounded_for_sequence_wrap() {
+    fn reliable_client_slot_window_is_bounded_for_sequence_reuse() {
         let mut state = SessionState::default();
-        let first = state::CompletedClientReliableSemanticEffect {
-            sequence: 7,
-            payload: vec![0x70, 0x0D, 0x01, 0],
+        let first = client_reliable_m_frame(7, 1, &[0x70, 0x0D, 0x01, 0]);
+        let first_view = MFrameView::parse(&first).expect("first client reliable slot");
+        let first_key = match client_replay::prepare_source_slot(
+            &mut state.client_reliable_replays,
+            &first,
+            &first_view,
+        )
+        .expect("pin first client slot")
+        {
+            client_replay::PreparedClientReliableSource::Pending(key) => key,
+            other => panic!("expected pending first client slot, got {other:?}"),
         };
-        assert!(claim_client_reliable_semantic_effect_once(
-            &mut state, &first
-        ));
+        client_replay::stage_translation(
+            &mut state.client_reliable_replays,
+            first_key,
+            VerifiedFamily::ClientInput,
+            Some(first.clone()),
+        )
+        .expect("stage first client replay");
 
-        for index in 0..MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS {
-            let identity = state::CompletedClientReliableSemanticEffect {
-                sequence: 8u16.wrapping_add(index as u16),
-                payload: vec![index as u8],
+        for index in 0..client_replay::MAX_CLIENT_RELIABLE_SLOTS {
+            let packet =
+                client_reliable_m_frame(8u16.wrapping_add(index as u16), 2, &[index as u8]);
+            let view = MFrameView::parse(&packet).expect("bounded client reliable slot");
+            let key = match client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &packet,
+                &view,
+            )
+            .expect("pin bounded client slot")
+            {
+                client_replay::PreparedClientReliableSource::Pending(key) => key,
+                other => panic!("expected pending bounded client slot, got {other:?}"),
             };
-            assert!(claim_client_reliable_semantic_effect_once(
-                &mut state, &identity
-            ));
+            client_replay::stage_translation(
+                &mut state.client_reliable_replays,
+                key,
+                VerifiedFamily::ClientInput,
+                Some(packet),
+            )
+            .expect("stage bounded client replay");
         }
 
         assert_eq!(
-            state.client_reliable_semantic_effects.completed.len(),
-            MAX_COMPLETED_CLIENT_RELIABLE_SEMANTIC_EFFECTS
+            state.client_reliable_replays.slots.len(),
+            client_replay::MAX_CLIENT_RELIABLE_SLOTS
         );
         assert!(
-            claim_client_reliable_semantic_effect_once(&mut state, &first),
-            "an entry outside the bounded reliable window must not suppress sequence reuse"
+            state
+                .client_reliable_replays
+                .slots
+                .iter()
+                .all(|slot| slot.key != first_key),
+            "oldest reliable slot should leave the bounded receive ledger"
         );
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &first,
+                &first_view,
+            )
+            .expect("reuse evicted client slot"),
+            client_replay::PreparedClientReliableSource::Pending(_)
+        ));
     }
 
     #[test]

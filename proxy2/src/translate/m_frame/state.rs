@@ -11,7 +11,7 @@ use crate::translate::{
 };
 
 use super::{
-    client_ack, deferred_module_resources,
+    client_ack, client_replay, deferred_module_resources,
     deflate::PersistentServerInflater,
     live_stream, quickbar_stream,
     reassembly::{
@@ -34,6 +34,10 @@ pub(super) struct ClientEmitValidationToken {
     /// window even if the translated legacy emit later fails strict
     /// validation. Controls have no reliable-data sequence ownership.
     pub(super) source_reliable_sequence: Option<u16>,
+    /// Wrap-safe origin epoch for the type-0 source slot. The immutable slot
+    /// is pinned before the speculative snapshot so a strict reader rejection
+    /// cannot later reinterpret different bytes under the same window key.
+    pub(super) source_origin_generation: Option<u64>,
     /// The source ACK is likewise modulo-u16 transport truth. Zero is the
     /// wrapped successor of `0xFFFF`; absence exists only in optional state,
     /// while a validated wire ACK is always present.
@@ -69,7 +73,7 @@ pub(super) struct EngineFacingEffectSnapshot {
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
-    pub(super) client_reliable_semantic_effects: ClientReliableSemanticEffectState,
+    pub(super) client_reliable_replays: client_replay::ClientReliableReplayState,
     pub(super) client_ack: client_ack::ClientAckState,
     pub(super) direct_server_semantic_replays: DirectServerSemanticReplayState,
     pub(super) login_waypoint: LoginWaypointState,
@@ -206,23 +210,6 @@ pub(super) struct PendingClientDrainEffectSnapshot {
     pub(super) in_flight_area_loaded: Option<synthetic_area::InFlightAreaLoaded>,
     pub(super) server_hold_gate: Option<synthetic_area::ServerHoldGate>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CompletedClientReliableSemanticEffect {
-    pub(super) sequence: u16,
-    pub(super) payload: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(super) struct ClientReliableSemanticEffectState {
-    /// Reliable `M` retransmissions remain transport-visible, but their typed
-    /// semantic and bridge effects must run once per exact sequence/payload.
-    /// Exact bytes avoid treating a reused sequence carrying new data as a
-    /// replay; the bounded window prevents old sequence-wrap entries from
-    /// suppressing later gameplay.
-    pub(super) completed: VecDeque<CompletedClientReliableSemanticEffect>,
-    pub(super) duplicate_effects_suppressed: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -767,7 +754,7 @@ pub struct SessionState {
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
-    pub(super) client_reliable_semantic_effects: ClientReliableSemanticEffectState,
+    pub(super) client_reliable_replays: client_replay::ClientReliableReplayState,
     /// Client-originated translation runs before the outer strict emit owner.
     /// Keep its engine-facing effects reversible while the validated source
     /// transport sequence/ACK remain authoritative on rejection.
@@ -799,7 +786,7 @@ impl SessionState {
             quickbar: QuickbarStreamState::default(),
             live_object: LiveObjectStreamState::default(),
             sequence: SequenceState::default(),
-            client_reliable_semantic_effects: ClientReliableSemanticEffectState::default(),
+            client_reliable_replays: client_replay::ClientReliableReplayState::default(),
             client_emit_effect_snapshot: None,
             client_emit_pending_validation: None,
             pending_client_drain_effect_snapshot: None,

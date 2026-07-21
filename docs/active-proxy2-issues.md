@@ -17,6 +17,59 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 immutable client reliable-slot identity and deterministic replay:
+  the `07:10+10:00` live gate used
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and exactly 23 hours,
+  46 minutes, 1.359 seconds old. It was still inside the 24-hour gate by 13
+  minutes, 58.641 seconds and remains gameplay-reaching evidence: typed
+  `starcore-druid60`, `Module_Loaded`, two native `Area_AreaLoaded` messages,
+  76 exact live-object accepts through 137.813 seconds after final area load,
+  449 strict allows, and zero route conflict, quarantine, `BNDP`, ERROR,
+  quarantine files, or stderr. There was no newer live attempt, so no fresh HG
+  login was required at the start of this run. This artifact crossed 24 hours
+  during the run; the next automation gate requires a fresh gameplay-reaching
+  capture unless another qualifying capture is created first.
+
+  Client type-0 reliable slots are now pinned before semantic dispatch by
+  `(lane, origin generation, source sequence)`. Their immutable identity covers
+  the exact datagram length, byte-7 flags masked by `0x8F`, and every byte from
+  offset 8 through the datagram end. CRC and ACK may refresh, the lane is held
+  in the key, and only FrameSend-owned bit 6 may refresh within that lane.
+  Reuse with different immutable bytes fails closed after retaining validated
+  ACK progress. Once the outer strict owner accepts a first translation, an
+  exact retransmit replays that translated sequence, family, payload, trailing
+  storage, and forward/consume disposition while refreshing only server-facing
+  ACK, bit 6, and CRC; engine-facing effects and proxy-owned synthetic siblings
+  do not run twice. Strict rejection restores a pinned but uncommitted slot so
+  only an exact source retry can translate again. The ledger is bounded to 64
+  slots and distinguishes delayed pre-wrap traffic from the next origin epoch;
+  control lanes never enter it.
+
+  Diamond `sub_5F36E0` lines 751243-751280 and EE `FrameSend` lines
+  879868-879893 prove the send-time CRC/ACK/kind/bit-6 ownership. Diamond
+  `sub_5F3940` lines 751460-751763 and EE `FrameReceive` lines 878825-879146
+  prove type-0-only receive storage, ordered modulo-u16 wrap, and occupied-slot
+  ACK retirement. This transport slice changes no CNW gameplay field order,
+  bit width/order, cursor movement, optional guard, string boundary, nested
+  object boundary, signedness, scale, or gameplay payload bit.
+
+  Formatting, `cargo check`, test compilation, the Release build, 66 root
+  M-frame tests, and 62 strict-path tests pass. Canonical strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-slot-canonical-20260722-0745`
+  processed all 164 packet files with 319 strict allows, 143 generated ACK
+  controls, 97 exact live-object claims, 19 exact live-object rewrites, and ten
+  Area rewrites, with zero strict/semantic quarantine, quarantine files,
+  skipped server packets, output timeouts, route conflicts, warnings, errors,
+  or stderr. This fixture contains no exact client type-0 retransmit, so the
+  identity/replay variants are proven by focused regression tests while the
+  replay proves unchanged real capture ordering.
+
+  The next generalized production path is to normalize the same decompile-
+  proven FrameSend bit-6 mutability in existing server reliable raw, stream,
+  and coalesced identities before treating an otherwise exact retransmit as a
+  conflict. The separate live terminal blocker still needs a deployed v2
+  writer producer and a unique sequence-95 door `UseObject` journal/capture.
 - 2026-07-22 client-emission validation transaction and ACK-zero wrap: the
   live gate used
   `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
