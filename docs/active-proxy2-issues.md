@@ -52,6 +52,54 @@ not as standalone workaround targets.
   The next production path returns to the session-owned raw successor queue for
   quickbar/live-object/zero-fill stream helpers, with dequeue/fence state staged
   across final strict emit validation.
+- 2026-07-21 raw stream-successor transaction: the live-data gate used the
+  gameplay-reaching HG artifact
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and 2 hours 41 minutes old
+  at the `10:04+10:00` audit. It remains current gameplay evidence: typed
+  character selection and `Module_Loaded`, two native `Area_AreaLoaded`
+  messages, 76 exact live-object accepts through 137.813 seconds after the
+  final area load, 449 strict allows, and zero route conflict, quarantine,
+  error, or stderr.
+
+  Recognized quickbar/live-object/zero-fill stream helpers now transfer every
+  withheld reliable successor into a bounded session-owned raw-event queue.
+  The queue keeps the complete source packet, reliable-origin generation, and
+  immutable bytes from the flags/payload region, while an exact retransmit may
+  refresh only ACK/CRC-bearing transport fields. Merges are transactional and
+  fail closed on conflicting identity or the 32-event bound. Each contiguous
+  event re-enters the full typed dispatcher; its queue removal and source-order
+  fence advancement are staged until `SessionTranslator` completes final strict
+  emit validation. Strict rejection retains the raw event for retransmission,
+  and an accepted `Consumed` transfers ownership without deadlocking a
+  packetized predecessor.
+
+  Diamond `sub_5F3940` (lines 751460-751763) and EE
+  `CNetLayerWindow::FrameReceive` (lines 878825-879146) prove that frame type,
+  not sequence value, selects the reliable data lane: type 0 wraps
+  `0xFFFF -> 0x0000`, while type 1 ACK cleanup and type 2 resend controls bypass
+  data ordering at any sequence. The same rule now governs active reassembly,
+  coalesced sequence shifts, server window observation, area/module hold gates,
+  and held-replay collapse. Diamond `sub_5F3FC0` (lines 752182-752453) and EE
+  `UnpacketizeFullMessages` (lines 914423-914649) remain the proof that each
+  count-greater-than-one stored frame contributes its complete raw datagram.
+
+  Focused ordered-successor tests (8), direct frame-type/sequence-zero tests
+  (3), production `cargo check`, formatting/diff checks, the native Release
+  build, and the Rust Release build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-raw-successor-20260721-1045` processed all
+  164 packets with 304 allows, 143 generated ACK controls, 97 exact live-object
+  claims, 19 exact rewrites, ten Area rewrites, and one stable 5,825-byte sealed
+  journal load. Strict/semantic quarantine, quarantine files, rewrite failures,
+  terminal residuals, output timeouts, warnings, errors, and stderr were zero.
+
+  The remaining transaction boundary is broader than this raw queue: semantic
+  observation, synthetic packet queues, sequence shifts, completed-route
+  ledgers, and persistent-inflater effects can still precede final validation.
+  The next production slice should stage those server-M effects behind the same
+  outer accept/reject callback, beginning with direct semantic observation and
+  synthetic/sequence side effects before extending the boundary to inflater
+  completion state.
 - 2026-07-21 packetized deflate storage correction: the newest gameplay-reaching
   HG artifact remains
   `C:\nwnbridge\codex-live-freshness-20260720-0700\harness-proxy-20260720-065922\proxy.structured.log`,
@@ -115,11 +163,11 @@ not as standalone workaround targets.
   commits no Area state. A gap, later buffered event, non-direct/coalesced or
   stream-family event, and completed-stream cache replay remain unacknowledged
   for reliable retransmission instead of being converted into a data shell.
-  Sequence-zero ACK/control frames use their independent control lane and are
-  forwarded immediately with the current ACK, kind, and CRC intact.
+  Type-1/type-2 ACK and resend controls use their independent control lanes and
+  are forwarded immediately at any sequence with current transport fields.
   A bounded post-reassembly source fence survives after the predecessor is
   emitted, blocks a repeated future event until each missing reliable sequence
-  dispatches successfully, and skips reserved control sequence zero at wrap.
+  dispatches successfully, including type-0 data across `0xFFFF -> 0x0000`.
 
   The same audit moved the active-reassembly gate ahead of coalesced semantic
   dispatch and added the decompile-backed `CRCVerifyFrame` source gate before

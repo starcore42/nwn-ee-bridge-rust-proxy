@@ -14,10 +14,19 @@ use crate::translate::{
 
 use super::{
     client_ack, deferred_module_resources, live_stream, quickbar_stream,
-    reassembly::{CompletedDeflatedStreamWindow, ServerDeflatedReassembly},
+    reassembly::{
+        BufferedInterleavedServerPacket, CompletedDeflatedStreamWindow, ServerDeflatedReassembly,
+    },
     sequence::{CoalescedSplitSequenceShift, SequenceElision, SequenceShift},
     synthetic_area,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OrderedSuccessorValidationToken {
+    pub(super) sequence: u16,
+    pub(super) server_origin_generation: u64,
+    pub(super) transport_payload_identity: Vec<u8>,
+}
 
 #[derive(Debug, Default)]
 pub(super) struct DeflateState {
@@ -35,7 +44,15 @@ pub(super) struct DeflateState {
     /// already left `server_reassembly`.
     pub(super) ordered_successor_next_sequence: Option<u16>,
     pub(super) ordered_successor_final_sequence: Option<u16>,
-    pub(super) ordered_successor_payload_identities: Vec<(u16, Vec<u8>)>,
+    /// Exact raw reliable events withheld behind a stream-family predecessor.
+    /// Keep the complete packet and transport epoch, not only a payload hash:
+    /// retransmissions must re-enter the full dispatcher in source order and
+    /// must not inherit another generation's semantic disposition.
+    pub(super) ordered_successor_events: VecDeque<BufferedInterleavedServerPacket>,
+    /// Candidate sequence translated by the core dispatcher but not yet
+    /// accepted by the outer strict validator. The active fence and raw event
+    /// remain unchanged until validation commits this candidate.
+    pub(super) ordered_successor_pending_validation: Option<OrderedSuccessorValidationToken>,
     pub(super) last_server_core_dispatch_accepted: bool,
 }
 

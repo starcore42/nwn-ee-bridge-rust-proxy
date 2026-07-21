@@ -537,7 +537,7 @@ fn shift_packet_sequence_for_existing_server_shifts(
     }
     let view = MFrameView::parse(packet)
         .ok_or_else(|| anyhow::anyhow!("pre-shifted split coalesced packet is not an M frame"))?;
-    if view.sequence == 0 {
+    if view.frame_type != 0 {
         return Ok(());
     }
     let mut shifted = shift_sequence_for_peer(shifts, view.sequence);
@@ -1478,6 +1478,39 @@ fn dump_invalid_inflated_payload_for_span(inflated: &[u8], sequence: u16, reason
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_server_shifts_include_type_zero_sequence_zero_but_not_controls() {
+        let shifts = [SequenceShift {
+            base: u16::MAX,
+            delta: 1,
+        }];
+        let mut wrapped_data = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        wrapped_data[0] = b'M';
+        write_be_u16(&mut wrapped_data, 3, 0);
+        write_be_u16(&mut wrapped_data, 5, 75);
+        wrapped_data[7] = 0x0A;
+        write_be_u16(&mut wrapped_data, 8, 1);
+        assert!(encode_legacy_m_crc(&mut wrapped_data));
+
+        shift_packet_sequence_for_existing_server_shifts(&mut wrapped_data, &shifts, &[], 0)
+            .expect("wrapped type-0 data should shift");
+        let shifted = MFrameView::parse(&wrapped_data).expect("shifted type-0 data frame");
+        assert_eq!(shifted.sequence, 1);
+        assert!(shifted.crc_valid);
+
+        let mut control = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        control[0] = b'M';
+        write_be_u16(&mut control, 3, 95);
+        write_be_u16(&mut control, 5, 75);
+        control[7] = 0x10;
+        assert!(encode_legacy_m_crc(&mut control));
+        let before = control.clone();
+
+        shift_packet_sequence_for_existing_server_shifts(&mut control, &shifts, &[], 0)
+            .expect("type-1 control should bypass data shifts");
+        assert_eq!(control, before);
+    }
 
     #[test]
     fn coalesced_stream_continuation_requires_known_proxy_owned_owner() {

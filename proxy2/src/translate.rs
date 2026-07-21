@@ -425,6 +425,8 @@ impl SessionTranslator {
         // Translation happens before strict validation. This prevents an
         // untranslated-but-recognized packet from slipping through simply
         // because its top-level tag is known.
+        let finish_server_m_validation = direction == Direction::ServerToClient
+            && matches!(Packet::classify(bytes), Packet::M(_));
         let emit = match self.translate_known(direction, bytes) {
             Ok(translated) => translated,
             Err(err) => {
@@ -433,11 +435,21 @@ impl SessionTranslator {
                     error = %err,
                     "strict semantic translation failed"
                 );
+                if finish_server_m_validation {
+                    m_frame::finish_server_to_client_emit_validation(&mut self.m_state, false);
+                }
                 return Emit::Drop;
             }
         };
 
-        self.validate_emit(direction, emit)
+        let validated = self.validate_emit(direction, emit);
+        if finish_server_m_validation {
+            m_frame::finish_server_to_client_emit_validation(
+                &mut self.m_state,
+                !matches!(&validated, Emit::Drop),
+            );
+        }
+        validated
     }
 
     fn translate_known(&mut self, direction: Direction, bytes: &[u8]) -> anyhow::Result<Emit> {

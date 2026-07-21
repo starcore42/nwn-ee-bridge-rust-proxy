@@ -479,15 +479,16 @@ fn is_client_module_loaded(high: Option<HighLevel>) -> bool {
 }
 
 pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
-    let parsed_sequence = MFrameView::parse(bytes)
-        .filter(|view| view.crc_valid)
-        .map(|view| view.sequence);
-    let fence_candidate = match (
+    let parsed_view = MFrameView::parse(bytes).filter(|view| view.crc_valid);
+    let parsed_sequence = parsed_view.as_ref().map(|view| view.sequence);
+    let parsed_frame_type = parsed_view.as_ref().map(|view| view.frame_type);
+    let fence_candidate_sequence = match (
         parsed_sequence,
         state.deflate.ordered_successor_next_sequence,
     ) {
-        (Some(0) | None, _) | (_, None) => false,
-        (Some(sequence), Some(expected)) if sequence == expected => true,
+        _ if parsed_frame_type != Some(0) => None,
+        (None, _) | (_, None) => None,
+        (Some(sequence), Some(expected)) if sequence == expected => Some(expected),
         (Some(sequence), Some(expected)) if sequence_at_or_after(sequence, expected) => {
             let view = MFrameView::parse(bytes).expect("validated reliable frame");
             inventory_equipment::observe_server_ack_for_client_gui_status(state, view.ack_sequence);
@@ -504,16 +505,24 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             );
             return Ok(Emit::Drop);
         }
-        _ => false,
+        _ => None,
     };
-    if fence_candidate {
-        if let Some((_, identity)) = state
+    if let Some(fence_sequence) = fence_candidate_sequence {
+        if state.deflate.ordered_successor_pending_validation.is_some() {
+            tracing::warn!(
+                sequence = fence_sequence,
+                "ordered server successor received before prior emit validation completed"
+            );
+            return Ok(Emit::Drop);
+        }
+        if let Some(index) = state
             .deflate
-            .ordered_successor_payload_identities
+            .ordered_successor_events
             .iter()
-            .find(|(sequence, _)| Some(*sequence) == parsed_sequence)
+            .position(|event| Some(event.sequence) == parsed_sequence)
         {
-            if bytes.get(7..).unwrap_or_default() != identity {
+            let event = &state.deflate.ordered_successor_events[index];
+            if bytes.get(7..).unwrap_or_default() != event.transport_payload_identity {
                 let view = MFrameView::parse(bytes).expect("validated reliable frame");
                 inventory_equipment::observe_server_ack_for_client_gui_status(
                     state,
@@ -531,39 +540,121 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
                 );
                 return Ok(Emit::Drop);
             }
+            let view = parsed_view
+                .as_ref()
+                .expect("ordered successor candidate has a valid parsed frame");
+            state.deflate.ordered_successor_events[index].packet = bytes.to_vec();
+            state.deflate.ordered_successor_events[index].server_peer_ack_sequence =
+                view.ack_sequence;
         }
     }
 
     state.deflate.last_server_core_dispatch_accepted = false;
     let emit = translate_server_to_client_inner(bytes, state)?;
-    if fence_candidate && state.deflate.last_server_core_dispatch_accepted {
-        let expected = state
-            .deflate
-            .ordered_successor_next_sequence
-            .expect("ordered successor candidate retains fence");
+    if let Some(expected) = fence_candidate_sequence.filter(|_| {
+        state.deflate.last_server_core_dispatch_accepted && !matches!(&emit, Emit::Drop)
+    }) {
         let final_sequence = state
             .deflate
             .ordered_successor_final_sequence
             .unwrap_or(expected);
-        if expected == final_sequence {
-            state.deflate.ordered_successor_next_sequence = None;
-            state.deflate.ordered_successor_final_sequence = None;
-            state.deflate.ordered_successor_payload_identities.clear();
-        } else {
-            state.deflate.ordered_successor_next_sequence =
-                Some(next_nonzero_reliable_sequence(expected));
-            state
-                .deflate
-                .ordered_successor_payload_identities
-                .retain(|(sequence, _)| *sequence != expected);
-        }
+        let transport_payload_identity = bytes.get(7..).unwrap_or_default().to_vec();
+        let server_origin_generation = state
+            .deflate
+            .ordered_successor_events
+            .iter()
+            .find(|event| {
+                event.sequence == expected
+                    && event.transport_payload_identity == transport_payload_identity
+            })
+            .map(|event| event.server_origin_generation)
+            .unwrap_or(state.direct_server_semantic_replays.origin_generation);
+        state.deflate.ordered_successor_pending_validation =
+            Some(state::OrderedSuccessorValidationToken {
+                sequence: expected,
+                server_origin_generation,
+                transport_payload_identity,
+            });
         tracing::info!(
             sequence = expected,
             final_sequence,
-            "successfully dispatched server M advanced ordered successor fence"
+            "successfully dispatched server M staged ordered successor advancement pending strict validation"
         );
     }
     Ok(emit)
+}
+
+/// Commit or reject the ordered-successor transport transaction after the
+/// outer strict validator has classified the complete emitted packet batch.
+///
+/// Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` advance reliable
+/// receive storage in sequence order, while gameplay dispatch happens only
+/// after the stored message is reconstructed. Proxy2 similarly must not dequeue
+/// a buffered successor merely because its translator returned a plausible
+/// packet: the exact emitted shape must pass the final strict owner first.
+pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, accepted: bool) {
+    let Some(token) = state.deflate.ordered_successor_pending_validation.take() else {
+        return;
+    };
+    let expected = token.sequence;
+    if state.deflate.ordered_successor_next_sequence != Some(expected) {
+        tracing::warn!(
+            sequence = expected,
+            active_sequence = state.deflate.ordered_successor_next_sequence.unwrap_or(0),
+            "ordered server successor validation result ignored because the active fence changed"
+        );
+        return;
+    }
+    if !accepted {
+        tracing::warn!(
+            sequence = expected,
+            queued_events = state.deflate.ordered_successor_events.len(),
+            "ordered server successor retained because final strict emit validation rejected it"
+        );
+        return;
+    }
+
+    if let Some(event) = state
+        .deflate
+        .ordered_successor_events
+        .iter()
+        .find(|event| event.sequence == expected)
+    {
+        if event.server_origin_generation != token.server_origin_generation
+            || event.transport_payload_identity != token.transport_payload_identity
+        {
+            tracing::warn!(
+                sequence = expected,
+                queued_server_origin_generation = event.server_origin_generation,
+                validated_server_origin_generation = token.server_origin_generation,
+                "ordered server successor retained because validated token no longer matches raw queue identity"
+            );
+            return;
+        }
+    }
+
+    let final_sequence = state
+        .deflate
+        .ordered_successor_final_sequence
+        .unwrap_or(expected);
+    state.deflate.ordered_successor_events.retain(|event| {
+        event.sequence != expected
+            || event.server_origin_generation != token.server_origin_generation
+            || event.transport_payload_identity != token.transport_payload_identity
+    });
+    if expected == final_sequence {
+        state.deflate.ordered_successor_next_sequence = None;
+        state.deflate.ordered_successor_final_sequence = None;
+        state.deflate.ordered_successor_events.clear();
+    } else {
+        state.deflate.ordered_successor_next_sequence = Some(next_reliable_sequence(expected));
+    }
+    tracing::info!(
+        sequence = expected,
+        final_sequence,
+        remaining_queued_events = state.deflate.ordered_successor_events.len(),
+        "strict-validated server M committed ordered successor advancement"
+    );
 }
 
 fn translate_server_to_client_inner(
@@ -587,7 +678,25 @@ fn translate_server_to_client_inner(
         );
         return Ok(Emit::Drop);
     }
-    let server_origin_generation = observe_server_origin_reliable_generation(state, view.sequence);
+    let server_origin_generation = observe_server_origin_reliable_generation(state, &view);
+    if state.deflate.ordered_successor_next_sequence == Some(view.sequence) {
+        if let Some(event) = state
+            .deflate
+            .ordered_successor_events
+            .iter()
+            .find(|event| event.sequence == view.sequence)
+        {
+            if event.server_origin_generation != server_origin_generation {
+                tracing::warn!(
+                    sequence = view.sequence,
+                    queued_server_origin_generation = event.server_origin_generation,
+                    server_origin_generation,
+                    "ordered server successor rejected across reliable-origin generation change"
+                );
+                return Ok(Emit::Drop);
+            }
+        }
+    }
     if let CompletedServerReliableStreamSlotMatch::Conflict(committed_route) =
         reassembly::completed_server_reliable_stream_slot(
             state,
@@ -1919,7 +2028,7 @@ fn exact_direct_semantic_source_payload<'a>(
     bytes: &'a [u8],
     view: &MFrameView,
 ) -> Option<&'a [u8]> {
-    if view.sequence == 0
+    if view.frame_type != 0
         || view.trailing_payload_length != 0
         || view.packetized_sequence != 1
         || view.deflated.is_some()
@@ -1930,11 +2039,12 @@ fn exact_direct_semantic_source_payload<'a>(
     parse_window::primary_payload(bytes, view)
 }
 
-fn observe_server_origin_reliable_generation(state: &mut SessionState, sequence: u16) -> u64 {
+fn observe_server_origin_reliable_generation(state: &mut SessionState, view: &MFrameView) -> u64 {
     let replay = &mut state.direct_server_semantic_replays;
-    if sequence == 0 {
+    if view.frame_type != 0 {
         return replay.origin_generation;
     }
+    let sequence = view.sequence;
     let Some(latest) = replay.latest_origin_sequence else {
         replay.latest_origin_sequence = Some(sequence);
         return replay.origin_generation;
@@ -2071,10 +2181,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
 
     let events = std::mem::take(&mut reassembly.interleaved_events);
     let fallbacks = std::mem::take(&mut reassembly.interleaved_packets);
-    state.deflate.ordered_successor_payload_identities = events
-        .iter()
-        .map(|event| (event.sequence, event.transport_payload_identity.clone()))
-        .collect();
+    merge_ordered_server_successor_events(state, &events)?;
     let final_sequence = events.last().map(|event| event.sequence);
     let mut resolved = Vec::with_capacity(1);
     let next_distance = reassembly.expected_frames;
@@ -2084,7 +2191,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
         if distance != next_distance {
             arm_ordered_server_successor_fence(
                 state,
-                advance_nonzero_reliable_sequence(reassembly.first_sequence, next_distance),
+                advance_reliable_sequence(reassembly.first_sequence, next_distance),
                 final_sequence.unwrap_or(event.sequence),
             );
             tracing::warn!(
@@ -2174,7 +2281,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             if final_sequence.is_some_and(|last| last != event.sequence) {
                 arm_ordered_server_successor_fence(
                     state,
-                    next_nonzero_reliable_sequence(event.sequence),
+                    next_reliable_sequence(event.sequence),
                     final_sequence.unwrap_or(event.sequence),
                 );
             }
@@ -2205,7 +2312,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             if final_sequence.is_some_and(|last| last != event.sequence) {
                 arm_ordered_server_successor_fence(
                     state,
-                    next_nonzero_reliable_sequence(event.sequence),
+                    next_reliable_sequence(event.sequence),
                     final_sequence.unwrap_or(event.sequence),
                 );
             }
@@ -2227,7 +2334,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
 
     reassembly.interleaved_packets = resolved;
     if state.deflate.ordered_successor_next_sequence.is_none() {
-        state.deflate.ordered_successor_payload_identities.clear();
+        state.deflate.ordered_successor_events.clear();
     }
     Ok(())
 }
@@ -2246,14 +2353,50 @@ fn arm_ordered_server_successor_fence(
     );
 }
 
-fn next_nonzero_reliable_sequence(sequence: u16) -> u16 {
-    let next = sequence.wrapping_add(1);
-    if next == 0 { 1 } else { next }
+fn merge_ordered_server_successor_events(
+    state: &mut SessionState,
+    events: &[reassembly::BufferedInterleavedServerPacket],
+) -> anyhow::Result<()> {
+    // Merge transactionally. A late conflict or capacity failure must not
+    // leave a prefix of the candidate suffix orphaned behind the active fence.
+    let mut merged = state.deflate.ordered_successor_events.clone();
+    for event in events {
+        if let Some(existing) = merged.iter_mut().find(|existing| {
+            existing.server_origin_generation == event.server_origin_generation
+                && existing.sequence == event.sequence
+        }) {
+            if existing.transport_payload_identity != event.transport_payload_identity {
+                anyhow::bail!(
+                    "conflicting raw ordered successor identity for sequence {} generation {}",
+                    event.sequence,
+                    event.server_origin_generation
+                );
+            }
+            existing.packet = event.packet.clone();
+            existing.server_peer_ack_sequence = event.server_peer_ack_sequence;
+            continue;
+        }
+        if merged.len() >= MAX_INTERLEAVED_PACKETS {
+            anyhow::bail!(
+                "raw ordered successor queue exceeds bounded capacity {} at sequence {} generation {}",
+                MAX_INTERLEAVED_PACKETS,
+                event.sequence,
+                event.server_origin_generation
+            );
+        }
+        merged.push_back(event.clone());
+    }
+    state.deflate.ordered_successor_events = merged;
+    Ok(())
 }
 
-fn advance_nonzero_reliable_sequence(mut sequence: u16, steps: usize) -> u16 {
+fn next_reliable_sequence(sequence: u16) -> u16 {
+    sequence.wrapping_add(1)
+}
+
+fn advance_reliable_sequence(mut sequence: u16, steps: usize) -> u16 {
     for _ in 0..steps {
-        sequence = next_nonzero_reliable_sequence(sequence);
+        sequence = next_reliable_sequence(sequence);
     }
     sequence
 }
@@ -2261,22 +2404,30 @@ fn advance_nonzero_reliable_sequence(mut sequence: u16, steps: usize) -> u16 {
 fn arm_withheld_reassembly_successors(
     state: &mut SessionState,
     reassembly: &ServerDeflatedReassembly,
-) {
+) -> anyhow::Result<()> {
     let Some(final_sequence) = reassembly
         .interleaved_events
         .last()
         .map(|event| event.sequence)
     else {
-        return;
+        return Ok(());
     };
-    state.deflate.ordered_successor_payload_identities = reassembly
-        .interleaved_events
-        .iter()
-        .map(|event| (event.sequence, event.transport_payload_identity.clone()))
-        .collect();
-    let next_sequence =
-        advance_nonzero_reliable_sequence(reassembly.first_sequence, reassembly.expected_frames);
+    merge_ordered_server_successor_events(state, &reassembly.interleaved_events)?;
+    let computed_next =
+        advance_reliable_sequence(reassembly.first_sequence, reassembly.expected_frames);
+    let next_sequence = state
+        .deflate
+        .ordered_successor_next_sequence
+        .unwrap_or(computed_next);
+    let final_sequence = state
+        .deflate
+        .ordered_successor_final_sequence
+        .into_iter()
+        .chain(std::iter::once(final_sequence))
+        .max_by_key(|sequence| sequence.wrapping_sub(next_sequence))
+        .unwrap_or(final_sequence);
     arm_ordered_server_successor_fence(state, next_sequence, final_sequence);
+    Ok(())
 }
 
 fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> anyhow::Result<()> {
@@ -2287,7 +2438,7 @@ fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> 
     let Some(view) = MFrameView::parse(packet) else {
         return Ok(());
     };
-    if view.sequence == 0 {
+    if view.frame_type != 0 {
         return Ok(());
     }
 
@@ -3117,9 +3268,409 @@ mod tests {
     }
 
     #[test]
-    fn ordered_successor_sequence_skips_reserved_control_zero_at_wrap() {
-        assert_eq!(next_nonzero_reliable_sequence(u16::MAX), 1);
-        assert_eq!(advance_nonzero_reliable_sequence(u16::MAX - 1, 2), 1);
+    fn ordered_successor_data_sequence_wraps_through_zero() {
+        // Diamond sub_5F3940 and EE FrameReceive reserve frame *types* 1/2 for
+        // control; the type-0 receive cursor itself wraps FFFF -> 0000.
+        assert_eq!(next_reliable_sequence(u16::MAX), 0);
+        assert_eq!(advance_reliable_sequence(u16::MAX - 1, 2), 0);
+    }
+
+    fn queue_ordered_successor_for_test(state: &mut SessionState, packet: &[u8]) {
+        let view = MFrameView::parse(packet).expect("ordered successor test frame");
+        state.deflate.ordered_successor_next_sequence = Some(view.sequence);
+        state.deflate.ordered_successor_final_sequence = Some(view.sequence);
+        state.deflate.ordered_successor_events.push_back(
+            reassembly::BufferedInterleavedServerPacket {
+                packet: packet.to_vec(),
+                sequence: view.sequence,
+                server_peer_ack_sequence: view.ack_sequence,
+                server_origin_generation: 0,
+                transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+            },
+        );
+    }
+
+    fn strict_session_translator_for_test() -> crate::translate::SessionTranslator {
+        let template = crate::translate::Translator {
+            strict_translate: true,
+            strict_profile: crate::config::StrictProfile::Player,
+            diamond_identity: crate::identity::DiamondIdentity::default(),
+            bncs_private_build: 8109,
+            bncs_build_field: 3,
+            bnxr_nwsync_advertisement: None,
+            server_port: 5121,
+            discovery_session_name: "test-session",
+            discovery_module_name: "test-module",
+            module_resources: crate::translate::module_resources::ModuleResourceRuntime::default(),
+            synthetic_area_loadbar: true,
+            quickbar_item_refresh_hint: None,
+        };
+        template.new_session(5122)
+    }
+
+    fn pending_ordered_successor_sequence(state: &SessionState) -> Option<u16> {
+        state
+            .deflate
+            .ordered_successor_pending_validation
+            .as_ref()
+            .map(|token| token.sequence)
+    }
+
+    #[test]
+    fn raw_ordered_successor_dequeues_only_after_final_emit_validation() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let first = client_reliable_m_frame(42, 75, &payload);
+        let mut state = SessionState::default();
+        queue_ordered_successor_for_test(&mut state, &first);
+
+        let first_emit = translate_server_to_client(&first, &mut state)
+            .expect("queued successor should reach its typed dispatcher");
+        assert!(!matches!(first_emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(42));
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(42));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, first);
+
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(pending_ordered_successor_sequence(&state), None);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(42));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(
+            state.deflate.ordered_successor_events[0].server_peer_ack_sequence,
+            75
+        );
+
+        let retry = client_reliable_m_frame(42, 76, &payload);
+        let retry_emit = translate_server_to_client(&retry, &mut state)
+            .expect("exact retransmit should retry from the retained raw queue");
+        assert!(!matches!(retry_emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(42));
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, retry);
+        assert_eq!(
+            state.deflate.ordered_successor_events[0].server_peer_ack_sequence,
+            76
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(pending_ordered_successor_sequence(&state), None);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
+        assert_eq!(state.deflate.ordered_successor_final_sequence, None);
+        assert!(state.deflate.ordered_successor_events.is_empty());
+    }
+
+    #[test]
+    fn raw_ordered_successor_rejects_conflicting_retransmit_without_dequeue() {
+        let expected_payload = crate::translate::loadbar::start_payload(2);
+        let expected = client_reliable_m_frame(43, 75, &expected_payload);
+        let mut state = SessionState::default();
+        queue_ordered_successor_for_test(&mut state, &expected);
+
+        let conflicting_payload = crate::translate::loadbar::start_payload(3);
+        let conflicting = client_reliable_m_frame(43, 76, &conflicting_payload);
+        assert!(matches!(
+            translate_server_to_client(&conflicting, &mut state)
+                .expect("conflicting retransmit should fail closed"),
+            Emit::Drop
+        ));
+        assert_eq!(pending_ordered_successor_sequence(&state), None);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(43));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, expected);
+    }
+
+    #[test]
+    fn ordered_successor_merge_is_transactional_on_late_capacity_failure() {
+        let mut state = SessionState::default();
+        for sequence in 0..(MAX_INTERLEAVED_PACKETS - 1) as u16 {
+            let packet =
+                client_reliable_m_frame(sequence, 75, &crate::translate::loadbar::start_payload(2));
+            let view = MFrameView::parse(&packet).expect("queued capacity-test frame");
+            state.deflate.ordered_successor_events.push_back(
+                reassembly::BufferedInterleavedServerPacket {
+                    packet: packet.clone(),
+                    sequence,
+                    server_peer_ack_sequence: view.ack_sequence,
+                    server_origin_generation: 0,
+                    transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+                },
+            );
+        }
+        let before = state.deflate.ordered_successor_events.clone();
+        let candidates = [200_u16, 201_u16]
+            .into_iter()
+            .map(|sequence| {
+                let packet = client_reliable_m_frame(
+                    sequence,
+                    76,
+                    &crate::translate::loadbar::start_payload(3),
+                );
+                reassembly::BufferedInterleavedServerPacket {
+                    packet: packet.clone(),
+                    sequence,
+                    server_peer_ack_sequence: 76,
+                    server_origin_generation: 0,
+                    transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert!(merge_ordered_server_successor_events(&mut state, &candidates).is_err());
+        assert_eq!(state.deflate.ordered_successor_events.len(), before.len());
+        for (actual, expected) in state
+            .deflate
+            .ordered_successor_events
+            .iter()
+            .zip(before.iter())
+        {
+            assert_eq!(actual.sequence, expected.sequence);
+            assert_eq!(
+                actual.server_origin_generation,
+                expected.server_origin_generation
+            );
+            assert_eq!(
+                actual.server_peer_ack_sequence,
+                expected.server_peer_ack_sequence
+            );
+            assert_eq!(actual.packet, expected.packet);
+            assert_eq!(
+                actual.transport_payload_identity,
+                expected.transport_payload_identity
+            );
+        }
+    }
+
+    #[test]
+    fn session_translator_commits_ordered_successor_after_automatic_strict_accept() {
+        let packet = client_reliable_m_frame(44, 75, &crate::translate::loadbar::start_payload(2));
+        let mut translator = strict_session_translator_for_test();
+        queue_ordered_successor_for_test(&mut translator.m_state, &packet);
+
+        let emit = translator.translate(crate::packet::Direction::ServerToClient, &packet);
+
+        assert!(!matches!(emit, Emit::Drop));
+        assert_eq!(
+            pending_ordered_successor_sequence(&translator.m_state),
+            None
+        );
+        assert_eq!(
+            translator.m_state.deflate.ordered_successor_next_sequence,
+            None
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .ordered_successor_events
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn session_translator_retains_ordered_successor_after_automatic_strict_reject() {
+        let packet = client_reliable_m_frame(45, 75, &crate::translate::loadbar::start_payload(2));
+        let mut translator = strict_session_translator_for_test();
+        queue_ordered_successor_for_test(&mut translator.m_state, &packet);
+        translator
+            .m_state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .push(synthetic_area::PendingServerPacket {
+                family: VerifiedFamily::LoadBar,
+                packet: vec![b'M'],
+                due_at: Instant::now(),
+                reason: "strict rejection callback test",
+                placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
+            });
+
+        let emit = translator.translate(crate::packet::Direction::ServerToClient, &packet);
+
+        assert!(matches!(emit, Emit::Drop));
+        assert_eq!(
+            pending_ordered_successor_sequence(&translator.m_state),
+            None
+        );
+        assert_eq!(
+            translator.m_state.deflate.ordered_successor_next_sequence,
+            Some(45)
+        );
+        assert_eq!(translator.m_state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(
+            translator.m_state.deflate.ordered_successor_events[0].packet,
+            packet
+        );
+    }
+
+    #[test]
+    fn ordered_successor_lane_uses_frame_type_and_accepts_type_zero_sequence_zero() {
+        let data = client_reliable_m_frame(0, 75, &crate::translate::loadbar::start_payload(2));
+        let mut state = SessionState::default();
+        queue_ordered_successor_for_test(&mut state, &data);
+
+        let data_emit = translate_server_to_client(&data, &mut state)
+            .expect("type-0 sequence-zero data should use the ordered lane");
+        assert!(!matches!(data_emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(0));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
+        assert!(state.deflate.ordered_successor_events.is_empty());
+
+        let expected =
+            client_reliable_m_frame(50, 76, &crate::translate::loadbar::start_payload(3));
+        queue_ordered_successor_for_test(&mut state, &expected);
+        let control = reliable_server_m_frame(99, 77, 0x10, 0, &[]);
+        let control_emit = translate_server_to_client(&control, &mut state)
+            .expect("type-1 control should bypass ordered data at any sequence");
+        assert!(!matches!(control_emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), None);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(50));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+    }
+
+    #[test]
+    fn stream_helper_withheld_suffix_persists_complete_raw_successor_event() {
+        let successor =
+            client_reliable_m_frame(52, 81, &crate::translate::loadbar::start_payload(2));
+        let view = MFrameView::parse(&successor).expect("raw successor frame");
+        let event = reassembly::BufferedInterleavedServerPacket {
+            packet: successor.clone(),
+            sequence: view.sequence,
+            server_peer_ack_sequence: 91,
+            server_origin_generation: 7,
+            transport_payload_identity: successor.get(7..).unwrap_or_default().to_vec(),
+        };
+        let reassembly = ServerDeflatedReassembly {
+            inflated_length: 32,
+            expected_frames: 2,
+            first_sequence: 50,
+            server_origin_generation: 7,
+            packetized_sequence: 2,
+            zlib_stream: true,
+            frames: Vec::new(),
+            interleaved_packets: Vec::new(),
+            interleaved_events: vec![event.clone()],
+        };
+        let mut state = SessionState::default();
+
+        arm_withheld_reassembly_successors(&mut state, &reassembly)
+            .expect("raw successor suffix should arm");
+
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(52));
+        assert_eq!(state.deflate.ordered_successor_final_sequence, Some(52));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        let queued = &state.deflate.ordered_successor_events[0];
+        assert_eq!(queued.packet, successor);
+        assert_eq!(queued.server_peer_ack_sequence, 91);
+        assert_eq!(queued.server_origin_generation, 7);
+        assert_eq!(
+            queued.transport_payload_identity,
+            event.transport_payload_identity
+        );
+    }
+
+    #[test]
+    fn nested_stream_helper_suffix_merges_without_clobbering_active_raw_queue() {
+        let active = client_reliable_m_frame(61, 80, &crate::translate::loadbar::start_payload(2));
+        let later = client_reliable_m_frame(62, 81, &crate::translate::loadbar::start_payload(3));
+        let later_view = MFrameView::parse(&later).expect("later raw successor");
+        let mut state = SessionState::default();
+        queue_ordered_successor_for_test(&mut state, &active);
+        let reassembly = ServerDeflatedReassembly {
+            inflated_length: 32,
+            expected_frames: 1,
+            first_sequence: 61,
+            server_origin_generation: 0,
+            packetized_sequence: 1,
+            zlib_stream: true,
+            frames: Vec::new(),
+            interleaved_packets: Vec::new(),
+            interleaved_events: vec![reassembly::BufferedInterleavedServerPacket {
+                packet: later.clone(),
+                sequence: later_view.sequence,
+                server_peer_ack_sequence: later_view.ack_sequence,
+                server_origin_generation: 0,
+                transport_payload_identity: later.get(7..).unwrap_or_default().to_vec(),
+            }],
+        };
+
+        arm_withheld_reassembly_successors(&mut state, &reassembly)
+            .expect("nested raw successor suffix should merge");
+
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(61));
+        assert_eq!(state.deflate.ordered_successor_final_sequence, Some(62));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 2);
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, active);
+        assert_eq!(state.deflate.ordered_successor_events[1].packet, later);
+    }
+
+    #[test]
+    fn nested_stream_helper_suffix_conflict_fails_closed_and_retains_first_event() {
+        let first = client_reliable_m_frame(63, 80, &crate::translate::loadbar::start_payload(2));
+        let conflicting =
+            client_reliable_m_frame(63, 81, &crate::translate::loadbar::start_payload(3));
+        let conflicting_view = MFrameView::parse(&conflicting).expect("conflicting raw successor");
+        let mut state = SessionState::default();
+        queue_ordered_successor_for_test(&mut state, &first);
+        let reassembly = ServerDeflatedReassembly {
+            inflated_length: 32,
+            expected_frames: 1,
+            first_sequence: 62,
+            server_origin_generation: 0,
+            packetized_sequence: 1,
+            zlib_stream: true,
+            frames: Vec::new(),
+            interleaved_packets: Vec::new(),
+            interleaved_events: vec![reassembly::BufferedInterleavedServerPacket {
+                packet: conflicting.clone(),
+                sequence: conflicting_view.sequence,
+                server_peer_ack_sequence: conflicting_view.ack_sequence,
+                server_origin_generation: 0,
+                transport_payload_identity: conflicting.get(7..).unwrap_or_default().to_vec(),
+            }],
+        };
+
+        assert!(arm_withheld_reassembly_successors(&mut state, &reassembly).is_err());
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(63));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, first);
+    }
+
+    #[test]
+    fn packetized_raw_ordered_successor_commits_each_stored_frame_in_order() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let (first, second) = two_frame_deflated_window(54, 82, &payload);
+        let first_view = MFrameView::parse(&first).expect("first packetized successor");
+        let second_view = MFrameView::parse(&second).expect("second packetized successor");
+        let mut state = SessionState::default();
+        state.deflate.ordered_successor_next_sequence = Some(54);
+        state.deflate.ordered_successor_final_sequence = Some(55);
+        for (packet, view) in [(&first, &first_view), (&second, &second_view)] {
+            state.deflate.ordered_successor_events.push_back(
+                reassembly::BufferedInterleavedServerPacket {
+                    packet: packet.clone(),
+                    sequence: view.sequence,
+                    server_peer_ack_sequence: view.ack_sequence,
+                    server_origin_generation: 0,
+                    transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+                },
+            );
+        }
+
+        let first_emit = translate_server_to_client(&first, &mut state)
+            .expect("first stored frame should enter reassembly");
+        assert!(matches!(first_emit, Emit::Consumed));
+        assert!(state.deflate.server_reassembly.is_some());
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(54));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(55));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+
+        let second_emit = translate_server_to_client(&second, &mut state)
+            .expect("second stored frame should complete typed reassembly");
+        assert!(!matches!(second_emit, Emit::Drop));
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(55));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
+        assert!(state.deflate.ordered_successor_events.is_empty());
     }
 
     #[test]
@@ -3361,6 +3912,7 @@ mod tests {
                 .sequence,
             72
         );
+        finish_server_to_client_emit_validation(&mut state, true);
         let retransmit_packets = proof_packets(
             translate_server_to_client(&area_frame, &mut state).expect("retransmit gapped Area"),
         );
@@ -3419,15 +3971,15 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_ack_control_shell_survives_pending_predecessor() {
+    fn interleaved_ack_control_shell_survives_pending_predecessor_at_any_sequence() {
         let predecessor = crate::translate::loadbar::start_payload(2);
         let (first, second) = two_frame_deflated_window(90, 74, &predecessor);
         let mut state = SessionState::default();
         state.synthetic_area.synthesize_loadbar = false;
 
         translate_server_to_client(&first, &mut state).expect("start predecessor");
-        for ack_sequence in [76, 77] {
-            let ack = reliable_server_m_frame(0, ack_sequence, 0x10, 0, &[]);
+        for (sequence, ack_sequence) in [(0, 76), (95, 77)] {
+            let ack = reliable_server_m_frame(sequence, ack_sequence, 0x10, 0, &[]);
             let packets = proof_packets(
                 translate_server_to_client(&ack, &mut state).expect("forward ACK shell"),
             );
@@ -3435,7 +3987,7 @@ mod tests {
             let (proof, packet) = &packets[0];
             let view = MFrameView::parse(packet).expect("ACK shell should parse");
             assert!(proof.contains_family(VerifiedFamily::ConsumedEmptyMFrame));
-            assert_eq!(view.sequence, 0);
+            assert_eq!(view.sequence, sequence);
             assert_eq!(view.ack_sequence, ack_sequence);
             assert_eq!(view.flags, 0x10);
             assert_eq!(view.frame_type, 1);
@@ -3548,9 +4100,12 @@ mod tests {
         );
 
         state.direct_server_semantic_replays.latest_origin_sequence = Some(0xFFFE);
-        assert_eq!(observe_server_origin_reliable_generation(&mut state, 5), 1);
         let wrapped = client_reliable_m_frame(5, 75, payload);
         let wrapped_view = MFrameView::parse(&wrapped).expect("wrapped frame");
+        assert_eq!(
+            observe_server_origin_reliable_generation(&mut state, &wrapped_view),
+            1
+        );
         assert!(
             replay_completed_direct_server_semantic_rewrite(
                 &wrapped,
@@ -4493,7 +5048,7 @@ mod tests {
         let pre_area = hold_or_release_server_packets(
             &mut state,
             VerifiedProof::family(VerifiedFamily::ClientSideMessage),
-            vec![empty_reliable_m_frame(9)],
+            vec![reliable_server_m_frame(9, 0, 0x08, 0, &[])],
             "test pre-area reliable order",
         );
         assert_eq!(pre_area.len(), 1);
@@ -4516,7 +5071,7 @@ mod tests {
         let area = hold_or_release_server_packets(
             &mut state,
             VerifiedProof::family(VerifiedFamily::AreaClientArea),
-            vec![empty_reliable_m_frame(14)],
+            vec![reliable_server_m_frame(14, 0, 0x08, 0, &[])],
             "test area window release",
         );
         assert_eq!(area.len(), 1);
@@ -4533,7 +5088,7 @@ mod tests {
         let post_area = hold_or_release_server_packets(
             &mut state,
             VerifiedProof::family(VerifiedFamily::ClientSideMessage),
-            vec![empty_reliable_m_frame(16)],
+            vec![reliable_server_m_frame(16, 0, 0x08, 0, &[])],
             "test post-area gameplay hold",
         );
         assert!(post_area.is_empty());
@@ -4718,7 +5273,7 @@ fn module_resource_gate_window_packet_can_pass(state: &SessionState, packet: &[u
     let Some(view) = MFrameView::parse(packet) else {
         return false;
     };
-    if view.sequence == 0 {
+    if view.frame_type != 0 {
         return view.frame_type == 1
             && view.payload_length == 0
             && view.trailing_payload_length == 0;
@@ -5007,11 +5562,11 @@ fn area_load_gate_packet_release_mode(
     let Some(view) = MFrameView::parse(packet) else {
         return None;
     };
-    if view.sequence == 0 {
+    if view.frame_type != 0 {
         return (view.frame_type == 1
             && view.payload_length == 0
             && view.trailing_payload_length == 0)
-            .then_some("sequence-zero reliable ACK/control bypasses semantic area gate");
+            .then_some("reliable ACK/control frame bypasses semantic area gate");
     }
 
     if !sequence_at_or_after(view.sequence, gate.area_first_sequence) {
@@ -5132,7 +5687,7 @@ fn record_server_packet_window_state(state: &mut SessionState, packet: &[u8]) {
     let Some(view) = MFrameView::parse(packet) else {
         return;
     };
-    if view.sequence == 0 {
+    if view.frame_type != 0 {
         return;
     }
 
@@ -5344,11 +5899,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                     compressed = source_compressed_length,
                     "server deflated M duplicate forced pending quickbar stream disposition"
                 );
-                arm_withheld_reassembly_successors(state, &reassembly);
+                arm_withheld_reassembly_successors(state, &reassembly)?;
                 return Ok(emit);
             }
             reassembly::retarget_completed_server_stream_replay(&mut replay, &reassembly)?;
-            arm_withheld_reassembly_successors(state, &reassembly);
+            arm_withheld_reassembly_successors(state, &reassembly)?;
             return match replay {
                 CompletedDeflatedReplay::Packets(packets) => {
                     tracing::info!(
@@ -5413,7 +5968,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             };
         }
         CompletedDeflatedStreamWindowMatch::Conflict => {
-            arm_withheld_reassembly_successors(state, &reassembly);
+            arm_withheld_reassembly_successors(state, &reassembly)?;
             tracing::warn!(
                 first_sequence = reassembly.first_sequence,
                 server_origin_generation = reassembly.server_origin_generation,
@@ -5457,7 +6012,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         used_server_stream,
         &bytes,
     )? {
-        arm_withheld_reassembly_successors(state, &reassembly);
+        arm_withheld_reassembly_successors(state, &reassembly)?;
         return Ok(emit);
     }
     if let Some(emit) = quickbar_stream::maybe_buffer_or_flush_server_quickbar_stream(
@@ -5467,7 +6022,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         used_server_stream,
         &bytes,
     )? {
-        arm_withheld_reassembly_successors(state, &reassembly);
+        arm_withheld_reassembly_successors(state, &reassembly)?;
         return Ok(emit);
     }
     if let Some(emit) = live_stream::maybe_buffer_or_flush_server_live_object_stream(
@@ -5477,7 +6032,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         used_server_stream,
         &mut bytes,
     )? {
-        arm_withheld_reassembly_successors(state, &reassembly);
+        arm_withheld_reassembly_successors(state, &reassembly)?;
         return Ok(emit);
     }
 
@@ -5491,7 +6046,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 source_compressed_length,
                 &bytes,
             )?;
-            arm_withheld_reassembly_successors(state, &reassembly);
+            arm_withheld_reassembly_successors(state, &reassembly)?;
             return Ok(emit);
         }
         dump_invalid_inflated_payload(&bytes, &reassembly, "no-high-level");
@@ -5614,7 +6169,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 "server deflated M reassembly found Module_Info candidate with no semantic rewrite"
             );
         }
-        arm_withheld_reassembly_successors(state, &reassembly);
+        arm_withheld_reassembly_successors(state, &reassembly)?;
         let packets = reassembly
             .frames
             .iter()

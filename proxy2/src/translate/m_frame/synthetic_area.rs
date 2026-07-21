@@ -212,7 +212,7 @@ pub(super) fn queue_pending_verified_server_packet(
 
 fn reliable_m_sequence(packet: &[u8]) -> Option<u16> {
     let view = MFrameView::parse(packet)?;
-    (view.sequence != 0).then_some(view.sequence)
+    (view.frame_type == 0).then_some(view.sequence)
 }
 
 #[derive(Debug, Clone)]
@@ -1448,5 +1448,39 @@ mod tests {
             PendingVerifiedServerPacketQueueResult::Queued { held_packets: 2 }
         );
         assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn pending_verified_server_queue_collapses_wrapped_type_zero_replay() {
+        let mut pending = Vec::new();
+        let proof = VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject);
+        let first = build_synthetic_gameplay_frame(0, 80, &[0x50, 0x05, 0x01])
+            .expect("wrapped type-0 frame");
+        let replay = build_synthetic_gameplay_frame(0, 81, &[0x50, 0x05, 0x01])
+            .expect("wrapped type-0 retransmit with refreshed ACK");
+        assert_ne!(first, replay, "ACK and CRC should refresh on retransmit");
+
+        assert_eq!(
+            queue_pending_verified_server_packet(
+                &mut pending,
+                proof.clone(),
+                first,
+                "wrapped reliable hold"
+            ),
+            PendingVerifiedServerPacketQueueResult::Queued { held_packets: 1 }
+        );
+        assert_eq!(
+            queue_pending_verified_server_packet(
+                &mut pending,
+                proof,
+                replay,
+                "wrapped reliable hold"
+            ),
+            PendingVerifiedServerPacketQueueResult::CollapsedReliableReplay {
+                sequence: 0,
+                held_packets: 1
+            }
+        );
+        assert_eq!(pending.len(), 1);
     }
 }

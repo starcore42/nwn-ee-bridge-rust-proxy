@@ -51,6 +51,26 @@ journal, so the exact terminal proof path remains to be exercised against the
 live sequence-95
 interaction failure.
 
+The `2026-07-21T10:04+10:00` gate rechecked that structured log at about 2 hours
+41 minutes old, so no new HG login was required. Production now persists exact
+raw reliable successors withheld by recognized quickbar/live-object/zero-fill
+stream helpers in a bounded session queue. Dequeue and ordered-fence advancement
+occur only after the outer strict validator accepts the completed emit; strict
+rejection retains the raw event, exact retransmits refresh ACK/CRC state, and
+conflicting or over-capacity merges fail transactionally. The decompile-backed
+lane rule is now consistent through reassembly, coalesced shifting, hold gates,
+and replay collapse: type-0 data wraps through sequence zero, while type-1 and
+type-2 controls bypass at any sequence. Focused tests and both Release builds
+pass. Current-code strict replay is
+`C:\nwnbridge\codex-proxy2-replay-raw-successor-20260721-1045`: all 164 packet
+files produced 304 strict allows, 143 generated ACK controls, 97 exact
+live-object claims, 19 exact rewrites, ten Area rewrites, and one stable sealed
+journal load, with zero strict/semantic quarantine, quarantine files, rewrite
+failures, terminal residuals, output timeouts, warnings, errors, or stderr. The
+next production boundary must stage direct semantic/synthetic/sequence effects,
+then persistent-inflater completion state, until the same final validation
+callback commits them.
+
 The `2026-07-21T04:01+10:00` gate inspected that artifact at about 21 hours old;
 it remained the newest live HG attempt and still satisfied the gameplay
 freshness requirement. Exact Diamond and EE reader tracing disproved the prior
@@ -78,10 +98,10 @@ after an ordinary successful predecessor. Failed predecessors commit no Area
 state; gaps, later/full-pipeline events, stream-helper events, and cache replay
 successors remain unacknowledged for reliable retransmission. A bounded source
 fence prevents a repeated future direct event overtaking a missing sequence and
-skips reserved sequence zero at wrap. Source CRC is now verified before any
+includes type-0 data across `0xFFFF -> 0x0000`. Source CRC is now verified before any
 reliable/semantic state mutation, active reassembly gates
-coalesced dispatch, and sequence-zero ACK/control frames continue immediately
-with kind `0x10`, current ACK, and valid CRC. Focused Area, CRC, gap/retry,
+coalesced dispatch, and type-1/type-2 control frames continue immediately at any
+sequence. Focused Area, CRC, gap/retry,
 control-lane, direct replay, reassembly, and coalesced regressions pass. The
 remaining stream-family successor queue, exact completed-window cache identity,
 primary-continuation/coalesced-trailing split, expanded primary-Area sequence

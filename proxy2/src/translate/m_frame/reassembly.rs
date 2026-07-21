@@ -323,11 +323,12 @@ pub(super) fn continue_server_deflated_reassembly(
         return Ok(Emit::Drop);
     };
 
-    // Sequence zero is the non-data reliable-window ACK/control lane. It does
-    // not participate in the source data cursor, so it may pass immediately
-    // while a packetized data predecessor is held. The exact empty-shell claim
-    // preserves the current unshifted ACK, control kind, and verified CRC.
-    if view.sequence == 0 {
+    // Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` select the
+    // ACK/resend lanes from frame type, not from the reusable sequence field.
+    // Type 0 data may legitimately wrap through sequence zero; type 1/2 control
+    // frames bypass receive-data storage at every sequence value. Preserve an
+    // exactly claimed control immediately while packetized data is held.
+    if view.frame_type != 0 {
         let Some(claim) = transport_identity::claim_server_frame_if_verified(view) else {
             return Ok(Emit::Drop);
         };
