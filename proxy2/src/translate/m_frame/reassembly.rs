@@ -4,7 +4,7 @@
 //! consumed-frame emission, and reconstruction of repaired deflated output
 //! frames. Semantic packet translation remains outside this module.
 
-use flate2::{Decompress, FlushDecompress};
+use flate2::FlushDecompress;
 
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
@@ -31,7 +31,10 @@ pub(super) const EE_SAFE_M_FRAME_PAYLOAD_BYTES: usize =
 
 use super::{
     MAX_INTERLEAVED_PACKETS, MAX_REASSEMBLY_FRAMES, SessionState,
-    deflate::{inflate_with_server_stream, inflate_with_window, looks_like_zlib_wrapped_deflate},
+    deflate::{
+        PersistentServerInflater, inflate_with_server_stream, inflate_with_window,
+        looks_like_zlib_wrapped_deflate,
+    },
     transport_identity,
 };
 
@@ -1490,7 +1493,7 @@ pub(super) fn inflate_gameplay_payload(
     compressed: &[u8],
     inflated_length: usize,
     zlib_stream: bool,
-    server_stream: &mut Option<Decompress>,
+    server_stream: &mut Option<PersistentServerInflater>,
 ) -> anyhow::Result<InflatedGameplayPayload> {
     if inflated_length > MAX_REASONABLE_GAMEPLAY_PAYLOAD {
         anyhow::bail!("inflated gameplay length is unreasonable: {inflated_length}");

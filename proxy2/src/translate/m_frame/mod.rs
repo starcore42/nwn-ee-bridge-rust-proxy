@@ -654,10 +654,7 @@ fn begin_ordered_successor_effect_transaction(
         server_zlib_stream_proxy_owned: state.deflate.server_zlib_stream_proxy_owned,
         server_zlib_stream_owner: state.deflate.server_zlib_stream_owner,
         server_zlib_stream_epoch: state.deflate.server_zlib_stream_epoch,
-        discard_created_server_zlib_inflater_on_rollback: state
-            .deflate
-            .server_zlib_inflater
-            .is_none(),
+        server_zlib_inflater: state.deflate.server_zlib_inflater.clone(),
         coalesced_replay: state.coalesced_replay.clone(),
         quickbar: state.quickbar.clone(),
         live_object: state.live_object.clone(),
@@ -693,9 +690,7 @@ fn rollback_ordered_successor_effect_transaction(state: &mut SessionState) -> bo
     state.deflate.server_zlib_stream_proxy_owned = snapshot.server_zlib_stream_proxy_owned;
     state.deflate.server_zlib_stream_owner = snapshot.server_zlib_stream_owner;
     state.deflate.server_zlib_stream_epoch = snapshot.server_zlib_stream_epoch;
-    if snapshot.discard_created_server_zlib_inflater_on_rollback {
-        state.deflate.server_zlib_inflater = None;
-    }
+    state.deflate.server_zlib_inflater = snapshot.server_zlib_inflater;
     state.coalesced_replay = snapshot.coalesced_replay;
     state.quickbar = snapshot.quickbar;
     state.live_object = snapshot.live_object;
@@ -905,24 +900,9 @@ fn translate_server_to_client_inner(
         view.ack_sequence,
     );
     if state.deflate.ordered_successor_next_sequence == Some(view.sequence) {
-        let exact_direct = exact_direct_semantic_source_payload(bytes, &view).is_some();
-        let transport_only = transport_identity::claim_server_frame_if_verified(&view).is_some();
-        let proven_noninflating_route = state.deflate.server_reassembly.is_none()
-            && (exact_direct
-                || (transport_only
-                    && view.payload_length == 0
-                    && view.trailing_payload_length == 0));
-        if state.deflate.server_zlib_inflater.is_some() && !proven_noninflating_route {
-            tracing::warn!(
-                sequence = view.sequence,
-                packetized_sequence = view.packetized_sequence,
-                trailing_payload_length = view.trailing_payload_length,
-                "ordered server successor retained because an existing persistent inflater cannot yet be rolled back after final validation"
-            );
-            return Ok(Emit::Drop);
-        }
         // Transport truth above survives rejection. Everything below this
-        // boundary is speculative client-facing dispatch/finalization state.
+        // boundary is speculative client-facing dispatch/finalization state,
+        // including an exact clone of any live persistent inflater.
         begin_ordered_successor_effect_transaction(state, view.sequence)?;
     }
     let pending_count_before = state.synthetic_area.pending_server_to_client_packets.len();
@@ -3693,6 +3673,215 @@ mod tests {
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
         assert_eq!(state.deflate.ordered_successor_next_sequence, None);
         assert!(state.deflate.ordered_successor_events.is_empty());
+    }
+
+    #[test]
+    fn persistent_inflater_ordered_successor_is_atomic_through_final_validation() {
+        fn compress_stream_chunk(compressor: &mut flate2::Compress, payload: &[u8]) -> Vec<u8> {
+            let before_out = compressor.total_out();
+            let mut output = vec![0u8; payload.len().saturating_mul(2).saturating_add(128)];
+            compressor
+                .compress(payload, &mut output, flate2::FlushCompress::Sync)
+                .expect("persistent stream compression should succeed");
+            output.truncate((compressor.total_out() - before_out) as usize);
+            output
+        }
+
+        fn stream_frame(
+            sequence: u16,
+            ack_sequence: u16,
+            inflated: &[u8],
+            compressed: &[u8],
+        ) -> Vec<u8> {
+            let mut payload = (inflated.len() as u32).to_le_bytes().to_vec();
+            payload.extend_from_slice(compressed);
+            reliable_server_m_frame(sequence, ack_sequence, 0x0D, 1, &payload)
+        }
+
+        fn custom_token_payload(token_id: u32, value: &[u8]) -> Vec<u8> {
+            let declared = 3 + 4 + 4 + 4 + value.len();
+            let mut payload = vec![b'P', 0x32, 0x01];
+            payload.extend_from_slice(&(declared as u32).to_le_bytes());
+            payload.extend_from_slice(&token_id.to_le_bytes());
+            payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            payload.extend_from_slice(value);
+            payload.push(0x60);
+            payload
+        }
+
+        // Repeat one incompressible-looking token value across otherwise
+        // distinct exact semantic messages. Later records therefore use the
+        // prior 32 KiB dictionary rather than a same-record repetition, and
+        // cannot be decoded as independent raw windows.
+        let mut token_value = Vec::with_capacity(2048);
+        let mut random = 0xA5C3_7E19u32;
+        for _ in 0..2048 {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            token_value.push(random as u8);
+        }
+        let first_inflated = custom_token_payload(2, &token_value);
+        let second_inflated = custom_token_payload(3, &token_value);
+        let third_inflated = custom_token_payload(4, &token_value);
+        let mut compressor = flate2::Compress::new(flate2::Compression::default(), true);
+        let first_compressed = compress_stream_chunk(&mut compressor, &first_inflated);
+        let second_compressed = compress_stream_chunk(&mut compressor, &second_inflated);
+        let third_compressed = compress_stream_chunk(&mut compressor, &third_inflated);
+        assert!(looks_like_zlib_wrapped_deflate(&first_compressed));
+        assert!(!looks_like_zlib_wrapped_deflate(&second_compressed));
+        let fresh_second = deflate::inflate_with_window(
+            &second_compressed,
+            second_inflated.len(),
+            false,
+            flate2::FlushDecompress::Sync,
+        )
+        .expect("fresh-window probe");
+        assert_ne!(
+            fresh_second.as_deref(),
+            Some(second_inflated.as_slice()),
+            "the ordered member must require the already-live inflater history"
+        );
+        let fresh_third = deflate::inflate_with_window(
+            &third_compressed,
+            third_inflated.len(),
+            false,
+            flate2::FlushDecompress::Sync,
+        )
+        .expect("fresh-window probe");
+        assert_ne!(
+            fresh_third.as_deref(),
+            Some(third_inflated.as_slice()),
+            "the post-commit member must require the accepted successor history"
+        );
+
+        let first = stream_frame(140, 74, &first_inflated, &first_compressed);
+        let second = stream_frame(141, 75, &second_inflated, &second_compressed);
+        let third = stream_frame(142, 77, &third_inflated, &third_compressed);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        let first_emit = translate_server_to_client(&first, &mut state)
+            .expect("first stream member should seed the persistent inflater");
+        assert!(!matches!(first_emit, Emit::Drop));
+        let baseline_totals = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .map(|inflater| (inflater.total_in(), inflater.total_out()))
+            .expect("first stream member should leave a live inflater");
+        let baseline_windows = state.deflate.completed_server_stream_windows.len();
+        let baseline_slots = state.deflate.completed_server_reliable_stream_slots.len();
+        let baseline_semantic_events = state.semantic.recent_events.len();
+
+        queue_ordered_successor_for_test(&mut state, &second);
+        let speculative_emit = translate_server_to_client(&second, &mut state)
+            .expect("ordered persistent-stream successor should translate speculatively");
+        assert!(!matches!(speculative_emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(141));
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_some());
+        let speculative_totals = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .map(|inflater| (inflater.total_in(), inflater.total_out()))
+            .expect("speculative successor should advance the working inflater");
+        assert_eq!(
+            speculative_totals,
+            (
+                baseline_totals.0 + second_compressed.len() as u64,
+                baseline_totals.1 + second_inflated.len() as u64,
+            )
+        );
+        assert_eq!(
+            state.deflate.completed_server_stream_windows.len(),
+            baseline_windows + 1
+        );
+        assert_eq!(
+            state.deflate.completed_server_reliable_stream_slots.len(),
+            baseline_slots + 1
+        );
+        assert_eq!(
+            state.semantic.recent_events.len(),
+            baseline_semantic_events + 1
+        );
+
+        finish_server_to_client_emit_validation(&mut state, false);
+
+        assert_eq!(pending_ordered_successor_sequence(&state), None);
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(141));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, second);
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(baseline_totals),
+            "strict rejection must restore the exact pre-successor inflater"
+        );
+        assert_eq!(
+            state.deflate.completed_server_stream_windows.len(),
+            baseline_windows
+        );
+        assert_eq!(
+            state.deflate.completed_server_reliable_stream_slots.len(),
+            baseline_slots
+        );
+        assert_eq!(state.semantic.recent_events.len(), baseline_semantic_events);
+
+        let retry = stream_frame(141, 76, &second_inflated, &second_compressed);
+        let retry_emit = translate_server_to_client(&retry, &mut state)
+            .expect("exact retransmit should reuse the restored inflater history");
+        assert!(!matches!(retry_emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(141));
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, retry);
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(speculative_totals),
+            "retry must advance the working inflater from the restored checkpoint"
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
+        assert!(state.deflate.ordered_successor_events.is_empty());
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(speculative_totals),
+            "accepted retransmit must commit exactly one inflater advancement"
+        );
+
+        let third_emit = translate_server_to_client(&third, &mut state)
+            .expect("third history-dependent member should use committed successor state");
+        assert!(!matches!(third_emit, Emit::Drop));
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some((
+                speculative_totals.0 + third_compressed.len() as u64,
+                speculative_totals.1 + third_inflated.len() as u64,
+            ))
+        );
+        assert_eq!(
+            state.deflate.completed_server_stream_windows.len(),
+            baseline_windows + 2
+        );
+        assert_eq!(
+            state.semantic.recent_events.len(),
+            baseline_semantic_events + 2
+        );
     }
 
     #[test]

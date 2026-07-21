@@ -6,14 +6,14 @@
 
 use std::{collections::VecDeque, path::PathBuf};
 
-use flate2::Decompress;
-
 use crate::translate::{
     ContinuationOwner, VerifiedProof, area, client_gui_inventory, module_resources, semantic,
 };
 
 use super::{
-    client_ack, deferred_module_resources, live_stream, quickbar_stream,
+    client_ack, deferred_module_resources,
+    deflate::PersistentServerInflater,
+    live_stream, quickbar_stream,
     reassembly::{
         BufferedInterleavedServerPacket, CompletedDeflatedStreamWindow, ServerDeflatedReassembly,
     },
@@ -45,7 +45,7 @@ pub(super) struct OrderedSuccessorEffectSnapshot {
     pub(super) server_zlib_stream_proxy_owned: bool,
     pub(super) server_zlib_stream_owner: Option<ContinuationOwner>,
     pub(super) server_zlib_stream_epoch: u64,
-    pub(super) discard_created_server_zlib_inflater_on_rollback: bool,
+    pub(super) server_zlib_inflater: Option<PersistentServerInflater>,
     pub(super) coalesced_replay: CoalescedReplayState,
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
@@ -64,7 +64,7 @@ pub(super) struct OrderedSuccessorEffectSnapshot {
 #[derive(Debug, Default)]
 pub(super) struct DeflateState {
     pub(super) server_reassembly: Option<ServerDeflatedReassembly>,
-    pub(super) server_zlib_inflater: Option<Decompress>,
+    pub(super) server_zlib_inflater: Option<PersistentServerInflater>,
     pub(super) completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
     pub(super) completed_server_reliable_stream_slots:
         Vec<super::reassembly::CompletedServerReliableStreamSlot>,

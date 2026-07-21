@@ -17,6 +17,52 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-21 persistent-inflater rollback transaction: the live gate used
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and 8 hours 44 minutes old
+  at the `16:08+10:00` audit. No newer live proxy attempt exists. The capture
+  remains qualifying gameplay evidence: typed character selection,
+  `Module_Loaded`, two native `Area_AreaLoaded` messages, 76 exact live-object
+  accepts through 137.813 seconds after the final area load, 449 strict allows,
+  and zero route conflict, quarantine, `BNDP`, ERROR, quarantine files, or
+  stderr. No fresh HG login was required.
+
+  `PersistentServerInflater` now owns the exact `miniz_oxide` streaming
+  `InflateState`, using the same raw/zlib formats, sync flush, and status
+  mapping as flate2's miniz backend. Ordered-successor transactions clone that
+  state, including its 32-KiB history, pending output, bit/Huffman cursor, and
+  counters. Final strict rejection restores the complete checkpoint, while
+  acceptance commits the advanced inflater once; the previous fail-closed
+  branch for an already-live inflater is removed. This changes no packet field,
+  bit order, cursor movement, or emitted wire bytes. Diamond `sub_5F3FC0`
+  (lines 752182-752453) and EE `UnpacketizeFullMessages` (lines
+  914423-914649) remain the reader-boundary proof: stored packetized bytes form
+  one complete compressed member, and inflater effects become authoritative
+  only when that enclosing receive path succeeds.
+
+  All 43 M-frame tests pass. The new history-dependent regression proves a
+  speculative second member can produce length-correct but wrong bytes without
+  its dictionary, rejects and restores every staged effect, retries exactly,
+  then successfully consumes a third member from the committed history.
+  Formatting, production check/build, the Rust Release build, and the native
+  Release build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-persistent-inflater-20260721-165106`
+  processed all 164 packet files with 304 strict allows, 143 generated ACK
+  controls, 97 exact live-object claims, 19 exact rewrites, ten Area rewrites,
+  both expected module-context checks, and one stable 5,825-byte sealed-journal
+  load. Strict/semantic quarantine, quarantine files, rewrite failures,
+  terminal residuals, output timeouts, WARNs, ERRORs, and stderr were zero.
+
+  The next generalized production path is atomic retention and eviction of a
+  coalesced outer reliable window. Its individual cached records currently age
+  out independently while the outer route survives if any sibling remains, so
+  an old exact retransmit could replay retained spans and reinflate evicted
+  spans against newer persistent history. Evict the outer identity when a
+  complete replay is no longer available, or retain the complete rewritten
+  window atomically. Ordinary non-ordered/pending-synthetic transactions and
+  the client-lane frame-type/sequence-zero audit also remain. The separate live
+  terminal blocker still needs a deployed v2 writer producer and a unique
+  sequence-95 door `UseObject` capture.
 - 2026-07-21 ordered-successor final-validation transaction: the live gate used
   `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
   last written `2026-07-21T07:23:58.6405077+10:00` and about 5.65 hours old at
