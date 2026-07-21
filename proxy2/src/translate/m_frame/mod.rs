@@ -85,16 +85,38 @@ pub(crate) fn rewrite_live_object_payload_to_exact_ee_for_test(
     live_update::rewrite_payload_to_exact_ee_if_possible(payload, latest_area_placeables).is_some()
 }
 
-pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> Vec<Vec<u8>> {
+pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> anyhow::Result<Emit> {
+    if state.sequence.pending_client_to_server_packets.is_empty()
+        && state.synthetic_area.pending_area_loaded.is_none()
+    {
+        return Ok(Emit::Consumed);
+    }
+    begin_pending_client_drain_effect_transaction(state)?;
     if let Err(err) =
         maybe_queue_area_loaded_fallback_from_timer(state, "session pending client drain")
     {
-        tracing::warn!(
-            error = %err,
-            "failed to evaluate synthetic Area_AreaLoaded fallback during pending client drain"
-        );
+        rollback_pending_client_drain_effect_transaction(state);
+        return Err(err);
     }
-    std::mem::take(&mut state.sequence.pending_client_to_server_packets)
+
+    let pending = std::mem::take(&mut state.sequence.pending_client_to_server_packets);
+    if pending.is_empty() {
+        // Timer-only state (ACK grace or native-probe gate progress) produced no
+        // wire candidate and therefore needs no outer emit decision.
+        commit_pending_client_drain_effect_transaction(state);
+        return Ok(Emit::Consumed);
+    }
+    tracing::debug!(
+        packets = pending.len(),
+        reasons = ?pending.iter().map(|packet| packet.reason).collect::<Vec<_>>(),
+        "pending client batch staged for exact-family strict validation"
+    );
+    Ok(Emit::MixedVerifiedPackets(
+        pending
+            .into_iter()
+            .map(|pending| (pending.family, pending.packet))
+            .collect(),
+    ))
 }
 
 pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> anyhow::Result<Emit> {
@@ -252,7 +274,7 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         &mut state.synthetic_area.server_hold_gate,
         &mut state.sequence.latest_client_sequence_from_client,
         &mut state.sequence.client_sequence_shifts,
-        view.ack_sequence,
+        Some(view.ack_sequence),
         origin_client_ack_sequence,
     )?;
 
@@ -639,6 +661,12 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let source_view = MFrameView::parse(bytes)
         .ok_or_else(|| anyhow::anyhow!("server M frame failed reliable-window parse"))?;
     validate_source_transport(&source_view, "server")?;
+    if state.client_emit_effect_snapshot.is_some()
+        || state.client_emit_pending_validation.is_some()
+        || state.pending_client_drain_effect_snapshot.is_some()
+    {
+        anyhow::bail!("client emit validation authority still active before server translation");
+    }
     let parsed_view = Some(source_view);
     let parsed_sequence = parsed_view.as_ref().map(|view| view.sequence);
     let parsed_frame_type = parsed_view.as_ref().map(|view| view.frame_type);
@@ -865,6 +893,101 @@ fn begin_ordinary_server_emit_effect_transaction(state: &mut SessionState) -> an
     Ok(())
 }
 
+/// Start a reversible client-originated emit transaction before semantic
+/// translation runs. The source frame has already passed the same CRC, length,
+/// kind, and exact-control checks used by the receive-window owner, so its
+/// data-sequence and ACK observations remain transport truth if the translated
+/// legacy emit is rejected later.
+pub(super) fn begin_client_to_server_emit_validation(
+    state: &mut SessionState,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    let view = MFrameView::parse(bytes)
+        .ok_or_else(|| anyhow::anyhow!("client M frame failed reliable-window parse"))?;
+    validate_source_transport(&view, "client")?;
+    if state.client_emit_effect_snapshot.is_some()
+        || state.client_emit_pending_validation.is_some()
+        || state.pending_client_drain_effect_snapshot.is_some()
+        || state.deflate.ordered_successor_effect_snapshot.is_some()
+        || state.deflate.server_emit_effect_transaction_kind.is_some()
+        || state.deflate.ordered_successor_pending_validation.is_some()
+    {
+        anyhow::bail!("M emit validation authority already active before client translation");
+    }
+
+    let token = state::ClientEmitValidationToken {
+        source_reliable_sequence: (view.frame_kind() == Some(MFrameType::ReliableData))
+            .then_some(view.sequence),
+        source_ack_sequence: view.ack_sequence,
+    };
+    let snapshot = capture_engine_facing_effect_snapshot(state);
+    state.client_emit_effect_snapshot = Some(Box::new(snapshot));
+    state.client_emit_pending_validation = Some(token);
+    tracing::trace!(
+        source_sequence = token.source_reliable_sequence,
+        source_ack_sequence = token.source_ack_sequence,
+        "client M began speculative engine-facing effect transaction"
+    );
+    Ok(())
+}
+
+fn begin_pending_client_drain_effect_transaction(state: &mut SessionState) -> anyhow::Result<()> {
+    if state.pending_client_drain_effect_snapshot.is_some()
+        || state.client_emit_effect_snapshot.is_some()
+        || state.client_emit_pending_validation.is_some()
+        || state.deflate.ordered_successor_effect_snapshot.is_some()
+        || state.deflate.server_emit_effect_transaction_kind.is_some()
+        || state.deflate.ordered_successor_pending_validation.is_some()
+    {
+        anyhow::bail!("M emit validation authority already active before pending client drain");
+    }
+
+    state.pending_client_drain_effect_snapshot = Some(state::PendingClientDrainEffectSnapshot {
+        pending_packets: state.sequence.pending_client_to_server_packets.clone(),
+        pending_area_loaded: state.synthetic_area.pending_area_loaded.clone(),
+        in_flight_area_loaded: state.synthetic_area.in_flight_area_loaded.clone(),
+        server_hold_gate: state.synthetic_area.server_hold_gate.clone(),
+        client_sequence_shifts: state.sequence.client_sequence_shifts.clone(),
+    });
+    Ok(())
+}
+
+fn rollback_pending_client_drain_effect_transaction(state: &mut SessionState) -> bool {
+    let Some(snapshot) = state.pending_client_drain_effect_snapshot.take() else {
+        return false;
+    };
+    state.sequence.pending_client_to_server_packets = snapshot.pending_packets;
+    state.synthetic_area.pending_area_loaded = snapshot.pending_area_loaded;
+    state.synthetic_area.in_flight_area_loaded = snapshot.in_flight_area_loaded;
+    state.synthetic_area.server_hold_gate = snapshot.server_hold_gate;
+    state.sequence.client_sequence_shifts = snapshot.client_sequence_shifts;
+    true
+}
+
+fn commit_pending_client_drain_effect_transaction(state: &mut SessionState) -> bool {
+    state.pending_client_drain_effect_snapshot.take().is_some()
+}
+
+pub(super) fn finish_pending_client_drain_emit_validation(
+    state: &mut SessionState,
+    accepted: bool,
+) {
+    if accepted {
+        if commit_pending_client_drain_effect_transaction(state) {
+            tracing::trace!(
+                "strict-validated pending client drain committed exact typed packet batch"
+            );
+        }
+        return;
+    }
+
+    let rolled_back = rollback_pending_client_drain_effect_transaction(state);
+    tracing::warn!(
+        rolled_back,
+        "pending client packet batch restored after final strict validation rejection"
+    );
+}
+
 fn begin_pending_server_drain_effect_transaction(state: &mut SessionState) -> anyhow::Result<()> {
     ensure_pending_server_drain_can_start(state)?;
 
@@ -882,6 +1005,9 @@ fn ensure_pending_server_drain_can_start(state: &SessionState) -> anyhow::Result
     if state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
         || state.deflate.ordered_successor_pending_validation.is_some()
+        || state.client_emit_effect_snapshot.is_some()
+        || state.client_emit_pending_validation.is_some()
+        || state.pending_client_drain_effect_snapshot.is_some()
     {
         anyhow::bail!(
             "server emit validation authority already active before pending synthetic drain"
@@ -892,8 +1018,8 @@ fn ensure_pending_server_drain_can_start(state: &SessionState) -> anyhow::Result
 
 fn capture_engine_facing_effect_snapshot(
     state: &mut SessionState,
-) -> state::OrderedSuccessorEffectSnapshot {
-    let snapshot = state::OrderedSuccessorEffectSnapshot {
+) -> state::EngineFacingEffectSnapshot {
+    let snapshot = state::EngineFacingEffectSnapshot {
         server_reassembly: state.deflate.server_reassembly.clone(),
         completed_server_stream_windows: state.deflate.completed_server_stream_windows.clone(),
         completed_server_reliable_stream_slots: state
@@ -908,6 +1034,7 @@ fn capture_engine_facing_effect_snapshot(
         quickbar: state.quickbar.clone(),
         live_object: state.live_object.clone(),
         sequence: state.sequence.clone(),
+        client_reliable_semantic_effects: state.client_reliable_semantic_effects.clone(),
         client_ack: state.client_ack.pending.clone(),
         direct_server_semantic_replays: state.direct_server_semantic_replays.clone(),
         login_waypoint: state.login_waypoint.clone(),
@@ -925,7 +1052,7 @@ fn capture_engine_facing_effect_snapshot(
 
 fn restore_engine_facing_effect_snapshot(
     state: &mut SessionState,
-    snapshot: state::OrderedSuccessorEffectSnapshot,
+    snapshot: state::EngineFacingEffectSnapshot,
 ) {
     state.deflate.server_reassembly = snapshot.server_reassembly;
     state.deflate.completed_server_stream_windows = snapshot.completed_server_stream_windows;
@@ -939,6 +1066,7 @@ fn restore_engine_facing_effect_snapshot(
     state.quickbar = snapshot.quickbar;
     state.live_object = snapshot.live_object;
     state.sequence = snapshot.sequence;
+    state.client_reliable_semantic_effects = snapshot.client_reliable_semantic_effects;
     state.client_ack.pending = snapshot.client_ack;
     state.direct_server_semantic_replays = snapshot.direct_server_semantic_replays;
     state.login_waypoint = snapshot.login_waypoint;
@@ -956,6 +1084,71 @@ fn commit_engine_facing_effect_transaction(state: &mut SessionState) {
     // enclosing reader transaction succeeds.
     state.module_resources.commit_speculative_observations();
     update_quickbar_item_refresh_hint(state);
+}
+
+fn reapply_validated_client_source_transport(
+    state: &mut SessionState,
+    token: state::ClientEmitValidationToken,
+) {
+    if let Some(sequence) = token.source_reliable_sequence {
+        record_forward_progress(
+            &mut state.sequence.latest_client_sequence_from_client,
+            sequence,
+        );
+    }
+    record_forward_progress(
+        &mut state.sequence.latest_client_ack_from_client,
+        token.source_ack_sequence,
+    );
+    synthetic_area::observe_server_hold_gate_client_ack(
+        &mut state.synthetic_area.server_hold_gate,
+        token.source_ack_sequence,
+    );
+    deferred_module_resources::observe_resource_hold_gate_client_ack(
+        &mut state.deferred_module_resources.pending,
+        token.source_ack_sequence,
+    );
+}
+
+/// Commit or reject client-originated semantic, replay, queue, and sequence-
+/// transform effects after the complete translated emit has passed the outer
+/// strict owner. Validated source receive-window progress is restored after a
+/// rejection because it belongs to the proxy-facing transport lane, not to the
+/// rejected legacy emit.
+pub(super) fn finish_client_to_server_emit_validation(state: &mut SessionState, accepted: bool) {
+    let token = state.client_emit_pending_validation.take();
+    let snapshot = state.client_emit_effect_snapshot.take();
+    let has_token = token.is_some();
+    let has_snapshot = snapshot.is_some();
+    let (Some(token), Some(snapshot)) = (token, snapshot) else {
+        if has_token || has_snapshot {
+            tracing::warn!(
+                accepted,
+                has_token,
+                has_snapshot,
+                "client M validation authority cleared with an incomplete transaction"
+            );
+        }
+        return;
+    };
+
+    if accepted {
+        commit_engine_facing_effect_transaction(state);
+        tracing::trace!(
+            source_sequence = token.source_reliable_sequence,
+            source_ack_sequence = token.source_ack_sequence,
+            "strict-validated client M committed speculative engine-facing effects"
+        );
+        return;
+    }
+
+    restore_engine_facing_effect_snapshot(state, *snapshot);
+    reapply_validated_client_source_transport(state, token);
+    tracing::warn!(
+        source_sequence = token.source_reliable_sequence,
+        source_ack_sequence = token.source_ack_sequence,
+        "client M engine-facing effects rolled back after final strict emit validation rejected the complete batch"
+    );
 }
 
 fn rollback_server_emit_effect_transaction(state: &mut SessionState) -> bool {
@@ -1636,8 +1829,10 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
     // complete emit. Do not leak its speculative semantic state through the
     // harness hint file; acceptance flushes the final body after the snapshot
     // is discarded, while rejection restores the prior in-memory body.
-    if state.deflate.ordered_successor_effect_snapshot.is_some() {
-        tracing::trace!("quickbar item-refresh hint deferred behind server emit strict validation");
+    if state.deflate.ordered_successor_effect_snapshot.is_some()
+        || state.client_emit_effect_snapshot.is_some()
+    {
+        tracing::trace!("quickbar item-refresh hint deferred behind M emit strict validation");
         return;
     }
     let Some(path) = state.quickbar_item_refresh_hint_path.clone() else {
@@ -2386,12 +2581,10 @@ fn observe_client_window_state(state: &mut SessionState, view: &MFrameView) {
             view.sequence,
         );
     }
-    if view.ack_sequence != 0 {
-        record_forward_progress(
-            &mut state.sequence.latest_client_ack_from_client,
-            view.ack_sequence,
-        );
-    }
+    record_forward_progress(
+        &mut state.sequence.latest_client_ack_from_client,
+        view.ack_sequence,
+    );
 }
 
 fn shift_client_sequence_for_server(
@@ -2442,9 +2635,8 @@ fn unshift_server_ack_for_client(
     packet: &mut [u8],
     view: &MFrameView,
 ) -> anyhow::Result<()> {
-    if view.ack_sequence == 0
-        || (state.sequence.client_sequence_shifts.is_empty()
-            && state.sequence.client_sequence_elisions.is_empty())
+    if state.sequence.client_sequence_shifts.is_empty()
+        && state.sequence.client_sequence_elisions.is_empty()
     {
         return Ok(());
     }
@@ -2480,7 +2672,7 @@ fn unshift_client_ack_for_server(
     packet: &mut [u8],
     view: &MFrameView,
 ) -> anyhow::Result<()> {
-    if view.ack_sequence == 0 || state.sequence.server_sequence_shifts.is_empty() {
+    if state.sequence.server_sequence_shifts.is_empty() {
         return Ok(());
     }
 
@@ -5823,6 +6015,132 @@ mod tests {
     }
 
     #[test]
+    fn client_emit_effects_rollback_but_valid_source_transport_survives_rejection() {
+        let candidate = crate::translate::semantic::InventoryItemContextCandidate {
+            object_id: 0x8001_5B01,
+            proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+        };
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+        let first = client_reliable_m_frame(78, 31, &payload);
+        let retry = client_reliable_m_frame(78, 32, &payload);
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(77);
+        state.sequence.latest_client_ack_from_client = Some(30);
+        state
+            .semantic
+            .ui
+            .last_inventory_item_context_after_committed_quickbar =
+            Some(crate::translate::semantic::InventoryItemContextSummary {
+                active_item_objects: 1,
+                materialized_item_objects: 1,
+                direct_item_proof_objects: 1,
+                compact_item_emission_proof_objects: 1,
+                compact_item_emission_candidate: Some(candidate),
+                compact_item_emission_ready_objects: 1,
+                compact_item_emission_ready_candidate: Some(candidate),
+                compact_item_emission_direct_only_proof_objects: 1,
+                ..Default::default()
+            });
+
+        begin_client_to_server_emit_validation(&mut state, &first)
+            .expect("valid client source should open a validation transaction");
+        let speculative = translate_client_to_server(&first, &mut state)
+            .expect("client GUI status should translate before final validation");
+        assert!(!matches!(speculative, Emit::Drop));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            1
+        );
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(state.client_reliable_semantic_effects.completed.len(), 1);
+        assert!(state.client_emit_effect_snapshot.is_some());
+
+        finish_client_to_server_emit_validation(&mut state, false);
+        assert_eq!(
+            state.sequence.latest_client_sequence_from_client,
+            Some(78),
+            "validated source receive progress remains transport truth"
+        );
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(31));
+        assert_eq!(state.semantic.ui.inventory_packets, 0);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            0
+        );
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert!(state.client_reliable_semantic_effects.completed.is_empty());
+        assert!(state.client_emit_effect_snapshot.is_none());
+        assert!(state.client_emit_pending_validation.is_none());
+
+        begin_client_to_server_emit_validation(&mut state, &retry)
+            .expect("exact retry should open a fresh validation transaction");
+        let accepted = translate_client_to_server(&retry, &mut state)
+            .expect("exact retry should translate from the restored boundary");
+        assert!(!matches!(accepted, Emit::Drop));
+        finish_client_to_server_emit_validation(&mut state, true);
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(32));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            1
+        );
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(state.client_reliable_semantic_effects.completed.len(), 1);
+        assert!(state.client_emit_effect_snapshot.is_none());
+        assert!(state.client_emit_pending_validation.is_none());
+    }
+
+    #[test]
+    fn session_translator_automatically_rolls_back_client_effects_on_strict_reject() {
+        // The raw server-admin owner claims only the exact primary payload.
+        // Adding trailing storage therefore lets the core translator stage its
+        // replay identity while the outer verified owner rejects the complete
+        // emitted frame.
+        let mut packet = client_reliable_m_frame(91, 41, b"sModule.Run");
+        packet.push(0xAA);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("trailing client frame");
+        assert!(view.crc_valid);
+        assert_eq!(view.trailing_payload_length, 1);
+
+        let mut translator = strict_session_translator_for_test();
+        translator
+            .m_state
+            .sequence
+            .latest_client_sequence_from_client = Some(90);
+        translator.m_state.sequence.latest_client_ack_from_client = Some(40);
+
+        let rejected = translator.translate(crate::packet::Direction::ClientToServer, &packet);
+        assert!(matches!(rejected, Emit::Drop));
+        assert_eq!(
+            translator
+                .m_state
+                .sequence
+                .latest_client_sequence_from_client,
+            Some(91)
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_client_ack_from_client,
+            Some(41)
+        );
+        assert!(
+            translator
+                .m_state
+                .client_reliable_semantic_effects
+                .completed
+                .is_empty()
+        );
+        assert!(translator.m_state.semantic.recent_events.is_empty());
+        assert!(translator.m_state.client_emit_effect_snapshot.is_none());
+        assert!(translator.m_state.client_emit_pending_validation.is_none());
+    }
+
+    #[test]
     fn client_type_zero_sequence_zero_wraps_shifts_and_deduplicates_retransmit() {
         let mut state = SessionState::default();
         state.sequence.latest_client_sequence_from_client = Some(u16::MAX);
@@ -5868,6 +6186,45 @@ mod tests {
                 .duplicate_effects_suppressed,
             1
         );
+    }
+
+    #[test]
+    fn top_level_ack_zero_is_observed_and_unshifted_as_wrapped_transport_state() {
+        // Diamond sub_5F36E0/sub_5F3940 and EE FrameSend/FrameReceive always
+        // write and consume receive_next-1 as a modulo-u16 ACK. Zero is the
+        // wrapped value after sequence zero, never an absent-field sentinel.
+        let mut client_state = SessionState::default();
+        client_state.sequence.latest_client_ack_from_client = Some(u16::MAX);
+        client_state
+            .sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 0, delta: 1 });
+        let client_control = reliable_server_m_frame(99, 0, 0x10, 0, &[]);
+
+        let translated = translate_client_to_server(&client_control, &mut client_state)
+            .expect("wrapped client ACK control should translate");
+        let translated_packet = match translated {
+            Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+            other => panic!("expected verified client ACK control, got {other:?}"),
+        };
+        let translated_view =
+            MFrameView::parse(&translated_packet).expect("translated client ACK control");
+        assert_eq!(client_state.sequence.latest_client_ack_from_client, Some(0));
+        assert_eq!(translated_view.ack_sequence, u16::MAX);
+        assert!(translated_view.crc_valid);
+
+        let mut server_state = SessionState::default();
+        server_state
+            .sequence
+            .client_sequence_shifts
+            .push(SequenceShift { base: 0, delta: 1 });
+        let mut server_control = reliable_server_m_frame(77, 0, 0x10, 0, &[]);
+        let server_view = MFrameView::parse(&server_control).expect("server ACK control");
+        unshift_server_ack_for_client(&server_state, &mut server_control, &server_view)
+            .expect("wrapped server ACK should unshift");
+        let server_view = MFrameView::parse(&server_control).expect("unshifted server ACK control");
+        assert_eq!(server_view.ack_sequence, u16::MAX);
+        assert!(server_view.crc_valid);
     }
 
     #[test]
@@ -7020,6 +7377,93 @@ mod tests {
     }
 
     #[test]
+    fn pending_client_drain_validates_typed_batch_and_restores_on_reject() {
+        let mut translator = strict_session_translator_for_test();
+        let valid = client_reliable_m_frame(55, 74, &[0x70, 0x04, 0x03]);
+        translator
+            .m_state
+            .sequence
+            .pending_client_to_server_packets
+            .extend([
+                state::PendingClientPacket {
+                    family: VerifiedFamily::ClientArea,
+                    packet: valid.clone(),
+                    reason: "pending client rollback valid sibling",
+                },
+                state::PendingClientPacket {
+                    family: VerifiedFamily::ClientArea,
+                    packet: vec![b'M'],
+                    reason: "pending client rollback invalid sibling",
+                },
+            ]);
+
+        let rejected = translator.take_pending_client_to_server_packets();
+
+        assert!(rejected.is_empty());
+        assert!(
+            translator
+                .m_state
+                .pending_client_drain_effect_snapshot
+                .is_none()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .sequence
+                .pending_client_to_server_packets
+                .len(),
+            2,
+            "one rejected sibling must restore the complete ordered typed batch"
+        );
+        assert_eq!(
+            translator.m_state.sequence.pending_client_to_server_packets[0].packet,
+            valid
+        );
+        assert_eq!(
+            translator.m_state.sequence.pending_client_to_server_packets[1].reason,
+            "pending client rollback invalid sibling"
+        );
+
+        let invalid = translator
+            .m_state
+            .sequence
+            .pending_client_to_server_packets
+            .pop()
+            .expect("invalid sibling should have been restored");
+        assert_eq!(invalid.packet, vec![b'M']);
+        let accepted = translator.take_pending_client_to_server_packets();
+
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0], valid);
+        assert!(
+            translator
+                .m_state
+                .sequence
+                .pending_client_to_server_packets
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .pending_client_drain_effect_snapshot
+                .is_none()
+        );
+
+        assert!(
+            translator
+                .take_pending_client_to_server_packets()
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .pending_client_drain_effect_snapshot
+                .is_none(),
+            "idle polling must not retain validation authority"
+        );
+    }
+
+    #[test]
     fn pending_server_drain_defers_observation_while_area_gate_blocks_validation() {
         let mut translator = strict_session_translator_for_test();
         translator.m_state.synthetic_area.server_hold_gate = Some(synthetic_area::ServerHoldGate {
@@ -7653,12 +8097,11 @@ fn maybe_queue_area_loaded_fallback_from_timer(
         return Ok(false);
     }
 
-    let observed_client_ack = state.sequence.latest_client_ack_from_client.unwrap_or(0);
-    let origin_ack_sequence = if observed_client_ack != 0 {
-        unshift_ack_for_origin(&state.sequence.server_sequence_shifts, observed_client_ack)
-    } else {
-        state.sequence.latest_server_sequence_to_client.unwrap_or(0)
-    };
+    let observed_client_ack = state.sequence.latest_client_ack_from_client;
+    let origin_ack_sequence = observed_client_ack
+        .map(|ack| unshift_ack_for_origin(&state.sequence.server_sequence_shifts, ack))
+        .or(state.sequence.latest_server_sequence_to_client)
+        .unwrap_or(u16::MAX);
 
     let Some(packet) = synthetic_area::maybe_build_area_loaded_client_packet(
         &mut state.synthetic_area.pending_area_loaded,
@@ -7673,9 +8116,16 @@ fn maybe_queue_area_loaded_fallback_from_timer(
         return Ok(false);
     };
 
-    state.sequence.pending_client_to_server_packets.push(packet);
+    state
+        .sequence
+        .pending_client_to_server_packets
+        .push(state::PendingClientPacket {
+            family: VerifiedFamily::ClientArea,
+            packet,
+            reason: "synthetic Area_AreaLoaded fallback released from timer",
+        });
     tracing::info!(
-        observed_client_ack,
+        observed_client_ack = ?observed_client_ack,
         origin_ack_sequence,
         pending_client_packets = state.sequence.pending_client_to_server_packets.len(),
         held_server_packets = state.synthetic_area.held_server_to_client_packets.len(),

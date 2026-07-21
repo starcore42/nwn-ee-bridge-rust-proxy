@@ -15,9 +15,10 @@
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET,
+    translate::VerifiedFamily,
 };
 
-use super::SessionState;
+use super::{SessionState, state::PendingClientPacket};
 
 const EMPTY_ACK_FLAGS: u8 = 0x10;
 
@@ -27,7 +28,14 @@ pub(super) fn queue_consumed_server_frame_ack(
     reason: &'static str,
 ) -> anyhow::Result<()> {
     let packet = build_empty_ack_control_frame(ack_sequence)?;
-    state.sequence.pending_client_to_server_packets.push(packet);
+    state
+        .sequence
+        .pending_client_to_server_packets
+        .push(PendingClientPacket {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packet,
+            reason,
+        });
     tracing::info!(
         ack_sequence,
         pending_local_acks = state.sequence.pending_client_to_server_packets.len(),

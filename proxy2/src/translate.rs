@@ -403,7 +403,23 @@ impl Translator {
 
 impl SessionTranslator {
     pub fn take_pending_client_to_server_packets(&mut self) -> Vec<Vec<u8>> {
-        m_frame::take_pending_client_to_server_packets(&mut self.m_state)
+        match m_frame::take_pending_client_to_server_packets(&mut self.m_state) {
+            Ok(emit) => {
+                let validated = self.validate_emit(Direction::ClientToServer, emit);
+                m_frame::finish_pending_client_drain_emit_validation(
+                    &mut self.m_state,
+                    !matches!(&validated, Emit::Drop),
+                );
+                packets_from_emit(validated)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "pending client packet drain failed before strict validation"
+                );
+                Vec::new()
+            }
+        }
     }
 
     pub fn take_pending_server_to_client_packets(&mut self) -> Vec<Vec<u8>> {
@@ -437,8 +453,21 @@ impl SessionTranslator {
         // Translation happens before strict validation. This prevents an
         // untranslated-but-recognized packet from slipping through simply
         // because its top-level tag is known.
+        let finish_client_m_validation = direction == Direction::ClientToServer
+            && matches!(Packet::classify(bytes), Packet::M(_));
         let finish_server_m_validation = direction == Direction::ServerToClient
             && matches!(Packet::classify(bytes), Packet::M(_));
+        if finish_client_m_validation
+            && let Err(err) =
+                m_frame::begin_client_to_server_emit_validation(&mut self.m_state, bytes)
+        {
+            tracing::warn!(
+                direction = direction.as_str(),
+                error = %err,
+                "client M emit transaction failed before semantic translation"
+            );
+            return Emit::Drop;
+        }
         let emit = match self.translate_known(direction, bytes) {
             Ok(translated) => translated,
             Err(err) => {
@@ -450,6 +479,9 @@ impl SessionTranslator {
                 if finish_server_m_validation {
                     m_frame::finish_server_to_client_emit_validation(&mut self.m_state, false);
                 }
+                if finish_client_m_validation {
+                    m_frame::finish_client_to_server_emit_validation(&mut self.m_state, false);
+                }
                 return Emit::Drop;
             }
         };
@@ -457,6 +489,12 @@ impl SessionTranslator {
         let validated = self.validate_emit(direction, emit);
         if finish_server_m_validation {
             m_frame::finish_server_to_client_emit_validation(
+                &mut self.m_state,
+                !matches!(&validated, Emit::Drop),
+            );
+        }
+        if finish_client_m_validation {
+            m_frame::finish_client_to_server_emit_validation(
                 &mut self.m_state,
                 !matches!(&validated, Emit::Drop),
             );

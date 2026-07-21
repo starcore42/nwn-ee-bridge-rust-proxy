@@ -24,7 +24,7 @@ use super::{
         InventoryEquipmentBridgeOutputDecisionKind,
         InventoryEquipmentBridgePendingConfirmedInventoryReplay,
         InventoryEquipmentBridgeQueuedClientGuiStatusOutput, InventoryEquipmentBridgeQueuedOutput,
-        SessionState,
+        PendingClientPacket, SessionState,
     },
     synthetic_area::{self, PendingServerPacket, PendingServerPacketPlacement},
 };
@@ -39,9 +39,6 @@ pub(super) fn observe_server_ack_for_client_gui_status(
     state: &mut SessionState,
     server_ack_sequence: u16,
 ) {
-    if server_ack_sequence == 0 {
-        return;
-    }
     let Some(queued) = state
         .inventory_equipment
         .last_queued_client_gui_status_output
@@ -811,14 +808,20 @@ fn queue_client_gui_status_output_with_claim(
         trigger_client_sequence,
     );
     let ack_sequence = server_sequence_to_ack
-        .filter(|sequence| *sequence != 0)
         .or(state.sequence.latest_client_ack_from_client)
         .or(state.sequence.latest_server_sequence_to_client)
-        .unwrap_or(0);
+        .unwrap_or(u16::MAX);
     let packet =
         synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
 
-    state.sequence.pending_client_to_server_packets.push(packet);
+    state
+        .sequence
+        .pending_client_to_server_packets
+        .push(PendingClientPacket {
+            family: VerifiedFamily::ClientGuiInventory,
+            packet,
+            reason: "inventory/equipment ClientGuiInventory_Status bridge output",
+        });
     state.sequence.client_sequence_shifts.push(SequenceShift {
         base: trigger_client_sequence,
         delta: INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
@@ -1153,10 +1156,11 @@ mod tests {
         );
 
         let pending = state.sequence.pending_client_to_server_packets.remove(0);
-        let view = MFrameView::parse(&pending).expect("queued client packet should parse");
+        assert_eq!(pending.family, VerifiedFamily::ClientGuiInventory);
+        let view = MFrameView::parse(&pending.packet).expect("queued client packet should parse");
         assert_eq!(view.sequence, 11);
         assert_eq!(view.ack_sequence, 10);
-        let payload = super::super::parse_window::primary_payload(&pending, &view)
+        let payload = super::super::parse_window::primary_payload(&pending.packet, &view)
             .expect("queued packet should expose primary payload");
         let claim = client_gui_inventory::claim_payload_if_verified(payload)
             .expect("queued ClientGuiInventory payload should be exact");
@@ -2347,10 +2351,11 @@ mod tests {
         );
 
         let pending = &state.sequence.pending_client_to_server_packets[0];
-        let view = MFrameView::parse(pending).expect("queued client packet should parse");
+        assert_eq!(pending.family, VerifiedFamily::ClientGuiInventory);
+        let view = MFrameView::parse(&pending.packet).expect("queued client packet should parse");
         assert_eq!(view.sequence, 31);
         assert_eq!(view.ack_sequence, 90);
-        let payload = super::super::parse_window::primary_payload(pending, &view)
+        let payload = super::super::parse_window::primary_payload(&pending.packet, &view)
             .expect("queued packet should expose primary payload");
         let claim = client_gui_inventory::claim_payload_if_verified(payload)
             .expect("queued ClientGuiInventory payload should be exact");

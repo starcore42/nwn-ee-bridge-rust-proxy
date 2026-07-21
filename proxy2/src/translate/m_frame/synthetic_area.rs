@@ -26,6 +26,7 @@ use crate::{
 use super::sequence::{
     SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
 };
+use super::state::PendingClientPacket;
 
 const AREA_MAJOR: u8 = 0x04;
 const AREA_LOADED_MINOR: u8 = 0x03;
@@ -361,9 +362,7 @@ pub(super) fn observe_area_loaded_server_ack(
     let Some(pending) = in_flight.as_ref() else {
         return;
     };
-    if server_ack_sequence == 0
-        || !sequence_at_or_after(server_ack_sequence, pending.shifted_sequence)
-    {
+    if !sequence_at_or_after(server_ack_sequence, pending.shifted_sequence) {
         return;
     }
 
@@ -461,9 +460,6 @@ pub(super) fn observe_server_hold_gate_client_ack(
     let Some(active) = gate.as_mut() else {
         return;
     };
-    if observed_client_ack == 0 {
-        return;
-    }
     let now = Instant::now();
     let ack_satisfied =
         sequence_at_or_after(observed_client_ack, active.release_client_ack_sequence);
@@ -502,7 +498,7 @@ pub(super) fn observe_server_hold_gate_client_ack(
 pub(super) fn maybe_queue_area_loaded_retransmit(
     in_flight: &mut Option<InFlightAreaLoaded>,
     completed: &mut Option<CompletedAreaLoaded>,
-    pending_client_to_server_packets: &mut Vec<Vec<u8>>,
+    pending_client_to_server_packets: &mut Vec<PendingClientPacket>,
     server_ack_sequence: u16,
 ) {
     observe_area_loaded_server_ack(in_flight, completed, server_ack_sequence);
@@ -517,7 +513,11 @@ pub(super) fn maybe_queue_area_loaded_retransmit(
 
     pending.retransmits = pending.retransmits.saturating_add(1);
     pending.next_retransmit_at = now + AREA_LOADED_RETRANSMIT_DELAY;
-    pending_client_to_server_packets.push(pending.packet.clone());
+    pending_client_to_server_packets.push(PendingClientPacket {
+        family: VerifiedFamily::ClientArea,
+        packet: pending.packet.clone(),
+        reason: pending.reason.as_str(),
+    });
     tracing::warn!(
         server_ack_sequence,
         original_sequence = pending.original_sequence,
@@ -705,18 +705,18 @@ pub(super) fn maybe_build_area_loaded_client_packet(
     server_hold_gate: &mut Option<ServerHoldGate>,
     latest_client_sequence_from_client: &mut Option<u16>,
     client_sequence_shifts: &mut Vec<SequenceShift>,
-    observed_client_ack: u16,
+    observed_client_ack: Option<u16>,
     origin_ack_sequence: u16,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(active) = pending_area_loaded.as_mut() else {
         return Ok(None);
     };
     let now = Instant::now();
-    let client_ack_satisfied = observed_client_ack != 0
-        && sequence_at_or_after(observed_client_ack, active.release_client_ack_sequence);
+    let client_ack_satisfied = observed_client_ack
+        .is_some_and(|ack| sequence_at_or_after(ack, active.release_client_ack_sequence));
     if active.require_client_ack_before_release && !client_ack_satisfied {
         tracing::trace!(
-            observed_client_ack,
+            observed_client_ack = ?observed_client_ack,
             release_client_ack_sequence = active.release_client_ack_sequence,
             reason = active.reason.as_str(),
             "client synthetic Area_AreaLoaded fallback waiting for EE ACK of rewritten Area_ClientArea"
@@ -733,7 +733,7 @@ pub(super) fn maybe_build_area_loaded_client_packet(
             active.release_at = ack_grace_release_at;
         }
         tracing::info!(
-            observed_client_ack,
+            observed_client_ack = ?observed_client_ack,
             release_client_ack_sequence = active.release_client_ack_sequence,
             native_grace_ms = active.native_completion_grace_after_ack.as_millis(),
             release_delay_ms = active.release_at.saturating_duration_since(now).as_millis(),
@@ -761,7 +761,7 @@ pub(super) fn maybe_build_area_loaded_client_packet(
             "synthetic Area_AreaLoaded fallback due; opening gate for native completion probe",
         );
         tracing::info!(
-            observed_client_ack,
+            observed_client_ack = ?observed_client_ack,
             release_client_ack_sequence = active.release_client_ack_sequence,
             native_probe_ms = AREA_LOADED_NATIVE_PROBE_AFTER_GATE_OPEN_GRACE.as_millis(),
             reason = reason.as_str(),
@@ -780,7 +780,7 @@ pub(super) fn maybe_build_area_loaded_client_packet(
         }
     } else {
         tracing::warn!(
-            observed_client_ack,
+            observed_client_ack = ?observed_client_ack,
             release_client_ack_sequence = pending.release_client_ack_sequence,
             reason = pending.reason.as_str(),
             "client synthetic Area_AreaLoaded fallback grace elapsed without area-load release ACK"
@@ -794,7 +794,7 @@ pub(super) fn maybe_build_area_loaded_client_packet(
         latest_client_sequence_from_client,
         client_sequence_shifts,
         pending,
-        Some(observed_client_ack),
+        observed_client_ack,
         origin_ack_sequence,
         release_trigger,
     )?;
@@ -991,7 +991,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            30,
+            Some(30),
             29,
         )
         .expect("early fallback check");
@@ -1006,7 +1006,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            31,
+            Some(31),
             30,
         )
         .expect("acked fallback release check");
@@ -1028,7 +1028,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            31,
+            Some(31),
             30,
         )
         .expect("native grace elapsed fallback release");
@@ -1051,7 +1051,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            31,
+            Some(31),
             30,
         )
         .expect("post-gate native probe elapsed fallback release")
@@ -1248,7 +1248,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            22,
+            Some(22),
             74,
         )
         .expect("area ack starts native grace");
@@ -1262,7 +1262,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            22,
+            Some(22),
             74,
         )
         .expect("fallback releases without waiting for LoadBar_End/Status ACK")
@@ -1291,7 +1291,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            31,
+            Some(31),
             30,
         )
         .expect("first synthetic build")
@@ -1311,7 +1311,7 @@ mod tests {
             &mut hold_gate,
             &mut latest_native_client_sequence,
             &mut client_sequence_shifts,
-            40,
+            Some(40),
             39,
         )
         .expect("second synthetic build")

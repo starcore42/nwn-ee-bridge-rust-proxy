@@ -2451,7 +2451,9 @@ mod tests {
         assert_eq!(outcome.proof.primary_family(), Some(VerifiedFamily::Login));
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
         let pending = state.sequence.pending_client_to_server_packets.remove(0);
-        let pending_view = MFrameView::parse(&pending).expect("queued response should parse");
+        assert_eq!(pending.family, VerifiedFamily::ClientLogin);
+        let pending_view =
+            MFrameView::parse(&pending.packet).expect("queued response should parse");
         assert_eq!(pending_view.sequence, 75);
         assert_eq!(pending_view.ack_sequence, 21);
         assert_eq!(
@@ -2496,7 +2498,9 @@ mod tests {
         assert_eq!(outcome.proof.primary_family(), Some(VerifiedFamily::Login));
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
         let pending = state.sequence.pending_client_to_server_packets.remove(0);
-        let pending_view = MFrameView::parse(&pending).expect("queued response should parse");
+        assert_eq!(pending.family, VerifiedFamily::ClientLogin);
+        let pending_view =
+            MFrameView::parse(&pending.packet).expect("queued response should parse");
         assert_eq!(pending_view.sequence, 75);
         assert_eq!(pending_view.ack_sequence, 22);
         assert_eq!(

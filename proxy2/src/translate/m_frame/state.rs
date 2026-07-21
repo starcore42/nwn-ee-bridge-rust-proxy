@@ -29,14 +29,26 @@ pub(super) struct OrderedSuccessorValidationToken {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ClientEmitValidationToken {
+    /// A validated type-0 client source advances the proxy-facing receive
+    /// window even if the translated legacy emit later fails strict
+    /// validation. Controls have no reliable-data sequence ownership.
+    pub(super) source_reliable_sequence: Option<u16>,
+    /// The source ACK is likewise modulo-u16 transport truth. Zero is the
+    /// wrapped successor of `0xFFFF`; absence exists only in optional state,
+    /// while a validated wire ACK is always present.
+    pub(super) source_ack_sequence: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ServerEmitEffectTransactionKind {
     OrderedSuccessor,
     OrdinaryServerEmit,
     PendingServerDrain,
 }
 
-/// Reversible engine-facing state touched while a server-origin or proxy-owned
-/// server emit is being translated ahead of the outer strict emit decision.
+/// Reversible engine-facing state touched while a client, server, or
+/// proxy-owned emit is being translated ahead of the outer strict decision.
 ///
 /// Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` retain the raw
 /// reliable slot before dispatch, but the reconstructed message does not
@@ -44,7 +56,7 @@ pub(super) enum ServerEmitEffectTransactionKind {
 /// reliable-generation bookkeeping live; only semantic observations and the
 /// proxy-owned packets/sequence intervals derived from them belong here.
 #[derive(Debug)]
-pub(super) struct OrderedSuccessorEffectSnapshot {
+pub(super) struct EngineFacingEffectSnapshot {
     pub(super) server_reassembly: Option<ServerDeflatedReassembly>,
     pub(super) completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
     pub(super) completed_server_reliable_stream_slots:
@@ -57,6 +69,7 @@ pub(super) struct OrderedSuccessorEffectSnapshot {
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
+    pub(super) client_reliable_semantic_effects: ClientReliableSemanticEffectState,
     pub(super) client_ack: client_ack::ClientAckState,
     pub(super) direct_server_semantic_replays: DirectServerSemanticReplayState,
     pub(super) login_waypoint: LoginWaypointState,
@@ -97,7 +110,7 @@ pub(super) struct DeflateState {
     /// Speculative engine-facing effects for a server emit transaction.
     /// The outer strict callback commits this snapshot on accept and restores
     /// it on rejection; coalesced/ordered effects never leak gameplay state.
-    pub(super) ordered_successor_effect_snapshot: Option<Box<OrderedSuccessorEffectSnapshot>>,
+    pub(super) ordered_successor_effect_snapshot: Option<Box<EngineFacingEffectSnapshot>>,
     pub(super) server_emit_effect_transaction_kind: Option<ServerEmitEffectTransactionKind>,
     pub(super) last_server_core_dispatch_accepted: bool,
 }
@@ -172,7 +185,27 @@ pub(super) struct SequenceState {
     pub(super) client_sequence_elisions: Vec<SequenceElision>,
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
     pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
-    pub(super) pending_client_to_server_packets: Vec<Vec<u8>>,
+    pub(super) pending_client_to_server_packets: Vec<PendingClientPacket>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingClientPacket {
+    pub(super) family: crate::translate::VerifiedFamily,
+    pub(super) packet: Vec<u8>,
+    pub(super) reason: &'static str,
+}
+
+/// Reversible state touched while timer/session-owned client packets are
+/// removed for final strict validation. Producer-side semantic decisions stay
+/// committed; a rejected drain restores the exact typed queue and only the
+/// AreaLoaded timer/sequence effects created by that drain.
+#[derive(Debug)]
+pub(super) struct PendingClientDrainEffectSnapshot {
+    pub(super) pending_packets: Vec<PendingClientPacket>,
+    pub(super) pending_area_loaded: Option<synthetic_area::PendingAreaLoaded>,
+    pub(super) in_flight_area_loaded: Option<synthetic_area::InFlightAreaLoaded>,
+    pub(super) server_hold_gate: Option<synthetic_area::ServerHoldGate>,
+    pub(super) client_sequence_shifts: Vec<SequenceShift>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +214,7 @@ pub(super) struct CompletedClientReliableSemanticEffect {
     pub(super) payload: Vec<u8>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct ClientReliableSemanticEffectState {
     /// Reliable `M` retransmissions remain transport-visible, but their typed
     /// semantic and bridge effects must run once per exact sequence/payload.
@@ -735,6 +768,12 @@ pub struct SessionState {
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
     pub(super) client_reliable_semantic_effects: ClientReliableSemanticEffectState,
+    /// Client-originated translation runs before the outer strict emit owner.
+    /// Keep its engine-facing effects reversible while the validated source
+    /// transport sequence/ACK remain authoritative on rejection.
+    pub(super) client_emit_effect_snapshot: Option<Box<EngineFacingEffectSnapshot>>,
+    pub(super) client_emit_pending_validation: Option<ClientEmitValidationToken>,
+    pub(super) pending_client_drain_effect_snapshot: Option<PendingClientDrainEffectSnapshot>,
     pub(super) direct_server_semantic_replays: DirectServerSemanticReplayState,
     pub(super) client_ack: ClientAckSessionState,
     pub(super) login_waypoint: LoginWaypointState,
@@ -761,6 +800,9 @@ impl SessionState {
             live_object: LiveObjectStreamState::default(),
             sequence: SequenceState::default(),
             client_reliable_semantic_effects: ClientReliableSemanticEffectState::default(),
+            client_emit_effect_snapshot: None,
+            client_emit_pending_validation: None,
+            pending_client_drain_effect_snapshot: None,
             direct_server_semantic_replays: DirectServerSemanticReplayState::default(),
             client_ack: ClientAckSessionState::default(),
             login_waypoint: LoginWaypointState::default(),

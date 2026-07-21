@@ -14,12 +14,12 @@
 
 use crate::{
     packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
-    translate::client_login,
+    translate::{VerifiedFamily, client_login},
 };
 
 use super::{
     sequence::{SequenceShift, shift_sequence_for_peer, trim_sequence_shifts},
-    state::SessionState,
+    state::{PendingClientPacket, SessionState},
     synthetic_area,
 };
 
@@ -92,7 +92,14 @@ pub(super) fn maybe_queue_empty_waypoint_response_payload(
         &payload,
     )?;
 
-    state.sequence.pending_client_to_server_packets.push(packet);
+    state
+        .sequence
+        .pending_client_to_server_packets
+        .push(PendingClientPacket {
+            family: VerifiedFamily::ClientLogin,
+            packet,
+            reason: "synthetic empty Login_WaypointResponse for legacy Login_GetWaypoint",
+        });
     state.sequence.client_sequence_shifts.push(SequenceShift {
         base: original_sequence,
         delta: 1,
@@ -163,11 +170,12 @@ mod tests {
 
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
         let pending = state.sequence.pending_client_to_server_packets.remove(0);
-        let pending_view = MFrameView::parse(&pending).unwrap();
+        assert_eq!(pending.family, VerifiedFamily::ClientLogin);
+        let pending_view = MFrameView::parse(&pending.packet).unwrap();
         assert_eq!(pending_view.sequence, 75);
         assert_eq!(pending_view.ack_sequence, 21);
         assert!(client_login::waypoint_response_payload_shape_valid(
-            &pending[LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+            &pending.packet[LEGACY_GAMEPLAY_PAYLOAD_OFFSET
                 ..LEGACY_GAMEPLAY_PAYLOAD_OFFSET + pending_view.payload_length]
         ));
         assert_eq!(state.sequence.latest_client_sequence_from_client, Some(74));

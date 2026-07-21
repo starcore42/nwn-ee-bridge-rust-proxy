@@ -155,8 +155,23 @@ mod tests {
         assert_eq!(latest, Some(74));
 
         let mut wrapped = Some(u16::MAX);
+        record_forward_progress(&mut wrapped, 0);
+        assert_eq!(wrapped, Some(0));
+        record_forward_progress(&mut wrapped, u16::MAX);
+        assert_eq!(
+            wrapped,
+            Some(0),
+            "the pre-wrap value is stale after ACK/data sequence zero commits"
+        );
         record_forward_progress(&mut wrapped, 1);
         assert_eq!(wrapped, Some(1));
+    }
+
+    #[test]
+    fn wrapped_ack_zero_unshifts_across_inserted_sequence_zero() {
+        let shifts = [SequenceShift { base: 0, delta: 1 }];
+
+        assert_eq!(unshift_ack_for_origin(&shifts, 0), u16::MAX);
     }
 
     #[test]

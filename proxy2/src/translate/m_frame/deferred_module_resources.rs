@@ -404,9 +404,7 @@ pub(super) fn observe_resource_hold_gate_client_ack(
         return;
     };
 
-    if observed_client_ack == 0
-        || !sequence_at_or_after(observed_client_ack, gate.release_client_ack_sequence)
-    {
+    if !sequence_at_or_after(observed_client_ack, gate.release_client_ack_sequence) {
         return;
     }
 
@@ -428,8 +426,7 @@ pub(super) fn client_ack_would_release_held_server_packets(
         return false;
     };
 
-    observed_client_ack != 0
-        && !state.held_server_to_client_packets.is_empty()
+    !state.held_server_to_client_packets.is_empty()
         && sequence_at_or_after(observed_client_ack, gate.release_client_ack_sequence)
 }
 

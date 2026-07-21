@@ -17,6 +17,54 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 client-emission validation transaction and ACK-zero wrap: the
+  live gate used
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and 21 hours 29 minutes old
+  at the `04:52+10:00` audit. It remains qualifying gameplay evidence: typed
+  `starcore-druid60`, `Module_Loaded`, two native `Area_AreaLoaded` messages,
+  76 exact live-object accepts through 137.813 seconds after the final area
+  load, 449 strict allows, and zero route conflict, quarantine, `BNDP`, ERROR,
+  quarantine files, or stderr. No newer live attempt exists, so no fresh HG
+  login was required.
+
+  Direct client M translation now snapshots semantic/replay state, synthetic
+  queues and gates, sequence transforms, persistent reader state, and deferred
+  publication before dispatch. The complete translated batch must pass the
+  outer strict owner before those effects commit. Rejection restores the exact
+  pre-dispatch snapshot while retaining only the already-validated source
+  reliable sequence and ACK observations. Pending local ACK, login-waypoint,
+  GUI-inventory-status, and synthetic `Area_AreaLoaded` producers now carry an
+  exact `VerifiedFamily` and drain as one atomic typed batch; strict rejection
+  restores the queue and timer/shift state for retry. Client and server emit
+  authorities are mutually exclusive.
+
+  Top-level M ACK zero is now handled as ordinary modulo-u16 transport state,
+  including shift reversal and ACK-gated resource/area/inventory release.
+  Diamond `sub_5F36E0`/`sub_5F3940` lines 751243, 751460, and 751680 plus its
+  FFFF initialization at line 750680, and EE `FrameSend`/`FrameReceive` lines
+  879824, 878825, and 879090 plus initialization at line 891050, prove that the
+  writer always emits `receive_next - 1`: zero is the wrapped ACK after FFFF,
+  never an absence sentinel. The separate zero-inherits-base rule remains only
+  inside a coalesced record. This slice changes no CNW gameplay field order,
+  bit width/order, cursor movement, string boundary, or gameplay payload.
+
+  Formatting, test compilation, Release build, the new rollback/wrap tests,
+  and the focused sequence, synthetic-area, local-ACK, login-waypoint,
+  inventory/equipment, coalesced, and 53-test strict suites pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-emit-atomic-20260722-0457`
+  processed all 164 packet files with 319 strict allows, including 155 direct
+  client transaction commits and 15 typed pending-client batch commits, and
+  zero strict/semantic quarantines, queue restorations, route conflicts,
+  quarantine files, errors, or stderr.
+
+  The next generalized production path is an immutable client reliable-slot
+  identity fence and deterministic replay of its first accepted translation.
+  The slot key must include the type-0 lane, origin generation, and sequence;
+  immutable identity must cover exact length, immutable flags, and bytes from
+  offset 8 onward while allowing only CRC, ACK, and the proven mutable flag
+  bits to refresh. The separate live terminal blocker still needs a deployed
+  v2 writer producer and a unique sequence-95 door `UseObject` capture.
 - 2026-07-22 reliable-window frame-kind lanes: the live gate used
   `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
   last written `2026-07-21T07:23:58.6405077+10:00` and 17 hours 44 minutes old
