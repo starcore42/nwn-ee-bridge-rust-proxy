@@ -485,6 +485,21 @@ pub(super) fn take_releasable_held_server_packets(
         .collect()
 }
 
+pub(super) fn has_releasable_held_server_packets(state: &DeferredModuleResourcesState) -> bool {
+    state.hold_gate.is_none() && !state.held_server_to_client_packets.is_empty()
+}
+
+#[cfg(test)]
+pub(super) fn arm_hold_gate_for_test(
+    state: &mut DeferredModuleResourcesState,
+    release_client_ack_sequence: u16,
+) {
+    state.hold_gate = Some(ModuleResourceHoldGate {
+        release_client_ack_sequence,
+        armed_at: Instant::now(),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use crate::packet::m::MFrameView;

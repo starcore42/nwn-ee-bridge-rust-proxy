@@ -97,16 +97,23 @@ pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> Vec<Ve
     std::mem::take(&mut state.sequence.pending_client_to_server_packets)
 }
 
-pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> Emit {
+pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> anyhow::Result<Emit> {
+    ensure_pending_server_drain_can_start(state)?;
+    let now = Instant::now();
+    if !pending_server_drain_has_work(state, now) {
+        return Ok(Emit::Consumed);
+    }
+    begin_pending_server_drain_effect_transaction(state)?;
     let mut proof_packets = deferred_module_resources::take_releasable_held_server_packets(
         &mut state.deferred_module_resources.pending,
     );
     proof_packets.extend(
         take_due_pending_server_packets(
             state,
-            Instant::now(),
+            now,
             "pending server-to-client proxy-owned packet released from session drain",
             true,
+            PendingServerGatePolicy::CurrentState,
         )
         .into_iter()
         .map(|(_, pending)| (VerifiedProof::family(pending.family), pending.packet)),
@@ -146,12 +153,32 @@ pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> Emit {
     }
 
     if proof_packets.is_empty() {
-        return Emit::Consumed;
+        return Ok(Emit::Consumed);
     }
 
     let emit = Emit::MixedVerifiedProofPacketsPreShifted(proof_packets);
     record_server_emit_window_state(state, &emit);
-    emit
+    Ok(emit)
+}
+
+fn pending_server_drain_has_work(state: &SessionState, now: Instant) -> bool {
+    client_ack::has_due_consumed_ee_only_ack(&state.client_ack.pending, now)
+        || state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .iter()
+            .any(|pending| {
+                pending.due_at <= now
+                    && pending_server_packet_can_reach_outer_validator(state, pending)
+            })
+        || deferred_module_resources::has_releasable_held_server_packets(
+            &state.deferred_module_resources.pending,
+        )
+        || (state.synthetic_area.server_hold_gate.is_none()
+            && !state
+                .synthetic_area
+                .held_server_to_client_packets
+                .is_empty())
 }
 
 pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
@@ -412,11 +439,22 @@ fn queue_proxy_owned_ack_for_consumed_client_frame(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum PendingServerGatePolicy<'a> {
+    Ignore,
+    CurrentState,
+    CurrentEmit {
+        pending_count_before: usize,
+        area_gate_after_current: &'a Option<synthetic_area::ServerHoldGate>,
+    },
+}
+
 fn take_due_pending_server_packets(
     state: &mut SessionState,
     now: Instant,
     release_log: &'static str,
     include_client_ack: bool,
+    gate_policy: PendingServerGatePolicy<'_>,
 ) -> Vec<(Option<usize>, synthetic_area::PendingServerPacket)> {
     let mut due = Vec::new();
     let mut kept = Vec::new();
@@ -435,6 +473,31 @@ fn take_due_pending_server_packets(
 
     for (original_index, pending) in pending_packets.into_iter().enumerate() {
         if pending.due_at > now {
+            kept.push(pending);
+            continue;
+        }
+        let can_reach_outer_validator = match gate_policy {
+            PendingServerGatePolicy::Ignore => true,
+            PendingServerGatePolicy::CurrentState => {
+                pending_server_packet_can_reach_outer_validator(state, &pending)
+            }
+            PendingServerGatePolicy::CurrentEmit {
+                pending_count_before,
+                area_gate_after_current,
+            } => pending_server_packet_can_reach_for_current_emit(
+                state,
+                &pending,
+                original_index,
+                pending_count_before,
+                area_gate_after_current,
+            ),
+        };
+        if !can_reach_outer_validator {
+            tracing::trace!(
+                family = pending.family.as_str(),
+                reason = pending.reason,
+                "due synthetic server packet retained in its typed queue behind an active emission gate"
+            );
             kept.push(pending);
             continue;
         }
@@ -472,6 +535,70 @@ fn take_due_pending_server_packets(
 
     state.synthetic_area.pending_server_to_client_packets = kept;
     due
+}
+
+fn pending_server_packet_can_reach_outer_validator(
+    state: &SessionState,
+    pending: &synthetic_area::PendingServerPacket,
+) -> bool {
+    pending_server_packet_can_reach_outer_validator_with_area_gate(
+        state,
+        pending,
+        &state.synthetic_area.server_hold_gate,
+    )
+}
+
+fn pending_server_packet_can_reach_outer_validator_with_area_gate(
+    state: &SessionState,
+    pending: &synthetic_area::PendingServerPacket,
+    area_gate: &Option<synthetic_area::ServerHoldGate>,
+) -> bool {
+    if deferred_module_resources::module_resource_hold_gate_release_sequence(
+        &state.deferred_module_resources.pending,
+    )
+    .is_some()
+        && !module_resource_gate_window_packet_can_pass(state, &pending.packet)
+    {
+        return false;
+    }
+
+    let proof = VerifiedProof::family(pending.family);
+    area_gate.is_none()
+        || area_load_gate_packet_would_release_from(area_gate, &proof, &pending.packet)
+}
+
+fn pending_server_packet_can_reach_for_current_emit(
+    state: &SessionState,
+    pending: &synthetic_area::PendingServerPacket,
+    original_index: usize,
+    pending_count_before: usize,
+    area_gate_after_current: &Option<synthetic_area::ServerHoldGate>,
+) -> bool {
+    let belongs_before_current = matches!(
+        pending.placement,
+        synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit
+    ) || original_index < pending_count_before;
+    let area_gate = if belongs_before_current {
+        &state.synthetic_area.server_hold_gate
+    } else {
+        area_gate_after_current
+    };
+    pending_server_packet_can_reach_outer_validator_with_area_gate(state, pending, area_gate)
+}
+
+fn active_server_reassembly_will_complete_on_frame(
+    state: &SessionState,
+    view: &MFrameView,
+) -> bool {
+    let Some(reassembly) = state.deflate.server_reassembly.as_ref() else {
+        return false;
+    };
+    if view.frame_type != 0 {
+        return false;
+    }
+    let distance = view.sequence.wrapping_sub(reassembly.first_sequence) as usize;
+    distance < reassembly.expected_frames
+        && reassembly.frames.len().saturating_add(1) >= reassembly.expected_frames
 }
 
 fn is_client_module_loaded(high: Option<HighLevel>) -> bool {
@@ -657,6 +784,37 @@ fn begin_ordered_successor_effect_transaction(
     Ok(())
 }
 
+fn promote_or_begin_ordered_successor_effect_transaction(
+    state: &mut SessionState,
+    sequence: u16,
+) -> anyhow::Result<()> {
+    if state.deflate.ordered_successor_effect_snapshot.is_some()
+        && state.deflate.server_emit_effect_transaction_kind
+            == Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+    {
+        if state.deflate.ordered_successor_next_sequence != Some(sequence) {
+            anyhow::bail!(
+                "server source transaction cannot promote to ordered successor {} with active fence {:?}",
+                sequence,
+                state.deflate.ordered_successor_next_sequence
+            );
+        }
+        if state.deflate.ordered_successor_pending_validation.is_some() {
+            anyhow::bail!(
+                "server source transaction cannot promote while another ordered validation identity is staged"
+            );
+        }
+        state.deflate.server_emit_effect_transaction_kind =
+            Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor);
+        tracing::debug!(
+            sequence,
+            "completing server source transaction promoted to ordered successor authority"
+        );
+        return Ok(());
+    }
+    begin_ordered_successor_effect_transaction(state, sequence)
+}
+
 fn begin_ordinary_server_emit_effect_transaction(state: &mut SessionState) -> anyhow::Result<()> {
     if state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
@@ -669,10 +827,33 @@ fn begin_ordinary_server_emit_effect_transaction(state: &mut SessionState) -> an
     let snapshot = capture_engine_facing_effect_snapshot(state);
     state.deflate.ordered_successor_effect_snapshot = Some(Box::new(snapshot));
     state.deflate.server_emit_effect_transaction_kind =
-        Some(state::ServerEmitEffectTransactionKind::OrdinaryCoalesced);
-    tracing::debug!(
-        "ordinary coalesced server window began speculative engine-facing effect transaction"
+        Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit);
+    tracing::debug!("ordinary server emit began speculative engine-facing effect transaction");
+    Ok(())
+}
+
+fn begin_pending_server_drain_effect_transaction(state: &mut SessionState) -> anyhow::Result<()> {
+    ensure_pending_server_drain_can_start(state)?;
+
+    let snapshot = capture_engine_facing_effect_snapshot(state);
+    state.deflate.ordered_successor_effect_snapshot = Some(Box::new(snapshot));
+    state.deflate.server_emit_effect_transaction_kind =
+        Some(state::ServerEmitEffectTransactionKind::PendingServerDrain);
+    tracing::trace!(
+        "pending server synthetic drain began speculative engine-facing effect transaction"
     );
+    Ok(())
+}
+
+fn ensure_pending_server_drain_can_start(state: &SessionState) -> anyhow::Result<()> {
+    if state.deflate.ordered_successor_effect_snapshot.is_some()
+        || state.deflate.server_emit_effect_transaction_kind.is_some()
+        || state.deflate.ordered_successor_pending_validation.is_some()
+    {
+        anyhow::bail!(
+            "server emit validation authority already active before pending synthetic drain"
+        );
+    }
     Ok(())
 }
 
@@ -694,6 +875,7 @@ fn capture_engine_facing_effect_snapshot(
         quickbar: state.quickbar.clone(),
         live_object: state.live_object.clone(),
         sequence: state.sequence.clone(),
+        client_ack: state.client_ack.pending.clone(),
         direct_server_semantic_replays: state.direct_server_semantic_replays.clone(),
         login_waypoint: state.login_waypoint.clone(),
         inventory_equipment: state.inventory_equipment.clone(),
@@ -724,6 +906,7 @@ fn restore_engine_facing_effect_snapshot(
     state.quickbar = snapshot.quickbar;
     state.live_object = snapshot.live_object;
     state.sequence = snapshot.sequence;
+    state.client_ack.pending = snapshot.client_ack;
     state.direct_server_semantic_replays = snapshot.direct_server_semantic_replays;
     state.login_waypoint = snapshot.login_waypoint;
     state.inventory_equipment = snapshot.inventory_equipment;
@@ -786,6 +969,15 @@ fn commit_server_emit_effect_transaction(
 /// its inner translator returned plausible packets: the complete emitted shape
 /// must pass the final strict owner first.
 pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, accepted: bool) {
+    if state.deflate.server_emit_effect_transaction_kind
+        == Some(state::ServerEmitEffectTransactionKind::PendingServerDrain)
+    {
+        tracing::warn!(
+            accepted,
+            "pending server synthetic drain ignored unrelated server-origin validation callback"
+        );
+        return;
+    }
     let token = state.deflate.ordered_successor_pending_validation.take();
     if !accepted {
         let rolled_back_effects = rollback_server_emit_effect_transaction(state);
@@ -806,15 +998,21 @@ pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, 
 
     let Some(token) = token else {
         match state.deflate.server_emit_effect_transaction_kind {
-            Some(state::ServerEmitEffectTransactionKind::OrdinaryCoalesced) => {
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit) => {
                 if commit_server_emit_effect_transaction(
                     state,
-                    state::ServerEmitEffectTransactionKind::OrdinaryCoalesced,
+                    state::ServerEmitEffectTransactionKind::OrdinaryServerEmit,
                 ) {
                     tracing::debug!(
-                        "strict-validated ordinary server M committed speculative engine-facing effects"
+                        "strict-validated ordinary server emit committed speculative engine-facing effects"
                     );
                 }
+            }
+            Some(state::ServerEmitEffectTransactionKind::PendingServerDrain) => {
+                tracing::warn!(
+                    "pending server synthetic transaction reached server-origin validation match after ownership guard"
+                );
+                return;
             }
             Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor) => {
                 let rolled_back_effects = rollback_server_emit_effect_transaction(state);
@@ -924,6 +1122,43 @@ pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, 
     );
 }
 
+/// Commit or reject only the timer/session-drained synthetic server batch.
+/// A pending-drain callback must never consume an ordered-successor token or
+/// commit an ordinary server-origin transaction merely because an idle network
+/// poll returned `Consumed`.
+pub(super) fn finish_pending_server_drain_emit_validation(
+    state: &mut SessionState,
+    accepted: bool,
+) {
+    let expected = state::ServerEmitEffectTransactionKind::PendingServerDrain;
+    match state.deflate.server_emit_effect_transaction_kind {
+        None if state.deflate.ordered_successor_effect_snapshot.is_none() => return,
+        Some(kind) if kind == expected => {}
+        transaction_kind => {
+            tracing::warn!(
+                ?transaction_kind,
+                accepted,
+                "pending server synthetic validation callback ignored foreign effect transaction"
+            );
+            return;
+        }
+    }
+
+    if accepted {
+        if commit_server_emit_effect_transaction(state, expected) {
+            tracing::trace!(
+                "strict-validated pending server synthetic drain committed speculative engine-facing effects"
+            );
+        }
+    } else {
+        let rolled_back_effects = rollback_server_emit_effect_transaction(state);
+        tracing::warn!(
+            rolled_back_effects,
+            "pending server synthetic drain restored after final strict validation rejected the complete batch"
+        );
+    }
+}
+
 fn translate_server_to_client_inner(
     bytes: &[u8],
     state: &mut SessionState,
@@ -999,9 +1234,47 @@ fn translate_server_to_client_inner(
         begin_ordered_successor_effect_transaction(state, view.sequence)?;
     }
     let pending_count_before = state.synthetic_area.pending_server_to_client_packets.len();
+    let server_emit_started_at = Instant::now();
     let mut inbound = bytes.to_vec();
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
     let view = MFrameView::parse(&inbound).unwrap_or(view);
+    let packetized_multi_frame = view.packetized_sequence > 1;
+    let starts_server_deflated_reassembly =
+        reassembly::should_start_server_deflated_reassembly(&inbound, &view);
+    let completes_server_deflated_source =
+        active_server_reassembly_will_complete_on_frame(state, &view)
+            || (state.deflate.server_reassembly.is_none()
+                && starts_server_deflated_reassembly
+                && view.packetized_sequence <= 1);
+    let ordinary_coalesced_window = view.packetized_sequence == 1
+        && view.trailing_payload_length > 0
+        && state.deflate.ordered_successor_effect_snapshot.is_none();
+    let source_can_queue_immediate_server_packet = completes_server_deflated_source
+        || (state.deflate.server_reassembly.is_none()
+            && (view
+                .high
+                .is_some_and(|high| high.major == 0x04 && high.minor == 0x01)
+                || (!packetized_multi_frame
+                    && state
+                        .inventory_equipment
+                        .pending_confirmed_inventory_replay
+                        .is_some())));
+    let ordinary_server_emit_transaction =
+        state.deflate.ordered_successor_effect_snapshot.is_none()
+            && (ordinary_coalesced_window
+                || pending_server_drain_has_work(state, server_emit_started_at)
+                || source_can_queue_immediate_server_packet);
+    if ordinary_server_emit_transaction {
+        // A complete count-one stored window is one reader transaction. A due
+        // or source-created proxy-owned server packet is likewise not emitted
+        // truth until the mixed outer batch validates. Keep both sources'
+        // semantic, queue, sequence, replay, and publication effects behind
+        // that boundary. Raw Area_ClientArea, an armed direct inventory replay,
+        // and a frame which completes a deflated source are the bounded
+        // producers visible before dispatch. A completing source may promote
+        // this authority if it also drains one buffered ordered successor.
+        begin_ordinary_server_emit_effect_transaction(state)?;
+    }
     if state.deflate.server_reassembly.is_some() {
         let emit = reassembly::continue_server_deflated_reassembly(
             &inbound,
@@ -1013,17 +1286,6 @@ fn translate_server_to_client_inner(
         return finalize_server_to_client_emit(state, emit, pending_count_before);
     }
 
-    let packetized_multi_frame = view.packetized_sequence > 1;
-    let ordinary_coalesced_transaction = view.packetized_sequence == 1
-        && view.trailing_payload_length > 0
-        && state.deflate.ordered_successor_effect_snapshot.is_none();
-    if ordinary_coalesced_transaction {
-        // A complete count-one stored window is one reader transaction. Keep
-        // its inflater, semantic, replay-cache, route, and external publication
-        // effects speculative through the outer strict validator; acceptance
-        // of an individual inner record is not the commit boundary.
-        begin_ordinary_server_emit_effect_transaction(state)?;
-    }
     if !packetized_multi_frame {
         deferred_module_resources::capture_early_server_status_if_needed(
             &inbound,
@@ -1032,8 +1294,6 @@ fn translate_server_to_client_inner(
             &mut state.deferred_module_resources.pending,
         );
     }
-    let starts_server_deflated_reassembly =
-        reassembly::should_start_server_deflated_reassembly(&inbound, &view);
     // Diamond and EE only walk declared-length queued records in the count-one
     // branch. A count-greater-than-one datagram owns a single compressed member
     // assembled from complete stored frames, so it must never enter coalesced
@@ -1048,13 +1308,13 @@ fn translate_server_to_client_inner(
         ) {
             Ok(rewrite) => rewrite,
             Err(error) => {
-                if ordinary_coalesced_transaction {
+                if ordinary_server_emit_transaction {
                     rollback_server_emit_effect_transaction(state);
                 }
                 return Err(error);
             }
         };
-        if rewrite.is_none() && ordinary_coalesced_transaction {
+        if rewrite.is_none() && ordinary_coalesced_window {
             // Trailing storage that cannot be reduced to complete declared
             // records is not a successful empty coalesced window. Reject it
             // before finalization so unrelated due synthetic output cannot
@@ -2615,7 +2875,6 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             event_sequence,
             final_sequence.unwrap_or(event_sequence),
         );
-        begin_ordered_successor_effect_transaction(state, event_sequence)?;
         deferred_module_resources::capture_early_server_status_if_needed(
             &inbound,
             &view,
@@ -2629,6 +2888,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             event_server_origin_generation,
             state,
         )? {
+            promote_or_begin_ordered_successor_effect_transaction(state, event_sequence)?;
             stage_ordered_successor_validation_token(
                 state,
                 event_sequence,
@@ -2646,6 +2906,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             Some(&state.area_context.latest_area_placeables),
             Some(&state.semantic.objects),
         )? {
+            promote_or_begin_ordered_successor_effect_transaction(state, event_sequence)?;
             let verified = commit_direct_server_semantic_rewrite(
                 state,
                 &inbound,
@@ -2669,7 +2930,6 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             break;
         }
 
-        rollback_server_emit_effect_transaction(state);
         tracing::warn!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -2842,19 +3102,143 @@ fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> 
     Ok(())
 }
 
+fn area_gate_after_current_server_emit(
+    state: &SessionState,
+    emit: &Emit,
+) -> anyhow::Result<Option<synthetic_area::ServerHoldGate>> {
+    let mut gate = state.synthetic_area.server_hold_gate.clone();
+    match emit {
+        Emit::VerifiedPackets { family, packets } => {
+            let proof = VerifiedProof::family(*family);
+            for packet in packets {
+                advance_preview_area_gate(state, &mut gate, &proof, packet, false)?;
+            }
+        }
+        Emit::VerifiedPacketsPreShifted { family, packets } => {
+            let proof = VerifiedProof::family(*family);
+            for packet in packets {
+                advance_preview_area_gate(state, &mut gate, &proof, packet, true)?;
+            }
+        }
+        Emit::VerifiedProofPackets { proof, packets } => {
+            for packet in packets {
+                advance_preview_area_gate(state, &mut gate, proof, packet, false)?;
+            }
+        }
+        Emit::VerifiedProofPacketsPreShifted { proof, packets } => {
+            for packet in packets {
+                advance_preview_area_gate(state, &mut gate, proof, packet, true)?;
+            }
+        }
+        Emit::MixedVerifiedPackets(packets) => {
+            for (family, packet) in packets {
+                let proof = VerifiedProof::family(*family);
+                advance_preview_area_gate(state, &mut gate, &proof, packet, false)?;
+            }
+        }
+        Emit::MixedVerifiedProofPackets(packets) => {
+            for (proof, packet) in packets {
+                advance_preview_area_gate(state, &mut gate, proof, packet, false)?;
+            }
+        }
+        Emit::MixedVerifiedProofPacketsPreShifted(packets) => {
+            for (proof, packet) in packets {
+                advance_preview_area_gate(state, &mut gate, proof, packet, true)?;
+            }
+        }
+        Emit::Packet(_)
+        | Emit::PacketRetireSession { .. }
+        | Emit::Packets(_)
+        | Emit::PacketsPreShifted(_)
+        | Emit::Consumed
+        | Emit::ConsumedRetireSession { .. }
+        | Emit::Drop => {}
+    }
+    Ok(gate)
+}
+
+fn advance_preview_area_gate(
+    state: &SessionState,
+    gate: &mut Option<synthetic_area::ServerHoldGate>,
+    proof: &VerifiedProof,
+    packet: &[u8],
+    pre_shifted: bool,
+) -> anyhow::Result<()> {
+    if !proof.contains_family(VerifiedFamily::AreaClientArea) {
+        return Ok(());
+    }
+    let mut shifted;
+    let packet = if pre_shifted {
+        packet
+    } else {
+        shifted = packet.to_vec();
+        shift_server_sequence_for_client(state, &mut shifted)?;
+        &shifted
+    };
+    if deferred_module_resources::module_resource_hold_gate_release_sequence(
+        &state.deferred_module_resources.pending,
+    )
+    .is_some()
+        && !module_resource_gate_window_packet_can_pass(state, packet)
+    {
+        return Ok(());
+    }
+    let _ = area_load_gate_packet_release_mode_for_gate(gate, proof, packet);
+    Ok(())
+}
+
 fn finalize_server_to_client_emit(
     state: &mut SessionState,
     emit: Emit,
     pending_count_before: usize,
 ) -> anyhow::Result<Emit> {
     state.deflate.last_server_core_dispatch_accepted = !matches!(emit, Emit::Drop);
+    if matches!(emit, Emit::Drop) {
+        // An unrelated due proxy-owned packet must not turn a rejected source
+        // datagram into a successful outer batch. Leave it queued for the
+        // session drain, whose own strict transaction can retry it exactly.
+        return Ok(Emit::Drop);
+    }
+    let area_gate_after_current = area_gate_after_current_server_emit(state, &emit)?;
     let now = Instant::now();
+    if state.deflate.ordered_successor_effect_snapshot.is_none()
+        && state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .iter()
+            .enumerate()
+            .any(|(original_index, pending)| {
+                pending.due_at <= now
+                    && pending_server_packet_can_reach_for_current_emit(
+                        state,
+                        pending,
+                        original_index,
+                        pending_count_before,
+                        &area_gate_after_current,
+                    )
+            })
+    {
+        // A source translator can queue an immediately due AfterCurrentEmit
+        // packet (notably Area_ClientArea -> LoadBar_Start). Snapshot after the
+        // accepted core dispatch but before removing that packet so final
+        // validation can restore the typed pending queue without changing its
+        // required source-before-suffix wire order.
+        begin_ordinary_server_emit_effect_transaction(state)?;
+    }
     let mut prefix = Vec::new();
     let mut suffix = Vec::new();
     let mut released_synthetic_loadbar_end = false;
 
-    let pending_packets =
-        take_due_pending_server_packets(state, now, "server synthetic M packet released", false);
+    let pending_packets = take_due_pending_server_packets(
+        state,
+        now,
+        "server synthetic M packet released",
+        false,
+        PendingServerGatePolicy::CurrentEmit {
+            pending_count_before,
+            area_gate_after_current: &area_gate_after_current,
+        },
+    );
     for (original_index, pending) in pending_packets {
         if pending.reason == "Area_ClientArea synthetic LoadBar_End" {
             released_synthetic_loadbar_end = true;
@@ -3652,8 +4036,13 @@ mod tests {
             },
         ];
 
-        let due =
-            take_due_pending_server_packets(&mut state, now, "test pending packet released", false);
+        let due = take_due_pending_server_packets(
+            &mut state,
+            now,
+            "test pending packet released",
+            false,
+            PendingServerGatePolicy::Ignore,
+        );
 
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].0, Some(1));
@@ -4144,6 +4533,7 @@ mod tests {
         let first_emit = translate_server_to_client(&first, &mut state)
             .expect("first stream member should seed the persistent inflater");
         assert!(!matches!(first_emit, Emit::Drop));
+        finish_server_to_client_emit_validation(&mut state, true);
         let baseline_totals = state
             .deflate
             .server_zlib_inflater
@@ -4760,6 +5150,10 @@ mod tests {
         assert!(state.synthetic_area.pending_area_loaded.is_some());
         assert!(state.synthetic_area.server_hold_gate.is_some());
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+        assert_eq!(
+            state.deflate.server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor)
+        );
 
         finish_server_to_client_emit_validation(&mut state, false);
 
@@ -4785,11 +5179,29 @@ mod tests {
         assert!(state.synthetic_area.pending_area_loaded.is_none());
         assert!(state.synthetic_area.server_hold_gate.is_none());
         assert!(state.direct_server_semantic_replays.completed.is_empty());
+        let restored_source = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("rejection must restore the partial predecessor source");
+        assert_eq!(restored_source.frames.len(), 1);
+        assert_eq!(restored_source.interleaved_events.len(), 1);
+        assert_eq!(restored_source.interleaved_events[0].packet, area);
 
-        let retry = client_reliable_m_frame(60, 76, area_payload);
-        let retry_emit = translate_server_to_client(&retry, &mut state)
-            .expect("retained Area successor should retry through full dispatcher");
+        let retry_emit = translate_server_to_client(&second, &mut state)
+            .expect("retransmitted source completion should retry the retained Area successor");
         assert!(!matches!(retry_emit, Emit::Drop));
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(60));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+
+        let area_retry = client_reliable_m_frame(60, 76, area_payload);
+        let area_retry_emit = translate_server_to_client(&area_retry, &mut state)
+            .expect("retained Area successor should retry through the full dispatcher");
+        assert!(!matches!(area_retry_emit, Emit::Drop));
         finish_server_to_client_emit_validation(&mut state, true);
 
         assert_eq!(state.deflate.ordered_successor_next_sequence, None);
@@ -4910,6 +5322,7 @@ mod tests {
             .map(|(_, packet)| MFrameView::parse(packet).expect("reliable packet").sequence)
             .collect::<Vec<_>>();
         assert_eq!(sequences, vec![70, 71]);
+        finish_server_to_client_emit_validation(&mut state, true);
         assert!(
             state
                 .area_context
@@ -5033,8 +5446,14 @@ mod tests {
             include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
         let mut state = SessionState::default();
 
-        translate_server_to_client(&client_reliable_m_frame(30, 74, payload), &mut state)
-            .expect("first direct Area_ClientArea should translate");
+        let first = proof_packets(
+            translate_server_to_client(&client_reliable_m_frame(30, 74, payload), &mut state)
+                .expect("first direct Area_ClientArea should translate"),
+        );
+        assert_eq!(first.len(), 2);
+        assert!(first[0].0.contains_family(VerifiedFamily::AreaClientArea));
+        assert!(first[1].0.contains_family(VerifiedFamily::LoadBar));
+        finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
@@ -5050,6 +5469,7 @@ mod tests {
 
         translate_server_to_client(&client_reliable_m_frame(30, 75, payload), &mut state)
             .expect("direct Area_ClientArea retransmission should replay");
+        finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(state.semantic.area.client_area_packets, 1);
         assert_eq!(
             state
@@ -5074,6 +5494,7 @@ mod tests {
             .clear();
         translate_server_to_client(&client_reliable_m_frame(30, 76, payload), &mut state)
             .expect("post-gate direct retransmission should still replay");
+        finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(state.semantic.area.client_area_packets, 1);
         assert!(state.synthetic_area.server_hold_gate.is_none());
         assert!(state.synthetic_area.pending_area_loaded.is_none());
@@ -5084,6 +5505,158 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 2);
+    }
+
+    #[test]
+    fn direct_area_rejection_restores_source_effects_and_created_suffix() {
+        let payload =
+            include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
+        let mut state = SessionState::default();
+
+        let emit =
+            translate_server_to_client(&client_reliable_m_frame(30, 74, payload), &mut state)
+                .expect("direct Area_ClientArea should reach final validation");
+
+        assert_eq!(proof_packets(emit).len(), 2);
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        assert!(
+            !state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert!(!state.direct_server_semantic_replays.completed.is_empty());
+        assert_eq!(
+            state.deflate.server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+        );
+
+        finish_server_to_client_emit_validation(&mut state, false);
+
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert!(state.synthetic_area.server_hold_gate.is_none());
+        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert!(state.direct_server_semantic_replays.completed.is_empty());
+        assert!(
+            state
+                .area_context
+                .latest_area_placeables
+                .area_resref
+                .is_empty()
+        );
+        assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+    }
+
+    #[test]
+    fn packetized_deflated_area_rejection_restores_partial_reassembly_and_source_effects() {
+        let payload =
+            include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
+        let (first, second) = two_frame_deflated_window(110, 74, payload);
+        let mut state = SessionState::default();
+
+        assert!(matches!(
+            translate_server_to_client(&first, &mut state).expect("start deflated Area window"),
+            Emit::Consumed
+        ));
+        let partial = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("first frame must remain buffered");
+        assert_eq!(partial.first_sequence, 110);
+        assert_eq!(partial.expected_frames, 2);
+        assert_eq!(partial.frames.len(), 1);
+        assert!(partial.interleaved_events.is_empty());
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+
+        let baseline_windows = state.deflate.completed_server_stream_windows.len();
+        let baseline_slots = state.deflate.completed_server_reliable_stream_slots.len();
+        let baseline_replays = state.direct_server_semantic_replays.completed.len();
+        let baseline_shifts = state.sequence.server_sequence_shifts.len();
+        let emit = translate_server_to_client(&second, &mut state)
+            .expect("complete deflated Area window speculatively");
+        assert!(
+            proof_packets(emit)
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        assert_eq!(
+            state.area_context.latest_area_placeables.area_resref,
+            "voyage"
+        );
+        assert!(state.synthetic_area.pending_area_loaded.is_some());
+        assert!(state.synthetic_area.server_hold_gate.is_some());
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(
+            state.deflate.server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+        );
+
+        finish_server_to_client_emit_validation(&mut state, false);
+
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+        assert!(
+            state
+                .area_context
+                .latest_area_placeables
+                .area_resref
+                .is_empty()
+        );
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert!(state.synthetic_area.pending_area_loaded.is_none());
+        assert!(state.synthetic_area.server_hold_gate.is_none());
+        assert_eq!(
+            state.deflate.completed_server_stream_windows.len(),
+            baseline_windows
+        );
+        assert_eq!(
+            state.deflate.completed_server_reliable_stream_slots.len(),
+            baseline_slots
+        );
+        assert_eq!(
+            state.direct_server_semantic_replays.completed.len(),
+            baseline_replays
+        );
+        assert_eq!(state.sequence.server_sequence_shifts.len(), baseline_shifts);
+        assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+        let restored = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("strict rejection must restore the partial source window");
+        assert_eq!(restored.first_sequence, 110);
+        assert_eq!(restored.expected_frames, 2);
+        assert_eq!(restored.frames.len(), 1);
+        assert!(restored.interleaved_events.is_empty());
+
+        let retry_emit = translate_server_to_client(&second, &mut state)
+            .expect("exact completion retransmit should retry from the restored source window");
+        assert!(
+            proof_packets(retry_emit)
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        assert_eq!(
+            state.area_context.latest_area_placeables.area_resref,
+            "voyage"
+        );
     }
 
     #[test]
@@ -6034,7 +6607,8 @@ mod tests {
         queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 40).expect("queue ACK");
         queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 42).expect("coalesce ACK");
 
-        let emit = take_pending_server_to_client_packets(&mut state);
+        let emit = take_pending_server_to_client_packets(&mut state)
+            .expect("pending proxy-owned ACK drain");
         let Emit::MixedVerifiedProofPacketsPreShifted(packets) = emit else {
             panic!("expected immediate pending ACK release, got {emit:?}");
         };
@@ -6057,6 +6631,429 @@ mod tests {
                 .is_some()
         );
         assert_eq!(state.sequence.latest_server_sequence_to_client, Some(7));
+        finish_pending_server_drain_emit_validation(&mut state, true);
+    }
+
+    #[test]
+    fn pending_server_drain_reject_restores_ack_queue_semantics_and_window_state() {
+        let mut translator = strict_session_translator_for_test();
+        translator.m_state.sequence.latest_server_sequence_to_client = Some(12);
+        translator
+            .m_state
+            .semantic
+            .synthetic
+            .server_synthetic_packets = 7;
+        queue_proxy_owned_ack_for_consumed_client_frame(&mut translator.m_state, 42)
+            .expect("queue pending ACK");
+        let original_ack = translator
+            .m_state
+            .client_ack
+            .pending
+            .pending_consumed_ee_only_ack
+            .clone()
+            .expect("ACK should be pending before drain");
+
+        let valid_packet =
+            client_reliable_m_frame(54, 74, &crate::translate::loadbar::start_payload(2));
+        translator
+            .m_state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .extend([
+                synthetic_area::PendingServerPacket {
+                    family: VerifiedFamily::LoadBar,
+                    packet: valid_packet.clone(),
+                    due_at: Instant::now(),
+                    reason: "pending drain rollback valid sibling",
+                    placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
+                },
+                synthetic_area::PendingServerPacket {
+                    family: VerifiedFamily::Inventory,
+                    packet: vec![b'M'],
+                    due_at: Instant::now(),
+                    reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
+                    placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
+                },
+            ]);
+
+        let rejected = translator.take_pending_server_to_client_packets();
+
+        assert!(rejected.is_empty());
+        assert_eq!(
+            translator
+                .m_state
+                .deflate
+                .server_emit_effect_transaction_kind,
+            None
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .ordered_successor_effect_snapshot
+                .is_none()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .len(),
+            2,
+            "the complete due batch must remain queued after one sibling fails strict validation"
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .semantic
+                .synthetic
+                .server_synthetic_packets,
+            7
+        );
+        assert!(translator.m_state.semantic.recent_events.is_empty());
+        assert_eq!(
+            translator.m_state.sequence.latest_server_sequence_to_client,
+            Some(12)
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .inventory_equipment
+                .confirmed_inventory_replay_dispatches,
+            0
+        );
+        let restored_ack = translator
+            .m_state
+            .client_ack
+            .pending
+            .pending_consumed_ee_only_ack
+            .as_ref()
+            .expect("rejected ACK transmit must remain pending");
+        assert_eq!(restored_ack.ack_sequence, original_ack.ack_sequence);
+        assert_eq!(restored_ack.transmits, original_ack.transmits);
+        assert_eq!(restored_ack.due_at, original_ack.due_at);
+
+        let rejected_invalid = translator
+            .m_state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .pop()
+            .expect("invalid sibling should have been restored");
+        assert_eq!(rejected_invalid.packet, vec![b'M']);
+
+        let accepted = translator.take_pending_server_to_client_packets();
+
+        assert_eq!(
+            accepted.len(),
+            2,
+            "exact retry should emit ACK plus LoadBar"
+        );
+        assert!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .semantic
+                .synthetic
+                .server_synthetic_packets,
+            8
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_server_sequence_to_client,
+            Some(54)
+        );
+        let committed_ack = translator
+            .m_state
+            .client_ack
+            .pending
+            .pending_consumed_ee_only_ack
+            .as_ref()
+            .expect("accepted ACK remains scheduled for bounded retransmit");
+        assert_eq!(committed_ack.ack_sequence, 42);
+        assert_eq!(committed_ack.transmits, 1);
+        assert!(committed_ack.due_at > original_ack.due_at);
+    }
+
+    #[test]
+    fn pending_server_drain_defers_observation_while_area_gate_blocks_validation() {
+        let mut translator = strict_session_translator_for_test();
+        translator.m_state.synthetic_area.server_hold_gate = Some(synthetic_area::ServerHoldGate {
+            area_first_sequence: 50,
+            release_client_ack_sequence: 55,
+            reason: synthetic_area::AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
+            armed_at: Instant::now(),
+            area_window_released_at: None,
+            area_ack_observed_at: None,
+            release_at: None,
+        });
+        translator
+            .m_state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .push(synthetic_area::PendingServerPacket {
+                family: VerifiedFamily::Inventory,
+                packet: vec![b'M'],
+                due_at: Instant::now(),
+                reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
+                placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
+            });
+
+        let gated = translator.take_pending_server_to_client_packets();
+
+        assert!(gated.is_empty());
+        assert_eq!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .len(),
+            1,
+            "blocked synthetic output must stay in its typed queue"
+        );
+        assert!(
+            translator
+                .m_state
+                .synthetic_area
+                .held_server_to_client_packets
+                .is_empty(),
+            "generic held packets cannot preserve pending synthetic observation ownership"
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .semantic
+                .synthetic
+                .server_synthetic_packets,
+            0
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .inventory_equipment
+                .confirmed_inventory_replay_dispatches,
+            0
+        );
+
+        translator.m_state.synthetic_area.server_hold_gate = None;
+        let rejected = translator.take_pending_server_to_client_packets();
+
+        assert!(rejected.is_empty());
+        assert_eq!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .len(),
+            1,
+            "later strict rejection must restore the still-owned pending packet"
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .semantic
+                .synthetic
+                .server_synthetic_packets,
+            0
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .inventory_equipment
+                .confirmed_inventory_replay_dispatches,
+            0
+        );
+    }
+
+    #[test]
+    fn direct_source_does_not_consume_pending_packet_blocked_by_outer_gate() {
+        for area_gate in [true, false] {
+            let mut translator = strict_session_translator_for_test();
+            let gate_name = if area_gate { "area" } else { "module" };
+            if area_gate {
+                translator.m_state.synthetic_area.server_hold_gate =
+                    Some(synthetic_area::ServerHoldGate {
+                        area_first_sequence: 50,
+                        release_client_ack_sequence: 55,
+                        reason:
+                            synthetic_area::AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
+                        armed_at: Instant::now(),
+                        area_window_released_at: None,
+                        area_ack_observed_at: None,
+                        release_at: None,
+                    });
+            } else {
+                deferred_module_resources::arm_hold_gate_for_test(
+                    &mut translator.m_state.deferred_module_resources.pending,
+                    55,
+                );
+            }
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .push(synthetic_area::PendingServerPacket {
+                    family: VerifiedFamily::Inventory,
+                    packet: vec![b'M'],
+                    due_at: Instant::now(),
+                    reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
+                    placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
+                });
+            let source =
+                client_reliable_m_frame(20, 75, &crate::translate::loadbar::start_payload(2));
+
+            let emit = translator.translate(crate::packet::Direction::ServerToClient, &source);
+
+            assert!(
+                !matches!(emit, Emit::Drop),
+                "{gate_name} gate should allow the independent source"
+            );
+            assert_eq!(
+                translator
+                    .m_state
+                    .synthetic_area
+                    .pending_server_to_client_packets
+                    .len(),
+                1,
+                "{gate_name}-blocked pending packet must retain typed ownership"
+            );
+            assert_eq!(
+                translator
+                    .m_state
+                    .semantic
+                    .synthetic
+                    .server_synthetic_packets,
+                0
+            );
+            assert_eq!(
+                translator
+                    .m_state
+                    .inventory_equipment
+                    .confirmed_inventory_replay_dispatches,
+                0
+            );
+            assert_eq!(
+                translator
+                    .m_state
+                    .deflate
+                    .server_emit_effect_transaction_kind,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn direct_server_emit_with_due_synthetic_rejects_atomically() {
+        let mut translator = strict_session_translator_for_test();
+        translator
+            .m_state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .push(synthetic_area::PendingServerPacket {
+                family: VerifiedFamily::Inventory,
+                packet: vec![b'M'],
+                due_at: Instant::now(),
+                reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
+                placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
+            });
+        let source = client_reliable_m_frame(60, 75, &crate::translate::loadbar::start_payload(2));
+
+        let emit = translator.translate(crate::packet::Direction::ServerToClient, &source);
+
+        assert!(matches!(emit, Emit::Drop));
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .last_server_core_dispatch_accepted
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .len(),
+            1
+        );
+        assert!(translator.m_state.semantic.recent_events.is_empty());
+        assert_eq!(
+            translator
+                .m_state
+                .semantic
+                .synthetic
+                .server_synthetic_packets,
+            0
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .inventory_equipment
+                .confirmed_inventory_replay_dispatches,
+            0
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_server_sequence_to_client,
+            None
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .deflate
+                .server_emit_effect_transaction_kind,
+            None
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .ordered_successor_effect_snapshot
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn idle_pending_server_drain_does_not_open_effect_transaction() {
+        let mut state = SessionState::default();
+
+        let emit = take_pending_server_to_client_packets(&mut state)
+            .expect("empty pending drain should remain a no-op");
+
+        assert!(matches!(emit, Emit::Consumed));
+        assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+    }
+
+    #[test]
+    fn idle_pending_server_drain_cannot_finish_foreign_effect_transaction() {
+        let mut translator = strict_session_translator_for_test();
+        begin_ordinary_server_emit_effect_transaction(&mut translator.m_state)
+            .expect("seed foreign ordinary transaction");
+
+        let packets = translator.take_pending_server_to_client_packets();
+
+        assert!(packets.is_empty());
+        assert_eq!(
+            translator
+                .m_state
+                .deflate
+                .server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .ordered_successor_effect_snapshot
+                .is_some(),
+            "the pending-drain callback must not commit or roll back foreign validation authority"
+        );
+        assert!(rollback_server_emit_effect_transaction(
+            &mut translator.m_state
+        ));
     }
 
     #[test]
@@ -6583,7 +7580,28 @@ fn area_load_gate_packet_release_mode(
     proof: &VerifiedProof,
     packet: &[u8],
 ) -> Option<&'static str> {
-    let Some(gate) = state.synthetic_area.server_hold_gate.as_mut() else {
+    area_load_gate_packet_release_mode_for_gate(
+        &mut state.synthetic_area.server_hold_gate,
+        proof,
+        packet,
+    )
+}
+
+fn area_load_gate_packet_would_release_from(
+    gate: &Option<synthetic_area::ServerHoldGate>,
+    proof: &VerifiedProof,
+    packet: &[u8],
+) -> bool {
+    let mut gate = gate.clone();
+    area_load_gate_packet_release_mode_for_gate(&mut gate, proof, packet).is_some()
+}
+
+fn area_load_gate_packet_release_mode_for_gate(
+    gate: &mut Option<synthetic_area::ServerHoldGate>,
+    proof: &VerifiedProof,
+    packet: &[u8],
+) -> Option<&'static str> {
+    let Some(gate) = gate.as_mut() else {
         return None;
     };
     let Some(view) = MFrameView::parse(packet) else {
@@ -7325,10 +8343,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             },
         );
     }
-    // These are predecessor-owned effects. Commit both the inventory replay
-    // and exact completed-stream disposition before opening the first buffered
-    // successor transaction; rejection then rolls back only that successor,
-    // while retransmission can replay the already-advanced predecessor stream.
+    // The completing reliable source and its first contiguous typed successor
+    // form one receive-window transaction. The pre-completion snapshot protects
+    // both predecessor and successor effects; promotion below only adds exact
+    // raw-slot authority. Strict rejection therefore restores the partial
+    // source window while retaining the fenced raw successor for retransmission.
     resolve_buffered_interleaved_server_packets_after_success(state, &mut reassembly)?;
     let interleaved_packets = reassembly.interleaved_packets;
 

@@ -414,10 +414,22 @@ impl SessionTranslator {
                 Emit::Packet(packet),
             )));
         }
-        let emit = m_frame::take_pending_server_to_client_packets(&mut self.m_state);
-        packets.extend(packets_from_emit(
-            self.validate_emit(Direction::ServerToClientSynthetic, emit),
-        ));
+        match m_frame::take_pending_server_to_client_packets(&mut self.m_state) {
+            Ok(emit) => {
+                let validated = self.validate_emit(Direction::ServerToClientSynthetic, emit);
+                m_frame::finish_pending_server_drain_emit_validation(
+                    &mut self.m_state,
+                    !matches!(&validated, Emit::Drop),
+                );
+                packets.extend(packets_from_emit(validated));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "pending server synthetic drain failed before strict validation"
+                );
+            }
+        }
         packets
     }
 

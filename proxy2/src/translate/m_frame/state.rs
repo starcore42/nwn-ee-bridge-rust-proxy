@@ -31,11 +31,12 @@ pub(super) struct OrderedSuccessorValidationToken {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ServerEmitEffectTransactionKind {
     OrderedSuccessor,
-    OrdinaryCoalesced,
+    OrdinaryServerEmit,
+    PendingServerDrain,
 }
 
-/// Reversible engine-facing state touched while an ordered raw reliable
-/// successor is being translated ahead of the outer strict emit decision.
+/// Reversible engine-facing state touched while a server-origin or proxy-owned
+/// server emit is being translated ahead of the outer strict emit decision.
 ///
 /// Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` retain the raw
 /// reliable slot before dispatch, but the reconstructed message does not
@@ -56,6 +57,7 @@ pub(super) struct OrderedSuccessorEffectSnapshot {
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
+    pub(super) client_ack: client_ack::ClientAckState,
     pub(super) direct_server_semantic_replays: DirectServerSemanticReplayState,
     pub(super) login_waypoint: LoginWaypointState,
     pub(super) inventory_equipment: InventoryEquipmentBridgeState,

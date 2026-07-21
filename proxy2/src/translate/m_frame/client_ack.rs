@@ -32,7 +32,7 @@ pub(super) const PROXY_OWNED_CLIENT_ACK_REASON: &str =
 const PROXY_OWNED_CLIENT_ACK_COALESCE_DELAY: Duration = Duration::from_millis(0);
 const PROXY_OWNED_CLIENT_ACK_RETRANSMIT_DELAY: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct ClientAckState {
     pub(super) pending_consumed_ee_only_ack: Option<PendingConsumedEeOnlyAck>,
 }
@@ -68,6 +68,13 @@ pub(super) fn queue_consumed_ee_only_ack(state: &mut ClientAckState, ack_sequenc
         coalesce_delay_ms = PROXY_OWNED_CLIENT_ACK_COALESCE_DELAY.as_millis(),
         "queued coalesced proxy-owned ACK for consumed EE-only client reliable frame"
     );
+}
+
+pub(super) fn has_due_consumed_ee_only_ack(state: &ClientAckState, now: Instant) -> bool {
+    state
+        .pending_consumed_ee_only_ack
+        .as_ref()
+        .is_some_and(|pending| pending.due_at <= now)
 }
 
 pub(super) fn take_due_consumed_ee_only_ack_packets(

@@ -1923,11 +1923,13 @@ mod tests {
             1
         );
 
-        let emit = super::super::take_pending_server_to_client_packets(&mut state);
+        let emit = super::super::take_pending_server_to_client_packets(&mut state)
+            .expect("pending confirmed inventory replay drain");
         assert!(matches!(
             emit,
             crate::translate::Emit::MixedVerifiedProofPacketsPreShifted(_)
         ));
+        super::super::finish_pending_server_drain_emit_validation(&mut state, true);
         assert_eq!(
             state
                 .inventory_equipment

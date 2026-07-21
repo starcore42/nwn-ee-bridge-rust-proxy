@@ -17,6 +17,104 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-21 pending server-emission final-validation transaction: the live
+  gate used
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and 14 hours 41 minutes old
+  at the `22:05+10:00` audit. It remains qualifying gameplay evidence: typed
+  `starcore-druid60`, `Module_Loaded`, two native `Area_AreaLoaded` messages,
+  76 exact live-object accepts through 137.813 seconds after the final area
+  load, 449 strict allows, and zero route conflict, quarantine, `BNDP`, ERROR,
+  quarantine files, or stderr. No fresh HG login was required.
+
+  Session/timer-drained M packets now use a dedicated tagged effect
+  transaction through final strict validation. Rejection restores the exact
+  ACK schedule and transmit count, typed synthetic queues, semantic/events and
+  inventory dispatch counters, sequence/window progress, and every existing
+  engine-facing snapshot field; acceptance commits once. Idle polling performs
+  a cheap work preflight and cannot finish an ordered or ordinary server
+  transaction. Direct server emits that piggyback due synthetic output use the
+  ordinary transaction, while a dropped source cannot be masked by unrelated
+  due output.
+
+  Module- and area-gated synthetics remain in their typed queue until they can
+  reach the outer validator, so moving into an unvalidated generic hold queue
+  cannot prematurely publish their effects. Current-emit gate preview is
+  placement-aware: pre-existing/`BeforeCurrentEmit` packets use the pre-source
+  gate, while a newly created `AfterCurrentEmit` packet may use only the gate
+  state established by the source. This preserves the required
+  `Area_ClientArea` then `LoadBar_Start` order. Raw direct Area and armed direct
+  inventory producers open the transaction before dispatch, so rejection also
+  restores their source semantic/replay effects. A frame that completes a
+  deflated source now opens the same transaction before reconstruction; if it
+  drains a contiguous typed successor, the transaction is promoted without
+  losing its pre-completion snapshot. Strict rejection restores the partial
+  source window plus all source/suffix effects, and exact source then successor
+  retransmission remains possible. Diamond `sub_5F36E0` lines
+  751251-751354 and EE `CNetLayerWindow::FrameSend` lines 879872-879941 prove
+  the transport-owned frame fields; this slice changes no CNW field order,
+  bit width/order, cursor movement, string boundary, or emitted wire bytes.
+
+  All 54 root M-frame tests pass, including ACK reject/retry, idle ownership,
+  direct piggyback rejection, both outer gates, Area source rollback, and
+  deflated completion, ordered, and persistent-stream regressions. Formatting,
+  `cargo check`, the current Rust build, and the native Release build pass.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-pending-drain-final2-20260721-232328`
+  processed all 164 packet files with 304 strict allows, 143 generated ACK
+  controls, 97 exact live-object claims, and zero strict quarantines,
+  quarantine files, output timeouts, route conflicts, errors, or stderr.
+
+  The next generalized production path is the remaining client-lane
+  frame-type versus sequence-zero audit. The separate live terminal blocker
+  still needs a deployed v2 writer producer and a unique sequence-95 door
+  `UseObject` capture.
+- 2026-07-21 atomic coalesced-window replay and validation transaction: the
+  live gate used
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and 11 hours 39 minutes old
+  at the `19:03+10:00` audit. It remains qualifying gameplay evidence: typed
+  `starcore-druid60`, `Module_Loaded`, two native `Area_AreaLoaded` messages,
+  76 exact live-object accepts through 137.813 seconds after the final area
+  load, 449 strict allows, and zero route conflict, quarantine, `BNDP`, ERROR,
+  quarantine files, or stderr. No fresh HG login was required.
+
+  Coalesced replay authority is now one complete `(sequence,
+  server-origin-generation)` outer window. Exact retransmits preflight every
+  effectful sibling before any semantic or persistent-inflater mutation;
+  eviction removes all direct/deflated sibling records and the matching outer
+  reliable route together. A consumed primary retains its proven early-abort
+  disposition without inventing caches for unvisited trailing records. Per-
+  window preflight rejects more than 128 direct or 64 deflated records, and the
+  completed-window ledger is bounded at 192 entries.
+
+  Ordinary coalesced dispatch now shares the tagged final-validation effect
+  transaction with ordered successors. Inflater state, semantic/object state,
+  synthetic queues and sequence shifts, replay caches, reliable routes, module
+  observations, and quickbar hint publication commit only after the complete
+  emitted batch passes the outer strict validator. Rejection restores the
+  exact snapshot; ordered transactions still require their exact raw identity
+  token, and malformed trailing storage fails before unrelated due synthetic
+  output can mask the source drop. Diamond `sub_5F3FC0` lines 752242-752315
+  and EE `UnpacketizeFullMessages` lines 914600-914689 prove the count-one
+  record walk and release of the complete stored slot. This slice changes no
+  CNW field order, bit width/order, cursor movement, string boundary, inflater
+  format, or emitted wire layout.
+
+  All 46 focused M-frame tests and 27 serial coalesced tests pass, including
+  final strict rejection, missing ordered-token rollback, malformed trailing
+  storage, incomplete replay groups, primary early-abort replay, per-window
+  budget rejection, and sibling/route eviction. Formatting, `cargo check`, the
+  current Rust build, and the native Release build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-coalesced-atomic-20260721-2004` processed
+  all 164 packet files with 304 strict allows, 97 exact live-object claims, and
+  zero strict quarantines, quarantine files, terminal residuals, or stderr.
+
+  The next generalized production path is the pending synthetic server-emission
+  validation boundary, followed by the remaining client-lane frame-type versus
+  sequence-zero audit. The separate live terminal blocker still needs a
+  deployed v2 writer producer and a unique sequence-95 door `UseObject`
+  capture.
 - 2026-07-21 persistent-inflater rollback transaction: the live gate used
   `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
   last written `2026-07-21T07:23:58.6405077+10:00` and 8 hours 44 minutes old
