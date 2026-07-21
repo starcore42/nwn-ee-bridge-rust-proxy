@@ -501,12 +501,14 @@ impl SessionTranslator {
                 }
             }
             (Direction::ClientToServer, Packet::M(_)) => {
+                let translated = m_frame::translate_client_to_server(bytes, &mut self.m_state)?;
                 self.bn_state.remember_reliable_gameplay_seen();
-                m_frame::translate_client_to_server(bytes, &mut self.m_state)
+                Ok(translated)
             }
             (Direction::ServerToClient, Packet::M(_)) => {
+                let translated = m_frame::translate_server_to_client(bytes, &mut self.m_state)?;
                 self.bn_state.remember_reliable_gameplay_seen();
-                m_frame::translate_server_to_client(bytes, &mut self.m_state)
+                Ok(translated)
             }
             (Direction::ServerToClientSynthetic, Packet::Bn(_))
             | (Direction::ServerToClientSynthetic, Packet::M(_)) => {

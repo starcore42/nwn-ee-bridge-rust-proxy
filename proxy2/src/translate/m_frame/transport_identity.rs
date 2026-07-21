@@ -20,7 +20,7 @@
 
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
-    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
+    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameType, MFrameView},
     translate::{ContinuationOwner, VerifiedFamily, VerifiedPacket, VerifiedProof},
 };
 
@@ -56,6 +56,7 @@ fn claim_frame_if_verified(
     view: &MFrameView,
     direction: DirectionKind,
 ) -> Option<TransportIdentityClaim> {
+    let frame_kind = view.frame_kind()?;
     if view.high.is_some() {
         return None;
     }
@@ -67,11 +68,18 @@ fn claim_frame_if_verified(
     }
 
     if view.payload_length == 0 {
+        if frame_kind != MFrameType::ReliableData && !view.is_exact_control_frame() {
+            return None;
+        }
         return Some(TransportIdentityClaim {
             packet_name: "empty reliable-window ack/control",
             reason: "verified-empty-M-window-shell",
             kind: TransportIdentityKind::EmptyWindowShell,
         });
+    }
+
+    if frame_kind != MFrameType::ReliableData {
+        return None;
     }
 
     if matches!(direction, DirectionKind::ServerToClient)

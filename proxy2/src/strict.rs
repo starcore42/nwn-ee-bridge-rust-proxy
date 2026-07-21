@@ -12,7 +12,7 @@ use crate::{
         Direction, Packet,
         bn::{BnPacket, BnTag, parse_bndr_extended_server_info},
         hex_prefix,
-        m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
+        m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameType, parse_packetized_spans},
     },
     translate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, ambient, area, area_change_day_night,
@@ -87,6 +87,20 @@ pub fn decide(direction: Direction, bytes: &[u8], profile: StrictProfile) -> Str
                     "M",
                     "invalid M frame",
                     "declared-payload-overflow",
+                );
+            }
+            let Some(frame_kind) = view.frame_kind() else {
+                return StrictDecision::quarantine(
+                    "M/control",
+                    "invalid M frame",
+                    "unsupported-frame-type",
+                );
+            };
+            if frame_kind != MFrameType::ReliableData && !view.is_exact_control_frame() {
+                return StrictDecision::quarantine(
+                    "M/control",
+                    "invalid M control frame",
+                    "invalid-control-frame-shape",
                 );
             }
             let has_trailing = view.trailing_payload_length != 0;
@@ -228,6 +242,20 @@ pub fn decide_verified_translated(
                     "M",
                     family.as_str(),
                     "declared-payload-overflow",
+                );
+            }
+            let Some(frame_kind) = view.frame_kind() else {
+                return StrictDecision::quarantine(
+                    "M/verified-control",
+                    family.as_str(),
+                    "unsupported-frame-type",
+                );
+            };
+            if frame_kind != MFrameType::ReliableData && !view.is_exact_control_frame() {
+                return StrictDecision::quarantine(
+                    "M/verified-control",
+                    family.as_str(),
+                    "invalid-control-frame-shape",
                 );
             }
 

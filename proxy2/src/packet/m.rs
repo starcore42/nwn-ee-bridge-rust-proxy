@@ -38,6 +38,19 @@ pub struct MFrameView {
     pub deflated: Option<DeflatedEnvelope>,
 }
 
+/// The three frame kinds owned by the original CNetLayer reliable window.
+///
+/// Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` decode bits
+/// 4..5 of byte 7 independently from the 16-bit sequence field. Only type 0
+/// enters reliable-data storage; types 1 and 2 are ACK and resend controls.
+/// In particular, type-0 sequence zero is ordinary data after wraparound.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MFrameType {
+    ReliableData,
+    AckControl,
+    ResendControl,
+}
+
 impl MFrameView {
     pub fn parse(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < LEGACY_GAMEPLAY_PAYLOAD_OFFSET || bytes.first().copied()? != b'M' {
@@ -123,6 +136,32 @@ impl MFrameView {
             high,
             deflated,
         })
+    }
+
+    pub fn frame_kind(&self) -> Option<MFrameType> {
+        match self.frame_type {
+            0 => Some(MFrameType::ReliableData),
+            1 => Some(MFrameType::AckControl),
+            2 => Some(MFrameType::ResendControl),
+            _ => None,
+        }
+    }
+
+    /// Whether this is the exact fixed-width control shape emitted by the
+    /// original reliable-window writers.
+    ///
+    /// Diamond `sub_5F36E0` and EE `CNetLayerWindow::FrameSend` zero a
+    /// 12-byte allocation, then set only the kind bits and optional bit 6.
+    /// Control frames therefore cannot carry low flag bits, the extended bit,
+    /// packetized metadata, or payload bytes.
+    pub fn is_exact_control_frame(&self) -> bool {
+        matches!(
+            self.frame_kind(),
+            Some(MFrameType::AckControl | MFrameType::ResendControl)
+        ) && self.flags & 0x8f == 0
+            && self.available_payload_length == 0
+            && self.declared_payload_length == 0
+            && self.packetized_sequence == 0
     }
 }
 

@@ -7,7 +7,7 @@
 
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
-    packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
+    packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameType, MFrameView},
     translate::{
         VerifiedFamily, client_device, client_high, client_server_admin, gameplay_stream,
         semantic::SemanticSessionState,
@@ -43,6 +43,34 @@ pub(super) fn translate_client_frame(
     view: &MFrameView,
     state: &mut SemanticSessionState,
 ) -> anyhow::Result<ClientFrameTranslation> {
+    let Some(frame_kind) = view.frame_kind() else {
+        anyhow::bail!(
+            "client M frame has unsupported frame type {}",
+            view.frame_type
+        );
+    };
+    if frame_kind != MFrameType::ReliableData {
+        let Some(summary) = transport_identity::claim_client_frame_if_verified(view) else {
+            anyhow::bail!("client M control frame has no exact transport identity owner");
+        };
+        tracing::info!(
+            packet = summary.packet_name,
+            reason = summary.reason,
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            flags = view.flags,
+            frame_type = view.frame_type,
+            "client M control frame semantically claimed as verified no-op"
+        );
+        return Ok(ClientFrameTranslation {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packet: Some(bytes),
+            semantic_observations: Vec::new(),
+            proxy_ack_client_sequence: None,
+            elide_client_sequence: false,
+        });
+    }
+
     let Some(high) = view.high else {
         let payload_end = LEGACY_GAMEPLAY_PAYLOAD_OFFSET
             .checked_add(view.payload_length)
@@ -547,6 +575,9 @@ fn consume_device_advertise_property(
 }
 
 fn build_consumed_empty_client_frame(bytes: &[u8], view: &MFrameView) -> anyhow::Result<Vec<u8>> {
+    if view.frame_kind() != Some(MFrameType::ReliableData) {
+        anyhow::bail!("cannot turn a client M control frame into a reliable-data carrier");
+    }
     if view.uses_extended_packet_length {
         anyhow::bail!("cannot consume extended-length client M frame yet");
     }

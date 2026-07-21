@@ -79,10 +79,10 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest gate audit (`2026-07-21T22:05+10:00`): the newest gameplay-reaching
+Latest gate audit (`2026-07-22T01:07:33+10:00`): the newest gameplay-reaching
 artifact remains
 `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
-last written `2026-07-21T07:23:58.6405077+10:00` and 14 hours 41 minutes old. No
+last written `2026-07-21T07:23:58.6405077+10:00` and 17 hours 44 minutes old. No
 newer live proxy attempt exists. It selected typed `starcore-druid60`, reached
 `Module_Loaded`, produced two native `Area_AreaLoaded` messages, accepted 76
 exact live-object packets, and continued for 137.813 seconds after the final
@@ -92,18 +92,17 @@ pre-seeded NWSync cache. It therefore remains current gameplay evidence and no
 fresh HG login was required.
 
 Current-code strict replay is
-`C:\nwnbridge\codex-proxy2-replay-pending-drain-final2-20260721-232328`: all 164
+`C:\nwnbridge\codex-proxy2-replay-client-frame-lanes-final-20260722-0146`: all 164
 packet files produced 304 strict allows and 97 exact live-object claims, with
-zero strict quarantines, quarantine files, output timeouts, route conflicts,
-errors, or stderr. The focused root M-frame suite passes all 54 tests.
-Production check/build, formatting, and the native Release build pass. Pending
-session drains and direct due-packet piggyback now carry ACK, queue, semantic,
-dispatch, sequence, and window effects through final strict validation. Active
-module/area gates retain pending packets in their typed queue; placement-aware
-gate preview keeps a source-created `LoadBar_Start` after its
-`Area_ClientArea`, and direct source rejection restores both source and suffix
-effects. Deflated completion uses the same pre-source transaction and restores
-the partial source window if the complete reconstructed batch is rejected.
+zero strict/semantic quarantines, quarantine files, output timeouts, terminal
+residuals, or stderr; it generated 143 ACK controls. The focused root M-frame
+suite passes all 59 tests and the strict suite passes all 53. Production
+check/build, formatting, and the native Release build pass. Reliable transport
+now selects its data/control lane by frame kind: type-0 sequence zero is normal
+wrapped data, while exact type-1/type-2 controls are transport-only and type 3
+or impossible control shapes fail before state publication in either
+direction. The next production slice is the client final-validation effect
+transaction, followed by contextual ACK-zero wrap handling.
 
 Latest known live HG proxy status: after the prior artifact crossed 24 hours,
 the first current-code refresh exposed and then fixed a completed-stream

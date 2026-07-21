@@ -19,7 +19,7 @@ use std::{
 
 use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
-    packet::m::{HighLevel, MFrameView},
+    packet::m::{HighLevel, MFrameType, MFrameView},
     translate::{
         ContinuationOwner, Emit, VerifiedFamily, VerifiedPacket, VerifiedProof, area,
         client_gui_inventory, semantic,
@@ -185,6 +185,7 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("client M frame failed reliable-window parse");
     };
+    validate_source_transport(&view, "client")?;
     let semantic_effect_identity = client_reliable_semantic_effect_identity(bytes, &view);
     let defer_module_loaded_until_released_packets_are_acked = is_client_module_loaded(view.high)
         && deferred_module_resources::client_ack_would_release_held_server_packets(
@@ -300,6 +301,34 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     }
 }
 
+fn validate_source_transport(view: &MFrameView, source: &'static str) -> anyhow::Result<()> {
+    // Diamond `sub_5F4F50` and EE `ProcessReceivedFrames` verify the CRC before
+    // calling FrameReceive. The proxy likewise must not publish ACK, sequence,
+    // gate, or semantic state from a source the original window would reject.
+    if !view.crc_valid {
+        anyhow::bail!("{source} M frame CRC mismatch");
+    }
+    if view.declared_payload_length != 0
+        && view.declared_payload_length > view.available_payload_length
+    {
+        anyhow::bail!("{source} M frame declared payload exceeds datagram");
+    }
+
+    let Some(frame_kind) = view.frame_kind() else {
+        anyhow::bail!(
+            "{source} M frame has unsupported frame type {}",
+            view.frame_type
+        );
+    };
+    // Both original FrameSend implementations allocate a zeroed 12-byte frame
+    // for type-1/type-2 controls. CNW payload and packetized metadata belong
+    // only to type 0, regardless of the reusable sequence field's value.
+    if frame_kind != MFrameType::ReliableData && !view.is_exact_control_frame() {
+        anyhow::bail!("{source} M control frame has an impossible writer shape");
+    }
+    Ok(())
+}
+
 fn translate_duplicate_native_area_loaded_after_synthetic(
     state: &mut SessionState,
     bytes: Vec<u8>,
@@ -325,10 +354,11 @@ fn translate_client_to_server_packet(
     semantic_effect_identity: Option<&state::CompletedClientReliableSemanticEffect>,
 ) -> anyhow::Result<client_filters::ClientFrameTranslation> {
     let translated = client_filters::translate_client_frame(bytes, view, &mut state.semantic)?;
-    if translated.proxy_ack_client_sequence.is_some() && origin_client_sequence != 0 {
+    let reliable_data_frame = view.frame_kind() == Some(MFrameType::ReliableData);
+    if translated.proxy_ack_client_sequence.is_some() && reliable_data_frame {
         queue_proxy_owned_ack_for_consumed_client_frame(state, origin_client_sequence)?;
     }
-    if translated.elide_client_sequence && origin_client_sequence != 0 {
+    if translated.elide_client_sequence && reliable_data_frame {
         record_client_sequence_elision(state, origin_client_sequence);
     }
     let observe_packet = translated.packet.is_some()
@@ -354,7 +384,7 @@ fn client_reliable_semantic_effect_identity(
     packet: &[u8],
     view: &MFrameView,
 ) -> Option<state::CompletedClientReliableSemanticEffect> {
-    if view.sequence == 0 {
+    if view.frame_kind() != Some(MFrameType::ReliableData) {
         return None;
     }
     let payload = parse_window::primary_payload(packet, view)?;
@@ -606,7 +636,10 @@ fn is_client_module_loaded(high: Option<HighLevel>) -> bool {
 }
 
 pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
-    let parsed_view = MFrameView::parse(bytes).filter(|view| view.crc_valid);
+    let source_view = MFrameView::parse(bytes)
+        .ok_or_else(|| anyhow::anyhow!("server M frame failed reliable-window parse"))?;
+    validate_source_transport(&source_view, "server")?;
+    let parsed_view = Some(source_view);
     let parsed_sequence = parsed_view.as_ref().map(|view| view.sequence);
     let parsed_frame_type = parsed_view.as_ref().map(|view| view.frame_type);
     let fence_candidate_sequence = match (
@@ -1166,20 +1199,11 @@ fn translate_server_to_client_inner(
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("server M frame failed reliable-window parse");
     };
-    // Both Diamond and EE run CNetLayerWindow::CRCVerifyFrame before reliable
-    // window insertion/dispatch. Reject the source datagram before ACK,
-    // generation, or semantic state can trust it; later ACK rewrites repair a
-    // valid frame but must never launder an invalid one.
-    if !view.crc_valid {
-        tracing::warn!(
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
-            expected_crc = view.computed_crc,
-            source_crc = view.crc,
-            "server M frame rejected before reliable-window state because its source CRC is invalid"
-        );
-        return Ok(Emit::Drop);
-    }
+    // Apply the same original-writer boundary before origin generation, ACK,
+    // gate, reassembly, or semantic state can trust the source. In particular,
+    // a payload-bearing control must not be dispatchable and then laundered
+    // into an empty verified control by a semantic consumer.
+    validate_source_transport(&view, "server")?;
     let server_origin_generation = observe_server_origin_reliable_generation(state, &view);
     if state.deflate.ordered_successor_next_sequence == Some(view.sequence) {
         if let Some(event) = state
@@ -2352,7 +2376,11 @@ fn observe_quickbar_stream_probe_from_rewrite(
 }
 
 fn observe_client_window_state(state: &mut SessionState, view: &MFrameView) {
-    if view.sequence != 0 {
+    // Diamond `sub_5F3940` (751460-751763) and EE `FrameReceive`
+    // (878825-879146) select the data lane from frame type and explicitly wrap
+    // its cursor from FFFF to 0000. Controls never advance that cursor, even if
+    // their otherwise-unused sequence field is nonzero.
+    if view.frame_kind() == Some(MFrameType::ReliableData) {
         record_forward_progress(
             &mut state.sequence.latest_client_sequence_from_client,
             view.sequence,
@@ -2371,7 +2399,7 @@ fn shift_client_sequence_for_server(
     packet: &mut [u8],
     view: &MFrameView,
 ) -> anyhow::Result<()> {
-    if view.sequence == 0
+    if view.frame_kind() != Some(MFrameType::ReliableData)
         || (state.sequence.client_sequence_shifts.is_empty()
             && state.sequence.client_sequence_elisions.is_empty())
     {
@@ -5274,10 +5302,7 @@ mod tests {
         state.synthetic_area.synthesize_loadbar = false;
 
         translate_server_to_client(&first, &mut state).expect("start predecessor");
-        assert!(matches!(
-            translate_server_to_client(&area_frame, &mut state).expect("reject corrupt Area"),
-            Emit::Drop
-        ));
+        assert!(translate_server_to_client(&area_frame, &mut state).is_err());
         assert!(
             state
                 .deflate
@@ -5795,6 +5820,221 @@ mod tests {
         );
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 2);
         assert_eq!(state.client_reliable_semantic_effects.completed.len(), 2);
+    }
+
+    #[test]
+    fn client_type_zero_sequence_zero_wraps_shifts_and_deduplicates_retransmit() {
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(u16::MAX);
+        state
+            .sequence
+            .client_sequence_shifts
+            .push(SequenceShift { base: 0, delta: 1 });
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+
+        let first =
+            translate_client_to_server(&client_reliable_m_frame(0, 31, &payload), &mut state)
+                .expect("wrapped type-0 client data should translate");
+        let first_packet = match first {
+            Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+            other => panic!("expected one verified client packet, got {other:?}"),
+        };
+        let first_view = MFrameView::parse(&first_packet).expect("shifted client frame");
+        assert_eq!(first_view.frame_kind(), Some(MFrameType::ReliableData));
+        assert_eq!(first_view.sequence, 1);
+        assert!(first_view.crc_valid);
+        assert_eq!(state.sequence.latest_client_sequence_from_client, Some(0));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+
+        let retransmit =
+            translate_client_to_server(&client_reliable_m_frame(0, 32, &payload), &mut state)
+                .expect("wrapped retransmit with refreshed ACK should translate");
+        let retransmit_packet = match retransmit {
+            Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+            other => panic!("expected one verified retransmit, got {other:?}"),
+        };
+        let retransmit_view =
+            MFrameView::parse(&retransmit_packet).expect("shifted retransmit frame");
+        assert_eq!(retransmit_view.sequence, 1);
+        assert_eq!(retransmit_view.ack_sequence, 32);
+        assert!(retransmit_view.crc_valid);
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(
+            state
+                .client_reliable_semantic_effects
+                .duplicate_effects_suppressed,
+            1
+        );
+    }
+
+    #[test]
+    fn client_controls_do_not_advance_or_shift_reliable_data_sequence() {
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state
+            .sequence
+            .client_sequence_shifts
+            .push(SequenceShift { base: 10, delta: 1 });
+
+        for (flags, sequence, ack_sequence, expected_kind) in [
+            (0x10, 11, 20, MFrameType::AckControl),
+            (0x50, 12, 21, MFrameType::AckControl),
+            (0x20, 13, 22, MFrameType::ResendControl),
+            (0x60, 14, 23, MFrameType::ResendControl),
+        ] {
+            let control = reliable_server_m_frame(sequence, ack_sequence, flags, 0, &[]);
+            let emit = translate_client_to_server(&control, &mut state)
+                .expect("exact empty client control should translate");
+            let packet = match emit {
+                Emit::VerifiedPackets { packets, .. } => packets.into_iter().next().unwrap(),
+                other => panic!("expected one verified control, got {other:?}"),
+            };
+            let view = MFrameView::parse(&packet).expect("translated control frame");
+            assert_eq!(packet, control);
+            assert_eq!(view.frame_kind(), Some(expected_kind));
+            assert_eq!(view.sequence, sequence);
+            assert_eq!(view.ack_sequence, ack_sequence);
+            assert_eq!(view.flags, flags);
+            assert_eq!(view.packetized_sequence, 0);
+            assert_eq!(view.declared_payload_length, 0);
+            assert_eq!(view.available_payload_length, 0);
+            assert!(view.crc_valid);
+        }
+
+        assert_eq!(state.sequence.latest_client_sequence_from_client, Some(10));
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(23));
+        assert!(state.client_reliable_semantic_effects.completed.is_empty());
+        assert_eq!(state.semantic.ui.inventory_packets, 0);
+    }
+
+    #[test]
+    fn client_non_data_payload_and_unknown_frame_type_fail_before_state_mutation() {
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+        let payload_control = reliable_server_m_frame(18, 7, 0x10, 1, &payload);
+        let unknown_control = reliable_server_m_frame(19, 8, 0x30, 0, &[]);
+        let low_flag_control = reliable_server_m_frame(20, 9, 0x14, 0, &[]);
+        let mut state = SessionState::default();
+
+        assert!(translate_client_to_server(&payload_control, &mut state).is_err());
+        assert!(translate_client_to_server(&unknown_control, &mut state).is_err());
+        assert!(translate_client_to_server(&low_flag_control, &mut state).is_err());
+        assert_eq!(state.sequence.latest_client_sequence_from_client, None);
+        assert_eq!(state.sequence.latest_client_ack_from_client, None);
+        assert_eq!(state.semantic.ui.inventory_packets, 0);
+        assert!(state.client_reliable_semantic_effects.completed.is_empty());
+
+        let strict = crate::strict::decide_verified_translated(
+            crate::packet::Direction::ClientToServer,
+            VerifiedFamily::ConsumedEmptyMFrame,
+            &unknown_control,
+        );
+        assert_eq!(strict.verdict, crate::strict::Verdict::Quarantine);
+        assert_eq!(strict.reason, "unsupported-frame-type");
+
+        let strict_low_flags = crate::strict::decide_verified_translated(
+            crate::packet::Direction::ClientToServer,
+            VerifiedFamily::ConsumedEmptyMFrame,
+            &low_flag_control,
+        );
+        assert_eq!(strict_low_flags.verdict, crate::strict::Verdict::Quarantine);
+        assert_eq!(strict_low_flags.reason, "invalid-control-frame-shape");
+    }
+
+    #[test]
+    fn corrupt_source_frames_do_not_publish_m_or_bn_session_state() {
+        let mut translator = strict_session_translator_for_test();
+        translator.bn_state.remember_nwsync_advertised_to_client();
+        assert!(translator.bn_state.should_consume_nwsync_handoff_bndm());
+        translator
+            .m_state
+            .sequence
+            .latest_client_sequence_from_client = Some(41);
+        translator.m_state.sequence.latest_client_ack_from_client = Some(52);
+
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+        let mut corrupt = client_reliable_m_frame(42, 53, &payload);
+        corrupt[1] ^= 0x01;
+        let parsed = MFrameView::parse(&corrupt).expect("corrupt frame remains parseable");
+        assert!(!parsed.crc_valid);
+
+        assert!(matches!(
+            translator.translate(crate::packet::Direction::ClientToServer, &corrupt),
+            Emit::Drop
+        ));
+        assert!(translator.bn_state.should_consume_nwsync_handoff_bndm());
+        assert!(matches!(
+            translator.translate(crate::packet::Direction::ServerToClient, &corrupt),
+            Emit::Drop
+        ));
+        assert!(translator.bn_state.should_consume_nwsync_handoff_bndm());
+        assert_eq!(
+            translator
+                .m_state
+                .sequence
+                .latest_client_sequence_from_client,
+            Some(41)
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_client_ack_from_client,
+            Some(52)
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_server_sequence_to_client,
+            None
+        );
+        assert_eq!(translator.m_state.semantic.ui.inventory_packets, 0);
+        assert!(
+            translator
+                .m_state
+                .client_reliable_semantic_effects
+                .completed
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .sequence
+                .pending_client_to_server_packets
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn invalid_server_control_shapes_fail_before_transport_or_semantic_state() {
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+        let invalid_frames = [
+            reliable_server_m_frame(61, 71, 0x10, 1, &payload),
+            reliable_server_m_frame(62, 72, 0x24, 0, &[]),
+            reliable_server_m_frame(63, 73, 0x30, 0, &[]),
+        ];
+        let mut state = SessionState::default();
+        state.sequence.latest_server_sequence_to_client = Some(60);
+
+        for frame in invalid_frames {
+            assert!(translate_server_to_client_inner(&frame, &mut state).is_err());
+            assert_eq!(state.sequence.latest_server_sequence_to_client, Some(60));
+            assert!(state.sequence.server_sequence_shifts.is_empty());
+            assert!(state.sequence.pending_client_to_server_packets.is_empty());
+            assert!(state.direct_server_semantic_replays.completed.is_empty());
+            assert_eq!(state.direct_server_semantic_replays.origin_generation, 0);
+            assert!(state.semantic.recent_events.is_empty());
+            assert!(state.synthetic_area.pending_area_loaded.is_none());
+            assert!(state.synthetic_area.in_flight_area_loaded.is_none());
+            assert!(state.deflate.server_reassembly.is_none());
+            assert!(state.deflate.server_emit_effect_transaction_kind.is_none());
+        }
     }
 
     #[test]

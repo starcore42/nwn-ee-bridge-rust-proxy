@@ -17,6 +17,46 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 reliable-window frame-kind lanes: the live gate used
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and 17 hours 44 minutes old
+  at the `01:07+10:00` audit. It remains qualifying gameplay evidence: typed
+  `starcore-druid60`, `Module_Loaded`, two native `Area_AreaLoaded` messages,
+  76 exact live-object accepts through 137.813 seconds after the final area
+  load, 449 strict allows, and zero route conflict, quarantine, `BNDP`, ERROR,
+  quarantine files, or stderr. No fresh HG login was required.
+
+  `MFrameType` now separates reliable data from ACK/resend controls. Type-0
+  sequence zero follows the original FFFF-to-0000 receive-window wrap, so it
+  advances and shifts as data and participates in semantic retransmit
+  suppression. Type-1/type-2 controls remain transport-only, never advance or
+  shift the data cursor, and must match the original fixed 12-byte writer
+  shape: kind plus optional bit 6, with no low/extended flags, packetized
+  metadata, or payload. Type 3 is rejected. One shared source validator now
+  checks CRC, declared length, kind, and control shape before either direction
+  can publish ACK, generation, gate, reassembly, BN gameplay, or semantic
+  state; strict raw/verified validation enforces the same invariant.
+
+  Diamond `sub_5F3940` lines 751460-751763 and EE
+  `CNetLayerWindow::FrameReceive` lines 878825-879146 prove kind decoding,
+  type-0 storage, control handling, and FFFF-to-0000 cursor wrap. Diamond
+  `sub_5F36E0` lines 751180-751412 and EE `FrameSend` lines 879824-879940 prove
+  the zeroed control allocation and exact flag/header writes. This slice
+  changes no CNW gameplay field order, bit width/order, bit-cursor movement,
+  nested object, string boundary, or gameplay payload bytes.
+
+  All 59 root M-frame tests and 53 strict tests pass. Formatting, `cargo
+  build`, `cargo check`, and the native Release build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-frame-lanes-final-20260722-0146`
+  processed all 164 packet files with 304 strict allows, 143 generated ACK
+  controls, 97 exact live-object claims, and zero strict/semantic quarantines,
+  quarantine files, output timeouts, terminal residuals, or stderr.
+
+  The next generalized production path is a client-emission effect transaction
+  through final strict validation, followed by the contextual ACK-zero wrap
+  audit and an immutable client reliable-slot identity fence. The separate live
+  terminal blocker still needs a deployed v2 writer producer and a unique
+  sequence-95 door `UseObject` capture.
 - 2026-07-21 pending server-emission final-validation transaction: the live
   gate used
   `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
