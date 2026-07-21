@@ -580,7 +580,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let emit = match translate_server_to_client_inner(bytes, state) {
         Ok(emit) => emit,
         Err(err) => {
-            rollback_ordered_successor_effect_transaction(state);
+            rollback_server_emit_effect_transaction(state);
             return Err(err);
         }
     };
@@ -617,7 +617,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         // No candidate reaches the outer validator when core dispatch fails
         // closed, so restore speculative state here while retaining the raw
         // ordered slot for a later exact retry.
-        rollback_ordered_successor_effect_transaction(state);
+        rollback_server_emit_effect_transaction(state);
     }
     Ok(emit)
 }
@@ -637,13 +637,48 @@ fn begin_ordered_successor_effect_transaction(
             state.deflate.ordered_successor_next_sequence
         );
     }
-    if state.deflate.ordered_successor_effect_snapshot.is_some() {
+    if state.deflate.ordered_successor_effect_snapshot.is_some()
+        || state.deflate.server_emit_effect_transaction_kind.is_some()
+    {
         anyhow::bail!(
             "ordered successor effect transaction already active for sequence {}",
             sequence
         );
     }
 
+    let snapshot = capture_engine_facing_effect_snapshot(state);
+    state.deflate.ordered_successor_effect_snapshot = Some(Box::new(snapshot));
+    state.deflate.server_emit_effect_transaction_kind =
+        Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor);
+    tracing::debug!(
+        sequence,
+        "direct ordered successor began speculative engine-facing effect transaction"
+    );
+    Ok(())
+}
+
+fn begin_ordinary_server_emit_effect_transaction(state: &mut SessionState) -> anyhow::Result<()> {
+    if state.deflate.ordered_successor_effect_snapshot.is_some()
+        || state.deflate.server_emit_effect_transaction_kind.is_some()
+    {
+        anyhow::bail!(
+            "server emit effect transaction already active before ordinary coalesced dispatch"
+        );
+    }
+
+    let snapshot = capture_engine_facing_effect_snapshot(state);
+    state.deflate.ordered_successor_effect_snapshot = Some(Box::new(snapshot));
+    state.deflate.server_emit_effect_transaction_kind =
+        Some(state::ServerEmitEffectTransactionKind::OrdinaryCoalesced);
+    tracing::debug!(
+        "ordinary coalesced server window began speculative engine-facing effect transaction"
+    );
+    Ok(())
+}
+
+fn capture_engine_facing_effect_snapshot(
+    state: &mut SessionState,
+) -> state::OrderedSuccessorEffectSnapshot {
     let snapshot = state::OrderedSuccessorEffectSnapshot {
         server_reassembly: state.deflate.server_reassembly.clone(),
         completed_server_stream_windows: state.deflate.completed_server_stream_windows.clone(),
@@ -670,19 +705,13 @@ fn begin_ordered_successor_effect_transaction(
         quickbar_item_refresh_hint_last_body: state.quickbar_item_refresh_hint_last_body.clone(),
     };
     state.module_resources = state.module_resources.for_speculative_transaction();
-    state.deflate.ordered_successor_effect_snapshot = Some(Box::new(snapshot));
-    tracing::debug!(
-        sequence,
-        "direct ordered successor began speculative engine-facing effect transaction"
-    );
-    Ok(())
+    snapshot
 }
 
-fn rollback_ordered_successor_effect_transaction(state: &mut SessionState) -> bool {
-    let Some(snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
-        return false;
-    };
-    let snapshot = *snapshot;
+fn restore_engine_facing_effect_snapshot(
+    state: &mut SessionState,
+    snapshot: state::OrderedSuccessorEffectSnapshot,
+) {
     state.deflate.server_reassembly = snapshot.server_reassembly;
     state.deflate.completed_server_stream_windows = snapshot.completed_server_stream_windows;
     state.deflate.completed_server_reliable_stream_slots =
@@ -704,37 +733,62 @@ fn rollback_ordered_successor_effect_transaction(state: &mut SessionState) -> bo
     state.module_resources = snapshot.module_resources;
     state.semantic = snapshot.semantic;
     state.quickbar_item_refresh_hint_last_body = snapshot.quickbar_item_refresh_hint_last_body;
-    true
 }
 
-fn commit_ordered_successor_effect_transaction(state: &mut SessionState) -> bool {
-    if state
-        .deflate
-        .ordered_successor_effect_snapshot
-        .take()
-        .is_none()
-    {
-        return false;
-    }
-    // The speculative path deliberately suppressed this external file write.
-    // Flush the accepted semantic state only after the exact emit passed.
+fn commit_engine_facing_effect_transaction(state: &mut SessionState) {
+    // Speculative module observations suppress external publication until the
+    // enclosing reader transaction succeeds.
     state.module_resources.commit_speculative_observations();
     update_quickbar_item_refresh_hint(state);
+}
+
+fn rollback_server_emit_effect_transaction(state: &mut SessionState) -> bool {
+    let transaction_kind = state.deflate.server_emit_effect_transaction_kind.take();
+    let Some(snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
+        if transaction_kind.is_some() {
+            tracing::warn!(
+                ?transaction_kind,
+                "server emit transaction kind cleared without a matching effect snapshot"
+            );
+        }
+        return false;
+    };
+    restore_engine_facing_effect_snapshot(state, *snapshot);
     true
 }
 
-/// Commit or reject the ordered-successor transport transaction after the
-/// outer strict validator has classified the complete emitted packet batch.
+fn commit_server_emit_effect_transaction(
+    state: &mut SessionState,
+    expected_kind: state::ServerEmitEffectTransactionKind,
+) -> bool {
+    if state.deflate.server_emit_effect_transaction_kind != Some(expected_kind) {
+        return false;
+    }
+    state.deflate.server_emit_effect_transaction_kind = None;
+    let Some(_snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
+        tracing::warn!(
+            ?expected_kind,
+            "server emit effect commit rejected because its tagged snapshot disappeared"
+        );
+        return false;
+    };
+    commit_engine_facing_effect_transaction(state);
+    true
+}
+
+/// Commit or reject the server emit effect transaction after the outer strict
+/// validator has classified the complete emitted packet batch.
 ///
 /// Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` advance reliable
 /// receive storage in sequence order, while gameplay dispatch happens only
 /// after the stored message is reconstructed. Proxy2 similarly must not dequeue
-/// a buffered successor merely because its translator returned a plausible
-/// packet: the exact emitted shape must pass the final strict owner first.
+/// a buffered successor or retain an ordinary coalesced window merely because
+/// its inner translator returned plausible packets: the complete emitted shape
+/// must pass the final strict owner first.
 pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, accepted: bool) {
     let token = state.deflate.ordered_successor_pending_validation.take();
     if !accepted {
-        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
+        let rolled_back_effects = rollback_server_emit_effect_transaction(state);
         if let Some(token) = token {
             tracing::warn!(
                 sequence = token.sequence,
@@ -744,23 +798,59 @@ pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, 
             );
         } else if rolled_back_effects {
             tracing::warn!(
-                "direct ordered successor engine-facing effects rolled back after core dispatch failed before a validation token was staged"
+                "server M engine-facing effects rolled back after final strict emit validation rejected the complete batch"
             );
         }
         return;
     }
 
     let Some(token) = token else {
-        if rollback_ordered_successor_effect_transaction(state) {
-            tracing::warn!(
-                "direct ordered successor engine-facing effects rolled back because no exact validation identity was staged"
-            );
+        match state.deflate.server_emit_effect_transaction_kind {
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryCoalesced) => {
+                if commit_server_emit_effect_transaction(
+                    state,
+                    state::ServerEmitEffectTransactionKind::OrdinaryCoalesced,
+                ) {
+                    tracing::debug!(
+                        "strict-validated ordinary server M committed speculative engine-facing effects"
+                    );
+                }
+            }
+            Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor) => {
+                let rolled_back_effects = rollback_server_emit_effect_transaction(state);
+                tracing::warn!(
+                    rolled_back_effects,
+                    "ordered successor engine-facing effects rolled back because no exact validation identity was staged"
+                );
+            }
+            None => {
+                if state.deflate.ordered_successor_effect_snapshot.is_some() {
+                    let rolled_back_effects = rollback_server_emit_effect_transaction(state);
+                    tracing::warn!(
+                        rolled_back_effects,
+                        "untagged server emit effect snapshot rolled back instead of accepting without ownership"
+                    );
+                }
+            }
         }
         return;
     };
+    if state.deflate.server_emit_effect_transaction_kind
+        != Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor)
+    {
+        let transaction_kind = state.deflate.server_emit_effect_transaction_kind;
+        let rolled_back_effects = rollback_server_emit_effect_transaction(state);
+        tracing::warn!(
+            sequence = token.sequence,
+            ?transaction_kind,
+            rolled_back_effects,
+            "ordered successor validation token rejected because its effect transaction kind did not match"
+        );
+        return;
+    }
     let expected = token.sequence;
     if state.deflate.ordered_successor_next_sequence != Some(expected) {
-        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
+        let rolled_back_effects = rollback_server_emit_effect_transaction(state);
         tracing::warn!(
             sequence = expected,
             active_sequence = state.deflate.ordered_successor_next_sequence.unwrap_or(0),
@@ -783,7 +873,7 @@ pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, 
             )
         });
     let Some((queued_server_origin_generation, queued_identity_matches)) = queued_identity else {
-        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
+        let rolled_back_effects = rollback_server_emit_effect_transaction(state);
         tracing::warn!(
             sequence = expected,
             validated_server_origin_generation = token.server_origin_generation,
@@ -793,7 +883,7 @@ pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, 
         return;
     };
     if !queued_identity_matches {
-        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
+        let rolled_back_effects = rollback_server_emit_effect_transaction(state);
         tracing::warn!(
             sequence = expected,
             queued_server_origin_generation,
@@ -804,7 +894,10 @@ pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, 
         return;
     }
 
-    let committed_effects = commit_ordered_successor_effect_transaction(state);
+    let committed_effects = commit_server_emit_effect_transaction(
+        state,
+        state::ServerEmitEffectTransactionKind::OrderedSuccessor,
+    );
 
     let final_sequence = state
         .deflate
@@ -921,6 +1014,16 @@ fn translate_server_to_client_inner(
     }
 
     let packetized_multi_frame = view.packetized_sequence > 1;
+    let ordinary_coalesced_transaction = view.packetized_sequence == 1
+        && view.trailing_payload_length > 0
+        && state.deflate.ordered_successor_effect_snapshot.is_none();
+    if ordinary_coalesced_transaction {
+        // A complete count-one stored window is one reader transaction. Keep
+        // its inflater, semantic, replay-cache, route, and external publication
+        // effects speculative through the outer strict validator; acceptance
+        // of an individual inner record is not the commit boundary.
+        begin_ordinary_server_emit_effect_transaction(state)?;
+    }
     if !packetized_multi_frame {
         deferred_module_resources::capture_early_server_status_if_needed(
             &inbound,
@@ -936,13 +1039,35 @@ fn translate_server_to_client_inner(
     // assembled from complete stored frames, so it must never enter coalesced
     // span routing even when bytes 10..11 under-claim the stored first frame.
     if view.packetized_sequence == 1 {
-        if let Some(rewrite) = coalesced::rewrite_server_window_spans_if_needed(
+        let rewrite = match coalesced::rewrite_server_window_spans_if_needed(
             &inbound,
             &view,
             state,
             server_peer_ack_sequence,
             server_origin_generation,
-        )? {
+        ) {
+            Ok(rewrite) => rewrite,
+            Err(error) => {
+                if ordinary_coalesced_transaction {
+                    rollback_server_emit_effect_transaction(state);
+                }
+                return Err(error);
+            }
+        };
+        if rewrite.is_none() && ordinary_coalesced_transaction {
+            // Trailing storage that cannot be reduced to complete declared
+            // records is not a successful empty coalesced window. Reject it
+            // before finalization so unrelated due synthetic output cannot
+            // turn the batch non-Drop and accidentally commit source effects.
+            rollback_server_emit_effect_transaction(state);
+            tracing::warn!(
+                sequence = view.sequence,
+                trailing_payload_length = view.trailing_payload_length,
+                "count-one server M rejected because trailing storage is not a complete coalesced record set"
+            );
+            return Ok(Emit::Drop);
+        }
+        if let Some(rewrite) = rewrite {
             reassembly::remember_completed_server_reliable_stream_slot(
                 state,
                 view.sequence,
@@ -1222,15 +1347,13 @@ fn observe_verified_synthetic_server_m_packet(
 }
 
 fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
-    // A direct ordered successor is still only a reconstructed-message
+    // A server emit transaction is still only a reconstructed-message
     // candidate until SessionTranslator's outer strict validator accepts the
     // complete emit. Do not leak its speculative semantic state through the
     // harness hint file; acceptance flushes the final body after the snapshot
     // is discarded, while rejection restores the prior in-memory body.
     if state.deflate.ordered_successor_effect_snapshot.is_some() {
-        tracing::trace!(
-            "quickbar item-refresh hint deferred behind ordered successor strict validation"
-        );
+        tracing::trace!("quickbar item-refresh hint deferred behind server emit strict validation");
         return;
     }
     let Some(path) = state.quickbar_item_refresh_hint_path.clone() else {
@@ -2546,7 +2669,7 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             break;
         }
 
-        rollback_ordered_successor_effect_transaction(state);
+        rollback_server_emit_effect_transaction(state);
         tracing::warn!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -3187,6 +3310,17 @@ mod tests {
 
         let mut state = SessionState::default();
         state.synthetic_area.synthesize_loadbar = false;
+        let due_packet =
+            client_reliable_m_frame(131, 73, &crate::translate::loadbar::start_payload(3));
+        state.synthetic_area.pending_server_to_client_packets.push(
+            synthetic_area::PendingServerPacket {
+                family: VerifiedFamily::LoadBar,
+                packet: due_packet.clone(),
+                due_at: Instant::now(),
+                reason: "malformed coalesced source must not drain valid due output",
+                placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
+            },
+        );
         assert!(matches!(
             translate_server_to_client(&frame, &mut state)
                 .expect("unclaimed trailing data should fail closed"),
@@ -3195,6 +3329,17 @@ mod tests {
         assert!(state.deflate.server_reassembly.is_none());
         assert!(state.deflate.server_zlib_inflater.is_none());
         assert!(state.deflate.completed_server_stream_windows.is_empty());
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+        assert_eq!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .iter()
+                .map(|pending| pending.packet.as_slice())
+                .collect::<Vec<_>>(),
+            vec![due_packet.as_slice()],
+            "malformed source rejection must not be masked by or consume unrelated valid due output"
+        );
     }
 
     #[test]
@@ -3614,6 +3759,212 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_first_pass_error_rolls_back_complete_window_effects() {
+        let source_payload = [
+            0x50, 0x09, 0x01, 0x16, 0, 0, 0, 0xC3, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0, b'c', b'h', b'e',
+            b'e', b's', b'e', b'7', 0x64,
+        ];
+        let mut packet = reliable_server_m_frame(44, 80, 0x0A, 1, &source_payload);
+        let mut invalid_payload = 64u32.to_le_bytes().to_vec();
+        invalid_payload.extend_from_slice(&[0xFF; 8]);
+        let mut invalid_span = vec![0u8; crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        invalid_span[7] = 0x04;
+        assert!(write_be_u16(&mut invalid_span, 8, 1));
+        assert!(write_be_u16(
+            &mut invalid_span,
+            10,
+            invalid_payload.len() as u16
+        ));
+        invalid_span.extend_from_slice(&invalid_payload);
+        packet.extend_from_slice(&invalid_span);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("coalesced test packet should parse");
+        assert!(view.trailing_payload_length > 0);
+        let mut state = SessionState::default();
+
+        let first_error = translate_server_to_client_inner(&packet, &mut state)
+            .expect_err("invalid later deflated sibling should reject the whole window");
+        assert!(
+            first_error
+                .to_string()
+                .contains("failed to inflate server gameplay payload")
+        );
+        assert!(state.coalesced_replay.completed_windows.is_empty());
+        assert!(state.coalesced_replay.completed_direct_records.is_empty());
+        assert!(state.coalesced_replay.completed_deflated_records.is_empty());
+        assert!(state.deflate.server_zlib_inflater.is_none());
+        assert!(state.semantic.recent_events.is_empty());
+
+        let retry_error = translate_server_to_client_inner(&packet, &mut state)
+            .expect_err("exact retry must fail from the same clean transaction boundary");
+        assert!(
+            retry_error
+                .to_string()
+                .contains("failed to inflate server gameplay payload")
+        );
+        assert!(state.coalesced_replay.completed_windows.is_empty());
+        assert!(state.coalesced_replay.completed_direct_records.is_empty());
+        assert!(state.deflate.server_zlib_inflater.is_none());
+        assert!(state.semantic.recent_events.is_empty());
+    }
+
+    #[test]
+    fn ordinary_coalesced_window_rolls_back_after_automatic_strict_reject() {
+        // The core reader accepts both records. A deliberately invalid due
+        // synthetic prefix then makes the final mixed batch fail strict
+        // validation, proving the whole coalesced transaction remains
+        // speculative through SessionTranslator::validate_emit.
+        let mut packet = client_reliable_m_frame(47, 75, &[0x70, 0x02, 0x0C]);
+        let trailing_payload = [b'P', 0x09, 0x05];
+        let mut trailing = vec![0u8; crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        assert!(write_be_u16(&mut trailing, 3, 48));
+        assert!(write_be_u16(&mut trailing, 5, 75));
+        trailing[7] = 0x0A;
+        assert!(write_be_u16(&mut trailing, 8, 1));
+        assert!(write_be_u16(
+            &mut trailing,
+            10,
+            trailing_payload.len() as u16
+        ));
+        trailing.extend_from_slice(&trailing_payload);
+        packet.extend_from_slice(&trailing);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("ordinary coalesced test window");
+        assert!(view.crc_valid);
+        assert_eq!(view.packetized_sequence, 1);
+        assert!(view.trailing_payload_length > 0);
+
+        let mut translator = strict_session_translator_for_test();
+        translator
+            .m_state
+            .sequence
+            .latest_client_sequence_from_client = Some(31);
+        translator
+            .m_state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .push(synthetic_area::PendingServerPacket {
+                family: VerifiedFamily::LoadBar,
+                packet: vec![b'M'],
+                due_at: Instant::now(),
+                reason: "ordinary coalesced strict rejection callback test",
+                placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
+            });
+
+        let emit = translator.translate(crate::packet::Direction::ServerToClient, &packet);
+
+        assert!(matches!(emit, Emit::Drop));
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .last_server_core_dispatch_accepted,
+            "the coalesced core must succeed before only the final strict owner rejects the batch"
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .ordered_successor_effect_snapshot
+                .is_none()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .len(),
+            1,
+            "strict rejection restores the synthetic packet drained by speculative finalization"
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets[0]
+                .packet,
+            vec![b'M']
+        );
+        assert!(
+            translator
+                .m_state
+                .sequence
+                .pending_client_to_server_packets
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .sequence
+                .client_sequence_shifts
+                .is_empty()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .sequence
+                .latest_client_sequence_from_client,
+            Some(31)
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .login_waypoint
+                .last_server_get_waypoint_sequence,
+            None
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .login_waypoint
+                .synthetic_empty_response_count,
+            0
+        );
+        assert!(translator.m_state.semantic.recent_events.is_empty());
+        assert!(
+            translator
+                .m_state
+                .coalesced_replay
+                .completed_windows
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .coalesced_replay
+                .completed_direct_records
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .coalesced_replay
+                .completed_deflated_records
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .completed_server_reliable_stream_slots
+                .is_empty()
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_server_sequence_to_client,
+            None
+        );
+        assert!(translator.m_state.deflate.server_zlib_inflater.is_none());
+        assert_eq!(
+            translator
+                .m_state
+                .direct_server_semantic_replays
+                .latest_origin_sequence,
+            Some(47),
+            "source reliable-generation observation remains transport truth above the effect boundary"
+        );
+    }
+
+    #[test]
     fn direct_ordered_successor_effects_are_atomic_at_final_validation() {
         // Diamond `Login_GetWaypoint` has no body. A proven direct dispatch
         // observes the semantic packet and queues one exact synthetic client
@@ -3673,6 +4024,35 @@ mod tests {
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
         assert_eq!(state.deflate.ordered_successor_next_sequence, None);
         assert!(state.deflate.ordered_successor_events.is_empty());
+    }
+
+    #[test]
+    fn ordered_successor_without_validation_token_rolls_back_fail_closed() {
+        let packet = client_reliable_m_frame(49, 75, &[0x70, 0x02, 0x0C]);
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(31);
+        queue_ordered_successor_for_test(&mut state, &packet);
+
+        let emit = translate_server_to_client(&packet, &mut state)
+            .expect("ordered successor should stage engine-facing effects");
+        assert!(!matches!(emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(49));
+        assert_eq!(
+            state.deflate.server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor)
+        );
+
+        state.deflate.ordered_successor_pending_validation = None;
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+        assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert!(state.sequence.client_sequence_shifts.is_empty());
+        assert!(state.semantic.recent_events.is_empty());
+        assert!(state.direct_server_semantic_replays.completed.is_empty());
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(49));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
     }
 
     #[test]

@@ -28,6 +28,12 @@ pub(super) struct OrderedSuccessorValidationToken {
     pub(super) transport_payload_identity: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ServerEmitEffectTransactionKind {
+    OrderedSuccessor,
+    OrdinaryCoalesced,
+}
+
 /// Reversible engine-facing state touched while an ordered raw reliable
 /// successor is being translated ahead of the outer strict emit decision.
 ///
@@ -86,17 +92,28 @@ pub(super) struct DeflateState {
     /// accepted by the outer strict validator. The active fence and raw event
     /// remain unchanged until validation commits this candidate.
     pub(super) ordered_successor_pending_validation: Option<OrderedSuccessorValidationToken>,
-    /// Speculative engine-facing effects for a direct ordered successor. The
-    /// outer strict callback discards this snapshot on accept and restores it
-    /// on rejection, so a retained raw slot cannot leak gameplay state.
+    /// Speculative engine-facing effects for a server emit transaction.
+    /// The outer strict callback commits this snapshot on accept and restores
+    /// it on rejection; coalesced/ordered effects never leak gameplay state.
     pub(super) ordered_successor_effect_snapshot: Option<Box<OrderedSuccessorEffectSnapshot>>,
+    pub(super) server_emit_effect_transaction_kind: Option<ServerEmitEffectTransactionKind>,
     pub(super) last_server_core_dispatch_accepted: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct CoalescedReplayState {
+    /// Complete outer reliable windows retained in acceptance order. Inner
+    /// record caches are useful only while their owning window remains here;
+    /// eviction must remove every sibling and the outer route together.
+    pub(super) completed_windows: Vec<CompletedCoalescedWindow>,
     pub(super) completed_deflated_records: Vec<CompletedCoalescedDeflatedRecord>,
     pub(super) completed_direct_records: Vec<CompletedCoalescedDirectRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CompletedCoalescedWindow {
+    pub(super) sequence: u16,
+    pub(super) server_origin_generation: u64,
 }
 
 #[derive(Debug, Clone)]

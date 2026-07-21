@@ -1632,9 +1632,10 @@ pub(super) fn remember_completed_server_reliable_stream_slot(
     let Some(transport_identity) = completed_reliable_stream_transport_identity(packet) else {
         return;
     };
-    // Cache families have independent record limits. Remove ledger-only stale
-    // entries before applying the aggregate cap so every disposition that can
-    // still replay remains protected from an ordinary/coalesced route switch.
+    // Remove ledger-only stale entries before applying the aggregate cap so
+    // every disposition that can still replay remains protected from an
+    // ordinary/coalesced route switch. Coalesced protection is keyed by a
+    // complete outer window, never by one surviving inner record.
     let protected_stream_slots = state
         .deflate
         .completed_server_stream_windows
@@ -1643,16 +1644,9 @@ pub(super) fn remember_completed_server_reliable_stream_slot(
         .chain(
             state
                 .coalesced_replay
-                .completed_deflated_records
+                .completed_windows
                 .iter()
-                .map(|entry| (entry.sequence, entry.server_origin_generation)),
-        )
-        .chain(
-            state
-                .coalesced_replay
-                .completed_direct_records
-                .iter()
-                .map(|entry| (entry.sequence, entry.server_origin_generation)),
+                .map(|window| (window.sequence, window.server_origin_generation)),
         )
         .collect::<std::collections::HashSet<_>>();
     state
@@ -1707,6 +1701,21 @@ pub(super) fn remember_completed_server_reliable_stream_slot(
             .completed_server_reliable_stream_slots
             .drain(0..overflow);
     }
+}
+
+pub(super) fn forget_completed_coalesced_window_route(
+    state: &mut SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+) {
+    state
+        .deflate
+        .completed_server_reliable_stream_slots
+        .retain(|slot| {
+            slot.sequence != sequence
+                || slot.server_origin_generation != server_origin_generation
+                || slot.route != CompletedServerReliableStreamRoute::CoalescedWindow
+        });
 }
 
 fn completed_reliable_stream_transport_identity(packet: &[u8]) -> Option<Vec<u8>> {

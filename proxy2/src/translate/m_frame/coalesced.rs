@@ -32,8 +32,15 @@ use super::{
         trim_coalesced_split_sequence_shifts, trim_sequence_shifts,
     },
     server_dispatch,
-    state::{CompletedCoalescedDeflatedRecord, CompletedCoalescedDirectRecord},
+    state::{
+        CompletedCoalescedDeflatedRecord, CompletedCoalescedDirectRecord, CompletedCoalescedWindow,
+    },
 };
+
+const MAX_COMPLETED_COALESCED_DEFLATED_RECORDS: usize = 64;
+const MAX_COMPLETED_COALESCED_DIRECT_RECORDS: usize = 128;
+const MAX_COMPLETED_COALESCED_WINDOWS: usize =
+    MAX_COMPLETED_COALESCED_DEFLATED_RECORDS + MAX_COMPLETED_COALESCED_DIRECT_RECORDS;
 
 pub(super) enum CoalescedRewrite {
     Single {
@@ -101,6 +108,82 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         return Ok(None);
     }
 
+    let primary_cache_kind =
+        coalesced_record_cache_kind(view.high, view.deflated.as_ref(), view.payload_length);
+    let direct_records = usize::from(primary_cache_kind == CoalescedRecordCacheKind::Direct)
+        + spans
+            .iter()
+            .filter(|span| {
+                coalesced_record_cache_kind(span.high, span.deflated.as_ref(), span.payload_length)
+                    == CoalescedRecordCacheKind::Direct
+            })
+            .count();
+    let deflated_records = usize::from(primary_cache_kind == CoalescedRecordCacheKind::Deflated)
+        + spans
+            .iter()
+            .filter(|span| {
+                coalesced_record_cache_kind(span.high, span.deflated.as_ref(), span.payload_length)
+                    == CoalescedRecordCacheKind::Deflated
+            })
+            .count();
+    if direct_records > MAX_COMPLETED_COALESCED_DIRECT_RECORDS
+        || deflated_records > MAX_COMPLETED_COALESCED_DEFLATED_RECORDS
+    {
+        anyhow::bail!(
+            "coalesced window exceeds atomic replay budget: direct={}/{} deflated={}/{}",
+            direct_records,
+            MAX_COMPLETED_COALESCED_DIRECT_RECORDS,
+            deflated_records,
+            MAX_COMPLETED_COALESCED_DEFLATED_RECORDS
+        );
+    }
+
+    if state
+        .coalesced_replay
+        .completed_windows
+        .iter()
+        .any(|window| {
+            window.sequence == view.sequence
+                && window.server_origin_generation == server_origin_generation
+        })
+    {
+        let primary_len = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
+        let primary_replay = completed_coalesced_record_replay_status(
+            state,
+            &bytes[..primary_len],
+            view.high,
+            view.deflated.as_ref(),
+            view.payload_length,
+            view.sequence,
+            server_origin_generation,
+            0,
+        );
+        let spans_cached = primary_replay.aborts_window_after_primary()
+            || spans.iter().all(|span| {
+                let record_end = span.offset + span.record_length;
+                completed_coalesced_record_replay_status(
+                    state,
+                    &bytes[span.offset..record_end],
+                    span.high,
+                    span.deflated.as_ref(),
+                    span.payload_length,
+                    view.sequence,
+                    server_origin_generation,
+                    span.offset,
+                )
+                .is_available()
+            });
+        if !primary_replay.is_available() || !spans_cached {
+            anyhow::bail!(
+                "completed coalesced replay window is missing an owned inner record: sequence={} generation={}",
+                view.sequence,
+                server_origin_generation
+            );
+        }
+    }
+
+    prepare_completed_coalesced_window_replay(state, view.sequence, server_origin_generation);
+
     let mut rewritten = Vec::new();
     let mut changed = false;
     let mut dropped_spans = 0u32;
@@ -143,6 +226,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
             dropped_spans,
             "server coalesced M window consumed because primary semantic record was quarantined"
         );
+        commit_completed_coalesced_window_replay(state, view.sequence, server_origin_generation);
         return Ok(Some(CoalescedRewrite::Single {
             proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
             packet: consumed,
@@ -201,6 +285,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
             output_packets = split_packets.len(),
             "server coalesced module-resource window split into typed standalone records so proxy-owned ServerStatus_ModuleResources sequence insertion stays coherent"
         );
+        commit_completed_coalesced_window_replay(state, view.sequence, server_origin_generation);
         return if pre_shifted {
             Ok(Some(CoalescedRewrite::SplitPreShifted {
                 packets: split_packets,
@@ -224,6 +309,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
             output_packets = split_packets.len(),
             "server coalesced area-load window split into typed standalone records so non-area spans stay behind the area ACK gate"
         );
+        commit_completed_coalesced_window_replay(state, view.sequence, server_origin_generation);
         return if pre_shifted {
             Ok(Some(CoalescedRewrite::SplitPreShifted {
                 packets: split_packets,
@@ -236,6 +322,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
     }
 
     if rewritten.len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES {
+        commit_completed_coalesced_window_replay(state, view.sequence, server_origin_generation);
         return Ok(Some(CoalescedRewrite::Single {
             proof: VerifiedProof::CoalescedWindow(record_proofs),
             packet: rewritten,
@@ -251,6 +338,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         output_packets = split_packets.len(),
         "server coalesced M window exceeded EE-safe datagram budget; split into standalone typed reliable frames"
     );
+    commit_completed_coalesced_window_replay(state, view.sequence, server_origin_generation);
     if pre_shifted {
         Ok(Some(CoalescedRewrite::SplitPreShifted {
             packets: split_packets,
@@ -671,21 +759,10 @@ fn remember_completed_coalesced_deflated_record(
         return;
     }
 
-    const MAX_COMPLETED_COALESCED_DEFLATED_RECORDS: usize = 64;
     state
         .coalesced_replay
         .completed_deflated_records
         .push(entry);
-    if state.coalesced_replay.completed_deflated_records.len()
-        > MAX_COMPLETED_COALESCED_DEFLATED_RECORDS
-    {
-        let overflow = state.coalesced_replay.completed_deflated_records.len()
-            - MAX_COMPLETED_COALESCED_DEFLATED_RECORDS;
-        state
-            .coalesced_replay
-            .completed_deflated_records
-            .drain(0..overflow);
-    }
 }
 
 fn replay_completed_coalesced_direct_record(
@@ -769,17 +846,251 @@ fn remember_completed_coalesced_direct_record(
         return;
     }
 
-    const MAX_COMPLETED_COALESCED_DIRECT_RECORDS: usize = 128;
     state.coalesced_replay.completed_direct_records.push(entry);
-    if state.coalesced_replay.completed_direct_records.len()
-        > MAX_COMPLETED_COALESCED_DIRECT_RECORDS
+}
+
+fn prepare_completed_coalesced_window_replay(
+    state: &mut SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+) {
+    if state
+        .coalesced_replay
+        .completed_windows
+        .iter()
+        .any(|window| {
+            window.sequence == sequence
+                && window.server_origin_generation == server_origin_generation
+        })
     {
-        let overflow = state.coalesced_replay.completed_direct_records.len()
-            - MAX_COMPLETED_COALESCED_DIRECT_RECORDS;
+        return;
+    }
+
+    // A failed first pass never commits an outer route, but it may have staged
+    // one or more inner records before a later sibling rejected. Clear those
+    // orphan rows before retry so only a completely translated outer window
+    // can become replay authority.
+    state
+        .coalesced_replay
+        .completed_deflated_records
+        .retain(|entry| {
+            entry.sequence != sequence || entry.server_origin_generation != server_origin_generation
+        });
+    state
+        .coalesced_replay
+        .completed_direct_records
+        .retain(|entry| {
+            entry.sequence != sequence || entry.server_origin_generation != server_origin_generation
+        });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompletedCoalescedRecordReplayStatus {
+    NotRequired,
+    Cached { abort_window_after_primary: bool },
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CoalescedRecordCacheKind {
+    None,
+    Direct,
+    Deflated,
+}
+
+fn coalesced_record_cache_kind(
+    high: Option<HighLevel>,
+    deflated: Option<&DeflatedEnvelope>,
+    payload_length: usize,
+) -> CoalescedRecordCacheKind {
+    if payload_length == 0 {
+        return CoalescedRecordCacheKind::None;
+    }
+    let prefer_deflated = deflated
+        .map(|envelope| envelope.plausible && payload_length >= CNW_LENGTH_BYTES)
+        .unwrap_or(false);
+    if !prefer_deflated && high.is_some() {
+        return CoalescedRecordCacheKind::Direct;
+    }
+    if prefer_deflated {
+        CoalescedRecordCacheKind::Deflated
+    } else {
+        CoalescedRecordCacheKind::None
+    }
+}
+
+impl CompletedCoalescedRecordReplayStatus {
+    fn is_available(self) -> bool {
+        !matches!(self, Self::Missing)
+    }
+
+    fn aborts_window_after_primary(self) -> bool {
+        matches!(
+            self,
+            Self::Cached {
+                abort_window_after_primary: true
+            }
+        )
+    }
+}
+
+fn completed_coalesced_record_replay_status(
+    state: &SessionState,
+    record: &[u8],
+    high: Option<HighLevel>,
+    deflated: Option<&DeflatedEnvelope>,
+    payload_length: usize,
+    sequence: u16,
+    server_origin_generation: u64,
+    offset: usize,
+) -> CompletedCoalescedRecordReplayStatus {
+    if payload_length == 0 {
+        return CompletedCoalescedRecordReplayStatus::NotRequired;
+    }
+    let Some(payload_end) = LEGACY_GAMEPLAY_PAYLOAD_OFFSET.checked_add(payload_length) else {
+        return CompletedCoalescedRecordReplayStatus::NotRequired;
+    };
+    let Some(payload) = record.get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..payload_end) else {
+        // The ordinary path owns malformed rows as empty progress shells and
+        // has no semantic or inflater effect to replay.
+        return CompletedCoalescedRecordReplayStatus::NotRequired;
+    };
+
+    let prefer_deflated = deflated
+        .map(|envelope| envelope.plausible && payload_length >= CNW_LENGTH_BYTES)
+        .unwrap_or(false);
+    if !prefer_deflated && high.is_some() {
+        return state
+            .coalesced_replay
+            .completed_direct_records
+            .iter()
+            .find(|entry| {
+                entry.sequence == sequence
+                    && entry.server_origin_generation == server_origin_generation
+                    && entry.offset == offset
+                    && entry.payload.as_slice() == payload
+            })
+            .map(|entry| CompletedCoalescedRecordReplayStatus::Cached {
+                abort_window_after_primary: entry.abort_window_if_primary_consumed,
+            })
+            .unwrap_or(CompletedCoalescedRecordReplayStatus::Missing);
+    }
+
+    let Some(deflated) = deflated else {
+        return CompletedCoalescedRecordReplayStatus::NotRequired;
+    };
+    if !deflated.plausible || payload_length < CNW_LENGTH_BYTES {
+        return CompletedCoalescedRecordReplayStatus::NotRequired;
+    }
+    let compressed = &payload[CNW_LENGTH_BYTES..];
+    state
+        .coalesced_replay
+        .completed_deflated_records
+        .iter()
+        .find(|entry| {
+            entry.sequence == sequence
+                && entry.server_origin_generation == server_origin_generation
+                && entry.offset == offset
+                && entry.payload_length == payload_length
+                && entry.inflated_length == deflated.inflated_length
+                && entry.compressed.as_slice() == compressed
+        })
+        .map(|entry| CompletedCoalescedRecordReplayStatus::Cached {
+            abort_window_after_primary: entry.abort_window_if_primary_consumed,
+        })
+        .unwrap_or(CompletedCoalescedRecordReplayStatus::Missing)
+}
+
+pub(super) fn commit_completed_coalesced_window_replay(
+    state: &mut SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+) {
+    if state
+        .coalesced_replay
+        .completed_windows
+        .iter()
+        .any(|window| {
+            window.sequence == sequence
+                && window.server_origin_generation == server_origin_generation
+        })
+    {
+        return;
+    }
+
+    // Diamond `sub_5F3FC0` and EE `UnpacketizeFullMessages` dispatch every
+    // declared record from one stored count-one datagram before that reliable
+    // slot is complete. Mirror that ownership boundary: record caches may age
+    // out only as one outer window, never independently. This prevents a
+    // retransmit from replaying retained siblings while re-inflating an
+    // evicted sibling against newer persistent-zlib history.
+    let retained_keys = state
+        .coalesced_replay
+        .completed_windows
+        .iter()
+        .map(|window| (window.sequence, window.server_origin_generation))
+        .chain(std::iter::once((sequence, server_origin_generation)))
+        .collect::<Vec<_>>();
+    state
+        .coalesced_replay
+        .completed_deflated_records
+        .retain(|entry| retained_keys.contains(&(entry.sequence, entry.server_origin_generation)));
+    state
+        .coalesced_replay
+        .completed_direct_records
+        .retain(|entry| retained_keys.contains(&(entry.sequence, entry.server_origin_generation)));
+    state
+        .coalesced_replay
+        .completed_windows
+        .push(CompletedCoalescedWindow {
+            sequence,
+            server_origin_generation,
+        });
+
+    let mut evicted = Vec::new();
+    loop {
+        let replay = &state.coalesced_replay;
+        // The parser preflight guarantees one production window fits both
+        // record budgets. Keep the newest group whole if an internal/test-only
+        // caller violates that invariant; never repair it by partial eviction.
+        let exceeds_record_budget = replay.completed_windows.len() > 1
+            && (replay.completed_deflated_records.len() > MAX_COMPLETED_COALESCED_DEFLATED_RECORDS
+                || replay.completed_direct_records.len() > MAX_COMPLETED_COALESCED_DIRECT_RECORDS);
+        let exceeds_window_budget =
+            replay.completed_windows.len() > MAX_COMPLETED_COALESCED_WINDOWS;
+        if !exceeds_record_budget && !exceeds_window_budget {
+            break;
+        }
+
+        let window = state.coalesced_replay.completed_windows.remove(0);
+        state
+            .coalesced_replay
+            .completed_deflated_records
+            .retain(|entry| {
+                entry.sequence != window.sequence
+                    || entry.server_origin_generation != window.server_origin_generation
+            });
         state
             .coalesced_replay
             .completed_direct_records
-            .drain(0..overflow);
+            .retain(|entry| {
+                entry.sequence != window.sequence
+                    || entry.server_origin_generation != window.server_origin_generation
+            });
+        evicted.push(window);
+    }
+
+    for window in evicted {
+        reassembly::forget_completed_coalesced_window_route(
+            state,
+            window.sequence,
+            window.server_origin_generation,
+        );
+        tracing::info!(
+            sequence = window.sequence,
+            server_origin_generation = window.server_origin_generation,
+            "evicted complete coalesced replay window and its reliable route atomically"
+        );
     }
 }
 
@@ -1479,6 +1790,19 @@ fn dump_invalid_inflated_payload_for_span(inflated: &[u8], sequence: u16, reason
 mod tests {
     use super::*;
 
+    fn reliable_data_packet(sequence: u16, payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        write_be_u16(&mut packet, 3, sequence);
+        write_be_u16(&mut packet, 5, 80);
+        packet[7] = 0x0A;
+        write_be_u16(&mut packet, 8, 1);
+        write_be_u16(&mut packet, 10, payload.len() as u16);
+        packet.extend_from_slice(payload);
+        assert!(encode_legacy_m_crc(&mut packet));
+        packet
+    }
+
     #[test]
     fn existing_server_shifts_include_type_zero_sequence_zero_but_not_controls() {
         let shifts = [SequenceShift {
@@ -1699,6 +2023,295 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_window_eviction_removes_all_siblings_and_outer_route() {
+        let generation = 7;
+        let first_sequence = 10;
+        let first_packet = reliable_data_packet(first_sequence, &[0xAA]);
+        let first_outcome = CoalescedRecordRewrite {
+            record: first_packet.clone(),
+            proof: VerifiedProof::family(VerifiedFamily::Inventory),
+            changed: true,
+            dropped: false,
+            rewritten_deflated: false,
+            abort_window_if_primary_consumed: false,
+        };
+        let mut state = SessionState::default();
+        remember_completed_coalesced_direct_record(
+            &mut state,
+            first_sequence,
+            generation,
+            0,
+            &[0xAA],
+            &first_outcome,
+        );
+        remember_completed_coalesced_deflated_record(
+            &mut state,
+            first_sequence,
+            generation,
+            13,
+            5,
+            9,
+            &[0x01],
+            &first_outcome,
+        );
+        commit_completed_coalesced_window_replay(&mut state, first_sequence, generation);
+        reassembly::remember_completed_server_reliable_stream_slot(
+            &mut state,
+            first_sequence,
+            generation,
+            &first_packet,
+            reassembly::CompletedServerReliableStreamRoute::CoalescedWindow,
+        );
+
+        let mut newest_packet = Vec::new();
+        let mut newest_sequence = 0;
+        for index in 0..MAX_COMPLETED_COALESCED_DEFLATED_RECORDS {
+            let sequence = first_sequence.wrapping_add(index as u16).wrapping_add(1);
+            let compressed = [index as u8, 0x5A];
+            let packet = reliable_data_packet(sequence, &compressed);
+            let outcome = CoalescedRecordRewrite {
+                record: packet.clone(),
+                proof: VerifiedProof::family(VerifiedFamily::GuiQuickbar),
+                changed: true,
+                dropped: false,
+                rewritten_deflated: true,
+                abort_window_if_primary_consumed: false,
+            };
+            remember_completed_coalesced_deflated_record(
+                &mut state,
+                sequence,
+                generation,
+                0,
+                6,
+                12,
+                &compressed,
+                &outcome,
+            );
+            commit_completed_coalesced_window_replay(&mut state, sequence, generation);
+            reassembly::remember_completed_server_reliable_stream_slot(
+                &mut state,
+                sequence,
+                generation,
+                &packet,
+                reassembly::CompletedServerReliableStreamRoute::CoalescedWindow,
+            );
+            newest_packet = packet;
+            newest_sequence = sequence;
+        }
+
+        assert_eq!(
+            state.coalesced_replay.completed_deflated_records.len(),
+            MAX_COMPLETED_COALESCED_DEFLATED_RECORDS
+        );
+        assert_eq!(state.coalesced_replay.completed_direct_records.len(), 0);
+        assert_eq!(
+            state.coalesced_replay.completed_windows.len(),
+            MAX_COMPLETED_COALESCED_DEFLATED_RECORDS
+        );
+        assert!(
+            !state
+                .coalesced_replay
+                .completed_windows
+                .iter()
+                .any(|window| {
+                    window.sequence == first_sequence
+                        && window.server_origin_generation == generation
+                })
+        );
+        assert!(
+            !state
+                .coalesced_replay
+                .completed_deflated_records
+                .iter()
+                .any(|entry| {
+                    entry.sequence == first_sequence && entry.server_origin_generation == generation
+                })
+        );
+        assert!(matches!(
+            reassembly::completed_server_reliable_stream_slot(
+                &state,
+                first_sequence,
+                generation,
+                &first_packet,
+            ),
+            reassembly::CompletedServerReliableStreamSlotMatch::Miss
+        ));
+        assert!(matches!(
+            reassembly::completed_server_reliable_stream_slot(
+                &state,
+                newest_sequence,
+                generation,
+                &newest_packet,
+            ),
+            reassembly::CompletedServerReliableStreamSlotMatch::Exact(
+                reassembly::CompletedServerReliableStreamRoute::CoalescedWindow
+            )
+        ));
+    }
+
+    #[test]
+    fn incomplete_completed_coalesced_window_fails_before_record_dispatch() {
+        let sequence = 91;
+        let generation = 3;
+        let payload =
+            crate::translate::inventory::build_ee_inventory_payload(0x01, 0x8000_1234, true, 4)
+                .expect("exact Inventory payload");
+        let mut packet = reliable_data_packet(sequence, &payload);
+        let missing_inflated = crate::translate::loadbar::start_payload(2);
+        let missing_compressed = deflate_zlib(&missing_inflated).expect("test span should deflate");
+        let mut missing_payload = (missing_inflated.len() as u32).to_le_bytes().to_vec();
+        missing_payload.extend_from_slice(&missing_compressed);
+        let mut missing_span = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        missing_span[7] = 0x04;
+        write_be_u16(&mut missing_span, 8, 1);
+        write_be_u16(&mut missing_span, 10, missing_payload.len() as u16);
+        missing_span.extend_from_slice(&missing_payload);
+        packet.extend_from_slice(&missing_span);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("coalesced packet should parse");
+        assert!(view.trailing_payload_length > 0);
+        let mut state = SessionState::default();
+        let primary_outcome = CoalescedRecordRewrite {
+            record: reliable_data_packet(sequence, &payload),
+            proof: VerifiedProof::family(VerifiedFamily::Inventory),
+            changed: true,
+            dropped: false,
+            rewritten_deflated: false,
+            abort_window_if_primary_consumed: false,
+        };
+        remember_completed_coalesced_direct_record(
+            &mut state,
+            sequence,
+            generation,
+            0,
+            &payload,
+            &primary_outcome,
+        );
+        commit_completed_coalesced_window_replay(&mut state, sequence, generation);
+        let seed_inflated = crate::translate::loadbar::start_payload(1);
+        let seed_compressed = deflate_zlib(&seed_inflated).expect("stream seed should deflate");
+        let seeded = reassembly::inflate_gameplay_payload(
+            &seed_compressed,
+            seed_inflated.len(),
+            true,
+            &mut state.deflate.server_zlib_inflater,
+        )
+        .expect("stream seed inflate should not fail");
+        assert_eq!(seeded.bytes, seed_inflated);
+        let inflater_before = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .map(|inflater| (inflater.total_in(), inflater.total_out()));
+
+        let error = match rewrite_server_window_spans_if_needed(
+            &packet,
+            &view,
+            &mut state,
+            view.ack_sequence,
+            generation,
+        ) {
+            Err(error) => error,
+            Ok(_) => {
+                panic!("a retained outer window with a missing direct sibling must fail closed")
+            }
+        };
+
+        assert!(error.to_string().contains("missing an owned inner record"));
+        assert_eq!(state.coalesced_replay.completed_direct_records.len(), 1);
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            inflater_before,
+            "preflight must reject before advancing persistent inflater history"
+        );
+    }
+
+    #[test]
+    fn cached_primary_consumption_replays_without_trailing_record_caches() {
+        let sequence = 92;
+        let generation = 4;
+        let primary_payload = [b'P', 0x7F, 0x7F, 0, 0, 0, 0];
+        let mut packet = reliable_data_packet(sequence, &primary_payload);
+        let trailing_inflated = crate::translate::loadbar::start_payload(2);
+        let trailing_compressed =
+            deflate_zlib(&trailing_inflated).expect("test trailing row should deflate");
+        let mut trailing_payload = (trailing_inflated.len() as u32).to_le_bytes().to_vec();
+        trailing_payload.extend_from_slice(&trailing_compressed);
+        let mut trailing = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        trailing[7] = 0x04;
+        write_be_u16(&mut trailing, 8, 1);
+        write_be_u16(&mut trailing, 10, trailing_payload.len() as u16);
+        trailing.extend_from_slice(&trailing_payload);
+        packet.extend_from_slice(&trailing);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("coalesced packet should parse");
+        let mut state = SessionState::default();
+
+        let first = rewrite_server_window_spans_if_needed(
+            &packet,
+            &view,
+            &mut state,
+            view.ack_sequence,
+            generation,
+        )
+        .expect("unknown primary should be consumed safely")
+        .expect("coalesced window should produce a progress shell");
+        assert!(matches!(first, CoalescedRewrite::Single { .. }));
+        assert_eq!(state.coalesced_replay.completed_direct_records.len(), 1);
+        assert!(state.coalesced_replay.completed_deflated_records.is_empty());
+
+        let replay = rewrite_server_window_spans_if_needed(
+            &packet,
+            &view,
+            &mut state,
+            view.ack_sequence,
+            generation,
+        )
+        .expect("cached aborting primary should not require trailing caches")
+        .expect("cached coalesced window should replay its progress shell");
+        assert!(matches!(replay, CoalescedRewrite::Single { .. }));
+        assert!(state.deflate.server_zlib_inflater.is_none());
+    }
+
+    #[test]
+    fn coalesced_window_record_budget_rejects_before_dispatch() {
+        let sequence = 93;
+        let mut packet = reliable_data_packet(sequence, &[0]);
+        for index in 0..=MAX_COMPLETED_COALESCED_DEFLATED_RECORDS {
+            let payload = [1, 0, 0, 0, index as u8];
+            let mut span = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+            span[7] = 0x04;
+            write_be_u16(&mut span, 8, 1);
+            write_be_u16(&mut span, 10, payload.len() as u16);
+            span.extend_from_slice(&payload);
+            packet.extend_from_slice(&span);
+        }
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("oversized coalesced window should parse");
+        let mut state = SessionState::default();
+
+        let error = match rewrite_server_window_spans_if_needed(
+            &packet,
+            &view,
+            &mut state,
+            view.ack_sequence,
+            5,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("oversized coalesced replay group must fail closed"),
+        };
+
+        assert!(error.to_string().contains("exceeds atomic replay budget"));
+        assert!(state.coalesced_replay.completed_windows.is_empty());
+        assert!(state.coalesced_replay.completed_deflated_records.is_empty());
+        assert!(state.deflate.server_zlib_inflater.is_none());
+    }
+
+    #[test]
     fn coalesced_direct_chat_talk_canonicalizes_diamond_padding_before_proof() {
         let source_payload = [
             0x50, 0x09, 0x01, 0x16, 0, 0, 0, 0xC3, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0, b'c', b'h', b'e',
@@ -1773,6 +2386,7 @@ mod tests {
             .observe_materialized_item_object_ids(&[0x8000_1234]);
         super::super::translate_server_to_client(&packet, &mut state)
             .expect("first coalesced Inventory window should translate");
+        super::super::finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(
             state
                 .semantic
@@ -1787,6 +2401,7 @@ mod tests {
         assert!(encode_legacy_m_crc(&mut retransmit));
         super::super::translate_server_to_client(&retransmit, &mut state)
             .expect("coalesced Inventory retransmit should replay typed output");
+        super::super::finish_server_to_client_emit_validation(&mut state, true);
 
         assert_eq!(
             state
