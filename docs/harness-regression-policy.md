@@ -13,6 +13,52 @@ more than 24 hours old. If the newest gameplay-reaching capture is older than
 capture before ordinary proxy work. If the previous run did not reach gameplay,
 fix or instrument that harness/server-connection blocker first and rerun.
 
+### EE-through-proxy gameplay gate
+
+The qualifying live gate is an EE client driven through the Release proxy into
+the real HG endpoint. It assumes a working EE Steam install (override with
+`-SteamRoot`), built or buildable Release bridge/proxy binaries, a local Diamond
+account/CD-key profile below `-DiamondConfigRoot`, an existing character named
+by `-AutoCharacter`, and either a usable native NWSync path or a local untracked
+NWSync environment/cache seed. Never put an account key or real password in the
+repository or command transcript; load it from a local secret source.
+
+```powershell
+$env:HG_BRIDGE_SERVER = '<host-or-ip>:<port>'
+$hgPlayerPassword = '<load-from-local-secret-source>'
+.\tools\test-hg-bridge.ps1 `
+  -Server $env:HG_BRIDGE_SERVER `
+  -Configuration Release `
+  -DriverOnly -AllowDriverAutoConnect `
+  -DiamondAccount 5 -DiamondConfigRoot 'C:\NWN\Config' `
+  -SteamRoot 'C:\Program Files (x86)\Steam\steamapps\common\Neverwinter Nights' `
+  -AutoCharacter 'starcore-druid60' `
+  -Password $hgPlayerPassword -AutoSpeakPassword `
+  -SeedNwsyncClientCache -NwsyncEnv 'C:\nwnbridge\hg-bridge-nwsync.env' `
+  -ProxyLogRoot 'C:\nwnbridge\<descriptive-live-run>'
+```
+
+`-Server` is an endpoint, not a server-list number. The expected ordered
+milestones are BN enumerate/login (`BNES`/`BNER`), key/build/session setup
+(`BNK2`/`BNK3`/`BNK4`/`BNCS`), a validated character vault, typed character
+selection, `PlayModule`/`Module_Info`, `Module_Loaded`, `Area_ClientArea`, a
+native client `Area_AreaLoaded`, and then continuing exact live-object traffic.
+Gameplay is reached only after module load plus native area completion and
+sustained post-area gameplay packets; reaching BN or the vault alone does not
+qualify.
+
+Each invocation creates
+`<ProxyLogRoot>\harness-proxy-<timestamp>\proxy.structured.log`,
+`proxy.stdout.log`, `proxy.stderr.log`, `quickbar-item-refresh-hint.json`, and
+`quarantine\` when diagnostic artifacts are written. The launcher prints the
+driver/client log locations. Record the full run root, timestamps, last
+milestone, post-area duration, strict decisions, exact live-object count,
+quarantine contents, and stderr status.
+
+Diamond direct capture is a separate legacy truth source used when the 1.69
+wire behavior is the question; it does not by itself satisfy the EE-through-
+proxy gameplay gate below.
+
 For real HG/Diamond source traffic, use:
 
 ```powershell
@@ -32,6 +78,28 @@ The 2026-06-25 manual review run
 `C:\nwnbridge\codex-review-diamond-client-20260625-174949` proved the Diamond
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
+
+Latest gate audit (`2026-07-21T13:03+10:00`): the newest gameplay-reaching
+artifact remains
+`C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+last written `2026-07-21T07:23:58.6405077+10:00` and about 5.65 hours old. No
+newer live proxy attempt exists. It selected typed `starcore-druid60`, reached
+`Module_Loaded`, produced two native `Area_AreaLoaded` messages, accepted 76
+exact live-object packets, and continued for 137.813 seconds after the final
+area load. It recorded 449 strict allows and zero route conflict, quarantine,
+`BNDP`, ERROR, quarantine files, or stderr; the single WARN declares the
+pre-seeded NWSync cache. It therefore remains current gameplay evidence and no
+fresh HG login was required.
+
+Current-code strict replay is
+`C:\nwnbridge\codex-proxy2-replay-ordered-atomic-20260721-20260721-135202`:
+all 164 packet files produced 304 strict allows, 143 generated ACK controls, 97
+exact live-object claims, 19 exact rewrites, ten Area rewrites, and one stable
+5,825-byte sealed-journal load. Strict/semantic quarantine, quarantine files,
+rewrite failures, terminal residuals, output timeouts, WARNs, ERRORs, and stderr
+were zero. The focused M-frame suite passes all 42 tests, production
+`cargo check`, all 16 module-resource tests, the native Release build, and the
+Rust Release build pass.
 
 Latest known live HG proxy status: after the prior artifact crossed 24 hours,
 the first current-code refresh exposed and then fixed a completed-stream

@@ -45,7 +45,7 @@ const ITEM_OBJECT_TYPE: u8 = 0x06;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
 const PLACEABLE_POSITION_EPSILON: f32 = 0.01;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SemanticSessionState {
     pub(crate) auth: AuthState,
     pub(crate) resources: ResourceState,
@@ -485,27 +485,27 @@ impl SemanticSessionState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct AuthState {
     pub(crate) login_packets: u64,
     pub(crate) client_input_packets: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ResourceState {
     pub(crate) module_info_seen: bool,
     pub(crate) module_resource_packets: u64,
     pub(crate) module_running_packets: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ModuleState {
     pub(crate) module_info_packets: u64,
     pub(crate) module_time_packets: u64,
     pub(crate) last_module_info_declared_len: Option<usize>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct AreaState {
     pub(crate) client_area_packets: u64,
     pub(crate) area_loaded_packets: u64,
@@ -514,7 +514,7 @@ pub(crate) struct AreaState {
     pub(crate) current_area_object_id: Option<u32>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ClientInputState {
     pub(crate) recent_open_door_id: Option<u32>,
     pub(crate) recent_open_at: Option<Instant>,
@@ -5503,7 +5503,7 @@ impl KnownObjectState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct UiState {
     pub(crate) quickbar_packets: u64,
     pub(crate) quickbar_placeholders: u64,
@@ -7221,7 +7221,7 @@ fn best_quickbar_item_context_for_commit(
     (None, None)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SyntheticState {
     pub(crate) server_synthetic_packets: u64,
 }

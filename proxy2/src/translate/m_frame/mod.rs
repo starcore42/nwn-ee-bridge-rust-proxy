@@ -547,10 +547,43 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             state.deflate.ordered_successor_events[index].server_peer_ack_sequence =
                 view.ack_sequence;
         }
+
+        let view = parsed_view
+            .as_ref()
+            .expect("ordered successor candidate has a valid parsed frame");
+        if !state
+            .deflate
+            .ordered_successor_events
+            .iter()
+            .any(|event| event.sequence == fence_sequence)
+        {
+            // A gap fence can name a missing predecessor which was never part
+            // of the buffered suffix. Once that exact packet arrives, retain
+            // it as the same raw transaction authority used for captured
+            // successors; final validation must never advance an identity
+            // that has no replayable slot.
+            let server_origin_generation = observe_server_origin_reliable_generation(state, view);
+            let event = reassembly::BufferedInterleavedServerPacket {
+                packet: bytes.to_vec(),
+                sequence: fence_sequence,
+                server_peer_ack_sequence: view.ack_sequence,
+                server_origin_generation,
+                transport_payload_identity: bytes.get(7..).unwrap_or_default().to_vec(),
+            };
+            if let Err(err) = merge_ordered_server_successor_events(state, &[event]) {
+                return Err(err);
+            }
+        }
     }
 
     state.deflate.last_server_core_dispatch_accepted = false;
-    let emit = translate_server_to_client_inner(bytes, state)?;
+    let emit = match translate_server_to_client_inner(bytes, state) {
+        Ok(emit) => emit,
+        Err(err) => {
+            rollback_ordered_successor_effect_transaction(state);
+            return Err(err);
+        }
+    };
     if let Some(expected) = fence_candidate_sequence.filter(|_| {
         state.deflate.last_server_core_dispatch_accepted && !matches!(&emit, Emit::Drop)
     }) {
@@ -580,8 +613,119 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             final_sequence,
             "successfully dispatched server M staged ordered successor advancement pending strict validation"
         );
+    } else if fence_candidate_sequence.is_some() {
+        // No candidate reaches the outer validator when core dispatch fails
+        // closed, so restore speculative state here while retaining the raw
+        // ordered slot for a later exact retry.
+        rollback_ordered_successor_effect_transaction(state);
     }
     Ok(emit)
+}
+
+fn begin_ordered_successor_effect_transaction(
+    state: &mut SessionState,
+    sequence: u16,
+) -> anyhow::Result<()> {
+    if state
+        .deflate
+        .ordered_successor_next_sequence
+        .is_some_and(|active| active != sequence)
+    {
+        anyhow::bail!(
+            "ordered successor effect transaction sequence {} does not match active fence {:?}",
+            sequence,
+            state.deflate.ordered_successor_next_sequence
+        );
+    }
+    if state.deflate.ordered_successor_effect_snapshot.is_some() {
+        anyhow::bail!(
+            "ordered successor effect transaction already active for sequence {}",
+            sequence
+        );
+    }
+
+    let snapshot = state::OrderedSuccessorEffectSnapshot {
+        server_reassembly: state.deflate.server_reassembly.clone(),
+        completed_server_stream_windows: state.deflate.completed_server_stream_windows.clone(),
+        completed_server_reliable_stream_slots: state
+            .deflate
+            .completed_server_reliable_stream_slots
+            .clone(),
+        server_zlib_stream_proxy_owned: state.deflate.server_zlib_stream_proxy_owned,
+        server_zlib_stream_owner: state.deflate.server_zlib_stream_owner,
+        server_zlib_stream_epoch: state.deflate.server_zlib_stream_epoch,
+        discard_created_server_zlib_inflater_on_rollback: state
+            .deflate
+            .server_zlib_inflater
+            .is_none(),
+        coalesced_replay: state.coalesced_replay.clone(),
+        quickbar: state.quickbar.clone(),
+        live_object: state.live_object.clone(),
+        sequence: state.sequence.clone(),
+        direct_server_semantic_replays: state.direct_server_semantic_replays.clone(),
+        login_waypoint: state.login_waypoint.clone(),
+        inventory_equipment: state.inventory_equipment.clone(),
+        synthetic_area: state.synthetic_area.clone(),
+        deferred_module_resources: state.deferred_module_resources.pending.clone(),
+        area_context: state.area_context.clone(),
+        module_resources: state.module_resources.clone(),
+        semantic: state.semantic.clone(),
+        quickbar_item_refresh_hint_last_body: state.quickbar_item_refresh_hint_last_body.clone(),
+    };
+    state.module_resources = state.module_resources.for_speculative_transaction();
+    state.deflate.ordered_successor_effect_snapshot = Some(Box::new(snapshot));
+    tracing::debug!(
+        sequence,
+        "direct ordered successor began speculative engine-facing effect transaction"
+    );
+    Ok(())
+}
+
+fn rollback_ordered_successor_effect_transaction(state: &mut SessionState) -> bool {
+    let Some(snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
+        return false;
+    };
+    let snapshot = *snapshot;
+    state.deflate.server_reassembly = snapshot.server_reassembly;
+    state.deflate.completed_server_stream_windows = snapshot.completed_server_stream_windows;
+    state.deflate.completed_server_reliable_stream_slots =
+        snapshot.completed_server_reliable_stream_slots;
+    state.deflate.server_zlib_stream_proxy_owned = snapshot.server_zlib_stream_proxy_owned;
+    state.deflate.server_zlib_stream_owner = snapshot.server_zlib_stream_owner;
+    state.deflate.server_zlib_stream_epoch = snapshot.server_zlib_stream_epoch;
+    if snapshot.discard_created_server_zlib_inflater_on_rollback {
+        state.deflate.server_zlib_inflater = None;
+    }
+    state.coalesced_replay = snapshot.coalesced_replay;
+    state.quickbar = snapshot.quickbar;
+    state.live_object = snapshot.live_object;
+    state.sequence = snapshot.sequence;
+    state.direct_server_semantic_replays = snapshot.direct_server_semantic_replays;
+    state.login_waypoint = snapshot.login_waypoint;
+    state.inventory_equipment = snapshot.inventory_equipment;
+    state.synthetic_area = snapshot.synthetic_area;
+    state.deferred_module_resources.pending = snapshot.deferred_module_resources;
+    state.area_context = snapshot.area_context;
+    state.module_resources = snapshot.module_resources;
+    state.semantic = snapshot.semantic;
+    state.quickbar_item_refresh_hint_last_body = snapshot.quickbar_item_refresh_hint_last_body;
+    true
+}
+
+fn commit_ordered_successor_effect_transaction(state: &mut SessionState) -> bool {
+    if state
+        .deflate
+        .ordered_successor_effect_snapshot
+        .take()
+        .is_none()
+    {
+        return false;
+    }
+    // The speculative path deliberately suppressed this external file write.
+    // Flush the accepted semantic state only after the exact emit passed.
+    state.module_resources.commit_speculative_observations();
+    update_quickbar_item_refresh_hint(state);
+    true
 }
 
 /// Commit or reject the ordered-successor transport transaction after the
@@ -593,45 +737,79 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
 /// a buffered successor merely because its translator returned a plausible
 /// packet: the exact emitted shape must pass the final strict owner first.
 pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, accepted: bool) {
-    let Some(token) = state.deflate.ordered_successor_pending_validation.take() else {
+    let token = state.deflate.ordered_successor_pending_validation.take();
+    if !accepted {
+        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
+        if let Some(token) = token {
+            tracing::warn!(
+                sequence = token.sequence,
+                queued_events = state.deflate.ordered_successor_events.len(),
+                rolled_back_effects,
+                "ordered server successor retained because final strict emit validation rejected it"
+            );
+        } else if rolled_back_effects {
+            tracing::warn!(
+                "direct ordered successor engine-facing effects rolled back after core dispatch failed before a validation token was staged"
+            );
+        }
+        return;
+    }
+
+    let Some(token) = token else {
+        if rollback_ordered_successor_effect_transaction(state) {
+            tracing::warn!(
+                "direct ordered successor engine-facing effects rolled back because no exact validation identity was staged"
+            );
+        }
         return;
     };
     let expected = token.sequence;
     if state.deflate.ordered_successor_next_sequence != Some(expected) {
+        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
         tracing::warn!(
             sequence = expected,
             active_sequence = state.deflate.ordered_successor_next_sequence.unwrap_or(0),
+            rolled_back_effects,
             "ordered server successor validation result ignored because the active fence changed"
         );
         return;
     }
-    if !accepted {
-        tracing::warn!(
-            sequence = expected,
-            queued_events = state.deflate.ordered_successor_events.len(),
-            "ordered server successor retained because final strict emit validation rejected it"
-        );
-        return;
-    }
 
-    if let Some(event) = state
+    let queued_identity = state
         .deflate
         .ordered_successor_events
         .iter()
         .find(|event| event.sequence == expected)
-    {
-        if event.server_origin_generation != token.server_origin_generation
-            || event.transport_payload_identity != token.transport_payload_identity
-        {
-            tracing::warn!(
-                sequence = expected,
-                queued_server_origin_generation = event.server_origin_generation,
-                validated_server_origin_generation = token.server_origin_generation,
-                "ordered server successor retained because validated token no longer matches raw queue identity"
-            );
-            return;
-        }
+        .map(|event| {
+            (
+                event.server_origin_generation,
+                event.server_origin_generation == token.server_origin_generation
+                    && event.transport_payload_identity == token.transport_payload_identity,
+            )
+        });
+    let Some((queued_server_origin_generation, queued_identity_matches)) = queued_identity else {
+        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
+        tracing::warn!(
+            sequence = expected,
+            validated_server_origin_generation = token.server_origin_generation,
+            rolled_back_effects,
+            "ordered server successor retained because its exact raw queue identity disappeared before final validation"
+        );
+        return;
+    };
+    if !queued_identity_matches {
+        let rolled_back_effects = rollback_ordered_successor_effect_transaction(state);
+        tracing::warn!(
+            sequence = expected,
+            queued_server_origin_generation,
+            validated_server_origin_generation = token.server_origin_generation,
+            rolled_back_effects,
+            "ordered server successor retained because validated token no longer matches raw queue identity"
+        );
+        return;
     }
+
+    let committed_effects = commit_ordered_successor_effect_transaction(state);
 
     let final_sequence = state
         .deflate
@@ -653,6 +831,7 @@ pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, 
         sequence = expected,
         final_sequence,
         remaining_queued_events = state.deflate.ordered_successor_events.len(),
+        committed_effects,
         "strict-validated server M committed ordered successor advancement"
     );
 }
@@ -725,6 +904,27 @@ fn translate_server_to_client_inner(
         &mut state.sequence.pending_client_to_server_packets,
         view.ack_sequence,
     );
+    if state.deflate.ordered_successor_next_sequence == Some(view.sequence) {
+        let exact_direct = exact_direct_semantic_source_payload(bytes, &view).is_some();
+        let transport_only = transport_identity::claim_server_frame_if_verified(&view).is_some();
+        let proven_noninflating_route = state.deflate.server_reassembly.is_none()
+            && (exact_direct
+                || (transport_only
+                    && view.payload_length == 0
+                    && view.trailing_payload_length == 0));
+        if state.deflate.server_zlib_inflater.is_some() && !proven_noninflating_route {
+            tracing::warn!(
+                sequence = view.sequence,
+                packetized_sequence = view.packetized_sequence,
+                trailing_payload_length = view.trailing_payload_length,
+                "ordered server successor retained because an existing persistent inflater cannot yet be rolled back after final validation"
+            );
+            return Ok(Emit::Drop);
+        }
+        // Transport truth above survives rejection. Everything below this
+        // boundary is speculative client-facing dispatch/finalization state.
+        begin_ordered_successor_effect_transaction(state, view.sequence)?;
+    }
     let pending_count_before = state.synthetic_area.pending_server_to_client_packets.len();
     let mut inbound = bytes.to_vec();
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
@@ -1042,6 +1242,17 @@ fn observe_verified_synthetic_server_m_packet(
 }
 
 fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
+    // A direct ordered successor is still only a reconstructed-message
+    // candidate until SessionTranslator's outer strict validator accepts the
+    // complete emit. Do not leak its speculative semantic state through the
+    // harness hint file; acceptance flushes the final body after the snapshot
+    // is discarded, while rejection restores the prior in-memory body.
+    if state.deflate.ordered_successor_effect_snapshot.is_some() {
+        tracing::trace!(
+            "quickbar item-refresh hint deferred behind ordered successor strict validation"
+        );
+        return;
+    }
     let Some(path) = state.quickbar_item_refresh_hint_path.clone() else {
         return;
     };
@@ -2183,10 +2394,37 @@ fn resolve_buffered_interleaved_server_packets_after_success(
     let fallbacks = std::mem::take(&mut reassembly.interleaved_packets);
     merge_ordered_server_successor_events(state, &events)?;
     let final_sequence = events.last().map(|event| event.sequence);
+    if let Some(active_sequence) = state.deflate.ordered_successor_next_sequence {
+        // A predecessor which is itself being retried under the ordered fence
+        // already owns this callback's validation token. Keep any nested raw
+        // successors queued for their own retransmission instead of trying to
+        // commit two independent reliable identities through one token.
+        if let Some(candidate_final) = final_sequence {
+            let current_final = state
+                .deflate
+                .ordered_successor_final_sequence
+                .unwrap_or(active_sequence);
+            state.deflate.ordered_successor_final_sequence = Some(
+                [current_final, candidate_final]
+                    .into_iter()
+                    .max_by_key(|sequence| sequence.wrapping_sub(active_sequence))
+                    .unwrap_or(candidate_final),
+            );
+        }
+        tracing::info!(
+            active_sequence,
+            queued_events = state.deflate.ordered_successor_events.len(),
+            "nested buffered server successors retained for separate ordered validation transactions"
+        );
+        return Ok(());
+    }
     let mut resolved = Vec::with_capacity(1);
     let next_distance = reassembly.expected_frames;
 
     for (event, _fallback) in events.into_iter().zip(fallbacks) {
+        let event_sequence = event.sequence;
+        let event_server_origin_generation = event.server_origin_generation;
+        let event_transport_payload_identity = event.transport_payload_identity.clone();
         let distance = event.sequence.wrapping_sub(reassembly.first_sequence) as usize;
         if distance != next_distance {
             arm_ordered_server_successor_fence(
@@ -2264,6 +2502,17 @@ fn resolve_buffered_interleaved_server_packets_after_success(
             break;
         }
 
+        // The first contiguous successor is emitted in the predecessor's
+        // reconstructed batch, just as the original receive window drains
+        // contiguous occupied slots. Keep its exact raw slot fenced until the
+        // *whole* batch passes the outer strict validator; rejection must be
+        // able to replay this event rather than only roll back its semantics.
+        arm_ordered_server_successor_fence(
+            state,
+            event_sequence,
+            final_sequence.unwrap_or(event_sequence),
+        );
+        begin_ordered_successor_effect_transaction(state, event_sequence)?;
         deferred_module_resources::capture_early_server_status_if_needed(
             &inbound,
             &view,
@@ -2274,17 +2523,16 @@ fn resolve_buffered_interleaved_server_packets_after_success(
         if let Some(verified) = replay_completed_direct_server_semantic_rewrite(
             &inbound,
             &view,
-            event.server_origin_generation,
+            event_server_origin_generation,
             state,
         )? {
+            stage_ordered_successor_validation_token(
+                state,
+                event_sequence,
+                event_server_origin_generation,
+                event_transport_payload_identity.clone(),
+            )?;
             resolved.push(verified);
-            if final_sequence.is_some_and(|last| last != event.sequence) {
-                arm_ordered_server_successor_fence(
-                    state,
-                    next_reliable_sequence(event.sequence),
-                    final_sequence.unwrap_or(event.sequence),
-                );
-            }
             break;
         }
 
@@ -2300,25 +2548,25 @@ fn resolve_buffered_interleaved_server_packets_after_success(
                 &inbound,
                 &view,
                 event.server_peer_ack_sequence,
-                event.server_origin_generation,
+                event_server_origin_generation,
                 rewrite,
+            )?;
+            stage_ordered_successor_validation_token(
+                state,
+                event_sequence,
+                event_server_origin_generation,
+                event_transport_payload_identity,
             )?;
             tracing::info!(
                 sequence = view.sequence,
                 proof = verified.proof.as_str(),
-                "buffered interleaved server M committed after typed predecessor"
+                "buffered interleaved server M staged after typed predecessor pending strict batch validation"
             );
             resolved.push(verified);
-            if final_sequence.is_some_and(|last| last != event.sequence) {
-                arm_ordered_server_successor_fence(
-                    state,
-                    next_reliable_sequence(event.sequence),
-                    final_sequence.unwrap_or(event.sequence),
-                );
-            }
             break;
         }
 
+        rollback_ordered_successor_effect_transaction(state);
         tracing::warn!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -2351,6 +2599,34 @@ fn arm_ordered_server_successor_fence(
         final_sequence,
         "ordered server successor fence armed for reliable retransmission"
     );
+}
+
+fn stage_ordered_successor_validation_token(
+    state: &mut SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+    transport_payload_identity: Vec<u8>,
+) -> anyhow::Result<()> {
+    if state.deflate.ordered_successor_pending_validation.is_some() {
+        anyhow::bail!(
+            "ordered successor validation token already active while staging sequence {}",
+            sequence
+        );
+    }
+    if state.deflate.ordered_successor_next_sequence != Some(sequence) {
+        anyhow::bail!(
+            "ordered successor validation token sequence {} does not match active fence {:?}",
+            sequence,
+            state.deflate.ordered_successor_next_sequence
+        );
+    }
+    state.deflate.ordered_successor_pending_validation =
+        Some(state::OrderedSuccessorValidationToken {
+            sequence,
+            server_origin_generation,
+            transport_payload_identity,
+        });
+    Ok(())
 }
 
 fn merge_ordered_server_successor_events(
@@ -3358,6 +3634,68 @@ mod tests {
     }
 
     #[test]
+    fn direct_ordered_successor_effects_are_atomic_at_final_validation() {
+        // Diamond `Login_GetWaypoint` has no body. A proven direct dispatch
+        // observes the semantic packet and queues one exact synthetic client
+        // response, which gives this transaction test independent semantic,
+        // packet-queue, sequence-shift, and replay-cache effects without a
+        // capture-specific fixture.
+        let payload = [0x70, 0x02, 0x0C];
+        let first = client_reliable_m_frame(46, 75, &payload);
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(31);
+        queue_ordered_successor_for_test(&mut state, &first);
+
+        let first_emit = translate_server_to_client(&first, &mut state)
+            .expect("ordered direct semantic successor");
+        assert!(!matches!(first_emit, Emit::Drop));
+        assert!(
+            state.deflate.ordered_successor_effect_snapshot.is_some(),
+            "engine-facing effects remain speculative until outer validation"
+        );
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
+        assert_eq!(
+            state.login_waypoint.last_server_get_waypoint_sequence,
+            Some(46)
+        );
+        assert_eq!(state.semantic.recent_events.len(), 1);
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+
+        finish_server_to_client_emit_validation(&mut state, false);
+
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert!(state.sequence.client_sequence_shifts.is_empty());
+        assert_eq!(state.sequence.latest_client_sequence_from_client, Some(31));
+        assert_eq!(state.login_waypoint.last_server_get_waypoint_sequence, None);
+        assert_eq!(state.login_waypoint.synthetic_empty_response_count, 0);
+        assert!(state.semantic.recent_events.is_empty());
+        assert!(state.direct_server_semantic_replays.completed.is_empty());
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(46));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+
+        let retry = client_reliable_m_frame(46, 76, &payload);
+        let retry_emit = translate_server_to_client(&retry, &mut state)
+            .expect("retained raw successor should replay the complete transaction");
+        assert!(!matches!(retry_emit, Emit::Drop));
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
+        assert_eq!(
+            state.login_waypoint.last_server_get_waypoint_sequence,
+            Some(46)
+        );
+        assert_eq!(state.login_waypoint.synthetic_empty_response_count, 1);
+        assert_eq!(state.semantic.recent_events.len(), 1);
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
+        assert!(state.deflate.ordered_successor_events.is_empty());
+    }
+
+    #[test]
     fn raw_ordered_successor_rejects_conflicting_retransmit_without_dequeue() {
         let expected_payload = crate::translate::loadbar::start_payload(2);
         let expected = client_reliable_m_frame(43, 75, &expected_payload);
@@ -3496,6 +3834,42 @@ mod tests {
         assert_eq!(
             translator.m_state.deflate.ordered_successor_events[0].packet,
             packet
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .len(),
+            1,
+            "strict rejection restores the due packet drained by speculative finalization"
+        );
+        assert!(translator.m_state.semantic.recent_events.is_empty());
+        assert!(
+            translator
+                .m_state
+                .direct_server_semantic_replays
+                .completed
+                .is_empty()
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_server_sequence_to_client, None,
+            "a rejected batch must not become an ACK source for later synthetic client packets"
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .direct_server_semantic_replays
+                .latest_origin_sequence,
+            Some(45),
+            "valid source reliable-window observation survives client-facing strict rejection"
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .ordered_successor_effect_snapshot
+                .is_none()
         );
     }
 
@@ -3744,6 +4118,10 @@ mod tests {
         assert!(state.synthetic_area.server_hold_gate.is_some());
         assert!(state.synthetic_area.pending_area_loaded.is_some());
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(52));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
+        assert!(state.deflate.ordered_successor_events.is_empty());
 
         translate_server_to_client(&client_reliable_m_frame(52, 77, area_payload), &mut state)
             .expect("post-commit Area retransmit should replay");
@@ -3766,6 +4144,8 @@ mod tests {
         let packets = proof_packets(
             translate_server_to_client(&second, &mut state).expect("complete predecessor"),
         );
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(57));
+        finish_server_to_client_emit_validation(&mut state, true);
 
         assert!(
             packets
@@ -3777,6 +4157,83 @@ mod tests {
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
         );
+    }
+
+    #[test]
+    fn buffered_direct_area_reject_restores_effects_and_retains_raw_retry() {
+        let predecessor = crate::translate::loadbar::start_payload(2);
+        let (first, second) = two_frame_deflated_window(58, 74, &predecessor);
+        let area_payload =
+            include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
+        let area = client_reliable_m_frame(60, 75, area_payload);
+        let mut state = SessionState::default();
+
+        assert!(matches!(
+            translate_server_to_client(&first, &mut state).expect("start predecessor"),
+            Emit::Consumed
+        ));
+        assert!(matches!(
+            translate_server_to_client(&area, &mut state).expect("buffer Area successor"),
+            Emit::Consumed
+        ));
+        let emitted = translate_server_to_client(&second, &mut state)
+            .expect("complete predecessor and stage Area successor");
+        assert!(!matches!(emitted, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(60));
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(60));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        assert_eq!(
+            state.area_context.latest_area_placeables.area_resref,
+            "voyage"
+        );
+        assert!(!state.sequence.server_sequence_shifts.is_empty());
+        assert!(state.synthetic_area.pending_area_loaded.is_some());
+        assert!(state.synthetic_area.server_hold_gate.is_some());
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+
+        finish_server_to_client_emit_validation(&mut state, false);
+
+        assert_eq!(pending_ordered_successor_sequence(&state), None);
+        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(60));
+        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.deflate.ordered_successor_events[0].packet, area);
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+        assert!(
+            state
+                .area_context
+                .latest_area_placeables
+                .area_resref
+                .is_empty()
+        );
+        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert!(state.synthetic_area.pending_area_loaded.is_none());
+        assert!(state.synthetic_area.server_hold_gate.is_none());
+        assert!(state.direct_server_semantic_replays.completed.is_empty());
+
+        let retry = client_reliable_m_frame(60, 76, area_payload);
+        let retry_emit = translate_server_to_client(&retry, &mut state)
+            .expect("retained Area successor should retry through full dispatcher");
+        assert!(!matches!(retry_emit, Emit::Drop));
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
+        assert!(state.deflate.ordered_successor_events.is_empty());
+        assert_eq!(state.semantic.area.client_area_packets, 1);
+        assert_eq!(
+            state.area_context.latest_area_placeables.area_resref,
+            "voyage"
+        );
+        assert!(!state.sequence.server_sequence_shifts.is_empty());
+        assert!(state.synthetic_area.pending_area_loaded.is_some());
+        assert!(state.synthetic_area.server_hold_gate.is_some());
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
     }
 
     #[test]
@@ -3959,6 +4416,7 @@ mod tests {
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
         );
+        finish_server_to_client_emit_validation(&mut state, true);
 
         let retried = proof_packets(
             translate_server_to_client(
@@ -6269,7 +6727,6 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         pre_shift_current_server_packets(state, &mut outputs)?;
         record_extra_deflated_output_sequence_shift(state, &reassembly, outputs.len())?;
     }
-    resolve_buffered_interleaved_server_packets_after_success(state, &mut reassembly)?;
     let response_last_sequence = reassembly
         .frames
         .last()
@@ -6299,6 +6756,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             },
         );
     }
+    // These are predecessor-owned effects. Commit both the inventory replay
+    // and exact completed-stream disposition before opening the first buffered
+    // successor transaction; rejection then rolls back only that successor,
+    // while retransmission can replay the already-advanced predecessor stream.
+    resolve_buffered_interleaved_server_packets_after_success(state, &mut reassembly)?;
     let interleaved_packets = reassembly.interleaved_packets;
 
     server_dispatch::log_deflated_semantic_rewrite(

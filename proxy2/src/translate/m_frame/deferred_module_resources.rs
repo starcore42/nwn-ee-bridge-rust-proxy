@@ -41,7 +41,7 @@ const MAX_SERVER_STATUS_STRING: usize = 4096;
 const MAX_FRAGMENT_TAIL_BYTES: usize = 64;
 const MODULE_RESOURCES_INSERTED_FRAME_COUNT: u16 = 1;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct DeferredModuleResourcesState {
     pending_status: Option<DeferredStatusPayload>,
     synthetic_without_status_emitted: bool,

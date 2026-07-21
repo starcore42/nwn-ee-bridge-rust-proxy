@@ -38,7 +38,10 @@ const MODULE_RESOURCES_FINAL_BITS: u8 = 4;
 
 use crate::nwsync::Advertisement;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Debug, Clone)]
 pub struct ModuleResourcesRewriteSummary {
@@ -70,6 +73,8 @@ pub struct ModuleResourceRuntime {
     nwsync_advertisement: Option<Advertisement>,
     observed_declaration: Arc<Mutex<Option<ObservedModuleResourceDeclaration>>>,
     observed_module_context: Arc<Mutex<Option<crate::translate::module::ObservedModuleContext>>>,
+    publish_observed_hak_order: bool,
+    speculative_hak_order_dirty: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +90,8 @@ impl ModuleResourceRuntime {
             nwsync_advertisement,
             observed_declaration: Arc::new(Mutex::new(None)),
             observed_module_context: Arc::new(Mutex::new(None)),
+            publish_observed_hak_order: true,
+            speculative_hak_order_dirty: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -100,6 +107,38 @@ impl ModuleResourceRuntime {
             nwsync_advertisement: self.nwsync_advertisement.clone(),
             observed_declaration: Arc::new(Mutex::new(None)),
             observed_module_context: Arc::new(Mutex::new(None)),
+            publish_observed_hak_order: true,
+            speculative_hak_order_dirty: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Fork session observations behind an emit-validation transaction.
+    ///
+    /// The ordinary `Clone` intentionally shares session observations through
+    /// `Arc`. A speculative translator instead needs private cells so a strict
+    /// rejection cannot publish Module_Info state to this or another session.
+    pub(crate) fn for_speculative_transaction(&self) -> Self {
+        Self {
+            profile_name: self.profile_name.clone(),
+            nwsync_advertisement: self.nwsync_advertisement.clone(),
+            observed_declaration: Arc::new(Mutex::new(self.observed_module_resource_declaration())),
+            observed_module_context: Arc::new(Mutex::new(self.observed_module_context())),
+            publish_observed_hak_order: false,
+            speculative_hak_order_dirty: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Publish observations only after the complete translated emit passed its
+    /// final strict owner. The private runtime remains the session's committed
+    /// runtime after this call.
+    pub(crate) fn commit_speculative_observations(&mut self) {
+        self.publish_observed_hak_order = true;
+        if self
+            .speculative_hak_order_dirty
+            .swap(false, Ordering::AcqRel)
+            && let Some(declaration) = self.observed_module_resource_declaration()
+        {
+            publish_hak_order_top_first(&declaration.hak_order_top_first);
         }
     }
 
@@ -130,18 +169,6 @@ impl ModuleResourceRuntime {
             return false;
         }
 
-        // Share the decompile-confirmed, server-provided HAK stack with
-        // resource-table helpers such as `baseitems.2da` lookup. Those helpers
-        // must follow the same observed Diamond/EE module order instead of an
-        // HG fallback profile whenever live Module_Info has already proved the
-        // active stack for this session.
-        crate::translate::baseitems::observe_hak_order_top_first(hak_order_top_first);
-        crate::translate::genericdoors::observe_hak_order_top_first(hak_order_top_first);
-        crate::translate::live_object_update::observe_visual_effect_hak_order_top_first(
-            hak_order_top_first,
-        );
-        crate::translate::placeables::observe_hak_order_top_first(hak_order_top_first);
-
         let Ok(mut observed) = self.observed_declaration.lock() else {
             return false;
         };
@@ -149,6 +176,18 @@ impl ModuleResourceRuntime {
             hak_order_top_first: hak_order_top_first.to_vec(),
             custom_tlk: custom_tlk.map(str::to_owned),
         });
+        // Share the decompile-confirmed, server-provided HAK stack with
+        // resource-table helpers such as `baseitems.2da` lookup. Those helpers
+        // must follow the same observed Diamond/EE module order instead of an
+        // HG fallback profile whenever live Module_Info has already proved the
+        // active stack for this session. A speculative runtime delays this
+        // process-wide publication until final emit validation commits.
+        if self.publish_observed_hak_order {
+            publish_hak_order_top_first(hak_order_top_first);
+        } else {
+            self.speculative_hak_order_dirty
+                .store(true, Ordering::Release);
+        }
         true
     }
 
@@ -181,8 +220,19 @@ impl Default for ModuleResourceRuntime {
             nwsync_advertisement: None,
             observed_declaration: Arc::new(Mutex::new(None)),
             observed_module_context: Arc::new(Mutex::new(None)),
+            publish_observed_hak_order: true,
+            speculative_hak_order_dirty: Arc::new(AtomicBool::new(false)),
         }
     }
+}
+
+fn publish_hak_order_top_first(hak_order_top_first: &[String]) {
+    crate::translate::baseitems::observe_hak_order_top_first(hak_order_top_first);
+    crate::translate::genericdoors::observe_hak_order_top_first(hak_order_top_first);
+    crate::translate::live_object_update::observe_visual_effect_hak_order_top_first(
+        hak_order_top_first,
+    );
+    crate::translate::placeables::observe_hak_order_top_first(hak_order_top_first);
 }
 
 struct ModuleResourceWriter {

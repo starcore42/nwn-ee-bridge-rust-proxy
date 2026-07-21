@@ -17,6 +17,63 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-21 ordered-successor final-validation transaction: the live gate used
+  `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
+  last written `2026-07-21T07:23:58.6405077+10:00` and about 5.65 hours old at
+  the `13:03+10:00` audit. No newer live proxy attempt exists. The capture
+  reached typed character selection, `Module_Loaded`, two native
+  `Area_AreaLoaded` messages, 76 exact live-object accepts, and 137.813 seconds
+  after the final area load, with 449 strict allows and zero route conflict,
+  quarantine, `BNDP`, ERROR, quarantine files, or stderr.
+
+  An exact raw ordered successor now opens a reversible client-facing state
+  transaction after source CRC, reliable-generation, and server-ACK truth have
+  been observed. Direct, transport-only, coalesced, and non-persistent
+  reassembly paths stage semantic/object state, synthetic queues and hold
+  gates, sequence shifts and emitted-window progress, direct/coalesced replay
+  caches, partial stream helpers, completed-route ledgers, module-resource
+  holds/context, and quickbar hint publication until the outer strict validator
+  accepts the complete emit. Rejection restores those effects while retaining
+  the exact raw packet; acceptance requires the same sequence, origin
+  generation, and immutable flags/payload identity before dequeue and fence
+  advancement. A newly arriving gap filler is first captured as the same raw
+  authority, so it can reject/retry without deadlocking the later suffix.
+
+  Module_Info observations use private per-transaction cells and publish the
+  observed HAK order only when that transaction both changed it and commits.
+  Buffered predecessor inventory and completed-stream replay effects are
+  recorded before the successor snapshot, preserving the already-advanced
+  predecessor inflater contract across a rejected combined batch. Reuse of an
+  already-live persistent inflater remains deliberately fail-closed because
+  `flate2::Decompress` cannot be cloned; this is the next transaction slice.
+
+  Diamond `sub_5F3940` (lines 751460-751763) and EE
+  `CNetLayerWindow::FrameReceive` (lines 878825-879146) prove type-0 reliable
+  ordering and contiguous drain through `0xFFFF -> 0`. EE
+  `ProcessReceivedFrames`/`FrameReceive` (lines 903612-903818) proves CRC before
+  receive-window mutation, while Diamond `sub_5F3FC0` (lines 752182-752453) and
+  EE `UnpacketizeFullMessages` (lines 914423-914649) prove complete packetized
+  storage before inflation. The proxy rollback is the bridge analogue of that
+  reader-success boundary, not a claim that the original engine cloned state.
+
+  The focused M-frame suite passes all 42 tests, including strict rejection,
+  exact retry, source gaps, packetized continuation ordering, and buffered Area
+  rollback; production `cargo check`, all 16 module-resource tests, the native
+  Release build, and the Rust Release build also pass.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-ordered-atomic-20260721-20260721-135202`
+  processed all 164 packet files with 304 strict allows, 143 generated ACK
+  controls, 97 exact live-object claims, 19 exact rewrites, ten Area rewrites,
+  and one stable 5,825-byte sealed-journal load. Strict/semantic quarantine,
+  quarantine files, rewrite failures, terminal residuals, output timeouts,
+  WARNs, ERRORs, and stderr were zero.
+
+  Remaining generalized gaps are: transactional reuse of an existing
+  persistent inflater; ordinary (non-ordered) and pending synthetic server
+  emits still drain/record window state before final strict validation; the
+  client lane still has frame-type-versus-sequence-zero assumptions to remove;
+  and coalesced immutable identity should exclude mutable nested transport
+  headers where decompile evidence permits ACK refresh.
 - 2026-07-21 completed-stream ACK-control lane repair and fresh live gate: the
   prior gameplay artifact crossed 24 hours, and the first refresh attempt at
   `C:\nwnbridge\codex-live-freshness-20260721-0706\harness-proxy-20260721-070535`

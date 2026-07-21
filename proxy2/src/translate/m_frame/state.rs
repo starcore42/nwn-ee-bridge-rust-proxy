@@ -28,6 +28,39 @@ pub(super) struct OrderedSuccessorValidationToken {
     pub(super) transport_payload_identity: Vec<u8>,
 }
 
+/// Reversible engine-facing state touched while an ordered raw reliable
+/// successor is being translated ahead of the outer strict emit decision.
+///
+/// Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` retain the raw
+/// reliable slot before dispatch, but the reconstructed message does not
+/// become gameplay truth until its reader succeeds. Keep transport ACK and
+/// reliable-generation bookkeeping live; only semantic observations and the
+/// proxy-owned packets/sequence intervals derived from them belong here.
+#[derive(Debug)]
+pub(super) struct OrderedSuccessorEffectSnapshot {
+    pub(super) server_reassembly: Option<ServerDeflatedReassembly>,
+    pub(super) completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
+    pub(super) completed_server_reliable_stream_slots:
+        Vec<super::reassembly::CompletedServerReliableStreamSlot>,
+    pub(super) server_zlib_stream_proxy_owned: bool,
+    pub(super) server_zlib_stream_owner: Option<ContinuationOwner>,
+    pub(super) server_zlib_stream_epoch: u64,
+    pub(super) discard_created_server_zlib_inflater_on_rollback: bool,
+    pub(super) coalesced_replay: CoalescedReplayState,
+    pub(super) quickbar: QuickbarStreamState,
+    pub(super) live_object: LiveObjectStreamState,
+    pub(super) sequence: SequenceState,
+    pub(super) direct_server_semantic_replays: DirectServerSemanticReplayState,
+    pub(super) login_waypoint: LoginWaypointState,
+    pub(super) inventory_equipment: InventoryEquipmentBridgeState,
+    pub(super) synthetic_area: SyntheticAreaState,
+    pub(super) deferred_module_resources: deferred_module_resources::DeferredModuleResourcesState,
+    pub(super) area_context: AreaContextState,
+    pub(super) module_resources: module_resources::ModuleResourceRuntime,
+    pub(super) semantic: semantic::SemanticSessionState,
+    pub(super) quickbar_item_refresh_hint_last_body: Option<String>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct DeflateState {
     pub(super) server_reassembly: Option<ServerDeflatedReassembly>,
@@ -53,10 +86,14 @@ pub(super) struct DeflateState {
     /// accepted by the outer strict validator. The active fence and raw event
     /// remain unchanged until validation commits this candidate.
     pub(super) ordered_successor_pending_validation: Option<OrderedSuccessorValidationToken>,
+    /// Speculative engine-facing effects for a direct ordered successor. The
+    /// outer strict callback discards this snapshot on accept and restores it
+    /// on rejection, so a retained raw slot cannot leak gameplay state.
+    pub(super) ordered_successor_effect_snapshot: Option<Box<OrderedSuccessorEffectSnapshot>>,
     pub(super) last_server_core_dispatch_accepted: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct CoalescedReplayState {
     pub(super) completed_deflated_records: Vec<CompletedCoalescedDeflatedRecord>,
     pub(super) completed_direct_records: Vec<CompletedCoalescedDirectRecord>,
@@ -92,17 +129,17 @@ pub(super) struct CompletedCoalescedDirectRecord {
     pub(super) abort_window_if_primary_consumed: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct QuickbarStreamState {
     pub(super) pending_stream: Option<quickbar_stream::PendingQuickbarStream>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct LiveObjectStreamState {
     pub(super) pending_stream: Option<live_stream::PendingLiveObjectStream>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct SequenceState {
     pub(super) latest_client_sequence_from_client: Option<u16>,
     pub(super) latest_client_ack_from_client: Option<u16>,
@@ -145,7 +182,7 @@ pub(super) struct CompletedDirectServerSemanticRewrite {
     pub(super) proof: VerifiedProof,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct DirectServerSemanticReplayState {
     /// Direct server `M` retransmissions are keyed by the reliable source slot
     /// and exact source gameplay bytes. ACK/header changes are transport state,
@@ -161,7 +198,7 @@ pub(super) struct ClientAckSessionState {
     pub(super) pending: client_ack::ClientAckState,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct LoginWaypointState {
     pub(super) last_server_get_waypoint_sequence: Option<u16>,
     pub(super) synthetic_empty_response_count: u32,
@@ -436,7 +473,7 @@ pub(super) struct InventoryEquipmentBridgeOutputDecision {
         Option<semantic::InventoryEquipmentClientGuiInventoryClaim>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_decision_state_update_index: Option<u64>,
     pub(super) last_queued_state_update_index: Option<u64>,
@@ -636,7 +673,7 @@ impl InventoryEquipmentBridgeState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct SyntheticAreaState {
     pub(super) pending_server_to_client_packets: Vec<synthetic_area::PendingServerPacket>,
     pub(super) pending_area_loaded: Option<synthetic_area::PendingAreaLoaded>,
@@ -666,7 +703,7 @@ pub(super) struct DeferredModuleResourcesSessionState {
     pub(super) pending: deferred_module_resources::DeferredModuleResourcesState,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct AreaContextState {
     pub(super) latest_area_placeables: area::AreaPlaceableContext,
 }
