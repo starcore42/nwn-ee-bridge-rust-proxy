@@ -19,7 +19,10 @@ use crate::{
 
 use super::transport_identity::SEND_WINDOW_BIT6_MASK;
 
-pub(super) const MAX_CLIENT_RELIABLE_SLOTS: usize = 64;
+/// Diamond initializes both reliable receive intervals with 16 slots at lines
+/// 750687-750694 and 750769-750775; EE does the same at lines 891083-891086 and
+/// 891172-891173.
+pub(super) const MAX_CLIENT_RELIABLE_SLOTS: usize = 16;
 const FRAME_SEND_OWNED_FLAG_MASK: u8 = 0x70;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +66,12 @@ pub(super) struct ClientReliableSlot {
 #[derive(Debug, Clone, Default)]
 pub(super) struct ClientReliableReplayState {
     pub(super) slots: VecDeque<ClientReliableSlot>,
-    pub(super) latest_origin_sequence: Option<u16>,
+    /// First source sequence in the circular half-open receive interval
+    /// `[receive_start, receive_start + 16)`. Isolated replay fixtures anchor
+    /// this on their first validated type-0 source.
+    pub(super) receive_start: Option<u16>,
+    /// Generation owning `receive_start`; an admitted slot after an in-window
+    /// `0xFFFF -> 0x0000` wrap belongs to the following generation.
     pub(super) origin_generation: u64,
     pub(super) exact_replays: u64,
 }
@@ -73,6 +81,7 @@ pub(super) enum PreparedClientReliableSource {
     Excluded,
     Pending(ClientReliableSlotKey),
     Conflict(ClientReliableSlotKey),
+    OutsideWindow(ClientReliableSlotKey),
     Replay {
         key: ClientReliableSlotKey,
         replay: ClientReliableTranslationReplay,
@@ -83,25 +92,20 @@ impl PreparedClientReliableSource {
     pub(super) fn key(&self) -> Option<ClientReliableSlotKey> {
         match self {
             Self::Excluded => None,
-            Self::Pending(key) | Self::Conflict(key) | Self::Replay { key, .. } => Some(*key),
+            Self::Pending(key)
+            | Self::Conflict(key)
+            | Self::OutsideWindow(key)
+            | Self::Replay { key, .. } => Some(*key),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct OriginGenerationObservation {
-    generation: u64,
-    latest_origin_sequence: u16,
-    origin_generation: u64,
-}
-
 /// Pin or match the immutable source identity before any semantic mutation.
 ///
-/// Diamond `sub_5F3940` lines 751460-751763 and EE
-/// `CNetLayerWindow::FrameReceive` lines 878825-879146 route only kind 0 into
-/// reliable-data storage and advance its cursor modulo `u16`. Controls are
-/// deliberately excluded from this ledger even when their sequence field is
-/// nonzero.
+/// Diamond `sub_5F3940` lines 751482-751549 and EE
+/// `CNetLayerWindow::FrameReceive` lines 878891-878952 admit kind 0 only inside
+/// the circular 16-slot interval and never replace an occupied slot. Controls
+/// are deliberately excluded even when their unused sequence field is nonzero.
 pub(super) fn prepare_source_slot(
     state: &mut ClientReliableReplayState,
     packet: &[u8],
@@ -112,40 +116,97 @@ pub(super) fn prepare_source_slot(
     }
 
     let transport_identity = transport_identity(packet, view)?;
-    let generation = preview_origin_generation(state, view.sequence);
+    let receive_start = *state.receive_start.get_or_insert(view.sequence);
+    let distance = view.sequence.wrapping_sub(receive_start) as usize;
     let key = ClientReliableSlotKey {
         lane: MFrameType::ReliableData,
         sequence: view.sequence,
-        origin_generation: generation.generation,
+        origin_generation: generation_for_sequence(state, receive_start, view.sequence, distance),
     };
+    if distance >= MAX_CLIENT_RELIABLE_SLOTS {
+        return Ok(PreparedClientReliableSource::OutsideWindow(key));
+    }
+
     let existing = state.slots.iter().find(|slot| slot.key == key).cloned();
     if let Some(existing) = existing {
         if existing.transport_identity != transport_identity {
             return Ok(PreparedClientReliableSource::Conflict(key));
         }
-        apply_origin_generation(state, generation);
         return Ok(match existing.replay {
             Some(replay) => PreparedClientReliableSource::Replay { key, replay },
             None => PreparedClientReliableSource::Pending(key),
         });
     }
 
-    apply_origin_generation(state, generation);
     state.slots.push_back(ClientReliableSlot {
         key,
         transport_identity,
         replay: None,
     });
-    while state.slots.len() > MAX_CLIENT_RELIABLE_SLOTS {
-        state.slots.pop_front();
-    }
+    debug_assert!(state.slots.len() <= MAX_CLIENT_RELIABLE_SLOTS);
     tracing::trace!(
         sequence = key.sequence,
         origin_generation = key.origin_generation,
+        receive_start,
         retained_slots = state.slots.len(),
-        "client reliable-data slot pinned to its first immutable transport identity"
+        "client reliable-data slot pinned inside the 16-frame receive window"
     );
     Ok(PreparedClientReliableSource::Pending(key))
+}
+
+/// Retire client source slots only after a Diamond-server ACK carrying this
+/// source-facing sequence has survived the outer strict emit validator.
+///
+/// Diamond lines 751677-751724 and EE lines 879090-879135 advance the send
+/// window cumulatively through the acknowledged sequence. Proxy-owned client
+/// sequence insertions/elisions must be removed by the caller before this
+/// boundary, so `ack_sequence` is expressed in the original EE source lane.
+pub(super) fn retire_through_server_ack(
+    state: &mut ClientReliableReplayState,
+    ack_sequence: u16,
+) -> usize {
+    let Some(receive_start) = state.receive_start else {
+        return 0;
+    };
+    let distance = ack_sequence.wrapping_sub(receive_start) as usize;
+    if distance >= MAX_CLIENT_RELIABLE_SLOTS {
+        return 0;
+    }
+    // The originals compare the cumulative ACK with the active send interval,
+    // not with the window's spare capacity. A future ACK inside the 16-slot
+    // allocation cannot advance across a source sequence that was never
+    // pinned (including a gap created by out-of-order UDP delivery).
+    if !(0..=distance).all(|offset| {
+        let sequence = receive_start.wrapping_add(offset as u16);
+        let generation = generation_for_sequence(state, receive_start, sequence, offset);
+        state
+            .slots
+            .iter()
+            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
+    }) {
+        return 0;
+    }
+
+    let before = state.slots.len();
+    state
+        .slots
+        .retain(|slot| slot.key.sequence.wrapping_sub(receive_start) as usize > distance);
+    let retired = before.saturating_sub(state.slots.len());
+    let next = ack_sequence.wrapping_add(1);
+    if next < receive_start {
+        state.origin_generation = state.origin_generation.saturating_add(1);
+    }
+    state.receive_start = Some(next);
+    tracing::trace!(
+        ack_sequence,
+        receive_start,
+        next_receive_start = next,
+        origin_generation = state.origin_generation,
+        retired_slots = retired,
+        retained_slots = state.slots.len(),
+        "strict-accepted Diamond ACK advanced the mirrored client receive window"
+    );
+    retired
 }
 
 pub(super) fn stage_translation(
@@ -237,56 +298,17 @@ fn transport_identity(
     })
 }
 
-fn preview_origin_generation(
+fn generation_for_sequence(
     state: &ClientReliableReplayState,
+    receive_start: u16,
     sequence: u16,
-) -> OriginGenerationObservation {
-    let Some(latest) = state.latest_origin_sequence else {
-        return OriginGenerationObservation {
-            generation: state.origin_generation,
-            latest_origin_sequence: sequence,
-            origin_generation: state.origin_generation,
-        };
-    };
-    if sequence == latest {
-        return OriginGenerationObservation {
-            generation: state.origin_generation,
-            latest_origin_sequence: latest,
-            origin_generation: state.origin_generation,
-        };
-    }
-
-    let forward_distance = sequence.wrapping_sub(latest);
-    if forward_distance < 0x8000 {
-        let origin_generation = if sequence < latest {
-            state.origin_generation.saturating_add(1)
-        } else {
-            state.origin_generation
-        };
-        OriginGenerationObservation {
-            generation: origin_generation,
-            latest_origin_sequence: sequence,
-            origin_generation,
-        }
-    } else if sequence > latest && state.origin_generation > 0 {
-        OriginGenerationObservation {
-            generation: state.origin_generation - 1,
-            latest_origin_sequence: latest,
-            origin_generation: state.origin_generation,
-        }
+    forward_distance: usize,
+) -> u64 {
+    if forward_distance < 0x8000 && sequence < receive_start {
+        state.origin_generation.saturating_add(1)
+    } else if forward_distance >= 0x8000 && sequence > receive_start {
+        state.origin_generation.saturating_sub(1)
     } else {
-        OriginGenerationObservation {
-            generation: state.origin_generation,
-            latest_origin_sequence: latest,
-            origin_generation: state.origin_generation,
-        }
+        state.origin_generation
     }
-}
-
-fn apply_origin_generation(
-    state: &mut ClientReliableReplayState,
-    observation: OriginGenerationObservation,
-) {
-    state.latest_origin_sequence = Some(observation.latest_origin_sequence);
-    state.origin_generation = observation.origin_generation;
 }

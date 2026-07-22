@@ -26,6 +26,7 @@ use crate::{
     },
 };
 
+mod ack_delivery;
 mod client_ack;
 mod client_filters;
 mod client_replay;
@@ -184,6 +185,82 @@ pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> anyhow
     Ok(emit)
 }
 
+pub(super) fn stage_direct_client_ack_delivery(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    ack_delivery::stage(
+        &mut state.ack_delivery,
+        ack_delivery::AckDeliveryOwner::DirectClient,
+        emit,
+    )
+}
+
+pub(super) fn stage_pending_client_ack_delivery(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    ack_delivery::stage(
+        &mut state.ack_delivery,
+        ack_delivery::AckDeliveryOwner::PendingClientDrain,
+        emit,
+    )
+}
+
+pub(super) fn stage_direct_server_ack_delivery(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    ack_delivery::stage(
+        &mut state.ack_delivery,
+        ack_delivery::AckDeliveryOwner::DirectServer,
+        emit,
+    )
+}
+
+pub(super) fn stage_pending_server_ack_delivery(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    ack_delivery::stage(
+        &mut state.ack_delivery,
+        ack_delivery::AckDeliveryOwner::PendingServerDrain,
+        emit,
+    )
+}
+
+fn finish_ack_delivery(
+    state: &mut SessionState,
+    owner: ack_delivery::AckDeliveryOwner,
+    accepted: bool,
+) {
+    let ack_sequences = ack_delivery::finish(&mut state.ack_delivery, owner, accepted);
+    if ack_sequences.is_empty() {
+        return;
+    }
+
+    let mut retired_slots = 0usize;
+    for ack_sequence in &ack_sequences {
+        retired_slots = retired_slots.saturating_add(if owner.acknowledges_server_sources() {
+            server_replay::retire_through_client_ack(
+                &mut state.server_reliable_slots,
+                *ack_sequence,
+            )
+        } else {
+            client_replay::retire_through_server_ack(
+                &mut state.client_reliable_replays,
+                *ack_sequence,
+            )
+        });
+    }
+    tracing::trace!(
+        owner = owner.as_str(),
+        ack_sequences = ?ack_sequences,
+        retired_slots,
+        "strict-accepted outgoing M batch committed destination-facing ACK delivery"
+    );
+}
+
 fn pending_server_drain_has_work(state: &SessionState, now: Instant) -> bool {
     client_ack::has_due_consumed_ee_only_ack(&state.client_ack.pending, now)
         || state
@@ -216,7 +293,12 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
             &state.deferred_module_resources.pending,
             view.ack_sequence,
         );
-    observe_client_window_state(state, &view);
+    let source_sequence_accepted = !matches!(
+        &prepared_source,
+        client_replay::PreparedClientReliableSource::Conflict(_)
+            | client_replay::PreparedClientReliableSource::OutsideWindow(_)
+    );
+    observe_client_window_state(state, &view, source_sequence_accepted);
     synthetic_area::observe_server_hold_gate_client_ack(
         &mut state.synthetic_area.server_hold_gate,
         view.ack_sequence,
@@ -232,6 +314,16 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
             origin_generation = key.origin_generation,
             ack_sequence = view.ack_sequence,
             "client M frame dropped because its reliable slot already committed different immutable transport bytes"
+        );
+        return Ok(Emit::Drop);
+    }
+    if let client_replay::PreparedClientReliableSource::OutsideWindow(key) = &prepared_source {
+        tracing::warn!(
+            sequence = key.sequence,
+            origin_generation = key.origin_generation,
+            ack_sequence = view.ack_sequence,
+            receive_start = state.client_reliable_replays.receive_start,
+            "client reliable datagram rejected outside the decompile-proven 16-frame receive window"
         );
         return Ok(Emit::Drop);
     }
@@ -661,6 +753,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     if state.client_emit_effect_snapshot.is_some()
         || state.client_emit_pending_validation.is_some()
         || state.pending_client_drain_effect_snapshot.is_some()
+        || state.ack_delivery.pending.is_some()
     {
         anyhow::bail!("client emit validation authority still active before server translation");
     }
@@ -939,6 +1032,7 @@ pub(super) fn begin_client_to_server_emit_validation(
     if state.client_emit_effect_snapshot.is_some()
         || state.client_emit_pending_validation.is_some()
         || state.pending_client_drain_effect_snapshot.is_some()
+        || state.ack_delivery.pending.is_some()
         || state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
         || state.deflate.ordered_successor_pending_validation.is_some()
@@ -952,15 +1046,17 @@ pub(super) fn begin_client_to_server_emit_validation(
     // disposition is rolled back for an exact retry.
     let prepared_source =
         client_replay::prepare_source_slot(&mut state.client_reliable_replays, bytes, &view)?;
+    let source_reliable_sequence = (view.frame_kind() == Some(MFrameType::ReliableData)
+        && !matches!(
+            &prepared_source,
+            client_replay::PreparedClientReliableSource::Conflict(_)
+                | client_replay::PreparedClientReliableSource::OutsideWindow(_)
+        ))
+    .then_some(view.sequence);
     let token = state::ClientEmitValidationToken {
-        source_reliable_sequence: (view.frame_kind() == Some(MFrameType::ReliableData))
-            .then_some(view.sequence),
+        source_reliable_sequence,
         source_origin_generation: prepared_source.key().map(|key| key.origin_generation),
         source_ack_sequence: view.ack_sequence,
-        server_origin_ack_sequence: unshift_ack_for_origin(
-            &state.sequence.server_sequence_shifts,
-            view.ack_sequence,
-        ),
     };
     let snapshot = capture_engine_facing_effect_snapshot(state);
     state.client_emit_effect_snapshot = Some(Box::new(snapshot));
@@ -978,6 +1074,7 @@ fn begin_pending_client_drain_effect_transaction(state: &mut SessionState) -> an
     if state.pending_client_drain_effect_snapshot.is_some()
         || state.client_emit_effect_snapshot.is_some()
         || state.client_emit_pending_validation.is_some()
+        || state.ack_delivery.pending.is_some()
         || state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
         || state.deflate.ordered_successor_pending_validation.is_some()
@@ -1015,6 +1112,15 @@ pub(super) fn finish_pending_client_drain_emit_validation(
     state: &mut SessionState,
     accepted: bool,
 ) {
+    finish_pending_client_drain_effect_validation(state, accepted);
+    finish_ack_delivery(
+        state,
+        ack_delivery::AckDeliveryOwner::PendingClientDrain,
+        accepted,
+    );
+}
+
+fn finish_pending_client_drain_effect_validation(state: &mut SessionState, accepted: bool) {
     if accepted {
         if commit_pending_client_drain_effect_transaction(state) {
             tracing::trace!(
@@ -1051,6 +1157,7 @@ fn ensure_pending_server_drain_can_start(state: &SessionState) -> anyhow::Result
         || state.client_emit_effect_snapshot.is_some()
         || state.client_emit_pending_validation.is_some()
         || state.pending_client_drain_effect_snapshot.is_some()
+        || state.ack_delivery.pending.is_some()
     {
         anyhow::bail!(
             "server emit validation authority already active before pending synthetic drain"
@@ -1159,6 +1266,15 @@ fn reapply_validated_client_source_transport(
 /// rejection because it belongs to the proxy-facing transport lane, not to the
 /// rejected legacy emit.
 pub(super) fn finish_client_to_server_emit_validation(state: &mut SessionState, accepted: bool) {
+    finish_client_to_server_effect_validation(state, accepted);
+    finish_ack_delivery(
+        state,
+        ack_delivery::AckDeliveryOwner::DirectClient,
+        accepted,
+    );
+}
+
+fn finish_client_to_server_effect_validation(state: &mut SessionState, accepted: bool) {
     let token = state.client_emit_pending_validation.take();
     let snapshot = state.client_emit_effect_snapshot.take();
     let has_token = token.is_some();
@@ -1176,17 +1292,11 @@ pub(super) fn finish_client_to_server_emit_validation(state: &mut SessionState, 
     };
 
     if accepted {
-        let retired_server_slots = server_replay::retire_through_client_ack(
-            &mut state.server_reliable_slots,
-            token.server_origin_ack_sequence,
-        );
         commit_engine_facing_effect_transaction(state);
         tracing::trace!(
             source_sequence = token.source_reliable_sequence,
             source_origin_generation = token.source_origin_generation,
             source_ack_sequence = token.source_ack_sequence,
-            server_origin_ack_sequence = token.server_origin_ack_sequence,
-            retired_server_slots,
             "strict-validated client M committed speculative engine-facing effects"
         );
         return;
@@ -1261,6 +1371,15 @@ fn commit_server_emit_effect_transaction(
 /// its inner translator returned plausible packets: the complete emitted shape
 /// must pass the final strict owner first.
 pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, accepted: bool) {
+    finish_server_to_client_effect_validation(state, accepted);
+    finish_ack_delivery(
+        state,
+        ack_delivery::AckDeliveryOwner::DirectServer,
+        accepted,
+    );
+}
+
+fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted: bool) {
     if state.deflate.server_emit_effect_transaction_kind
         == Some(state::ServerEmitEffectTransactionKind::PendingServerDrain)
     {
@@ -1422,6 +1541,15 @@ pub(super) fn finish_pending_server_drain_emit_validation(
     state: &mut SessionState,
     accepted: bool,
 ) {
+    finish_pending_server_drain_effect_validation(state, accepted);
+    finish_ack_delivery(
+        state,
+        ack_delivery::AckDeliveryOwner::PendingServerDrain,
+        accepted,
+    );
+}
+
+fn finish_pending_server_drain_effect_validation(state: &mut SessionState, accepted: bool) {
     let expected = state::ServerEmitEffectTransactionKind::PendingServerDrain;
     match state.deflate.server_emit_effect_transaction_kind {
         None if state.deflate.ordered_successor_effect_snapshot.is_none() => return,
@@ -2687,12 +2815,16 @@ fn observe_quickbar_stream_probe_from_rewrite(
     update_quickbar_item_refresh_hint(state);
 }
 
-fn observe_client_window_state(state: &mut SessionState, view: &MFrameView) {
+fn observe_client_window_state(
+    state: &mut SessionState,
+    view: &MFrameView,
+    source_sequence_accepted: bool,
+) {
     // Diamond `sub_5F3940` (751460-751763) and EE `FrameReceive`
     // (878825-879146) select the data lane from frame type and explicitly wrap
     // its cursor from FFFF to 0000. Controls never advance that cursor, even if
     // their otherwise-unused sequence field is nonzero.
-    if view.frame_kind() == Some(MFrameType::ReliableData) {
+    if source_sequence_accepted && view.frame_kind() == Some(MFrameType::ReliableData) {
         record_forward_progress(
             &mut state.sequence.latest_client_sequence_from_client,
             view.sequence,
@@ -6143,15 +6275,135 @@ mod tests {
         let client_ack = client_reliable_m_frame(1, 35, &[b'P', 0xFE, 0xFD]);
         begin_client_to_server_emit_validation(&mut state, &client_ack)
             .expect("begin rejected client ACK transaction");
+        let rejected_emit = translate_client_to_server(&client_ack, &mut state)
+            .expect("translate rejected client ACK candidate");
+        stage_direct_client_ack_delivery(&mut state, &rejected_emit)
+            .expect("stage rejected client ACK delivery");
         finish_client_to_server_emit_validation(&mut state, false);
         assert_eq!(state.server_reliable_slots.receive_start, Some(35));
         assert_eq!(state.server_reliable_slots.slots.len(), 1);
 
         begin_client_to_server_emit_validation(&mut state, &client_ack)
             .expect("begin accepted client ACK transaction");
+        let accepted_emit = translate_client_to_server(&client_ack, &mut state)
+            .expect("translate accepted client ACK candidate");
+        stage_direct_client_ack_delivery(&mut state, &accepted_emit)
+            .expect("stage accepted client ACK delivery");
         finish_client_to_server_emit_validation(&mut state, true);
         assert_eq!(state.server_reliable_slots.receive_start, Some(36));
         assert!(state.server_reliable_slots.slots.is_empty());
+    }
+
+    #[test]
+    fn consumed_client_output_does_not_deliver_its_source_ack() {
+        let server_source =
+            client_reliable_m_frame(35, 74, &crate::translate::loadbar::start_payload(2));
+        let server_view = MFrameView::parse(&server_source).expect("consumed ACK server slot");
+        let mut state = SessionState::default();
+        assert!(matches!(
+            server_replay::prepare_source_slot(
+                &mut state.server_reliable_slots,
+                &server_source,
+                &server_view,
+            )
+            .expect("pin consumed ACK server slot"),
+            server_replay::PreparedServerReliableSource::Pinned(_)
+        ));
+
+        stage_direct_client_ack_delivery(&mut state, &Emit::Consumed)
+            .expect("stage consumed client output");
+        finish_client_to_server_emit_validation(&mut state, true);
+
+        assert_eq!(state.server_reliable_slots.receive_start, Some(35));
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+    }
+
+    #[test]
+    fn foreign_validation_callback_preserves_pending_ack_delivery_owner() {
+        let client_source = client_reliable_m_frame(7, 30, &[0x70, 0x0D, 0x01, 0]);
+        let client_view = MFrameView::parse(&client_source).expect("pending-owner client slot");
+        let mut state = SessionState::default();
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &client_source,
+                &client_view,
+            )
+            .expect("pin pending-owner client slot"),
+            client_replay::PreparedClientReliableSource::Pending(_)
+        ));
+
+        let outgoing_ack = Emit::Packet(reliable_server_m_frame(0, 7, 0x10, 0, &[]));
+        stage_pending_server_ack_delivery(&mut state, &outgoing_ack)
+            .expect("stage pending-server ACK delivery");
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.client_reliable_replays.receive_start, Some(7));
+        assert_eq!(state.client_reliable_replays.slots.len(), 1);
+        assert!(matches!(
+            state
+                .ack_delivery
+                .pending
+                .as_ref()
+                .map(|pending| pending.owner),
+            Some(ack_delivery::AckDeliveryOwner::PendingServerDrain)
+        ));
+
+        finish_pending_server_drain_emit_validation(&mut state, true);
+        assert_eq!(state.client_reliable_replays.receive_start, Some(8));
+        assert!(state.client_reliable_replays.slots.is_empty());
+        assert!(state.ack_delivery.pending.is_none());
+    }
+
+    #[test]
+    fn client_receive_slots_retire_only_after_exact_server_ack_output_is_accepted() {
+        let mut state = SessionState::default();
+        for sequence in 7..=9 {
+            let packet = client_reliable_m_frame(sequence, 30, &[0x70, 0x0D, 0x01, 0]);
+            let view = MFrameView::parse(&packet).expect("client receive-window source");
+            assert!(matches!(
+                client_replay::prepare_source_slot(
+                    &mut state.client_reliable_replays,
+                    &packet,
+                    &view,
+                )
+                .expect("pin client receive-window source"),
+                client_replay::PreparedClientReliableSource::Pending(_)
+            ));
+        }
+        state
+            .sequence
+            .client_sequence_shifts
+            .push(SequenceShift { base: 7, delta: 2 });
+        state
+            .sequence
+            .client_sequence_elisions
+            .push(SequenceElision { sequence: 8 });
+
+        let server_ack = reliable_server_m_frame(0, 10, 0x10, 0, &[]);
+        let rejected_emit = translate_server_to_client(&server_ack, &mut state)
+            .expect("translate rejected server ACK candidate");
+        let rejected_packets = proof_packets(rejected_emit.clone());
+        assert_eq!(rejected_packets.len(), 1);
+        assert_eq!(
+            MFrameView::parse(&rejected_packets[0].1)
+                .expect("mapped server ACK output")
+                .ack_sequence,
+            9,
+            "outgoing ACK must be mapped back through client shifts and elisions"
+        );
+        stage_direct_server_ack_delivery(&mut state, &rejected_emit)
+            .expect("stage rejected server ACK delivery");
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(state.client_reliable_replays.receive_start, Some(7));
+        assert_eq!(state.client_reliable_replays.slots.len(), 3);
+
+        let accepted_emit = translate_server_to_client(&server_ack, &mut state)
+            .expect("translate accepted server ACK candidate");
+        stage_direct_server_ack_delivery(&mut state, &accepted_emit)
+            .expect("stage accepted server ACK delivery");
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.client_reliable_replays.receive_start, Some(10));
+        assert!(state.client_reliable_replays.slots.is_empty());
     }
 
     #[test]
@@ -6737,7 +6989,7 @@ mod tests {
     fn client_type_zero_sequence_zero_wraps_generation_and_replays_retransmit() {
         let mut state = SessionState::default();
         state.sequence.latest_client_sequence_from_client = Some(u16::MAX);
-        state.client_reliable_replays.latest_origin_sequence = Some(u16::MAX);
+        state.client_reliable_replays.receive_start = Some(u16::MAX);
         state
             .sequence
             .client_sequence_shifts
@@ -6759,7 +7011,7 @@ mod tests {
         assert_eq!(first_view.sequence, 1);
         assert!(first_view.crc_valid);
         assert_eq!(state.sequence.latest_client_sequence_from_client, Some(0));
-        assert_eq!(state.client_reliable_replays.origin_generation, 1);
+        assert_eq!(state.client_reliable_replays.origin_generation, 0);
         assert_eq!(
             state.client_reliable_replays.slots[0].key.origin_generation,
             1
@@ -6786,7 +7038,7 @@ mod tests {
     fn delayed_pre_wrap_client_slot_replays_from_previous_generation() {
         let mut state = SessionState::default();
         state.sequence.latest_client_sequence_from_client = Some(u16::MAX - 1);
-        state.client_reliable_replays.latest_origin_sequence = Some(u16::MAX - 1);
+        state.client_reliable_replays.receive_start = Some(u16::MAX - 1);
         let first_payload = client_gui_inventory::build_status_payload(
             client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
             true,
@@ -6813,7 +7065,15 @@ mod tests {
             .expect("post-wrap client slot"),
             Emit::Drop
         ));
-        assert_eq!(state.client_reliable_replays.origin_generation, 1);
+        assert_eq!(state.client_reliable_replays.origin_generation, 0);
+        assert_eq!(
+            state.client_reliable_replays.slots[0].key.origin_generation,
+            0
+        );
+        assert_eq!(
+            state.client_reliable_replays.slots[1].key.origin_generation,
+            1
+        );
         assert_eq!(state.client_reliable_replays.slots.len(), 2);
         assert_eq!(state.semantic.ui.inventory_packets, 2);
 
@@ -6829,10 +7089,10 @@ mod tests {
         let delayed_view = MFrameView::parse(&delayed_packet).expect("delayed replay view");
         assert_eq!(delayed_view.ack_sequence, 42);
         assert_eq!(&delayed_packet[8..], &first_packet[8..]);
-        assert_eq!(state.client_reliable_replays.origin_generation, 1);
+        assert_eq!(state.client_reliable_replays.origin_generation, 0);
         assert_eq!(
-            state.client_reliable_replays.latest_origin_sequence,
-            Some(0)
+            state.client_reliable_replays.receive_start,
+            Some(u16::MAX - 1)
         );
         assert_eq!(state.semantic.ui.inventory_packets, 2);
         assert_eq!(state.client_reliable_replays.exact_replays, 1);
@@ -7049,7 +7309,7 @@ mod tests {
     }
 
     #[test]
-    fn reliable_client_slot_window_is_bounded_for_sequence_reuse() {
+    fn reliable_client_slot_window_rejects_outside_without_evicting_live_slots() {
         let mut state = SessionState::default();
         let first = client_reliable_m_frame(7, 1, &[0x70, 0x0D, 0x01, 0]);
         let first_view = MFrameView::parse(&first).expect("first client reliable slot");
@@ -7071,7 +7331,7 @@ mod tests {
         )
         .expect("stage first client replay");
 
-        for index in 0..client_replay::MAX_CLIENT_RELIABLE_SLOTS {
+        for index in 0..(client_replay::MAX_CLIENT_RELIABLE_SLOTS - 1) {
             let packet =
                 client_reliable_m_frame(8u16.wrapping_add(index as u16), 2, &[index as u8]);
             let view = MFrameView::parse(&packet).expect("bounded client reliable slot");
@@ -7103,8 +7363,23 @@ mod tests {
                 .client_reliable_replays
                 .slots
                 .iter()
-                .all(|slot| slot.key != first_key),
-            "oldest reliable slot should leave the bounded receive ledger"
+                .any(|slot| slot.key == first_key)
+        );
+
+        let seventeenth = client_reliable_m_frame(23, 3, &[0xAA]);
+        let seventeenth_view = MFrameView::parse(&seventeenth).expect("17th client slot");
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &seventeenth,
+                &seventeenth_view,
+            )
+            .expect("classify 17th client slot"),
+            client_replay::PreparedClientReliableSource::OutsideWindow(_)
+        ));
+        assert_eq!(
+            state.client_reliable_replays.slots.len(),
+            client_replay::MAX_CLIENT_RELIABLE_SLOTS
         );
         assert!(matches!(
             client_replay::prepare_source_slot(
@@ -7112,9 +7387,106 @@ mod tests {
                 &first,
                 &first_view,
             )
-            .expect("reuse evicted client slot"),
+            .expect("exact live first slot"),
+            client_replay::PreparedClientReliableSource::Replay { .. }
+        ));
+
+        assert_eq!(
+            client_replay::retire_through_server_ack(&mut state.client_reliable_replays, 14,),
+            8
+        );
+        assert_eq!(state.client_reliable_replays.receive_start, Some(15));
+        assert_eq!(state.client_reliable_replays.slots.len(), 8);
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &first,
+                &first_view,
+            )
+            .expect("classify stale retired client slot"),
+            client_replay::PreparedClientReliableSource::OutsideWindow(_)
+        ));
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &seventeenth,
+                &seventeenth_view,
+            )
+            .expect("admit client slot after cumulative ACK"),
             client_replay::PreparedClientReliableSource::Pending(_)
         ));
+    }
+
+    #[test]
+    fn reliable_ack_cannot_advance_past_contiguous_pinned_frontier() {
+        let payload = &[0x70, 0x0D, 0x01, 0];
+        let mut client_state = client_replay::ClientReliableReplayState::default();
+        for sequence in [7, 9] {
+            let packet = client_reliable_m_frame(sequence, 30, payload);
+            let view = MFrameView::parse(&packet).expect("sparse client source");
+            assert!(matches!(
+                client_replay::prepare_source_slot(&mut client_state, &packet, &view)
+                    .expect("pin sparse client source"),
+                client_replay::PreparedClientReliableSource::Pending(_)
+            ));
+        }
+        assert_eq!(
+            client_replay::retire_through_server_ack(&mut client_state, 15),
+            0
+        );
+        assert_eq!(
+            client_replay::retire_through_server_ack(&mut client_state, 9),
+            0
+        );
+        assert_eq!(client_state.receive_start, Some(7));
+        assert_eq!(client_state.slots.len(), 2);
+        let client_gap = client_reliable_m_frame(8, 30, payload);
+        let client_gap_view = MFrameView::parse(&client_gap).expect("client gap source");
+        assert!(matches!(
+            client_replay::prepare_source_slot(&mut client_state, &client_gap, &client_gap_view,)
+                .expect("pin client gap source"),
+            client_replay::PreparedClientReliableSource::Pending(_)
+        ));
+        assert_eq!(
+            client_replay::retire_through_server_ack(&mut client_state, 9),
+            3
+        );
+        assert_eq!(client_state.receive_start, Some(10));
+        assert!(client_state.slots.is_empty());
+
+        let mut server_state = server_replay::ServerReliableSlotState::default();
+        for sequence in [40, 42] {
+            let packet = client_reliable_m_frame(sequence, 30, payload);
+            let view = MFrameView::parse(&packet).expect("sparse server source");
+            assert!(matches!(
+                server_replay::prepare_source_slot(&mut server_state, &packet, &view)
+                    .expect("pin sparse server source"),
+                server_replay::PreparedServerReliableSource::Pinned(_)
+            ));
+        }
+        assert_eq!(
+            server_replay::retire_through_client_ack(&mut server_state, 48),
+            0
+        );
+        assert_eq!(
+            server_replay::retire_through_client_ack(&mut server_state, 42),
+            0
+        );
+        assert_eq!(server_state.receive_start, Some(40));
+        assert_eq!(server_state.slots.len(), 2);
+        let server_gap = client_reliable_m_frame(41, 30, payload);
+        let server_gap_view = MFrameView::parse(&server_gap).expect("server gap source");
+        assert!(matches!(
+            server_replay::prepare_source_slot(&mut server_state, &server_gap, &server_gap_view)
+                .expect("pin server gap source"),
+            server_replay::PreparedServerReliableSource::Pinned(_)
+        ));
+        assert_eq!(
+            server_replay::retire_through_client_ack(&mut server_state, 42),
+            3
+        );
+        assert_eq!(server_state.receive_start, Some(43));
+        assert!(server_state.slots.is_empty());
     }
 
     #[test]
@@ -7926,6 +8298,19 @@ mod tests {
     #[test]
     fn pending_server_drain_reject_restores_ack_queue_semantics_and_window_state() {
         let mut translator = strict_session_translator_for_test();
+        for sequence in 40..=42 {
+            let packet = client_reliable_m_frame(sequence, 12, &[0x70, 0x0D, 0x01, 0]);
+            let view = MFrameView::parse(&packet).expect("pending ACK client slot");
+            assert!(matches!(
+                client_replay::prepare_source_slot(
+                    &mut translator.m_state.client_reliable_replays,
+                    &packet,
+                    &view,
+                )
+                .expect("pin pending ACK client slot"),
+                client_replay::PreparedClientReliableSource::Pending(_)
+            ));
+        }
         translator.m_state.sequence.latest_server_sequence_to_client = Some(12);
         translator
             .m_state
@@ -8021,6 +8406,11 @@ mod tests {
         assert_eq!(restored_ack.ack_sequence, original_ack.ack_sequence);
         assert_eq!(restored_ack.transmits, original_ack.transmits);
         assert_eq!(restored_ack.due_at, original_ack.due_at);
+        assert_eq!(
+            translator.m_state.client_reliable_replays.receive_start,
+            Some(40)
+        );
+        assert_eq!(translator.m_state.client_reliable_replays.slots.len(), 3);
 
         let rejected_invalid = translator
             .m_state
@@ -8066,11 +8456,29 @@ mod tests {
         assert_eq!(committed_ack.ack_sequence, 42);
         assert_eq!(committed_ack.transmits, 1);
         assert!(committed_ack.due_at > original_ack.due_at);
+        assert_eq!(
+            translator.m_state.client_reliable_replays.receive_start,
+            Some(43)
+        );
+        assert!(translator.m_state.client_reliable_replays.slots.is_empty());
     }
 
     #[test]
     fn pending_client_drain_validates_typed_batch_and_restores_on_reject() {
         let mut translator = strict_session_translator_for_test();
+        let server_source =
+            client_reliable_m_frame(74, 12, &crate::translate::loadbar::start_payload(2));
+        let server_view =
+            MFrameView::parse(&server_source).expect("pending client ACK server slot");
+        assert!(matches!(
+            server_replay::prepare_source_slot(
+                &mut translator.m_state.server_reliable_slots,
+                &server_source,
+                &server_view,
+            )
+            .expect("pin pending client ACK server slot"),
+            server_replay::PreparedServerReliableSource::Pinned(_)
+        ));
         let valid = client_reliable_m_frame(55, 74, &[0x70, 0x04, 0x03]);
         translator
             .m_state
@@ -8115,6 +8523,11 @@ mod tests {
             translator.m_state.sequence.pending_client_to_server_packets[1].reason,
             "pending client rollback invalid sibling"
         );
+        assert_eq!(
+            translator.m_state.server_reliable_slots.receive_start,
+            Some(74)
+        );
+        assert_eq!(translator.m_state.server_reliable_slots.slots.len(), 1);
 
         let invalid = translator
             .m_state
@@ -8140,6 +8553,11 @@ mod tests {
                 .pending_client_drain_effect_snapshot
                 .is_none()
         );
+        assert_eq!(
+            translator.m_state.server_reliable_slots.receive_start,
+            Some(75)
+        );
+        assert!(translator.m_state.server_reliable_slots.slots.is_empty());
 
         assert!(
             translator

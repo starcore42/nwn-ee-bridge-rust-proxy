@@ -148,6 +148,19 @@ pub(super) fn retire_through_client_ack(
     if distance >= MAX_SERVER_RELIABLE_SLOTS {
         return 0;
     }
+    // Diamond/EE bound cumulative ACK cleanup by the active send interval,
+    // not by unused capacity in the 16-slot allocation. Never advance over a
+    // source sequence the proxy has not actually pinned.
+    if !(0..=distance).all(|offset| {
+        let sequence = receive_start.wrapping_add(offset as u16);
+        let generation = generation_for_sequence(state, receive_start, sequence, offset);
+        state
+            .slots
+            .iter()
+            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
+    }) {
+        return 0;
+    }
 
     let before = state.slots.len();
     state

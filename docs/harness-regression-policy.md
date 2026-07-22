@@ -110,6 +110,20 @@ recorded 503 strict allows. Reliable conflicts, datagram/quarantine files,
 pre-seeded NWSync cache. This is current gameplay evidence and remains within
 the 24-hour gate until `2026-07-23T10:37:58.7634802+10:00`.
 
+The `2026-07-22T16:14:53+10:00` gate rechecked that artifact at 5 hours 36
+minutes 55 seconds old. No newer failed live attempt exists, so it remained the
+authoritative current gameplay capture and no fresh login was needed. Proxy2
+now mirrors both reliable type-0 receive lanes as 16-slot circular windows and
+retires only a contiguous pinned frontier after the exact destination-facing
+ACK batch passes its matching strict callback. Final strict replay
+`C:\nwnbridge\codex-proxy2-replay-client-window-final-20260722-170319`
+processed all 164 canonical gameplay packet files with 318 strict allows, 143
+generated ACK controls, 97 exact live-object claims, 19 exact rewrites, and ten
+Area rewrites. It recorded zero outside-window events, skipped packets, output
+timeouts, strict quarantine, quarantine files, warnings, errors, or stderr.
+The next transport verification target is mapped type-1 ACK-only output for a
+valid ACK carried by a consumed, held, conflicted, or outside-window payload.
+
 The `2026-07-22T13:13:58+10:00` gate rechecked that artifact at 2 hours 35
 minutes 59 seconds old, so no new HG login was required. Production now pins
 server type-0 sources before dispatch in the decompile-proven 16-slot circular

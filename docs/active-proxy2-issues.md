@@ -17,6 +17,52 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 client 16-slot receive window and destination-confirmed ACK
+  retirement: the `16:14:53+10:00` live gate rechecked
+  `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,
+  last written `2026-07-22T10:37:58.7634802+10:00` and 5 hours 36 minutes 55
+  seconds old. It remains qualifying gameplay evidence until
+  `2026-07-23T10:37:58.7634802+10:00`: typed `starcore-druid60`,
+  `Module_Loaded`, `Area_ClientArea`, one native `Area_AreaLoaded`, 88 exact
+  live-object accepts through 168.164 seconds post-area, 503 strict allows,
+  and zero reliable conflicts, quarantine, `BNDP`, ERROR, timeout, or stderr.
+  No newer failed live attempt exists, so no fresh HG login was required.
+
+  Client type-0 replay ownership now uses the original 16-slot circular
+  half-open interval instead of the unsupported 64-entry FIFO. It rejects
+  stale/outside input without evicting live replay identities, assigns exact
+  generations across modulo-u16 wrap, and advances only through a contiguous
+  current-generation pinned frontier. The same active-frontier guard now
+  protects the mirrored server ledger. ACK retirement is staged from the exact
+  final output batch for direct client/server traffic and both pending-drain
+  owners; only that owner's strict-accepted callback commits it. Consumed,
+  dropped, malformed, rejected, or foreign-owner output cannot retire a source
+  slot or destroy another owner's pending token. Diamond proof is at lines
+  750687-750694, 750769-750775, 751482-751549, 751605-751724; EE proof is at
+  878825-879135, 891083-891086, and 891172-891173. This transport-only slice
+  changes no CNW gameplay field/bit sequence, cursor, branch, nested-object or
+  string boundary, endian, signedness, scale, or gameplay payload bit.
+
+  Formatting, final test compilation, and all 77 root M-frame tests pass,
+  including direct/pending rejection, mapped shift/elision ACKs, control ACKs,
+  wrap, sparse/future ACKs, and foreign validation ownership. The bounded full
+  test executable did not finish inside five minutes and was terminated; no
+  test failure was reported before the bound. Final strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-window-final-20260722-170319`
+  processed all 164 packet files with 318 strict allows, 143 generated ACK
+  controls, 97 exact live-object claims, 19 exact rewrites, and ten Area
+  rewrites. It produced zero outside-window events, skipped server packets,
+  output timeouts, strict quarantine, quarantine files, warnings, errors, or
+  stderr.
+
+  Active next protocol issue: when a valid mapped ACK arrives on a source
+  frame whose payload is consumed, held, conflicted, or outside-window, emit an
+  exact type-1 ACK-only carrier to the destination and retire only after that
+  carrier passes strict validation. Diamond lines 751677-751724 and EE lines
+  879090-879135 prove ACK cleanup is independent of type-0 payload admission;
+  never retire directly from the inbound ACK. The separate external terminal
+  blocker still needs the deployed v2 writer and a unique sequence-95 door
+  `UseObject` capture.
 - 2026-07-22 server receive-window ownership and direct-reader atomicity: the
   `13:13:58+10:00` live gate rechecked
   `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,

@@ -405,6 +405,16 @@ impl SessionTranslator {
     pub fn take_pending_client_to_server_packets(&mut self) -> Vec<Vec<u8>> {
         match m_frame::take_pending_client_to_server_packets(&mut self.m_state) {
             Ok(emit) => {
+                if let Err(err) =
+                    m_frame::stage_pending_client_ack_delivery(&mut self.m_state, &emit)
+                {
+                    m_frame::finish_pending_client_drain_emit_validation(&mut self.m_state, false);
+                    tracing::warn!(
+                        error = %err,
+                        "pending client packet drain failed to stage exact outgoing ACK delivery"
+                    );
+                    return Vec::new();
+                }
                 let validated = self.validate_emit(Direction::ClientToServer, emit);
                 m_frame::finish_pending_client_drain_emit_validation(
                     &mut self.m_state,
@@ -432,6 +442,16 @@ impl SessionTranslator {
         }
         match m_frame::take_pending_server_to_client_packets(&mut self.m_state) {
             Ok(emit) => {
+                if let Err(err) =
+                    m_frame::stage_pending_server_ack_delivery(&mut self.m_state, &emit)
+                {
+                    m_frame::finish_pending_server_drain_emit_validation(&mut self.m_state, false);
+                    tracing::warn!(
+                        error = %err,
+                        "pending server packet drain failed to stage exact outgoing ACK delivery"
+                    );
+                    return packets;
+                }
                 let validated = self.validate_emit(Direction::ServerToClientSynthetic, emit);
                 m_frame::finish_pending_server_drain_emit_validation(
                     &mut self.m_state,
@@ -485,6 +505,28 @@ impl SessionTranslator {
                 return Emit::Drop;
             }
         };
+
+        let ack_delivery = if finish_client_m_validation {
+            m_frame::stage_direct_client_ack_delivery(&mut self.m_state, &emit)
+        } else if finish_server_m_validation {
+            m_frame::stage_direct_server_ack_delivery(&mut self.m_state, &emit)
+        } else {
+            Ok(())
+        };
+        if let Err(err) = ack_delivery {
+            tracing::warn!(
+                direction = direction.as_str(),
+                error = %err,
+                "translated M batch failed to stage exact outgoing ACK delivery"
+            );
+            if finish_server_m_validation {
+                m_frame::finish_server_to_client_emit_validation(&mut self.m_state, false);
+            }
+            if finish_client_m_validation {
+                m_frame::finish_client_to_server_emit_validation(&mut self.m_state, false);
+            }
+            return Emit::Drop;
+        }
 
         let validated = self.validate_emit(direction, emit);
         if finish_server_m_validation {

@@ -11,7 +11,7 @@ use crate::translate::{
 };
 
 use super::{
-    client_ack, client_replay, deferred_module_resources,
+    ack_delivery, client_ack, client_replay, deferred_module_resources,
     deflate::PersistentServerInflater,
     live_stream, quickbar_stream,
     reassembly::{
@@ -44,10 +44,6 @@ pub(super) struct ClientEmitValidationToken {
     /// wrapped successor of `0xFFFF`; absence exists only in optional state,
     /// while a validated wire ACK is always present.
     pub(super) source_ack_sequence: u16,
-    /// EE-facing server ACK mapped back across proxy-owned server sequence
-    /// insertions. Retire server source-window slots only if the complete
-    /// client emit carrying this ACK passes outer strict validation.
-    pub(super) server_origin_ack_sequence: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -768,6 +764,9 @@ pub struct SessionState {
     /// deliberately excluded from `EngineFacingEffectSnapshot`. A rejected
     /// CNW reader may retry the pinned bytes but cannot replace the slot.
     pub(super) server_reliable_slots: server_replay::ServerReliableSlotState,
+    /// ACK delivery is owned by the exact outgoing batch, independently of
+    /// whichever semantic/effect transaction produced that batch.
+    pub(super) ack_delivery: ack_delivery::AckDeliveryState,
     /// Client-originated translation runs before the outer strict emit owner.
     /// Keep its engine-facing effects reversible while the validated source
     /// transport sequence/ACK remain authoritative on rejection.
@@ -801,6 +800,7 @@ impl SessionState {
             sequence: SequenceState::default(),
             client_reliable_replays: client_replay::ClientReliableReplayState::default(),
             server_reliable_slots: server_replay::ServerReliableSlotState::default(),
+            ack_delivery: ack_delivery::AckDeliveryState::default(),
             client_emit_effect_snapshot: None,
             client_emit_pending_validation: None,
             pending_client_drain_effect_snapshot: None,
