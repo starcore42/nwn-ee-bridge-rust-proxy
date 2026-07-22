@@ -52,7 +52,9 @@ mod synthetic_area;
 mod transport_identity;
 mod zlib_zero_fill;
 
-use deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate};
+use deflate::deflate_zlib;
+#[cfg(test)]
+use deflate::looks_like_zlib_wrapped_deflate;
 use reassembly::{
     CompletedDeflatedReplay, CompletedDeflatedStreamWindowMatch,
     CompletedServerReliableStreamRoute, CompletedServerReliableStreamSlotMatch,
@@ -5271,6 +5273,211 @@ mod tests {
             state.semantic.recent_events.len(),
             baseline_semantic_events + 2
         );
+    }
+
+    #[test]
+    fn incomplete_raw_stream_salvage_probes_a_clone_and_commits_once() {
+        fn compress_stream_chunk(compressor: &mut flate2::Compress, payload: &[u8]) -> Vec<u8> {
+            let before_out = compressor.total_out();
+            let mut output = vec![0u8; payload.len().saturating_mul(2).saturating_add(128)];
+            compressor
+                .compress(payload, &mut output, flate2::FlushCompress::Sync)
+                .expect("persistent stream compression should succeed");
+            output.truncate((compressor.total_out() - before_out) as usize);
+            output
+        }
+
+        fn custom_token_payload(token_id: u32, value: &[u8]) -> Vec<u8> {
+            let declared = 3 + 4 + 4 + 4 + value.len();
+            let mut payload = vec![b'P', 0x32, 0x01];
+            payload.extend_from_slice(&(declared as u32).to_le_bytes());
+            payload.extend_from_slice(&token_id.to_le_bytes());
+            payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            payload.extend_from_slice(value);
+            payload.push(0x60);
+            payload
+        }
+
+        fn stream_frame(
+            sequence: u16,
+            ack_sequence: u16,
+            packetized_sequence: u16,
+            inflated: &[u8],
+            compressed: &[u8],
+        ) -> Vec<u8> {
+            let mut payload = (inflated.len() as u32).to_le_bytes().to_vec();
+            payload.extend_from_slice(compressed);
+            reliable_server_m_frame(sequence, ack_sequence, 0x0D, packetized_sequence, &payload)
+        }
+
+        // Make later chunks depend on the accepted first member's dictionary,
+        // so a fresh inflater cannot accidentally make this test pass.
+        let mut token_value = Vec::with_capacity(2048);
+        let mut random = 0x6D2B_79F5u32;
+        for _ in 0..2048 {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            token_value.push(random as u8);
+        }
+        let first_inflated = custom_token_payload(10, &token_value);
+        let salvaged_inflated = custom_token_payload(11, &token_value);
+        let following_inflated = custom_token_payload(12, &token_value);
+        let mut compressor = flate2::Compress::new(flate2::Compression::default(), true);
+        let first_compressed = compress_stream_chunk(&mut compressor, &first_inflated);
+        let salvaged_compressed = compress_stream_chunk(&mut compressor, &salvaged_inflated);
+        let following_compressed = compress_stream_chunk(&mut compressor, &following_inflated);
+        assert!(looks_like_zlib_wrapped_deflate(&first_compressed));
+        assert!(!looks_like_zlib_wrapped_deflate(&salvaged_compressed));
+        assert_ne!(
+            deflate::inflate_with_window(
+                &salvaged_compressed,
+                salvaged_inflated.len(),
+                false,
+                flate2::FlushDecompress::Sync,
+            )
+            .expect("fresh-window probe")
+            .as_deref(),
+            Some(salvaged_inflated.as_slice()),
+            "the salvage candidate must require the active persistent inflater"
+        );
+
+        let first = stream_frame(180, 80, 1, &first_inflated, &first_compressed);
+        // The source claims two packetized frames even though its first stored
+        // datagram already contains one complete history-dependent member.
+        let incomplete = stream_frame(181, 81, 2, &salvaged_inflated, &salvaged_compressed);
+        let following = stream_frame(182, 84, 1, &following_inflated, &following_compressed);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        let first_emit = translate_server_to_client(&first, &mut state)
+            .expect("first stream member should seed the persistent inflater");
+        assert!(!matches!(first_emit, Emit::Drop));
+        finish_server_to_client_emit_validation(&mut state, true);
+        let baseline_totals = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .map(|inflater| (inflater.total_in(), inflater.total_out()))
+            .expect("first member should leave a live persistent inflater");
+        let baseline_windows = state.deflate.completed_server_stream_windows.len();
+        let baseline_events = state.semantic.recent_events.len();
+
+        assert!(matches!(
+            translate_server_to_client(&incomplete, &mut state)
+                .expect("overdeclared stream member should remain pending"),
+            Emit::Consumed
+        ));
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(baseline_totals),
+            "buffering the incomplete member must not advance persistent history"
+        );
+        assert_eq!(
+            state
+                .deflate
+                .server_reassembly
+                .as_ref()
+                .map(|reassembly| (reassembly.frames.len(), reassembly.expected_frames)),
+            Some((1, 2))
+        );
+
+        let mut duplicate = incomplete.clone();
+        assert!(write_be_u16(&mut duplicate, 5, 82));
+        assert!(encode_legacy_m_crc(&mut duplicate));
+        let speculative_emit = translate_server_to_client(&duplicate, &mut state)
+            .expect("duplicate should salvage through a cloned inflater probe");
+        assert!(!matches!(speculative_emit, Emit::Drop | Emit::Consumed));
+        let advanced_totals = (
+            baseline_totals.0 + salvaged_compressed.len() as u64,
+            baseline_totals.1 + salvaged_inflated.len() as u64,
+        );
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(advanced_totals),
+            "the clone probe must not double-advance the working inflater"
+        );
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(
+            state.deflate.completed_server_stream_windows.len(),
+            baseline_windows + 1
+        );
+        assert_eq!(state.semantic.recent_events.len(), baseline_events + 1);
+
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(baseline_totals),
+            "strict rejection must restore the pre-salvage inflater"
+        );
+        assert_eq!(
+            state
+                .deflate
+                .server_reassembly
+                .as_ref()
+                .map(|reassembly| (reassembly.frames.len(), reassembly.expected_frames)),
+            Some((1, 2)),
+            "strict rejection must restore the still-incomplete source window"
+        );
+        assert_eq!(
+            state.deflate.completed_server_stream_windows.len(),
+            baseline_windows
+        );
+        assert_eq!(state.semantic.recent_events.len(), baseline_events);
+
+        let mut retry = incomplete.clone();
+        assert!(write_be_u16(&mut retry, 5, 83));
+        assert!(encode_legacy_m_crc(&mut retry));
+        let retry_emit = translate_server_to_client(&retry, &mut state)
+            .expect("exact retry should salvage from the restored inflater checkpoint");
+        assert!(!matches!(retry_emit, Emit::Drop | Emit::Consumed));
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(advanced_totals)
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some(advanced_totals),
+            "accepted salvage must commit exactly one real advancement"
+        );
+
+        let following_emit = translate_server_to_client(&following, &mut state)
+            .expect("following raw member should use the committed salvage history");
+        assert!(!matches!(following_emit, Emit::Drop));
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            Some((
+                advanced_totals.0 + following_compressed.len() as u64,
+                advanced_totals.1 + following_inflated.len() as u64,
+            ))
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
     }
 
     #[test]
@@ -10564,21 +10771,14 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
         .iter()
         .flat_map(|frame| frame.compressed_chunk.iter().copied())
         .collect::<Vec<_>>();
-    let stream_payload = reassembly.zlib_stream && !looks_like_zlib_wrapped_deflate(&compressed);
-    if stream_payload && state.deflate.server_zlib_inflater.is_some() {
-        tracing::debug!(
-            first_sequence = reassembly.first_sequence,
-            packetized_sequence = reassembly.packetized_sequence,
-            buffered_frames,
-            expected_frames,
-            compressed = compressed.len(),
-            reason,
-            "incomplete server deflated M salvage deferred: persistent zlib stream cannot be probed without mutating inflater state"
-        );
-        return Ok(None);
-    }
-
-    let mut probe_inflater = None;
+    // `PersistentServerInflater` is a deep-cloneable miniz state, including
+    // its dictionary and bit/Huffman cursor. Probe the incomplete candidate
+    // against an exact clone of the live stream so history-dependent raw
+    // continuations can be recognized without advancing committed state. The
+    // ordinary completion path below replays the bytes against the real
+    // inflater under the outer strict-validation transaction; that remains the
+    // only advancement which can commit.
+    let mut probe_inflater = state.deflate.server_zlib_inflater.clone();
     match reassembly::inflate_gameplay_payload(
         &compressed,
         reassembly.inflated_length,
