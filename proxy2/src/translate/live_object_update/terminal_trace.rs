@@ -141,6 +141,10 @@ pub(crate) fn format_live_object_update_terminal_tail9_handoff_capture(
             correlation.artifact_status.as_str().to_string(),
             "selection_status".to_string(),
             correlation.selection_status.as_str().to_string(),
+            "rewrite_scope".to_string(),
+            correlation.rewrite_scope.as_str().to_string(),
+            "source_handoff_authorized".to_string(),
+            correlation.exact_handoff.is_some().to_string(),
             "journal_artifact_count".to_string(),
             correlation.artifact_count.to_string(),
             "payload_match_count".to_string(),
@@ -1029,7 +1033,8 @@ mod tests {
         LiveObjectUpdateTerminalWriterHandoffVerdict,
         terminal_writer_trace::{
             TerminalWriterTraceArtifactStatus, TerminalWriterTraceCorrelation,
-            TerminalWriterTraceCursorEvidence, TerminalWriterTraceSelectionStatus,
+            TerminalWriterTraceCursorEvidence, TerminalWriterTraceRewriteScope,
+            TerminalWriterTraceSelectionStatus,
         },
     };
 
@@ -1058,6 +1063,7 @@ mod tests {
         let columns = terminal_writer_trace_identity_columns(&TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
             selection_status: TerminalWriterTraceSelectionStatus::UniquePayloadMatch,
+            rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
             artifact_count: 3,
             payload_match_count: 1,
             verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff,
@@ -1080,6 +1086,7 @@ mod tests {
         let columns = terminal_writer_trace_cursor_columns(&TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
             selection_status: TerminalWriterTraceSelectionStatus::UniquePayloadMatch,
+            rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
             artifact_count: 1,
             payload_match_count: 1,
             verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::NoTerminalFragmentWrites,

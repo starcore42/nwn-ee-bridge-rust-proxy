@@ -119,11 +119,29 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = config.terminal_writer_trace.clone() {
-        let summary =
-            translate::live_object_update::configure_terminal_writer_trace_path(path.clone())
-                .map_err(|reason| {
+        let (summary, rewrite_scope, proof_summary) = if let Some(proof_payload_path) =
+            config.terminal_writer_trace_proof_payload.as_deref()
+        {
+            let proof = translate::live_object_update::configure_terminal_writer_trace_proof_paths(
+                path.clone(),
+                proof_payload_path,
+            )
+            .map_err(|reason| {
+                anyhow::anyhow!(
+                    "terminal writer runtime proof journal={} payload={}: {reason}",
+                    path.display(),
+                    proof_payload_path.display()
+                )
+            })?;
+            (proof.journal.clone(), "exact-proof-payload", Some(proof))
+        } else {
+            let summary =
+                translate::live_object_update::configure_terminal_writer_trace_path(path.clone())
+                    .map_err(|reason| {
                     anyhow::anyhow!("terminal writer trace {}: {reason}", path.display())
                 })?;
+            (summary, "diagnostic-only", None)
+        };
         let output_dir = translate::diagnostics::probe_dump_dir().ok_or_else(|| {
             anyhow::anyhow!(
                 "--terminal-writer-trace requires a diagnostic output: use --packet-dump with --log, or set NWN_BRIDGE_QUARANTINE_DIR"
@@ -143,6 +161,14 @@ fn main() -> anyhow::Result<()> {
             trace_id_max = summary.trace_id_max,
             distinct_producer_component_count = summary.distinct_producer_component_count(),
             producer_reported_component_sha256 = %summary.producer_reported_component_sha256_csv(),
+            rewrite_scope,
+            authorized_proof_payload_path = ?config.terminal_writer_trace_proof_payload,
+            authorized_target_payload_bytes = ?proof_summary.as_ref().map(|proof| proof.target_payload_bytes),
+            authorized_source_record_offset = ?proof_summary.as_ref().and_then(|proof| proof.source_record_offset),
+            authorized_source_fragment_bit_start = ?proof_summary.as_ref().and_then(|proof| proof.source_fragment_bit_start),
+            authorized_source_fragment_bit_end = ?proof_summary.as_ref().and_then(|proof| proof.source_fragment_bit_end),
+            authorized_emitted_fragment_bit_start = ?proof_summary.as_ref().and_then(|proof| proof.emitted_fragment_bit_start),
+            authorized_emitted_fragment_bit_end = ?proof_summary.as_ref().and_then(|proof| proof.emitted_fragment_bit_end),
             "loaded bounded private terminal writer trace journal"
         );
     }

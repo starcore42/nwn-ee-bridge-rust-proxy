@@ -17,6 +17,52 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-23 exact runtime terminal-proof scope: the `04:55+10:00` live gate
+  rechecked
+  `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
+  last written `2026-07-22T20:00:34.0528616+10:00` and 8 hours 54 minutes 43
+  seconds old. It remains current gameplay evidence until `20:00:34+10:00`:
+  typed `starcore-druid60` reached `Module_Loaded`, two native
+  `Area_AreaLoaded` messages, and 78 exact live-object accepts through 137.818
+  seconds after final area completion. It recorded 514 strict allows and 54
+  ACK carriers with no drop, quarantine, error, timeout, conflict, or stderr;
+  no newer live attempt exists.
+
+  The strongest reference remains that live HG capture plus the stopped
+  controlled stock-Diamond v2 journal: the live payload identifies the real
+  failure contract and the journal proves lifecycle/shape, but only an HG-side
+  journal can prove the source writer for the failing interaction. Runtime
+  `--terminal-writer-trace` is now explicitly `diagnostic-only`. Supplying the
+  journal with `--terminal-writer-trace-proof-payload` makes startup reopen
+  both stopped files through deny-write snapshots and repeat the complete
+  unique-payload, typed-writer, two-sided-join, transactional-apply, and exact
+  final-validator proof before any socket is bound. A ready proof installs one
+  opaque authorization bound to the exact source bytes, derived cursor
+  requirement, and selected trace identity. Each candidate rechecks the owned
+  immutable journal plus the explicit scope and identity; byte-identical
+  reliable retransmits may reuse the proof, while every other exact journal
+  member stays diagnostic. The live harness now forwards both paths to the
+  long-lived proxy after its separate no-network preflight. No gameplay field,
+  BOOL/bit order, width, cursor, padding, boundary, or emitted byte changed.
+
+  The real 246-byte sequence-95 payload still has no match in the stock
+  three-artifact journal. Both proof preflight and normal runtime report
+  `terminal-proof-not-ready`; runtime exited 1 with no listener on the test
+  port. Structural preflight remains `status=loaded`. All 28 terminal-writer
+  tests (including inconsistent scope, cross-identity token reuse, a distinct
+  exact payload, and retransmits), formatting, `cargo check`, Rust/native
+  Release builds, PowerShell parsing, and diff checks pass. Canonical strict
+  replay at
+  `C:\nwnbridge\codex-proxy2-replay-terminal-runtime-scope-20260723-0455\replay-summary.json`
+  processed all 164 packet files (21 client, 144 server), retained 339 strict
+  allows, kept the journal stable, and produced zero strict/semantic
+  quarantine, quarantine files, terminal residuals, exact terminal rewrites,
+  warnings/errors, or stderr.
+
+  Next: deploy the existing v2 producer on the actual HG component, stop and
+  transfer its complete journal, rerun the exact sequence-95 proof until one
+  unique match reports `status=ready`, then live-confirm the same door
+  `UseObject` path before generalizing the terminal writer rule.
 - 2026-07-23 payload-aware terminal proof preflight: the `01:14+10:00` live
   gate rechecked
   `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
@@ -29,9 +75,10 @@ not as standalone workaround targets.
   login.
 
   The active writer-owner fix remains blocked on the stopped v2 journal from
-  the deployed HG component. Production now accepts
-  `--terminal-writer-trace-proof-payload <PATH>` only with terminal trace
-  preflight. It opens both journal and exact captured `P/05/01` payload through
+  the deployed HG component. This run added the no-network preflight form of
+  `--terminal-writer-trace-proof-payload <PATH>`; the newer entry above records
+  its subsequent exact runtime scope. Preflight opens both journal and exact
+  captured `P/05/01` payload through
   bounded Windows deny-write snapshots, then exercises the ordinary unique
   full-payload selector, opaque source token, typed EE residual-removal plan,
   two-sided proof join, transactional apply, and final exact validator on an

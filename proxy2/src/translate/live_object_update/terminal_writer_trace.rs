@@ -41,6 +41,21 @@ const WINDOWS_FILE_SHARE_READ: u32 = 0x0000_0001;
 static TERMINAL_WRITER_TRACE_JOURNAL: OnceLock<OwnedTerminalWriterTraceJournal> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TerminalWriterTraceRewriteScope {
+    DiagnosticOnly,
+    ExactProofPayload,
+}
+
+impl TerminalWriterTraceRewriteScope {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::DiagnosticOnly => "diagnostic-only",
+            Self::ExactProofPayload => "exact-proof-payload",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TerminalWriterTraceArtifactStatus {
     NotConfigured,
     ReadFailed,
@@ -88,6 +103,7 @@ impl TerminalWriterTraceSelectionStatus {
 pub(super) struct TerminalWriterTraceCorrelation {
     pub(super) artifact_status: TerminalWriterTraceArtifactStatus,
     pub(super) selection_status: TerminalWriterTraceSelectionStatus,
+    pub(super) rewrite_scope: TerminalWriterTraceRewriteScope,
     pub(super) artifact_count: usize,
     pub(super) payload_match_count: usize,
     pub(super) verdict: LiveObjectUpdateTerminalWriterHandoffVerdict,
@@ -176,6 +192,8 @@ struct TerminalWriterTraceIdentity {
 #[derive(Debug)]
 struct OwnedTerminalWriterTraceJournal {
     artifacts: Vec<OwnedTerminalWriterTraceArtifact>,
+    rewrite_scope: TerminalWriterTraceRewriteScope,
+    authorized_handoff: Option<ExactTerminalWriterHandoff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -480,9 +498,12 @@ struct ValidatedPacketLayout<'a> {
 }
 
 /// Configure and eagerly validate the private operator journal that terminal
-/// diagnostics may ingest. The loader first acquires a closed, deny-write
-/// snapshot, so a complete-looking prefix cannot become process-wide proof
-/// while the producer can still append a conflicting block or poison marker.
+/// diagnostics may ingest. Journal-only configuration is diagnostic: runtime
+/// token minting additionally requires one exact proof payload configured by
+/// `configure_terminal_writer_trace_proof_paths`. The loader first acquires a
+/// closed, deny-write snapshot, so a complete-looking prefix cannot become
+/// process-wide evidence while the producer can still append a conflicting
+/// block or poison marker.
 pub(crate) fn configure_terminal_writer_trace_path(
     path: PathBuf,
 ) -> Result<TerminalWriterTraceJournalSummary, &'static str> {
@@ -504,6 +525,43 @@ pub(crate) fn configure_terminal_writer_trace_path(
             .set(journal)
             .map_err(|_| "already-configured")?;
         Ok(summary)
+    }
+}
+
+/// Configure one runtime terminal rewrite scope from the same owned journal
+/// and exact payload snapshots used by proof preflight. The complete typed
+/// parser/writer/final-validator path must be ready before the journal is
+/// installed. Only byte-identical copies of `proof_payload_path` may mint the
+/// source handoff token afterward; other journal entries remain diagnostic.
+pub(crate) fn configure_terminal_writer_trace_proof_paths(
+    journal_path: PathBuf,
+    proof_payload_path: &Path,
+) -> Result<TerminalWriterTraceProofPreflightSummary, &'static str> {
+    #[cfg(not(windows))]
+    {
+        let _ = (journal_path, proof_payload_path);
+        return Err("immutable-snapshot-unsupported");
+    }
+
+    #[cfg(windows)]
+    {
+        if TERMINAL_WRITER_TRACE_JOURNAL.get().is_some() {
+            return Err("already-configured");
+        }
+        let (mut journal, evaluated) =
+            load_terminal_writer_trace_proof_pair(&journal_path, proof_payload_path)?;
+        if !evaluated.summary.ready() {
+            return Err("terminal-proof-not-ready");
+        }
+        let authorized_handoff = evaluated
+            .authorized_handoff
+            .ok_or("terminal-proof-authorization-unavailable")?;
+        journal.rewrite_scope = TerminalWriterTraceRewriteScope::ExactProofPayload;
+        journal.authorized_handoff = Some(authorized_handoff);
+        TERMINAL_WRITER_TRACE_JOURNAL
+            .set(journal)
+            .map_err(|_| "already-configured")?;
+        Ok(evaluated.summary)
     }
 }
 
@@ -550,113 +608,155 @@ pub(crate) fn preflight_terminal_writer_trace_proof_paths(
 
     #[cfg(windows)]
     {
-        let journal =
-            load_terminal_writer_trace_journal(journal_path).map_err(|status| status.as_str())?;
-        let journal_summary = journal.summary();
-        let source_payload = load_terminal_writer_trace_proof_payload(proof_payload_path)
-            .map_err(|status| status.as_str())?;
-        let mut candidate = source_payload.clone();
-        let mut observed_requirement = None;
-        let mut selection_status = "not-evaluated";
-        let mut payload_match_count = 0usize;
-        let mut writer_handoff_verdict = "terminal-requirement-unavailable";
-        let mut writer_handoff_observed = false;
+        load_terminal_writer_trace_proof_pair(journal_path, proof_payload_path)
+            .map(|(_, evaluated)| evaluated.summary)
+    }
+}
 
-        let attempt =
-            super::rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
-                &mut candidate,
-                None,
-                super::LiveObjectUpdateDiagnostics::Suppressed,
-                |requirement, exact_source_payload| {
-                    observed_requirement = Some(requirement);
-                    let correlation = correlate_loaded_terminal_writer_trace_journal(
-                        requirement,
-                        exact_source_payload,
-                        &journal,
-                    );
-                    selection_status = correlation.selection_status.as_str();
-                    payload_match_count = correlation.payload_match_count;
-                    writer_handoff_verdict = correlation.verdict.as_str();
-                    writer_handoff_observed = correlation.verdict.writer_handoff_observed();
-                    correlation.exact_handoff
-                },
-            );
+#[cfg(windows)]
+struct EvaluatedTerminalWriterTraceProof {
+    summary: TerminalWriterTraceProofPreflightSummary,
+    authorized_handoff: Option<ExactTerminalWriterHandoff>,
+}
 
-        let terminal_exact_writer_rewrites = attempt
-            .summary
-            .as_ref()
-            .map_or(0, |summary| summary.terminal_exact_writer_rewrites);
-        let proof_join_ready = terminal_exact_writer_rewrites == 1
-            && attempt.failure.is_none()
-            && writer_handoff_observed;
-        let exact_final_claim_accepted =
-            proof_join_ready && super::claim_payload_if_verified(&candidate).is_some();
-        let candidate_layout = exact_final_claim_accepted
-            .then(|| validated_packet_layout(&candidate))
-            .flatten();
-        let exact_final_validator_accepted =
-            exact_final_claim_accepted && candidate_layout.is_some();
+#[cfg(windows)]
+fn load_terminal_writer_trace_proof_pair(
+    journal_path: &Path,
+    proof_payload_path: &Path,
+) -> Result<
+    (
+        OwnedTerminalWriterTraceJournal,
+        EvaluatedTerminalWriterTraceProof,
+    ),
+    &'static str,
+> {
+    let journal =
+        load_terminal_writer_trace_journal(journal_path).map_err(|status| status.as_str())?;
+    let source_payload = load_terminal_writer_trace_proof_payload(proof_payload_path)
+        .map_err(|status| status.as_str())?;
+    let evaluated = evaluate_loaded_terminal_writer_trace_proof(&journal, &source_payload);
+    Ok((journal, evaluated))
+}
 
-        let (
-            source_record_offset,
-            source_read_buffer_cursor,
-            source_read_buffer_end,
-            source_fragment_bit_start,
-            source_fragment_bit_end,
-            source_fragment_bit_count,
-            emitted_read_buffer_cursor,
-            emitted_read_buffer_end,
-            emitted_fragment_bit_start,
-            emitted_fragment_bit_end,
-            emitted_fragment_bit_count,
-        ) = observed_requirement.map_or(
-            (
-                None, None, None, None, None, None, None, None, None, None, None,
-            ),
-            |requirement| {
-                (
-                    Some(requirement.source_record_offset),
-                    Some(requirement.source_read_buffer_cursor),
-                    Some(requirement.source_read_buffer_end),
-                    Some(requirement.source_fragment_bits.bit_start),
-                    Some(requirement.source_fragment_bits.bit_end),
-                    Some(requirement.source_fragment_bits.bit_count),
-                    Some(requirement.emitted_read_buffer_cursor),
-                    Some(requirement.emitted_read_buffer_end),
-                    Some(requirement.emitted_fragment_bit_start),
-                    Some(requirement.emitted_fragment_bit_end),
-                    Some(requirement.emitted_fragment_bit_count),
-                )
+#[cfg(windows)]
+fn evaluate_loaded_terminal_writer_trace_proof(
+    journal: &OwnedTerminalWriterTraceJournal,
+    source_payload: &[u8],
+) -> EvaluatedTerminalWriterTraceProof {
+    // Suppress the entire evaluation, including the independent final exact
+    // claim below. The inner translator enters a nested guard of its own; the
+    // outer guard prevents later validation steps from escaping the CLI's
+    // one-row, payload-free preflight contract.
+    let _debug_output_suppression = super::LiveObjectDebugOutputSuppressionGuard::enter();
+    let journal_summary = journal.summary();
+    let mut candidate = source_payload.to_vec();
+    let mut observed_requirement = None;
+    let mut selection_status = "not-evaluated";
+    let mut payload_match_count = 0usize;
+    let mut writer_handoff_verdict = "terminal-requirement-unavailable";
+    let mut writer_handoff_observed = false;
+    let mut authorized_handoff = None;
+
+    let attempt =
+        super::rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+            &mut candidate,
+            None,
+            super::LiveObjectUpdateDiagnostics::Suppressed,
+            |requirement, exact_source_payload| {
+                observed_requirement = Some(requirement);
+                let correlation = correlate_loaded_terminal_writer_trace_journal(
+                    requirement,
+                    exact_source_payload,
+                    journal,
+                );
+                selection_status = correlation.selection_status.as_str();
+                payload_match_count = correlation.payload_match_count;
+                writer_handoff_verdict = correlation.verdict.as_str();
+                writer_handoff_observed = correlation.verdict.writer_handoff_observed();
+                authorized_handoff = correlation.exact_handoff.clone();
+                correlation.exact_handoff
             },
         );
 
-        Ok(TerminalWriterTraceProofPreflightSummary {
-            journal: journal_summary,
-            target_payload_bytes: source_payload.len(),
-            terminal_requirement_observed: observed_requirement.is_some(),
-            selection_status,
-            payload_match_count,
-            writer_handoff_verdict,
-            writer_handoff_observed,
-            source_record_offset,
-            source_read_buffer_cursor,
-            source_read_buffer_end,
-            source_fragment_bit_start,
-            source_fragment_bit_end,
-            source_fragment_bit_count,
-            emitted_read_buffer_cursor,
-            emitted_read_buffer_end,
-            emitted_fragment_bit_start,
-            emitted_fragment_bit_end,
-            emitted_fragment_bit_count,
-            proof_join_ready,
-            exact_final_validator_accepted,
-            candidate_payload_bytes: exact_final_validator_accepted.then_some(candidate.len()),
-            candidate_fragment_bit_end: candidate_layout.map(|layout| layout.fragment_valid_bits),
-            candidate_fragment_final_bits: candidate_layout
-                .map(|layout| (layout.fragment_valid_bits % 8) as u8),
-            terminal_exact_writer_rewrites,
-        })
+    let terminal_exact_writer_rewrites = attempt
+        .summary
+        .as_ref()
+        .map_or(0, |summary| summary.terminal_exact_writer_rewrites);
+    let proof_join_ready =
+        terminal_exact_writer_rewrites == 1 && attempt.failure.is_none() && writer_handoff_observed;
+    let exact_final_claim_accepted =
+        proof_join_ready && super::claim_payload_if_verified(&candidate).is_some();
+    let candidate_layout = exact_final_claim_accepted
+        .then(|| validated_packet_layout(&candidate))
+        .flatten();
+    let exact_final_validator_accepted = exact_final_claim_accepted && candidate_layout.is_some();
+
+    let (
+        source_record_offset,
+        source_read_buffer_cursor,
+        source_read_buffer_end,
+        source_fragment_bit_start,
+        source_fragment_bit_end,
+        source_fragment_bit_count,
+        emitted_read_buffer_cursor,
+        emitted_read_buffer_end,
+        emitted_fragment_bit_start,
+        emitted_fragment_bit_end,
+        emitted_fragment_bit_count,
+    ) = observed_requirement.map_or(
+        (
+            None, None, None, None, None, None, None, None, None, None, None,
+        ),
+        |requirement| {
+            (
+                Some(requirement.source_record_offset),
+                Some(requirement.source_read_buffer_cursor),
+                Some(requirement.source_read_buffer_end),
+                Some(requirement.source_fragment_bits.bit_start),
+                Some(requirement.source_fragment_bits.bit_end),
+                Some(requirement.source_fragment_bits.bit_count),
+                Some(requirement.emitted_read_buffer_cursor),
+                Some(requirement.emitted_read_buffer_end),
+                Some(requirement.emitted_fragment_bit_start),
+                Some(requirement.emitted_fragment_bit_end),
+                Some(requirement.emitted_fragment_bit_count),
+            )
+        },
+    );
+
+    let summary = TerminalWriterTraceProofPreflightSummary {
+        journal: journal_summary,
+        target_payload_bytes: source_payload.len(),
+        terminal_requirement_observed: observed_requirement.is_some(),
+        selection_status,
+        payload_match_count,
+        writer_handoff_verdict,
+        writer_handoff_observed,
+        source_record_offset,
+        source_read_buffer_cursor,
+        source_read_buffer_end,
+        source_fragment_bit_start,
+        source_fragment_bit_end,
+        source_fragment_bit_count,
+        emitted_read_buffer_cursor,
+        emitted_read_buffer_end,
+        emitted_fragment_bit_start,
+        emitted_fragment_bit_end,
+        emitted_fragment_bit_count,
+        proof_join_ready,
+        exact_final_validator_accepted,
+        candidate_payload_bytes: exact_final_validator_accepted.then_some(candidate.len()),
+        candidate_fragment_bit_end: candidate_layout.map(|layout| layout.fragment_valid_bits),
+        candidate_fragment_final_bits: candidate_layout
+            .map(|layout| (layout.fragment_valid_bits % 8) as u8),
+        terminal_exact_writer_rewrites,
+    };
+    if !summary.ready() {
+        authorized_handoff = None;
+    }
+    EvaluatedTerminalWriterTraceProof {
+        summary,
+        authorized_handoff,
     }
 }
 
@@ -701,9 +801,11 @@ pub(crate) fn terminal_writer_trace_configured() -> bool {
 }
 
 /// Correlate the configured operator journal inside this sealed module.
-/// Loading is bounded and happens at most once. A source token is minted only
-/// after a unique complete-payload selection also reaches exact requirement
-/// correlation. Even that result remains diagnostic:
+/// Loading is bounded and happens at most once. Journal correlation remains
+/// diagnostic unless startup installed one opaque handoff produced by the
+/// complete exact-payload proof. Runtime then reruns unique full-payload and
+/// exact-requirement correlation, but returns only that startup-issued token.
+/// Even the source token cannot authorize an EE rewrite by itself:
 /// `ExactObservedHandoff::allows_exact_claim()` is false.
 pub(super) fn correlate_terminal_writer_trace(
     requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
@@ -713,6 +815,7 @@ pub(super) fn correlate_terminal_writer_trace(
         return TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::NotConfigured,
             selection_status: TerminalWriterTraceSelectionStatus::NotConfigured,
+            rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
             artifact_count: 0,
             payload_match_count: 0,
             verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace,
@@ -723,7 +826,31 @@ pub(super) fn correlate_terminal_writer_trace(
             exact_handoff: None,
         };
     };
-    correlate_loaded_terminal_writer_trace_journal(requirement, quarantined_payload, journal)
+    correlate_runtime_terminal_writer_trace_journal(requirement, quarantined_payload, journal)
+}
+
+fn correlate_runtime_terminal_writer_trace_journal(
+    requirement: LiveObjectUpdateTerminalWriterHandoffRequirement,
+    quarantined_payload: &[u8],
+    journal: &OwnedTerminalWriterTraceJournal,
+) -> TerminalWriterTraceCorrelation {
+    let mut correlation =
+        correlate_loaded_terminal_writer_trace_journal(requirement, quarantined_payload, journal);
+    correlation.rewrite_scope = journal.rewrite_scope;
+    let current_trace_identity = correlation
+        .exact_handoff
+        .as_ref()
+        .map(|handoff| handoff.identity);
+    correlation.exact_handoff = (journal.rewrite_scope
+        == TerminalWriterTraceRewriteScope::ExactProofPayload)
+        .then(|| journal.authorized_handoff.as_ref())
+        .flatten()
+        .filter(|handoff| {
+            Some(handoff.identity) == current_trace_identity
+                && handoff.matches(requirement, quarantined_payload)
+        })
+        .cloned();
+    correlation
 }
 
 fn correlate_loaded_terminal_writer_trace_journal(
@@ -742,6 +869,7 @@ fn correlate_loaded_terminal_writer_trace_journal(
         return TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
             selection_status: TerminalWriterTraceSelectionStatus::NoPayloadMatch,
+            rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
             artifact_count,
             payload_match_count,
             verdict: if requirement.source_contract_is_valid() {
@@ -760,6 +888,7 @@ fn correlate_loaded_terminal_writer_trace_journal(
         return TerminalWriterTraceCorrelation {
             artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
             selection_status: TerminalWriterTraceSelectionStatus::AmbiguousPayloadMatch,
+            rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
             artifact_count,
             payload_match_count,
             verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace,
@@ -798,6 +927,7 @@ fn correlate_loaded_terminal_writer_trace(
     TerminalWriterTraceCorrelation {
         artifact_status: TerminalWriterTraceArtifactStatus::Loaded,
         selection_status: TerminalWriterTraceSelectionStatus::UniquePayloadMatch,
+        rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
         artifact_count: 1,
         payload_match_count: 1,
         verdict,
@@ -902,7 +1032,11 @@ fn parse_terminal_writer_trace_journal(text: &str) -> Option<OwnedTerminalWriter
         }
         artifacts.push(artifact);
     }
-    (!artifacts.is_empty()).then_some(OwnedTerminalWriterTraceJournal { artifacts })
+    (!artifacts.is_empty()).then_some(OwnedTerminalWriterTraceJournal {
+        artifacts,
+        rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
+        authorized_handoff: None,
+    })
 }
 
 fn terminal_writer_trace_artifact_is_structurally_valid(
@@ -1979,6 +2113,193 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn runtime_scope_authorizes_only_the_startup_proven_payload() {
+        let (source_a, record_offset) = coherent_payload();
+        let mut source_b = source_a.clone();
+        let final_byte = source_b
+            .last_mut()
+            .expect("coherent payload has one final fragment byte");
+        *final_byte ^= 0x01;
+        let journal_text = format!(
+            "{}{}",
+            artifact_text(&source_a, record_offset),
+            artifact_text_for_identity(
+                &source_b,
+                record_offset,
+                TerminalWriterTraceIdentity {
+                    trace_id: 18,
+                    message_id: 0x0000_0000_1234_ABCE,
+                    component_sha256: [0xB6; 32],
+                },
+            )
+        );
+        let mut journal = parse_terminal_writer_trace_journal(&journal_text)
+            .expect("two distinct structurally sealed payloads");
+
+        let mut diagnostic_candidate = source_a.clone();
+        let diagnostic_attempt = super::super::
+            rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                &mut diagnostic_candidate,
+                None,
+                super::super::LiveObjectUpdateDiagnostics::Suppressed,
+                |requirement, source_payload| {
+                    let correlation = correlate_runtime_terminal_writer_trace_journal(
+                        requirement,
+                        source_payload,
+                        &journal,
+                    );
+                    assert_eq!(
+                        correlation.verdict,
+                        LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff
+                    );
+                    assert_eq!(
+                        correlation.rewrite_scope,
+                        TerminalWriterTraceRewriteScope::DiagnosticOnly
+                    );
+                    assert!(correlation.exact_handoff.is_none());
+                    correlation.exact_handoff
+                },
+            );
+        assert!(diagnostic_attempt.summary.is_none());
+        assert_eq!(diagnostic_candidate, source_a);
+
+        let evaluated = evaluate_loaded_terminal_writer_trace_proof(&journal, &source_a);
+        assert!(evaluated.summary.ready());
+        let authorized_handoff = evaluated
+            .authorized_handoff
+            .expect("ready startup evaluation must issue one opaque authorization");
+
+        journal.authorized_handoff = Some(authorized_handoff.clone());
+        let mut inconsistent_scope_candidate = source_a.clone();
+        let inconsistent_scope_attempt = super::super::
+            rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                &mut inconsistent_scope_candidate,
+                None,
+                super::super::LiveObjectUpdateDiagnostics::Suppressed,
+                |requirement, source_payload| {
+                    let correlation = correlate_runtime_terminal_writer_trace_journal(
+                        requirement,
+                        source_payload,
+                        &journal,
+                    );
+                    assert_eq!(
+                        correlation.rewrite_scope,
+                        TerminalWriterTraceRewriteScope::DiagnosticOnly
+                    );
+                    assert!(
+                        correlation.exact_handoff.is_none(),
+                        "diagnostic scope must deny an accidentally installed token"
+                    );
+                    correlation.exact_handoff
+                },
+            );
+        assert!(inconsistent_scope_attempt.summary.is_none());
+        assert_eq!(inconsistent_scope_candidate, source_a);
+
+        journal.rewrite_scope = TerminalWriterTraceRewriteScope::ExactProofPayload;
+        let mut wrong_identity_handoff = authorized_handoff.clone();
+        wrong_identity_handoff.identity = TerminalWriterTraceIdentity {
+            trace_id: 18,
+            message_id: 0x0000_0000_1234_ABCE,
+            component_sha256: [0xB6; 32],
+        };
+        journal.authorized_handoff = Some(wrong_identity_handoff);
+        let mut wrong_identity_candidate = source_a.clone();
+        let wrong_identity_attempt = super::super::
+            rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                &mut wrong_identity_candidate,
+                None,
+                super::super::LiveObjectUpdateDiagnostics::Suppressed,
+                |requirement, source_payload| {
+                    let correlation = correlate_runtime_terminal_writer_trace_journal(
+                        requirement,
+                        source_payload,
+                        &journal,
+                    );
+                    assert!(
+                        correlation.exact_handoff.is_none(),
+                        "startup authority must bind the currently selected trace identity"
+                    );
+                    correlation.exact_handoff
+                },
+            );
+        assert!(wrong_identity_attempt.summary.is_none());
+        assert_eq!(wrong_identity_candidate, source_a);
+
+        journal.authorized_handoff = Some(authorized_handoff);
+
+        for retransmit in 0..2 {
+            let mut candidate = source_a.clone();
+            let attempt = super::super::
+                rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                    &mut candidate,
+                    None,
+                    super::super::LiveObjectUpdateDiagnostics::Suppressed,
+                    |requirement, source_payload| {
+                        let correlation = correlate_runtime_terminal_writer_trace_journal(
+                            requirement,
+                            source_payload,
+                            &journal,
+                        );
+                        assert_eq!(
+                            correlation.rewrite_scope,
+                            TerminalWriterTraceRewriteScope::ExactProofPayload
+                        );
+                        assert!(correlation.exact_handoff.is_some());
+                        correlation.exact_handoff
+                    },
+                );
+            assert!(attempt.failure.is_none());
+            assert_eq!(
+                attempt
+                    .summary
+                    .expect("authorized payload must apply transactionally")
+                    .terminal_exact_writer_rewrites,
+                1,
+                "retransmit {retransmit}"
+            );
+            assert_ne!(candidate, source_a);
+        }
+
+        let mut denied_candidate = source_b.clone();
+        let mut denied_resolver_called = false;
+        let denied_attempt = super::super::
+            rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                &mut denied_candidate,
+                None,
+                super::super::LiveObjectUpdateDiagnostics::Suppressed,
+                |requirement, source_payload| {
+                    denied_resolver_called = true;
+                    let correlation = correlate_runtime_terminal_writer_trace_journal(
+                        requirement,
+                        source_payload,
+                        &journal,
+                    );
+                    assert_eq!(
+                        correlation.verdict,
+                        LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff
+                    );
+                    assert_eq!(
+                        correlation.rewrite_scope,
+                        TerminalWriterTraceRewriteScope::ExactProofPayload
+                    );
+                    assert!(
+                        correlation.exact_handoff.is_none(),
+                        "a second exact journal entry must remain diagnostic"
+                    );
+                    correlation.exact_handoff
+                },
+            );
+        assert!(
+            denied_resolver_called,
+            "the second exact journal payload must reach the terminal resolver"
+        );
+        assert!(denied_attempt.summary.is_none());
+        assert_eq!(denied_candidate, source_b);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn proof_preflight_runs_the_exact_terminal_plan_and_classifies_missing_evidence() {
         let (source, record_offset) = coherent_payload();
         let payload_path = temp_artifact_path("proof-payload");
@@ -2542,6 +2863,7 @@ mod tests {
             TerminalWriterTraceCorrelation {
                 artifact_status: TerminalWriterTraceArtifactStatus::NotConfigured,
                 selection_status: TerminalWriterTraceSelectionStatus::NotConfigured,
+                rewrite_scope: TerminalWriterTraceRewriteScope::DiagnosticOnly,
                 artifact_count: 0,
                 payload_match_count: 0,
                 verdict: LiveObjectUpdateTerminalWriterHandoffVerdict::IncompleteTrace,

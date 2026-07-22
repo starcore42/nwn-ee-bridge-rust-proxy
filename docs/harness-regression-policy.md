@@ -59,10 +59,10 @@ Diamond direct capture is a separate legacy truth source used when the 1.69
 wire behavior is the question; it does not by itself satisfy the EE-through-
 proxy gameplay gate below.
 
-Latest gate audit (`2026-07-23T01:14:00+10:00`): the newest live HG attempt is
+Latest gate audit (`2026-07-23T04:55:16+10:00`): the newest live HG attempt is
 still
 `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
-last written `2026-07-22T20:00:34.0528616+10:00` and 5 hours 13 minutes 26
+last written `2026-07-22T20:00:34.0528616+10:00` and 8 hours 54 minutes 43
 seconds old. It reached typed character selection, `Module_Loaded`, two native
 `Area_AreaLoaded` messages, and 78 exact live-object accepts through 137.818
 seconds after final area completion, with 514 strict allows and empty
@@ -97,10 +97,21 @@ mismatch, proof-join failure, or final-validator failure all stop before
 networking. Stop both producers and transfer complete files; do not infer
 readiness from file existence or a structural `status=loaded` result.
 
-The live harness applies the same guard when both paths are supplied. It quotes
-proxy arguments using Windows command-line rules, so paths containing spaces
-are safe, and its `-Configuration` value selects the matching Rust Cargo
-profile as well as the native bridge profile:
+`--terminal-writer-trace` without a proof payload is diagnostic-only: even an
+exact journal correlation cannot return a rewrite handoff. Normal runtime with
+both paths (and without `--terminal-writer-trace-preflight`) independently
+reopens the owned pair and repeats the complete proof before binding a socket.
+Only the startup-proven payload, cursor requirement, and selected trace
+identity can return the stored opaque handoff; another exact journal member
+remains diagnostic, while a byte-identical retransmit may use the same proof.
+Any mismatch or non-ready proof aborts startup.
+
+The live harness applies the same guard when both paths are supplied, then
+forwards both paths to the long-lived proxy so runtime repeats rather than
+trusts the separate preflight result. It quotes proxy arguments using Windows
+command-line rules, so paths containing spaces are safe, and its
+`-Configuration` value selects the matching Rust Cargo profile as well as the
+native bridge profile:
 
 ```powershell
 .\tools\test-hg-bridge.ps1 `
@@ -119,10 +130,10 @@ component; it is not a harness connection failure and does not authorize a
 translator change.
 
 Canonical strict replay on 2026-07-23 retained the stopped journal unchanged
-and passed 164 packet files with 339 strict allows, zero strict/semantic
-quarantine, zero quarantine files, zero terminal residuals, and empty proxy
-stderr. Its summary is
-`C:\nwnbridge\codex-proxy2-replay-terminal-proof-preflight-20260723-0212\replay-summary.json`.
+in diagnostic-only runtime scope and passed 164 packet files with 339 strict
+allows, zero strict/semantic quarantine, zero quarantine files, zero terminal
+residuals, zero terminal rewrites, and empty proxy stderr. Its summary is
+`C:\nwnbridge\codex-proxy2-replay-terminal-runtime-scope-20260723-0455\replay-summary.json`.
 
 Latest gate audit (`2026-07-22T20:06:53+10:00`): the run began from qualifying
 gameplay evidence at
@@ -184,11 +195,13 @@ of that group will remain an ambiguous runtime match. `writer-still-open`,
 oversize, invalid UTF-8/format, or an unsupported immutable-snapshot platform
 must fail before proxy startup. Component SHA-256 is provenance reported by
 the producer, not independently authenticated by this check. The
-`-TerminalWriterTracePath` live harness path now runs this preflight
-automatically. Runtime does not trust that earlier result: it independently
-reopens, revalidates, and logs the startup snapshot. A different valid stopped
-journal can replace the path between processes, so the runtime summary is
-authoritative and same-file identity is not implied by preflight.
+`-TerminalWriterTracePath` live harness path runs this structural preflight
+automatically. Journal-only runtime independently reopens, revalidates, and
+logs the startup snapshot, but remains diagnostic even for a unique exact
+entry. With `-TerminalWriterTraceProofPayloadPath`, the harness first runs the
+complete no-network proof and then supplies both paths to runtime; runtime's
+second owned-pair proof is authoritative because files can change between the
+two processes.
 
 Current preflight verification used the stopped controlled stock-Diamond
 journal at

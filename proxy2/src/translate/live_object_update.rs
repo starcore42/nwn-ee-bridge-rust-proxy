@@ -111,8 +111,9 @@ pub(crate) use terminal_evidence::{
 };
 pub(crate) use terminal_trace::format_live_object_update_terminal_tail9_handoff_capture;
 pub(crate) use terminal_writer_trace::{
-    configure_terminal_writer_trace_path, preflight_terminal_writer_trace_path,
-    preflight_terminal_writer_trace_proof_paths, terminal_writer_trace_configured,
+    configure_terminal_writer_trace_path, configure_terminal_writer_trace_proof_paths,
+    preflight_terminal_writer_trace_path, preflight_terminal_writer_trace_proof_paths,
+    terminal_writer_trace_configured,
 };
 
 thread_local! {

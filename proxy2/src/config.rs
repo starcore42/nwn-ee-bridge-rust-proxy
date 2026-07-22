@@ -107,10 +107,10 @@ pub struct Config {
     /// quarantined `P/05/01` live-object evidence. Requires `--packet-dump`
     /// with `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`, for correlation output.
     ///
-    /// Source-writer ownership alone never authorizes mutation. One unique
-    /// full-payload v2 match may enable only the terminal rewrite candidate
-    /// independently sealed by the typed EE reader and exact final validator;
-    /// every incomplete or mismatched proof remains diagnostic-only.
+    /// Journal-only configuration is diagnostic. Runtime rewrite scope also
+    /// requires `--terminal-writer-trace-proof-payload`; one unique full-payload
+    /// v2 match may then enable only the terminal rewrite candidate independently
+    /// sealed by the typed EE reader and exact final validator.
     #[arg(long, value_name = "PATH")]
     pub terminal_writer_trace: Option<PathBuf>,
 
@@ -121,16 +121,11 @@ pub struct Config {
     pub terminal_writer_trace_preflight: bool,
 
     /// Exact captured `P/05/01` source payload whose terminal proof should be
-    /// exercised during `--terminal-writer-trace-preflight`. Both the stopped
-    /// journal and this payload are opened through the runtime's bounded
-    /// immutable-snapshot path. The production unique-match, typed EE writer,
-    /// proof-join, transactional rewrite, and final exact validator run on an
-    /// owned copy before the process exits without binding a socket.
-    #[arg(
-        long,
-        value_name = "PATH",
-        requires_all = ["terminal_writer_trace", "terminal_writer_trace_preflight"]
-    )]
+    /// exercised. Both stopped inputs use the bounded immutable-snapshot path.
+    /// In preflight mode the complete proof runs on an owned copy before exit.
+    /// In runtime mode startup repeats that proof and retains its opaque source
+    /// handoff as the only payload allowed to reach the terminal rewrite plan.
+    #[arg(long, value_name = "PATH", requires = "terminal_writer_trace")]
     pub terminal_writer_trace_proof_payload: Option<PathBuf>,
 
     /// Diamond `nwncdkey.ini` used to derive 1.69 public CD-key fields.
@@ -270,28 +265,34 @@ mod tests {
     }
 
     #[test]
-    fn terminal_writer_trace_proof_payload_requires_preflight_and_journal() {
-        for arguments in [
-            vec![
-                "hgbridge_proxy2",
-                "--terminal-writer-trace-proof-payload",
-                "sequence-95.bin",
-            ],
-            vec![
-                "hgbridge_proxy2",
-                "--terminal-writer-trace",
-                "terminal-writer-v2.tsv",
-                "--terminal-writer-trace-proof-payload",
-                "sequence-95.bin",
-            ],
-        ] {
-            let error = Config::try_parse_from(arguments)
-                .expect_err("proof payload without full preflight mode must fail in clap");
-            assert_eq!(
-                error.kind(),
-                clap::error::ErrorKind::MissingRequiredArgument
-            );
-        }
+    fn terminal_writer_trace_proof_payload_requires_a_journal() {
+        let error = Config::try_parse_from([
+            "hgbridge_proxy2",
+            "--terminal-writer-trace-proof-payload",
+            "sequence-95.bin",
+        ])
+        .expect_err("proof payload without a journal must fail in clap");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn terminal_writer_trace_proof_payload_accepts_runtime_scope() {
+        let config = Config::try_parse_from([
+            "hgbridge_proxy2",
+            "--terminal-writer-trace",
+            "terminal-writer-v2.tsv",
+            "--terminal-writer-trace-proof-payload",
+            "sequence-95.bin",
+        ])
+        .expect("runtime proof scope with its journal should parse");
+        assert!(!config.terminal_writer_trace_preflight);
+        assert_eq!(
+            config.terminal_writer_trace_proof_payload,
+            Some(PathBuf::from("sequence-95.bin"))
+        );
     }
 
     #[test]

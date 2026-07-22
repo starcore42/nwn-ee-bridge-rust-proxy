@@ -3114,7 +3114,7 @@ mod fixture_free_tests {
             "packet_correlation_required\texact-payload-bytes\tfinal_ee_claim_required\ttrue\tclaimable\tfalse\trewrite_authorized\tfalse\tfragment_trim_authorized\tfalse"
         ));
         assert!(capture.contains(
-            "writer_handoff_correlation\tartifact_status\tnot-configured\tselection_status\tnot-configured\tjournal_artifact_count\t0\tpayload_match_count\t0\tverdict\tincomplete-trace\twriter_handoff_observed\tfalse\tclaimable\tfalse\ttrace_id\tnone\tmessage_id\tnone\tcomponent_sha256\tnone"
+            "writer_handoff_correlation\tartifact_status\tnot-configured\tselection_status\tnot-configured\trewrite_scope\tdiagnostic-only\tsource_handoff_authorized\tfalse\tjournal_artifact_count\t0\tpayload_match_count\t0\tverdict\tincomplete-trace\twriter_handoff_observed\tfalse\tclaimable\tfalse\ttrace_id\tnone\tmessage_id\tnone\tcomponent_sha256\tnone"
         ));
         assert!(capture.contains(
             "terminal_ee_writer_candidate\tstatus\tunavailable-bounded-rerun-mismatch\tclaimable\tfalse\trewrite_authorized\tfalse\tcursor_advance_authorized\tfalse\tfragment_trim_authorized\tfalse"
