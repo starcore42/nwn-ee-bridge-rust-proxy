@@ -17,6 +17,52 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 stopped terminal-writer journal preflight: the `22:13+10:00` live
+  gate used
+  `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
+  last written `2026-07-22T20:00:34.0528616+10:00` and 2 hours 12 minutes 26
+  seconds old. It had reached typed `starcore-druid60`, `Module_Loaded`, two
+  native `Area_AreaLoaded` messages, and 78 exact live-object accepts through
+  137.818 seconds after final area completion. Its 514 strict allows, empty
+  stderr/quarantine, and absence of a newer failed live attempt made a new HG
+  login unnecessary.
+
+  The strongest reference setup is the current live HG capture for deployed
+  behavior plus the stopped controlled stock-Diamond v2 journal for writer
+  lifecycle/shape, because the deployed HG owner/list/finalizer journal is
+  still unavailable. Proxy2 now supports
+  `--terminal-writer-trace <path> --terminal-writer-trace-preflight`: it uses
+  the exact bounded runtime parser through a Windows deny-write/delete
+  snapshot, prints one bounded TSV summary, and exits before logging, NWSync,
+  or network startup. The summary exposes artifact/payload sizes, exact
+  duplicate-payload ambiguity groups, trace range, and producer-reported
+  component fingerprints without printing payload bytes. Runtime activation
+  logs the same summary. Both preflight and activation fail closed on platforms
+  that cannot prove the immutable snapshot; the component digest remains
+  reported provenance rather than authenticated trust. The live harness now
+  requires and runs this preflight before starting a trace-backed session.
+  No CNW field, bit width/order, BOOL order, cursor, optional branch, padding,
+  string/object boundary, endian, signedness, scale, payload byte, claim, or
+  rewrite authority changed.
+
+  The real 5,825-byte controlled journal preflight reported three artifacts,
+  three distinct payloads, zero duplicate groups, maximum match count one, and
+  the audited stock component fingerprint. All 22 terminal-writer/preflight
+  tests, formatting, `cargo check`, Rust Release build, native Release build,
+  PowerShell parsing, and diff checks pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-terminal-preflight-20260722-2248` loaded
+  the same stopped journal with stable length/time/SHA-256 and processed all
+  164 packets with 339 strict allows, 143 generated ACK controls, 97 exact
+  live-object claims, 19 exact rewrites, and ten Area rewrites. It produced
+  zero strict/semantic quarantine, files, terminal residuals, warnings,
+  errors, or stderr.
+
+  The production translator remains externally evidence-blocked: deploy the
+  existing v2 producer on the actual HG component, stop and transfer its
+  complete journal, require one unique sequence-95 door `UseObject` payload
+  match, then exercise the already-sealed two-sided terminal rewrite through
+  its final exact EE validator. Do not register a generalized source-owner
+  rule from stock Diamond evidence alone.
 - 2026-07-22 exact ACK carrier across rejected payloads: the `19:12:41+10:00`
   live gate found the newest qualifying artifact at
   `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,

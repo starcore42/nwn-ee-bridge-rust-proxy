@@ -110,7 +110,8 @@ pub(crate) use terminal_evidence::{
 };
 pub(crate) use terminal_trace::format_live_object_update_terminal_tail9_handoff_capture;
 pub(crate) use terminal_writer_trace::{
-    configure_terminal_writer_trace_path, terminal_writer_trace_configured,
+    configure_terminal_writer_trace_path, preflight_terminal_writer_trace_path,
+    terminal_writer_trace_configured,
 };
 
 pub(crate) fn looks_like_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {

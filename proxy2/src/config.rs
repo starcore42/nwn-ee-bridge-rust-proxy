@@ -114,6 +114,12 @@ pub struct Config {
     #[arg(long, value_name = "PATH")]
     pub terminal_writer_trace: Option<PathBuf>,
 
+    /// Validate a stopped `--terminal-writer-trace` journal with the exact
+    /// bounded runtime loader, print a machine-readable summary, and exit
+    /// before loading NWSync state or binding any network socket.
+    #[arg(long, requires = "terminal_writer_trace")]
+    pub terminal_writer_trace_preflight: bool,
+
     /// Diamond `nwncdkey.ini` used to derive 1.69 public CD-key fields.
     ///
     /// The Starcore5 harness account defaults to `C:\NWN\Config\5.nwncdkey.ini`
@@ -216,4 +222,36 @@ fn parse_server(value: &str) -> anyhow::Result<SocketAddr> {
             .map_err(Into::into),
     }
     .map_err(|err| anyhow!("{err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_writer_trace_preflight_requires_a_journal_path() {
+        let error =
+            Config::try_parse_from(["hgbridge_proxy2", "--terminal-writer-trace-preflight"])
+                .expect_err("preflight without a journal path must fail in clap");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn terminal_writer_trace_preflight_accepts_its_required_journal_path() {
+        let config = Config::try_parse_from([
+            "hgbridge_proxy2",
+            "--terminal-writer-trace",
+            "terminal-writer-v2.tsv",
+            "--terminal-writer-trace-preflight",
+        ])
+        .expect("preflight with a journal path should parse");
+        assert_eq!(
+            config.terminal_writer_trace,
+            Some(PathBuf::from("terminal-writer-v2.tsv"))
+        );
+        assert!(config.terminal_writer_trace_preflight);
+    }
 }

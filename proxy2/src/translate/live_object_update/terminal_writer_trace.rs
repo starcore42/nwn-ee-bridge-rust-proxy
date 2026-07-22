@@ -178,6 +178,113 @@ struct OwnedTerminalWriterTraceJournal {
     artifacts: Vec<OwnedTerminalWriterTraceArtifact>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalWriterTraceJournalSummary {
+    pub(crate) artifact_count: usize,
+    pub(crate) finalized_payload_bytes: usize,
+    pub(crate) payload_length_min: usize,
+    pub(crate) payload_length_max: usize,
+    pub(crate) distinct_finalized_payload_count: usize,
+    pub(crate) duplicate_payload_group_count: usize,
+    pub(crate) max_payload_match_count: usize,
+    pub(crate) trace_id_min: u64,
+    pub(crate) trace_id_max: u64,
+    producer_reported_component_sha256: Vec<[u8; 32]>,
+}
+
+impl TerminalWriterTraceJournalSummary {
+    pub(crate) fn distinct_producer_component_count(&self) -> usize {
+        self.producer_reported_component_sha256.len()
+    }
+
+    pub(crate) fn producer_reported_component_sha256_csv(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut output = String::with_capacity(
+            self.producer_reported_component_sha256
+                .len()
+                .saturating_mul(65),
+        );
+        for (index, digest) in self.producer_reported_component_sha256.iter().enumerate() {
+            if index != 0 {
+                output.push(',');
+            }
+            for byte in digest {
+                write!(&mut output, "{byte:02X}").expect("writing to String cannot fail");
+            }
+        }
+        output
+    }
+}
+
+impl OwnedTerminalWriterTraceJournal {
+    fn summary(&self) -> TerminalWriterTraceJournalSummary {
+        let first = self
+            .artifacts
+            .first()
+            .expect("a parsed terminal writer journal is never empty");
+        let mut finalized_payload_bytes = 0usize;
+        let mut payload_length_min = first.finalized_payload.len();
+        let mut payload_length_max = first.finalized_payload.len();
+        let mut trace_id_min = first.identity.trace_id;
+        let mut trace_id_max = first.identity.trace_id;
+        let mut producer_reported_component_sha256 = Vec::new();
+        let mut payload_groups: Vec<([u8; 16], &[u8], usize)> = Vec::new();
+
+        for artifact in &self.artifacts {
+            finalized_payload_bytes = finalized_payload_bytes
+                .checked_add(artifact.finalized_payload.len())
+                .expect("bounded journal payload lengths cannot overflow usize");
+            payload_length_min = payload_length_min.min(artifact.finalized_payload.len());
+            payload_length_max = payload_length_max.max(artifact.finalized_payload.len());
+            trace_id_min = trace_id_min.min(artifact.identity.trace_id);
+            trace_id_max = trace_id_max.max(artifact.identity.trace_id);
+            if !producer_reported_component_sha256.contains(&artifact.identity.component_sha256) {
+                producer_reported_component_sha256.push(artifact.identity.component_sha256);
+            }
+            // MD5 is only a bounded lookup accelerator here. Exact payload
+            // bytes still define a group, so a digest collision cannot turn
+            // different finalized packets into an ambiguity diagnosis.
+            let digest = md5::compute(&artifact.finalized_payload).0;
+            if let Some((_, _, match_count)) =
+                payload_groups
+                    .iter_mut()
+                    .find(|(candidate_digest, candidate_payload, _)| {
+                        *candidate_digest == digest
+                            && *candidate_payload == artifact.finalized_payload.as_slice()
+                    })
+            {
+                *match_count += 1;
+            } else {
+                payload_groups.push((digest, artifact.finalized_payload.as_slice(), 1));
+            }
+        }
+
+        let duplicate_payload_group_count = payload_groups
+            .iter()
+            .filter(|(_, _, match_count)| *match_count > 1)
+            .count();
+        let max_payload_match_count = payload_groups
+            .iter()
+            .map(|(_, _, match_count)| *match_count)
+            .max()
+            .unwrap_or(0);
+
+        TerminalWriterTraceJournalSummary {
+            artifact_count: self.artifacts.len(),
+            finalized_payload_bytes,
+            payload_length_min,
+            payload_length_max,
+            distinct_finalized_payload_count: payload_groups.len(),
+            duplicate_payload_group_count,
+            max_payload_match_count,
+            trace_id_min,
+            trace_id_max,
+            producer_reported_component_sha256,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct OwnedTerminalWriterTraceArtifact {
     identity: TerminalWriterTraceIdentity,
@@ -308,14 +415,54 @@ struct ValidatedPacketLayout<'a> {
 /// diagnostics may ingest. The loader first acquires a closed, deny-write
 /// snapshot, so a complete-looking prefix cannot become process-wide proof
 /// while the producer can still append a conflicting block or poison marker.
-pub(crate) fn configure_terminal_writer_trace_path(path: PathBuf) -> Result<(), &'static str> {
-    if TERMINAL_WRITER_TRACE_JOURNAL.get().is_some() {
-        return Err("already-configured");
+pub(crate) fn configure_terminal_writer_trace_path(
+    path: PathBuf,
+) -> Result<TerminalWriterTraceJournalSummary, &'static str> {
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        return Err("immutable-snapshot-unsupported");
     }
-    let journal = load_terminal_writer_trace_journal(&path).map_err(|status| status.as_str())?;
-    TERMINAL_WRITER_TRACE_JOURNAL
-        .set(journal)
-        .map_err(|_| "already-configured")
+
+    #[cfg(windows)]
+    {
+        if TERMINAL_WRITER_TRACE_JOURNAL.get().is_some() {
+            return Err("already-configured");
+        }
+        let journal =
+            load_terminal_writer_trace_journal(&path).map_err(|status| status.as_str())?;
+        let summary = journal.summary();
+        TERMINAL_WRITER_TRACE_JOURNAL
+            .set(journal)
+            .map_err(|_| "already-configured")?;
+        Ok(summary)
+    }
+}
+
+/// Validate one stopped private operator journal without installing it as
+/// process-wide rewrite evidence. This is the same bounded, deny-write loader
+/// used by runtime configuration, so a successful preflight cannot disagree
+/// with startup parsing for the same immutable bytes. A later proxy process
+/// still reopens and validates its own snapshot; its runtime summary is
+/// authoritative if the pathname was replaced after preflight.
+pub(crate) fn preflight_terminal_writer_trace_path(
+    path: &Path,
+) -> Result<TerminalWriterTraceJournalSummary, &'static str> {
+    #[cfg(windows)]
+    {
+        return load_terminal_writer_trace_journal(path)
+            .map(|journal| journal.summary())
+            .map_err(|status| status.as_str());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        // The v2 producer's retained append handle denies write/delete sharing
+        // on Windows. A plain Unix File::open cannot prove that the producer is
+        // stopped, so preflight must not describe a mutable prefix as sealed.
+        Err("immutable-snapshot-unsupported")
+    }
 }
 
 pub(crate) fn terminal_writer_trace_configured() -> bool {
@@ -2026,6 +2173,15 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn runtime_configuration_rejects_platforms_without_an_immutable_snapshot() {
+        assert_eq!(
+            configure_terminal_writer_trace_path(PathBuf::from("unused-v2-journal.tsv")),
+            Err("immutable-snapshot-unsupported")
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn journal_loader_requires_the_append_producer_to_close() {
@@ -2091,6 +2247,34 @@ mod tests {
         assert_eq!(loaded.artifacts.len(), 2);
         assert_eq!(loaded.artifacts[0].identity, trace_identity());
         assert_eq!(loaded.artifacts[1].identity, second_identity);
+        let expected_payload_bytes = payload.len() * 2;
+        #[cfg(windows)]
+        {
+            let summary = preflight_terminal_writer_trace_path(&journal_path)
+                .expect("preflight must use the same valid journal loader");
+            assert_eq!(summary.artifact_count, 2);
+            assert_eq!(summary.finalized_payload_bytes, expected_payload_bytes);
+            assert_eq!(summary.payload_length_min, payload.len());
+            assert_eq!(summary.payload_length_max, payload.len());
+            assert_eq!(summary.distinct_finalized_payload_count, 1);
+            assert_eq!(summary.duplicate_payload_group_count, 1);
+            assert_eq!(summary.max_payload_match_count, 2);
+            assert_eq!(summary.trace_id_min, 17);
+            assert_eq!(summary.trace_id_max, 18);
+            assert_eq!(summary.distinct_producer_component_count(), 2);
+            assert_eq!(
+                summary.producer_reported_component_sha256_csv(),
+                format!("{},{}", "A5".repeat(32), "B6".repeat(32))
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = expected_payload_bytes;
+            assert_eq!(
+                preflight_terminal_writer_trace_path(&journal_path),
+                Err("immutable-snapshot-unsupported")
+            );
+        }
         std::fs::remove_file(&journal_path).expect("remove valid terminal writer journal");
 
         let invalid_utf8_path = temp_artifact_path("invalid-utf8");

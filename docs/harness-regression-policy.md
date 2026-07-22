@@ -99,6 +99,48 @@ directions and a malformed reliable gameplay frame followed by real `BNDM`
 disconnect handling. The live capture directly confirms the stale/outside-
 window path and remains the current gameplay gate.
 
+Before any live or replay run that supplies a private v2 writer journal,
+validate that the producer is stopped and the transferred artifact is accepted
+by the exact runtime loader without starting a network session:
+
+```powershell
+.\target\release\hgbridge_proxy2.exe `
+  --terminal-writer-trace C:\secure\terminal-writer-v2.tsv `
+  --terminal-writer-trace-preflight
+```
+
+Success is one TSV row beginning
+`terminal-writer-trace-preflight\tstatus\tloaded\tsnapshot_integrity\twindows-deny-write`.
+It reports artifact count, total/min/max payload lengths, exact distinct and
+duplicate-payload group counts, maximum match count, trace range, and the
+producer-reported component fingerprints; it never prints payload bytes. A
+duplicate group does not invalidate unrelated unique payloads, but any member
+of that group will remain an ambiguous runtime match. `writer-still-open`,
+oversize, invalid UTF-8/format, or an unsupported immutable-snapshot platform
+must fail before proxy startup. Component SHA-256 is provenance reported by
+the producer, not independently authenticated by this check. The
+`-TerminalWriterTracePath` live harness path now runs this preflight
+automatically. Runtime does not trust that earlier result: it independently
+reopens, revalidates, and logs the startup snapshot. A different valid stopped
+journal can replace the path between processes, so the runtime summary is
+authoritative and same-file identity is not implied by preflight.
+
+Current preflight verification used the stopped controlled stock-Diamond
+journal at
+`C:\nwnbridge\local-diamond-baseline-20260719-174343\terminal-writer-v2.tsv`.
+It reported three artifacts, three distinct payloads, zero duplicate groups,
+maximum match count one, one component, and fingerprint
+`CD395615C1BA19B0E67C22C9C8DA2BDFB854329A144A86DA6518BB3876112FE3`.
+Strict replay
+`C:\nwnbridge\codex-proxy2-replay-terminal-preflight-20260722-2248` loaded the
+same immutable 5,825-byte journal, kept its length/write-time/SHA-256 stable,
+and processed 164 packets with 339 strict allows, 143 generated ACK controls,
+97 exact live-object claims, 19 exact rewrites, and ten Area rewrites. Strict
+and semantic quarantine, files, terminal residuals, warnings, errors, and
+stderr were zero. This confirms journal lifecycle/diagnostics only; the stock
+journal does not replace the still-required HG-side sequence-95 owner/list
+evidence.
+
 For real HG/Diamond source traffic, use:
 
 ```powershell
@@ -2595,6 +2637,7 @@ work.
 | Live HG receives raw `BNK2` but no `BNK3`, `BNK4`, or `BNCS`; driver log has no `NonWindow` BNK2 begin/result and EE writes a fresh `nwmain-crash-*.nwcrash.txt` | Intermittent EE crypto handoff stall/crash before `HandleBNK2Message` processes the deferred BNK2, or a stale client/proxy state that makes the BNK2 handler unsafe | Stop stale `nwmain`/`hgbridge_proxy2` processes, rerun with `HG_BRIDGE_DRIVER_ONLY_TRACE_BNK_HANDLERS=1`, and inspect proxy `observed EE BNK3 after deferred BNK2` versus `EE crypto handshake stalled after BNK2; no BNK3 received` alongside driver `NonWindow` BNK2 rows. The 2026-07-13 12:00 bard50 attempt stalled; the 12:02 traced retry observed BNK3 after 124 ms and reached sustained gameplay. |
 | A delayed `ClientGuiInventory` request reaches proxy2, then the same reliable-M client sequences retransmit and each replay increments bridge update indices or queues the same synthetic status request | Fixed in production code 2026-07-13: semantic inventory/quickbar effects were rerun for an exact reliable sequence/payload while expensive quickbar stream candidate probing delayed ACK progress | Exact sequence/payload pairs now apply typed semantic/bridge effects once while retransmissions and ACK changes remain transport-visible; the cache is bounded for sequence wrap. Require a live recurrence to confirm suppression, then continue bounding independent candidate-analysis latency. Bard50 capture `codex-live-bard50-stale-area-fast-20260713` resolved the missing-GQ context, showed repeats through bridge update 40, and ended with HG `BNDP`; focused tests and strict replay `codex-proxy2-replay-client-reliable-effects-20260713-175105` pass. |
 | `BNK3`/`BNK4`/`BNCS` succeed, then proxy logs `server BNCR reject result parsed` with `detail=6` and `detail_hint="observed-hg-rapid-reconnect-or-name-reservation"` before the client sends `BNDM` | HG still has a rapid-reconnect or player-name/session reservation for the account/character, usually after a live harness rerun too soon after stopping the previous client | Do not count the failed artifact as gameplay evidence. Stop stale `nwmain` and `hgbridge_proxy2`, wait 2-5 minutes for the HG reservation to clear, and rerun the same harness command. The 2026-07-08 23:06 run failed this way and the 23:13 rerun reached gameplay after cooldown. |
+| Terminal-journal preflight exits with `read-failed`, `writer-still-open`, `too-large`, `invalid-utf8`, `invalid-format`, or `immutable-snapshot-unsupported`, or reports a duplicate payload group | The path cannot be opened/read; the producer append handle is still alive; the transferred block is partial, poisoned, duplicated, malformed, or beyond the cap; the platform cannot prove a deny-write snapshot; or multiple trace identities contain identical finalized bytes | Stop the producer before transfer and retry the exact preflight. Preserve the failed artifact, compare its bounded block/identity/cursor structure with producer logs, and never bypass the check. A duplicate group may coexist with usable unique payloads, but its members must remain `ambiguous-payload-match`; capture a unique HG occurrence instead of selecting by trace id. |
 | Gameplay reaches movement, then sequence 95 quarantines an alternating `A/0A,U/0A,A/09,U/09,A/09,U/09` live-object stream and `UseObject` never completes | The terminal stock `U/09` reader ends at fragment cursor 63 while 13 additional bits are declared valid; they repeat a neighboring add-row span but have no proven stock owner, indicating an earlier cursor handoff error or an HG custom fragment extension | Keep the packet quarantined. Compare its `.terminal.tsv` with a controlled stock trace from `-TraceServerWriter`, then trace/reproduce the HG writer or list handoff. Rerun the same door interaction only after one exact owner explains `63..76`; never trim from the duplicate pattern alone. |
 | Capture reaches `BNVR A` and one `P/01/03` response, but never sends client `P/11/01` | Driver fell back to native DirectConnect after missing or discarding the server-list path | Keep using the server-list DirectConnect path; if Diamond's app-state server-list slot is empty, retry with the remembered `SERVERLIST_PANEL` from the constructor hook before native fallback. |
 | `PRE_PLAYMOD` selection fires with `entries=0 count=0` | Auto-character path is too early or lacks refresh/retry | Add wait/refresh/retry instrumentation and rerun until the character list is populated or a new blocker is proven. |
