@@ -79,58 +79,47 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest gate audit (`2026-07-22T07:10:00+10:00`): the newest gameplay-reaching
-artifact remains
-`C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,
-last written `2026-07-21T07:23:58.6405077+10:00` and exactly 23 hours, 46
-minutes, 1.359 seconds old. No newer live proxy attempt exists. It selected
-typed `starcore-druid60`, reached `Module_Loaded`, produced two native
-`Area_AreaLoaded` messages, accepted 76 exact live-object packets, and
-continued for 137.813 seconds after the final area load. It recorded 449 strict
-allows and zero route conflict, quarantine, `BNDP`, ERROR, quarantine files, or
-stderr; the single WARN declares the pre-seeded NWSync cache. It was still
-inside the 24-hour gate by 13 minutes, 58.641 seconds, so no fresh HG login was
-required at run start. It crossed 24 hours during this run; the next automation
-gate requires a fresh gameplay-reaching capture unless another qualifying
-capture is created first.
+Latest gate audit (`2026-07-22T10:48:00+10:00`): the previous qualifying
+artifact was more than 24 hours old, so this run performed a fresh live HG
+capture before ordinary feature work. The first refresh,
+`C:\nwnbridge\codex-live-freshness-client-slot-20260722-1013\harness-proxy-20260722-101336\proxy.structured.log`,
+last written `2026-07-22T10:16:42.0399802+10:00`, reached gameplay with typed
+`starcore-druid60`, `Module_Loaded`, two native `Area_AreaLoaded` messages, 76
+exact live-object accepts through 137.712 seconds after the final area load,
+and 465 strict allows. It then exposed 24 immutable server-transport conflicts
+and 24 fail-closed datagram drops across sequences 46-49. The repeated raw,
+stream, and coalesced type-0 data differed only in outer byte-7 FrameSend bit
+6; no quarantine files, `BNDP`, ERROR, or stderr were produced.
+
+Production now canonicalizes only that decompile-proven mutable outer bit in
+pending and completed server reliable identities, direct semantic replay, and
+ordered raw retry. It preserves all low flags, packetized fields, nested
+count-one record flags, gameplay bytes, tails, and lane/generation/sequence
+state. Replayed output refreshes bit 6, then ACK and CRC. Diamond
+`sub_5F36E0` lines 751251-751280 and EE `FrameSend` lines 879868-879893 prove
+send ownership; the receive/unpacketize traces do not prove nested flag
+mutation, so nested record identity remains exact.
+
+Latest known live HG proxy status: the fixed-code qualifying rerun is
+`C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,
+last written `2026-07-22T10:37:58.7634802+10:00`. It reached typed character
+selection and `Module_Loaded`, produced one native `Area_AreaLoaded`, accepted
+88 exact live-object packets through 168.164 seconds after area load, and
+recorded 503 strict allows. Reliable conflicts, datagram/quarantine files,
+`BNDP`, ERROR, and stderr were all zero; its sole warning declares the
+pre-seeded NWSync cache. This is current gameplay evidence and remains within
+the 24-hour gate until `2026-07-23T10:37:58.7634802+10:00`.
 
 Current-code strict replay is
-`C:\nwnbridge\codex-proxy2-replay-client-slot-canonical-20260722-0745`: all 164
-packet files produced 319 strict allows, 143 generated ACK controls, 97 exact
+`C:\nwnbridge\codex-proxy2-replay-server-bit6-20260722-1046`: all 164 packet
+files produced 319 strict allows, 143 generated ACK controls, 97 exact
 live-object claims, 19 exact live-object rewrites, and ten Area rewrites, with
-zero strict/semantic quarantines, skipped server packets, route conflicts,
-quarantine files, output timeouts, warnings, errors, or stderr. Formatting,
-test compilation, both Release builds, 66 root M-frame tests, and 62
-strict-path tests pass. Client type-0 slots now use wrap-safe immutable source
-identity and deterministic first-translation replay: ACK, FrameSend bit 6, and
-CRC may refresh, while lane, source generation/sequence, exact length,
-immutable flags, packetized metadata, gameplay bytes, and trailing storage
-cannot change. Strict rejection retains the pinned transport slot but rolls
-back its semantic disposition for an exact retry. The canonical fixture has no
-exact client type-0 retransmit, so focused variants prove replay, conflict,
-strict rollback, wrap, control-lane exclusion, and bounded eviction while the
-replay proves unchanged real capture order. The next production slice is the
-same bit-6 identity normalization across server raw, stream, and coalesced
-reliable replay paths.
-
-Latest known live HG proxy status: after the prior artifact crossed 24 hours,
-the first current-code refresh exposed and then fixed a completed-stream
-ACK-control route collision. The qualifying rerun is
-`C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045`,
-with structured log
-`C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`
-(last write `2026-07-21T07:23:58.6405077+10:00`). It selected typed
-`starcore-druid60`, claimed `Module_Loaded`, produced two native
-`Area_AreaLoaded` messages, and sustained 76 exact live-object accepts through
-137.813 seconds after the final native area load. The run recorded 449 strict
-allows with zero completed-route conflicts, strict/datagram quarantine,
-quarantine files, `BNDP`, ERROR, or stderr. Its only WARN is the declared
-pre-seeded NWSync cache. It qualified at the `2026-07-22T07:10:00+10:00` gate
-but has since crossed 24 hours, so the next automation run requires a fresh
-gameplay-reaching capture. It did not issue a door `UseObject` or configure a
-private v2 terminal-writer journal, so the exact terminal proof path remains to
-be exercised against the live sequence-95
-interaction failure.
+zero strict/semantic quarantine, skipped server packets, route conflicts,
+quarantine files, warnings, errors, or stderr. Formatting, `cargo check`, all
+66 root M-frame, 13 reassembly, and 26 coalesced tests, the Rust Release build,
+and the full native Release build pass. The next production path is the live
+terminal proof: deploy a v2 terminal-writer trace producer and capture a unique
+sequence-95 door `UseObject` interaction.
 
 The `2026-07-21T10:04+10:00` gate rechecked that structured log at about 2 hours
 41 minutes old, so no new HG login was required. Production now persists exact
@@ -2508,6 +2497,7 @@ work.
 
 | Symptom | Likely cause | Response |
 | --- | --- | --- |
+| Gameplay reaches area/live-object traffic, then one reliable burst logs repeated `different immutable transport bytes` plus `server datagram quarantined` for otherwise matching raw, stream, or coalesced sequences | The sender toggled outer byte-7 bit 6 while the proxy treated the complete transport frame as immutable. Diamond and EE `FrameSend` own that send-window bit independently of gameplay bytes | Fixed and live-confirmed 2026-07-22: canonicalize only outer bit 6 in server type-0 identities, refresh it on cached output before ACK/CRC, and keep nested count-one record flags exact. Diagnose a recurrence by comparing exact length, low flags, packetized fields, gameplay/tail bytes, and the current bit-6 value; the qualifying rerun sustained 168.164 seconds post-area with zero conflicts or datagram drops. |
 | After a deflated character list commits at server sequence zero, proxy2 repeatedly logs `reliable slot already committed different immutable transport bytes`; pre-module traffic repeats and gameplay is never reached | A completed type-0 stream route was incorrectly allowed to claim the independent type-1 ACK-control lane because both carry sequence zero | Fixed 2026-07-21: completed stream/coalesced route identity accepts only decompile-backed frame type 0. Diamond `sub_5F3940` and EE `FrameReceive` both keep type-1 ACK controls out of receive-data storage. Require the next run to pass typed `Module_Loaded`, native `Area_AreaLoaded`, sustained live-object traffic, and zero route-conflict/quarantine rows. |
 | First-area gameplay succeeds, then a following `Area_ClientArea` reports width 11 / packet height 0 / inferred height 14 with three legacy zero-count/single-resref sound rows; EE ACK progress stops, HG retransmits the following window, and eventually sends `BNDP CE 16 00 00` without a quarantine file | The exact missing-height repair ran before sound-row normalization. It correctly rejected the still-legacy tail; the sound repair later committed, but no height retry rebuilt the final EE area shape | Fixed 2026-07-19: after a nonzero independently proven sound repair, retry only the exact missing-height repair once when height is still zero. Diagnose recurrences by comparing `packet_height`, `inferred_height`, `sound_count_zero_one_repairs`, client ACK progression, and the final EE cursor proof. The combined captured fixture proves both repairs and full fragment exhaustion; the post-fix live run sustained Docks gameplay with no disconnect/quarantine, although its source arrived already normalized. |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |

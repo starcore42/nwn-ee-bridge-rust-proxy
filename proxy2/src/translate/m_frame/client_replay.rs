@@ -17,9 +17,10 @@ use crate::{
     translate::VerifiedFamily,
 };
 
+use super::transport_identity::SEND_WINDOW_BIT6_MASK;
+
 pub(super) const MAX_CLIENT_RELIABLE_SLOTS: usize = 64;
 const FRAME_SEND_OWNED_FLAG_MASK: u8 = 0x70;
-const SEND_WINDOW_BIT6_MASK: u8 = 0x40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ClientReliableSlotKey {

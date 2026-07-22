@@ -25,6 +25,8 @@ use super::{
 pub(super) struct OrderedSuccessorValidationToken {
     pub(super) sequence: u16,
     pub(super) server_origin_generation: u64,
+    /// Exact server type-0 bytes from flags onward with only the
+    /// FrameSend-owned bit 6 canonicalized away.
     pub(super) transport_payload_identity: Vec<u8>,
 }
 
@@ -216,6 +218,10 @@ pub(super) struct PendingClientDrainEffectSnapshot {
 pub(super) struct CompletedDirectServerSemanticRewrite {
     pub(super) sequence: u16,
     pub(super) origin_generation: u64,
+    /// Exact source bytes from flags onward with only FrameSend-owned bit 6
+    /// canonicalized away. This prevents a same-payload low-flag conflict from
+    /// inheriting a previously committed semantic disposition.
+    pub(super) source_transport_identity: Vec<u8>,
     pub(super) source_payload: Vec<u8>,
     pub(super) rewritten_payload: Vec<u8>,
     pub(super) proof: VerifiedProof,
@@ -224,8 +230,9 @@ pub(super) struct CompletedDirectServerSemanticRewrite {
 #[derive(Debug, Clone, Default)]
 pub(super) struct DirectServerSemanticReplayState {
     /// Direct server `M` retransmissions are keyed by the reliable source slot
-    /// and exact source gameplay bytes. ACK/header changes are transport state,
-    /// so a replay refreshes them without running semantic effects again.
+    /// and canonical immutable transport bytes. ACK and FrameSend-owned bit 6
+    /// may refresh; every other flag/header/payload byte remains exact so a
+    /// replay cannot inherit semantic effects from a conflicting source.
     pub(super) completed: VecDeque<CompletedDirectServerSemanticRewrite>,
     pub(super) duplicates_replayed: u64,
     pub(super) latest_origin_sequence: Option<u16>,

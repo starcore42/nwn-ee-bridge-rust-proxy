@@ -17,6 +17,54 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 server reliable FrameSend bit-6 replay identity: the newest prior
+  gameplay capture was stale at the `10:09+10:00` gate, so a fresh HG run was
+  required. The first refresh,
+  `C:\nwnbridge\codex-live-freshness-client-slot-20260722-1013\harness-proxy-20260722-101336\proxy.structured.log`,
+  reached gameplay with typed `starcore-druid60`, `Module_Loaded`, two native
+  `Area_AreaLoaded` messages, 76 exact live-object accepts through 137.712
+  seconds after the final area load, and 465 strict allows. It also exposed 24
+  server reliable conflicts and 24 fail-closed datagram drops across sequences
+  46-49: otherwise identical raw, stream, and coalesced retransmits differed
+  only in the send-window-owned outer byte-7 bit 6. No quarantine artifacts,
+  `BNDP`, ERROR, or stderr were produced.
+
+  Server reliable data identities now clear only outer FrameSend bit 6 while
+  retaining every low flag, packetized field, gameplay byte, nested record,
+  tail byte, and lane/generation/sequence boundary. Pending deflated and
+  interleaved frames, completed stream/route caches, ordered raw retries, and
+  direct semantic replay use that shared identity. Replayed output refreshes
+  the current bit-6 value before ACK and CRC. A committed direct slot with a
+  different canonical identity is rejected before coalesced, reassembly, ACK,
+  or semantic effects can mutate. Nested count-one coalesced record flags stay
+  exact because the legacy unpacketizer evidence does not show FrameSend
+  mutating them.
+
+  Diamond `sub_5F36E0` lines 751251-751280 and EE `FrameSend` lines
+  879868-879893 prove outer bit-6 send ownership. Diamond `sub_5F3940` lines
+  751460-751763 and EE `FrameReceive` lines 878825-879146 prove the receive
+  storage and replay boundary. This changes no CNW gameplay field sequence,
+  bit width/order, cursor movement, optional guard, string/nested-object
+  boundary, endian, signedness, scale, or gameplay payload bit.
+
+  The fixed-code rerun,
+  `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,
+  last written `2026-07-22T10:37:58.7634802+10:00`, reached gameplay with one
+  native `Area_AreaLoaded`, 88 exact live-object accepts through 168.164
+  seconds post-area, and 503 strict allows. It had zero reliable conflicts,
+  datagram/quarantine files, `BNDP`, ERROR, or stderr; its sole warning declares
+  the pre-seeded NWSync cache. Formatting, `cargo check`, all 66 root M-frame,
+  13 reassembly, and 26 coalesced tests, the Rust Release build, and the full
+  native Release build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-server-bit6-20260722-1046` processed all
+  164 packet files with 319 strict allows, 143 generated ACK controls, 97 exact
+  live-object claims, 19 exact rewrites, and ten Area rewrites, with zero
+  quarantine, skipped server packet, conflict, warning, error, or stderr.
+
+  The next generalized production path returns to the live terminal blocker:
+  deploy a v2 terminal-writer trace producer, then capture a unique sequence-95
+  door `UseObject` interaction so the final writer handoff can be implemented
+  from two-sided evidence.
 - 2026-07-22 immutable client reliable-slot identity and deterministic replay:
   the `07:10+10:00` live gate used
   `C:\nwnbridge\codex-live-freshness-ack-lane-20260721-0722\harness-proxy-20260721-072045\proxy.structured.log`,

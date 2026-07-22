@@ -66,9 +66,10 @@ pub(super) struct BufferedInterleavedServerPacket {
     pub(super) sequence: u16,
     pub(super) server_peer_ack_sequence: u16,
     pub(super) server_origin_generation: u64,
-    /// Header bytes from flags through the exact payload/trailing window. CRC,
-    /// sequence, and ACK are intentionally excluded so a retransmit can refresh
-    /// transport state without becoming a second semantic event.
+    /// Canonical header bytes from flags through the exact payload/trailing
+    /// window. CRC, sequence, ACK, and FrameSend-owned bit 6 are intentionally
+    /// excluded so a retransmit can refresh transport state without becoming a
+    /// second semantic event. Every other flag and stored byte remains exact.
     pub(super) transport_payload_identity: Vec<u8>,
 }
 
@@ -94,9 +95,9 @@ pub(super) struct CompletedDeflatedStreamWindow {
     /// same reliable slot must not inherit cached semantics or skip inflation.
     pub(super) compressed: Vec<u8>,
     /// Per-frame immutable transport bytes from flags through the exact
-    /// datagram tail. CRC, sequence, and ACK are deliberately excluded:
-    /// retransmit ACKs may advance, but flags, packetized lengths, chunk
-    /// boundaries, payload, and any trailing bytes may not change within one
+    /// datagram tail. CRC, sequence, ACK, and FrameSend-owned bit 6 are
+    /// deliberately excluded. Every other flag, packetized length, chunk
+    /// boundary, payload byte, and trailing byte remains exact within one
     /// reliable generation.
     pub(super) frame_transport_identities: Vec<Vec<u8>>,
     /// Expanded replacements are shifted before their future source-sequence
@@ -377,7 +378,9 @@ pub(super) fn continue_server_deflated_reassembly(
             proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
             packet: consume_interleaved_unclaimed_server_packet(bytes)?,
         };
-        let transport_payload_identity = bytes.get(7..).unwrap_or_default().to_vec();
+        let transport_payload_identity =
+            transport_identity::server_reliable_data_transport_identity(bytes, view)
+                .ok_or_else(|| anyhow::anyhow!("interleaved server event left type-0 data lane"))?;
         let Some(reassembly) = state.deflate.server_reassembly.as_mut() else {
             return Ok(Emit::Drop);
         };
@@ -624,7 +627,8 @@ fn buffered_frame_from_view(
 }
 
 fn buffered_frame_transport_identity(frame: &BufferedFrame) -> Option<Vec<u8>> {
-    frame.packet.get(7..).map(<[u8]>::to_vec)
+    let view = MFrameView::parse(&frame.packet)?;
+    transport_identity::server_reliable_data_transport_identity(&frame.packet, &view)
 }
 
 fn completed_stream_frame_transport_identities(
@@ -993,6 +997,7 @@ mod tests {
 
         let mut retransmit = full.frames[3].packet.clone();
         assert!(write_be_u16(&mut retransmit, 5, 96));
+        retransmit[7] ^= transport_identity::SEND_WINDOW_BIT6_MASK;
         assert!(encode_legacy_m_crc(&mut retransmit));
         let retransmit_view = MFrameView::parse(&retransmit).expect("valid retransmit frame");
         assert!(matches!(
@@ -1054,6 +1059,7 @@ mod tests {
 
         let mut interleaved_retransmit = interleaved.clone();
         assert!(write_be_u16(&mut interleaved_retransmit, 5, 98));
+        interleaved_retransmit[7] ^= transport_identity::SEND_WINDOW_BIT6_MASK;
         assert!(encode_legacy_m_crc(&mut interleaved_retransmit));
         let interleaved_retransmit_view =
             MFrameView::parse(&interleaved_retransmit).expect("valid interleaved retransmit");
@@ -1255,6 +1261,16 @@ mod tests {
         assert_eq!(exact.server_origin_generation, 7);
         assert_eq!(exact.compressed, compressed);
 
+        let mut bit6_refreshed = reassembly.clone();
+        for frame in &mut bit6_refreshed.frames {
+            frame.packet[7] ^= transport_identity::SEND_WINDOW_BIT6_MASK;
+            assert!(encode_legacy_m_crc(&mut frame.packet));
+        }
+        assert!(matches!(
+            completed_server_stream_window(&state, &bit6_refreshed, &compressed),
+            CompletedDeflatedStreamWindowMatch::Exact(_)
+        ));
+
         let mut conflicting = compressed;
         conflicting[4] ^= 0x80;
         assert!(matches!(
@@ -1296,6 +1312,17 @@ mod tests {
             CompletedServerReliableStreamSlotMatch::Exact(
                 CompletedServerReliableStreamRoute::StreamWindow
             )
+        );
+
+        let mut bit6_refresh = packet.clone();
+        bit6_refresh[7] ^= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut bit6_refresh));
+        assert_eq!(
+            completed_server_reliable_stream_slot(&state, 44, 7, &bit6_refresh),
+            CompletedServerReliableStreamSlotMatch::Exact(
+                CompletedServerReliableStreamRoute::StreamWindow
+            ),
+            "FrameSend-owned bit 6 may refresh within one reliable slot"
         );
 
         let mut conflicting_tail = packet.clone();
@@ -1387,6 +1414,7 @@ mod tests {
             span_offset + 8,
             2
         ));
+        refreshed_embedded_transport[7] ^= transport_identity::SEND_WINDOW_BIT6_MASK;
         assert!(encode_legacy_m_crc(&mut refreshed_embedded_transport));
         assert_eq!(
             completed_server_reliable_stream_slot(
@@ -1400,6 +1428,16 @@ mod tests {
             ),
             "queued-record storage transport fields may refresh on retransmit"
         );
+        let mut nested_bit6_conflict = refreshed_embedded_transport.clone();
+        nested_bit6_conflict[span_offset + 7] ^= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut nested_bit6_conflict));
+        assert_eq!(
+            completed_server_reliable_stream_slot(&coalesced_first, 44, 7, &nested_bit6_conflict,),
+            CompletedServerReliableStreamSlotMatch::Conflict(
+                CompletedServerReliableStreamRoute::CoalescedWindow
+            ),
+            "nested coalesced flags stay exact without a FrameSend ownership proof"
+        );
         assert_eq!(
             completed_server_reliable_stream_slot(&coalesced_first, 44, 7, &packet),
             CompletedServerReliableStreamSlotMatch::Conflict(
@@ -1409,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_stream_replay_refreshes_each_current_ack_and_crc() {
+    fn completed_stream_replay_refreshes_each_current_ack_bit6_and_crc() {
         let mut reassembly = make_reassembly(120, &[4, 3]);
         reassembly.frames[0].ack_sequence = 81;
         reassembly.frames[1].ack_sequence = 82;
@@ -1420,9 +1458,15 @@ mod tests {
         assert!(write_be_u16(&mut spill, 5, 70));
         assert!(encode_legacy_m_crc(&mut spill));
         packets.push(spill);
-        for packet in &mut packets[..2] {
+        for packet in &mut packets {
             assert!(write_be_u16(packet, 5, 70));
+            packet[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
             assert!(encode_legacy_m_crc(packet));
+        }
+        reassembly.frames[0].packet[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
+        reassembly.frames[1].packet[7] &= !transport_identity::SEND_WINDOW_BIT6_MASK;
+        for frame in &mut reassembly.frames {
+            assert!(encode_legacy_m_crc(&mut frame.packet));
         }
         let mut replay = CompletedDeflatedReplay::VerifiedProofPackets {
             proof: VerifiedProof::family(VerifiedFamily::LoadBar),
@@ -1445,6 +1489,13 @@ mod tests {
                 .map(|view| view.ack_sequence)
                 .collect::<Vec<_>>(),
             vec![81, 82, 82]
+        );
+        assert_eq!(
+            views
+                .iter()
+                .map(|view| view.flags & transport_identity::SEND_WINDOW_BIT6_MASK)
+                .collect::<Vec<_>>(),
+            vec![transport_identity::SEND_WINDOW_BIT6_MASK, 0, 0]
         );
         assert!(views.iter().all(|view| view.crc_valid));
     }
@@ -1732,7 +1783,7 @@ fn completed_reliable_stream_transport_identity(packet: &[u8]) -> Option<Vec<u8>
     if view.frame_type != 0 {
         return None;
     }
-    let mut identity = packet.get(7..)?.to_vec();
+    let mut identity = transport_identity::server_reliable_data_transport_identity(packet, &view)?;
     if view.packetized_sequence != 1 || view.trailing_payload_length == 0 {
         return Some(identity);
     }
@@ -1746,7 +1797,9 @@ fn completed_reliable_stream_transport_identity(packet: &[u8]) -> Option<Vec<u8>
     for span in spans {
         // Queued records inherit the primary window when these storage-header
         // fields are zero, and retransmission may refresh them. They are not
-        // semantic or route identity. Preserve flags and payload/length bytes.
+        // semantic or route identity. The UnpacketizeFullMessages decompiles
+        // do not prove that FrameSend revisits nested record flags, so keep
+        // every nested flag and payload/length byte exact.
         for absolute in (span.offset + 3..span.offset + 7).chain(span.offset + 8..span.offset + 10)
         {
             if let Some(byte) = absolute
@@ -1905,6 +1958,13 @@ pub(super) fn retarget_completed_server_stream_replay(
     };
     for (index, packet) in packets.iter_mut().enumerate() {
         let source_frame = reassembly.frames.get(index).unwrap_or(last_source_frame);
+        let source_flags = *source_frame
+            .packet
+            .get(7)
+            .ok_or_else(|| anyhow::anyhow!("completed stream source frame has no flags byte"))?;
+        transport_identity::refresh_send_window_bit6(packet, source_flags)
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("failed to refresh completed stream replay bit 6"))?;
         write_be_u16(packet, 5, source_frame.ack_sequence)
             .then_some(())
             .ok_or_else(|| anyhow::anyhow!("failed to retarget completed stream replay ACK"))?;

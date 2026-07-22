@@ -24,6 +24,44 @@ use crate::{
     translate::{ContinuationOwner, VerifiedFamily, VerifiedPacket, VerifiedProof},
 };
 
+/// Send-window state copied into byte 7 immediately before transmission.
+///
+/// Diamond `sub_5F36E0` lines 751251-751280 and EE
+/// `CNetLayerWindow::FrameSend` lines 879868-879893 write this bit after the
+/// reliable-data slot has already acquired its sequence and payload. The
+/// matching receive paths (`sub_5F3940` lines 751460-751763 and EE
+/// `FrameReceive` lines 878825-879146) store type-0 data by sequence slot, so
+/// a retransmission may change this bit without changing the stored message.
+pub(super) const SEND_WINDOW_BIT6_MASK: u8 = 0x40;
+
+/// Canonical immutable identity for one server-origin type-0 data frame.
+///
+/// CRC, sequence, and ACK are before offset 7 and are already excluded. Keep
+/// every low flag, packetized field, gameplay byte, and trailing storage byte
+/// exact, while clearing only the decompile-proven FrameSend-owned bit 6. The
+/// caller's reliable key owns sequence/generation and this function refuses
+/// control lanes rather than letting them alias a data slot.
+pub(super) fn server_reliable_data_transport_identity(
+    bytes: &[u8],
+    view: &MFrameView,
+) -> Option<Vec<u8>> {
+    if view.frame_kind() != Some(MFrameType::ReliableData) {
+        return None;
+    }
+    let mut identity = bytes.get(7..)?.to_vec();
+    *identity.first_mut()? &= !SEND_WINDOW_BIT6_MASK;
+    Some(identity)
+}
+
+/// Refresh only the sender-owned bit on a cached reliable-data emission.
+pub(super) fn refresh_send_window_bit6(packet: &mut [u8], source_flags: u8) -> bool {
+    let Some(flags) = packet.get_mut(7) else {
+        return false;
+    };
+    *flags = (*flags & !SEND_WINDOW_BIT6_MASK) | (source_flags & SEND_WINDOW_BIT6_MASK);
+    true
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TransportIdentityClaim {
     pub(super) packet_name: &'static str,

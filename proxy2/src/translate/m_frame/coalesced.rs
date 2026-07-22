@@ -2398,9 +2398,11 @@ mod tests {
 
         let mut retransmit = packet;
         retransmit[5..7].copy_from_slice(&81u16.to_be_bytes());
+        retransmit[7] |= super::super::transport_identity::SEND_WINDOW_BIT6_MASK;
         assert!(encode_legacy_m_crc(&mut retransmit));
-        super::super::translate_server_to_client(&retransmit, &mut state)
+        let retransmit_emit = super::super::translate_server_to_client(&retransmit, &mut state)
             .expect("coalesced Inventory retransmit should replay typed output");
+        assert!(!matches!(retransmit_emit, crate::translate::Emit::Drop));
         super::super::finish_server_to_client_emit_validation(&mut state, true);
 
         assert_eq!(

@@ -649,6 +649,9 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let parsed_view = Some(source_view);
     let parsed_sequence = parsed_view.as_ref().map(|view| view.sequence);
     let parsed_frame_type = parsed_view.as_ref().map(|view| view.frame_type);
+    let source_transport_identity = parsed_view
+        .as_ref()
+        .and_then(|view| transport_identity::server_reliable_data_transport_identity(bytes, view));
     let fence_candidate_sequence = match (
         parsed_sequence,
         state.deflate.ordered_successor_next_sequence,
@@ -689,7 +692,9 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             .position(|event| Some(event.sequence) == parsed_sequence)
         {
             let event = &state.deflate.ordered_successor_events[index];
-            if bytes.get(7..).unwrap_or_default() != event.transport_payload_identity {
+            if source_transport_identity.as_deref()
+                != Some(event.transport_payload_identity.as_slice())
+            {
                 let view = MFrameView::parse(bytes).expect("validated reliable frame");
                 inventory_equipment::observe_server_ack_for_client_gui_status(
                     state,
@@ -730,12 +735,16 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             // successors; final validation must never advance an identity
             // that has no replayable slot.
             let server_origin_generation = observe_server_origin_reliable_generation(state, view);
+            let transport_payload_identity =
+                source_transport_identity.clone().ok_or_else(|| {
+                    anyhow::anyhow!("ordered server successor left the type-0 data lane")
+                })?;
             let event = reassembly::BufferedInterleavedServerPacket {
                 packet: bytes.to_vec(),
                 sequence: fence_sequence,
                 server_peer_ack_sequence: view.ack_sequence,
                 server_origin_generation,
-                transport_payload_identity: bytes.get(7..).unwrap_or_default().to_vec(),
+                transport_payload_identity,
             };
             if let Err(err) = merge_ordered_server_successor_events(state, &[event]) {
                 return Err(err);
@@ -758,7 +767,9 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             .deflate
             .ordered_successor_final_sequence
             .unwrap_or(expected);
-        let transport_payload_identity = bytes.get(7..).unwrap_or_default().to_vec();
+        let transport_payload_identity = source_transport_identity.clone().ok_or_else(|| {
+            anyhow::anyhow!("validated ordered server successor left the type-0 data lane")
+        })?;
         let server_origin_generation = state
             .deflate
             .ordered_successor_events
@@ -1387,6 +1398,31 @@ fn translate_server_to_client_inner(
     // into an empty verified control by a semantic consumer.
     validate_source_transport(&view, "server")?;
     let server_origin_generation = observe_server_origin_reliable_generation(state, &view);
+    if let Some(source_transport_identity) =
+        transport_identity::server_reliable_data_transport_identity(bytes, &view)
+    {
+        if let Some(committed) =
+            state
+                .direct_server_semantic_replays
+                .completed
+                .iter()
+                .find(|entry| {
+                    entry.sequence == view.sequence
+                        && entry.origin_generation == server_origin_generation
+                })
+        {
+            if committed.source_transport_identity != source_transport_identity {
+                tracing::warn!(
+                    sequence = view.sequence,
+                    server_origin_generation,
+                    trailing_payload_length = view.trailing_payload_length,
+                    packetized_sequence = view.packetized_sequence,
+                    "server M frame rejected before route selection because its direct reliable slot carried different immutable transport bytes"
+                );
+                return Ok(Emit::Drop);
+            }
+        }
+    }
     if state.deflate.ordered_successor_next_sequence == Some(view.sequence) {
         if let Some(event) = state
             .deflate
@@ -2785,9 +2821,12 @@ fn commit_direct_server_semantic_rewrite(
         view.ack_sequence,
         area_rewrite.as_ref(),
     )?;
-    let cache_source_payload = exact_direct_semantic_source_payload(inbound, view)
+    let cache_source = exact_direct_semantic_source_payload(inbound, view)
         .filter(|payload| source_payload.as_deref() == Some(*payload))
-        .map(|payload| payload.to_vec());
+        .and_then(|payload| {
+            transport_identity::server_reliable_data_transport_identity(inbound, view)
+                .map(|identity| (payload.to_vec(), identity))
+        });
     login_waypoint::maybe_queue_empty_waypoint_response(state, inbound, view)?;
     observe_verified_server_m_packet(
         state,
@@ -2795,11 +2834,12 @@ fn commit_direct_server_semantic_rewrite(
         &verified.packet,
         server_peer_ack_sequence,
     );
-    if let Some(source_payload) = cache_source_payload {
+    if let Some((source_payload, source_transport_identity)) = cache_source {
         remember_completed_direct_server_semantic_rewrite(
             state,
             view.sequence,
             server_origin_generation,
+            source_transport_identity,
             source_payload,
             &verified,
         );
@@ -2858,19 +2898,29 @@ fn replay_completed_direct_server_semantic_rewrite(
     let Some(source_payload) = exact_direct_semantic_source_payload(bytes, view) else {
         return Ok(None);
     };
+    let source_transport_identity =
+        transport_identity::server_reliable_data_transport_identity(bytes, view)
+            .ok_or_else(|| anyhow::anyhow!("direct semantic replay left type-0 data lane"))?;
     let Some(entry) = state
         .direct_server_semantic_replays
         .completed
         .iter()
         .find(|entry| {
-            entry.sequence == view.sequence
-                && entry.origin_generation == origin_generation
-                && entry.source_payload.as_slice() == source_payload
+            entry.sequence == view.sequence && entry.origin_generation == origin_generation
         })
         .cloned()
     else {
         return Ok(None);
     };
+    if entry.source_payload.as_slice() != source_payload
+        || entry.source_transport_identity != source_transport_identity
+    {
+        anyhow::bail!(
+            "server direct M reliable slot {} generation {} carried different immutable transport bytes",
+            view.sequence,
+            origin_generation
+        );
+    }
     let packet = parse_window::replace_primary_payload_and_repair(
         bytes,
         view,
@@ -2900,6 +2950,7 @@ fn remember_completed_direct_server_semantic_rewrite(
     state: &mut SessionState,
     sequence: u16,
     origin_generation: u64,
+    source_transport_identity: Vec<u8>,
     source_payload: Vec<u8>,
     verified: &VerifiedPacket,
 ) {
@@ -2914,11 +2965,7 @@ fn remember_completed_direct_server_semantic_rewrite(
         .direct_server_semantic_replays
         .completed
         .iter()
-        .any(|entry| {
-            entry.sequence == sequence
-                && entry.origin_generation == origin_generation
-                && entry.source_payload == source_payload
-        })
+        .any(|entry| entry.sequence == sequence && entry.origin_generation == origin_generation)
     {
         return;
     }
@@ -2926,6 +2973,7 @@ fn remember_completed_direct_server_semantic_rewrite(
         state::CompletedDirectServerSemanticRewrite {
             sequence,
             origin_generation,
+            source_transport_identity,
             source_payload,
             rewritten_payload: rewritten_payload.to_vec(),
             proof: verified.proof.clone(),
@@ -3047,7 +3095,9 @@ fn resolve_buffered_interleaved_server_packets_after_success(
         };
         if !view.crc_valid
             || view.sequence != event.sequence
-            || inbound.get(7..).unwrap_or_default() != event.transport_payload_identity
+            || transport_identity::server_reliable_data_transport_identity(&inbound, &view)
+                .as_deref()
+                != Some(event.transport_payload_identity.as_slice())
         {
             tracing::warn!(
                 sequence = event.sequence,
@@ -3865,7 +3915,7 @@ mod tests {
                 packetized_sequence: 1,
                 inflated_length: 16,
                 compressed,
-                frame_transport_identities: vec![source[7..].to_vec()],
+                frame_transport_identities: vec![server_transport_identity_for_test(&source)],
                 pre_shifted: true,
                 replay: CompletedDeflatedReplay::VerifiedProofPackets {
                     proof: VerifiedProof::family(VerifiedFamily::LoadBar),
@@ -4276,6 +4326,7 @@ mod tests {
 
     fn queue_ordered_successor_for_test(state: &mut SessionState, packet: &[u8]) {
         let view = MFrameView::parse(packet).expect("ordered successor test frame");
+        let transport_payload_identity = server_transport_identity_for_test(packet);
         state.deflate.ordered_successor_next_sequence = Some(view.sequence);
         state.deflate.ordered_successor_final_sequence = Some(view.sequence);
         state.deflate.ordered_successor_events.push_back(
@@ -4284,9 +4335,15 @@ mod tests {
                 sequence: view.sequence,
                 server_peer_ack_sequence: view.ack_sequence,
                 server_origin_generation: 0,
-                transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+                transport_payload_identity,
             },
         );
+    }
+
+    fn server_transport_identity_for_test(packet: &[u8]) -> Vec<u8> {
+        let view = MFrameView::parse(packet).expect("server transport identity test frame");
+        transport_identity::server_reliable_data_transport_identity(packet, &view)
+            .expect("server type-0 transport identity")
     }
 
     fn strict_session_translator_for_test() -> crate::translate::SessionTranslator {
@@ -4339,7 +4396,9 @@ mod tests {
             75
         );
 
-        let retry = client_reliable_m_frame(42, 76, &payload);
+        let mut retry = client_reliable_m_frame(42, 76, &payload);
+        retry[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut retry));
         let retry_emit = translate_server_to_client(&retry, &mut state)
             .expect("exact retransmit should retry from the retained raw queue");
         assert!(!matches!(retry_emit, Emit::Drop));
@@ -4896,7 +4955,7 @@ mod tests {
                     sequence,
                     server_peer_ack_sequence: view.ack_sequence,
                     server_origin_generation: 0,
-                    transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+                    transport_payload_identity: server_transport_identity_for_test(&packet),
                 },
             );
         }
@@ -4914,7 +4973,7 @@ mod tests {
                     sequence,
                     server_peer_ack_sequence: 76,
                     server_origin_generation: 0,
-                    transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+                    transport_payload_identity: server_transport_identity_for_test(&packet),
                 }
             })
             .collect::<Vec<_>>();
@@ -5077,7 +5136,7 @@ mod tests {
             sequence: view.sequence,
             server_peer_ack_sequence: 91,
             server_origin_generation: 7,
-            transport_payload_identity: successor.get(7..).unwrap_or_default().to_vec(),
+            transport_payload_identity: server_transport_identity_for_test(&successor),
         };
         let reassembly = ServerDeflatedReassembly {
             inflated_length: 32,
@@ -5129,7 +5188,7 @@ mod tests {
                 sequence: later_view.sequence,
                 server_peer_ack_sequence: later_view.ack_sequence,
                 server_origin_generation: 0,
-                transport_payload_identity: later.get(7..).unwrap_or_default().to_vec(),
+                transport_payload_identity: server_transport_identity_for_test(&later),
             }],
         };
 
@@ -5165,7 +5224,7 @@ mod tests {
                 sequence: conflicting_view.sequence,
                 server_peer_ack_sequence: conflicting_view.ack_sequence,
                 server_origin_generation: 0,
-                transport_payload_identity: conflicting.get(7..).unwrap_or_default().to_vec(),
+                transport_payload_identity: server_transport_identity_for_test(&conflicting),
             }],
         };
 
@@ -5191,7 +5250,7 @@ mod tests {
                     sequence: view.sequence,
                     server_peer_ack_sequence: view.ack_sequence,
                     server_origin_generation: 0,
-                    transport_payload_identity: packet.get(7..).unwrap_or_default().to_vec(),
+                    transport_payload_identity: server_transport_identity_for_test(packet),
                 },
             );
         }
@@ -5885,12 +5944,52 @@ mod tests {
             &mut state,
             5,
             0,
+            transport_identity::server_reliable_data_transport_identity(&packet, &view)
+                .expect("direct source transport identity"),
             payload.to_vec(),
             &rewrite.verified,
         );
 
+        let mut bit6_refresh = client_reliable_m_frame(5, 75, payload);
+        bit6_refresh[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut bit6_refresh));
+        let bit6_view = MFrameView::parse(&bit6_refresh).expect("bit-6 direct replay frame");
+        let bit6_replay = replay_completed_direct_server_semantic_rewrite(
+            &bit6_refresh,
+            &bit6_view,
+            0,
+            &mut state,
+        )
+        .expect("bit-6-only direct retransmit should retain slot identity")
+        .expect("bit-6-only direct retransmit should replay");
+        let bit6_replay_view =
+            MFrameView::parse(&bit6_replay.packet).expect("bit-6 direct replay output");
+        assert_eq!(
+            bit6_replay_view.flags & transport_identity::SEND_WINDOW_BIT6_MASK,
+            transport_identity::SEND_WINDOW_BIT6_MASK
+        );
+        assert!(bit6_replay_view.crc_valid);
+
+        let mut low_flag_conflict = bit6_refresh.clone();
+        low_flag_conflict[7] ^= 0x01;
+        assert!(encode_legacy_m_crc(&mut low_flag_conflict));
+        let low_flag_view =
+            MFrameView::parse(&low_flag_conflict).expect("low-flag direct replay conflict");
+        let low_flag_error = replay_completed_direct_server_semantic_rewrite(
+            &low_flag_conflict,
+            &low_flag_view,
+            0,
+            &mut state,
+        )
+        .expect_err("same reliable slot with a changed low flag must fail closed");
+        assert!(
+            low_flag_error
+                .to_string()
+                .contains("different immutable transport bytes")
+        );
+
         let mut trailing = packet.clone();
-        trailing.push(0xAA);
+        trailing.extend_from_slice(&client_reliable_m_frame(6, 74, &[b'P', 0x09, 0x05]));
         assert!(encode_legacy_m_crc(&mut trailing));
         let trailing_view = MFrameView::parse(&trailing).expect("trailing frame");
         assert_ne!(trailing_view.trailing_payload_length, 0);
@@ -5904,6 +6003,18 @@ mod tests {
             .expect("trailing replay probe")
             .is_none()
         );
+        let coalesced_before = state.coalesced_replay.completed_windows.len();
+        assert!(matches!(
+            translate_server_to_client(&trailing, &mut state)
+                .expect("conflicting trailing shape should fail closed before route dispatch"),
+            Emit::Drop
+        ));
+        assert_eq!(
+            state.coalesced_replay.completed_windows.len(),
+            coalesced_before
+        );
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
 
         state.direct_server_semantic_replays.latest_origin_sequence = Some(0xFFFE);
         let wrapped = client_reliable_m_frame(5, 75, payload);
