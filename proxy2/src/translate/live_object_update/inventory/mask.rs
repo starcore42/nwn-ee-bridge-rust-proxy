@@ -70,7 +70,9 @@ pub(super) fn try_parse_generic_inventory_prefix_with_branching(
             .collect::<Vec<_>>();
     candidates.sort_by_key(|candidate| (candidate.cursor, candidate.bits));
     candidates.dedup_by_key(|candidate| (candidate.cursor, candidate.bits));
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "inventory prefix candidates: mask=0x{mask:04X} offset={record_offset} search_end={search_end} candidates={:?}",
             candidates
@@ -182,7 +184,9 @@ fn generic_inventory_candidates_after_mask(
 }
 
 fn trace_inventory_stage(mask: u16, stage: &'static str, candidates: &[GenericInventoryCandidate]) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(

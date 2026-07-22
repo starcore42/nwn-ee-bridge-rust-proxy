@@ -1396,7 +1396,9 @@ fn try_get_legacy_door_placeable_inline_name_update_record_end(
     if (raw_mask & LEGACY_UPDATE_NAME_MASK) == 0 {
         return None;
     }
-    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug_live_claim = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
 
     // Diamond `CNWSMessage::WriteGameObjUpdate_UpdateObject` and EE
     // `sub_14079C050` consume the shared generic door/placeable fields before

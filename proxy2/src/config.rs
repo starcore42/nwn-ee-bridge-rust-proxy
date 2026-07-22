@@ -120,6 +120,19 @@ pub struct Config {
     #[arg(long, requires = "terminal_writer_trace")]
     pub terminal_writer_trace_preflight: bool,
 
+    /// Exact captured `P/05/01` source payload whose terminal proof should be
+    /// exercised during `--terminal-writer-trace-preflight`. Both the stopped
+    /// journal and this payload are opened through the runtime's bounded
+    /// immutable-snapshot path. The production unique-match, typed EE writer,
+    /// proof-join, transactional rewrite, and final exact validator run on an
+    /// owned copy before the process exits without binding a socket.
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires_all = ["terminal_writer_trace", "terminal_writer_trace_preflight"]
+    )]
+    pub terminal_writer_trace_proof_payload: Option<PathBuf>,
+
     /// Diamond `nwncdkey.ini` used to derive 1.69 public CD-key fields.
     ///
     /// The Starcore5 harness account defaults to `C:\NWN\Config\5.nwncdkey.ini`
@@ -253,5 +266,48 @@ mod tests {
             Some(PathBuf::from("terminal-writer-v2.tsv"))
         );
         assert!(config.terminal_writer_trace_preflight);
+        assert_eq!(config.terminal_writer_trace_proof_payload, None);
+    }
+
+    #[test]
+    fn terminal_writer_trace_proof_payload_requires_preflight_and_journal() {
+        for arguments in [
+            vec![
+                "hgbridge_proxy2",
+                "--terminal-writer-trace-proof-payload",
+                "sequence-95.bin",
+            ],
+            vec![
+                "hgbridge_proxy2",
+                "--terminal-writer-trace",
+                "terminal-writer-v2.tsv",
+                "--terminal-writer-trace-proof-payload",
+                "sequence-95.bin",
+            ],
+        ] {
+            let error = Config::try_parse_from(arguments)
+                .expect_err("proof payload without full preflight mode must fail in clap");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_writer_trace_proof_payload_accepts_complete_preflight_mode() {
+        let config = Config::try_parse_from([
+            "hgbridge_proxy2",
+            "--terminal-writer-trace",
+            "terminal-writer-v2.tsv",
+            "--terminal-writer-trace-preflight",
+            "--terminal-writer-trace-proof-payload",
+            "sequence-95.bin",
+        ])
+        .expect("proof payload with complete preflight mode should parse");
+        assert_eq!(
+            config.terminal_writer_trace_proof_payload,
+            Some(PathBuf::from("sequence-95.bin"))
+        );
     }
 }

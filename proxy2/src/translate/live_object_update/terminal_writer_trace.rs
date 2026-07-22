@@ -192,6 +192,74 @@ pub(crate) struct TerminalWriterTraceJournalSummary {
     producer_reported_component_sha256: Vec<[u8; 32]>,
 }
 
+/// Bounded, network-free result of exercising one stopped writer journal
+/// against one exact captured `P/05/01` source payload. This is operational
+/// readiness evidence only: the production rewrite runs on an owned copy and
+/// neither the process-global journal nor any live translator state is
+/// configured by preflight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalWriterTraceProofPreflightSummary {
+    pub(crate) journal: TerminalWriterTraceJournalSummary,
+    pub(crate) target_payload_bytes: usize,
+    pub(crate) terminal_requirement_observed: bool,
+    pub(crate) selection_status: &'static str,
+    pub(crate) payload_match_count: usize,
+    pub(crate) writer_handoff_verdict: &'static str,
+    pub(crate) writer_handoff_observed: bool,
+    pub(crate) source_record_offset: Option<usize>,
+    pub(crate) source_read_buffer_cursor: Option<usize>,
+    pub(crate) source_read_buffer_end: Option<usize>,
+    pub(crate) source_fragment_bit_start: Option<usize>,
+    pub(crate) source_fragment_bit_end: Option<usize>,
+    pub(crate) source_fragment_bit_count: Option<usize>,
+    pub(crate) emitted_read_buffer_cursor: Option<usize>,
+    pub(crate) emitted_read_buffer_end: Option<usize>,
+    pub(crate) emitted_fragment_bit_start: Option<usize>,
+    pub(crate) emitted_fragment_bit_end: Option<usize>,
+    pub(crate) emitted_fragment_bit_count: Option<usize>,
+    pub(crate) proof_join_ready: bool,
+    pub(crate) exact_final_validator_accepted: bool,
+    pub(crate) candidate_payload_bytes: Option<usize>,
+    pub(crate) candidate_fragment_bit_end: Option<usize>,
+    pub(crate) candidate_fragment_final_bits: Option<u8>,
+    pub(crate) terminal_exact_writer_rewrites: u32,
+}
+
+impl TerminalWriterTraceProofPreflightSummary {
+    pub(crate) fn ready(&self) -> bool {
+        self.terminal_requirement_observed
+            && self.selection_status
+                == TerminalWriterTraceSelectionStatus::UniquePayloadMatch.as_str()
+            && self.payload_match_count == 1
+            && self.writer_handoff_observed
+            && self.proof_join_ready
+            && self.exact_final_validator_accepted
+            && self.candidate_payload_bytes.is_some()
+            && self.candidate_fragment_bit_end.is_some()
+            && self.candidate_fragment_final_bits.is_some()
+            && self.terminal_exact_writer_rewrites == 1
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalWriterTraceProofPayloadStatus {
+    ReadFailed,
+    WriterStillOpen,
+    TooLarge,
+    InvalidFormat,
+}
+
+impl TerminalWriterTraceProofPayloadStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadFailed => "proof-payload-read-failed",
+            Self::WriterStillOpen => "proof-payload-writer-still-open",
+            Self::TooLarge => "proof-payload-too-large",
+            Self::InvalidFormat => "proof-payload-invalid-format",
+        }
+    }
+}
+
 impl TerminalWriterTraceJournalSummary {
     pub(crate) fn distinct_producer_component_count(&self) -> usize {
         self.producer_reported_component_sha256.len()
@@ -463,6 +531,169 @@ pub(crate) fn preflight_terminal_writer_trace_path(
         // stopped, so preflight must not describe a mutable prefix as sealed.
         Err("immutable-snapshot-unsupported")
     }
+}
+
+/// Exercise the complete production terminal-proof path against one exact
+/// captured payload without configuring global state or starting the proxy.
+/// Both input files must be stopped/immutable snapshots on Windows. A
+/// structurally valid journal with no target match is returned as a bounded
+/// not-ready summary so callers can print the reason before exiting nonzero.
+pub(crate) fn preflight_terminal_writer_trace_proof_paths(
+    journal_path: &Path,
+    proof_payload_path: &Path,
+) -> Result<TerminalWriterTraceProofPreflightSummary, &'static str> {
+    #[cfg(not(windows))]
+    {
+        let _ = (journal_path, proof_payload_path);
+        return Err("immutable-snapshot-unsupported");
+    }
+
+    #[cfg(windows)]
+    {
+        let journal =
+            load_terminal_writer_trace_journal(journal_path).map_err(|status| status.as_str())?;
+        let journal_summary = journal.summary();
+        let source_payload = load_terminal_writer_trace_proof_payload(proof_payload_path)
+            .map_err(|status| status.as_str())?;
+        let mut candidate = source_payload.clone();
+        let mut observed_requirement = None;
+        let mut selection_status = "not-evaluated";
+        let mut payload_match_count = 0usize;
+        let mut writer_handoff_verdict = "terminal-requirement-unavailable";
+        let mut writer_handoff_observed = false;
+
+        let attempt =
+            super::rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
+                &mut candidate,
+                None,
+                super::LiveObjectUpdateDiagnostics::Suppressed,
+                |requirement, exact_source_payload| {
+                    observed_requirement = Some(requirement);
+                    let correlation = correlate_loaded_terminal_writer_trace_journal(
+                        requirement,
+                        exact_source_payload,
+                        &journal,
+                    );
+                    selection_status = correlation.selection_status.as_str();
+                    payload_match_count = correlation.payload_match_count;
+                    writer_handoff_verdict = correlation.verdict.as_str();
+                    writer_handoff_observed = correlation.verdict.writer_handoff_observed();
+                    correlation.exact_handoff
+                },
+            );
+
+        let terminal_exact_writer_rewrites = attempt
+            .summary
+            .as_ref()
+            .map_or(0, |summary| summary.terminal_exact_writer_rewrites);
+        let proof_join_ready = terminal_exact_writer_rewrites == 1
+            && attempt.failure.is_none()
+            && writer_handoff_observed;
+        let exact_final_claim_accepted =
+            proof_join_ready && super::claim_payload_if_verified(&candidate).is_some();
+        let candidate_layout = exact_final_claim_accepted
+            .then(|| validated_packet_layout(&candidate))
+            .flatten();
+        let exact_final_validator_accepted =
+            exact_final_claim_accepted && candidate_layout.is_some();
+
+        let (
+            source_record_offset,
+            source_read_buffer_cursor,
+            source_read_buffer_end,
+            source_fragment_bit_start,
+            source_fragment_bit_end,
+            source_fragment_bit_count,
+            emitted_read_buffer_cursor,
+            emitted_read_buffer_end,
+            emitted_fragment_bit_start,
+            emitted_fragment_bit_end,
+            emitted_fragment_bit_count,
+        ) = observed_requirement.map_or(
+            (
+                None, None, None, None, None, None, None, None, None, None, None,
+            ),
+            |requirement| {
+                (
+                    Some(requirement.source_record_offset),
+                    Some(requirement.source_read_buffer_cursor),
+                    Some(requirement.source_read_buffer_end),
+                    Some(requirement.source_fragment_bits.bit_start),
+                    Some(requirement.source_fragment_bits.bit_end),
+                    Some(requirement.source_fragment_bits.bit_count),
+                    Some(requirement.emitted_read_buffer_cursor),
+                    Some(requirement.emitted_read_buffer_end),
+                    Some(requirement.emitted_fragment_bit_start),
+                    Some(requirement.emitted_fragment_bit_end),
+                    Some(requirement.emitted_fragment_bit_count),
+                )
+            },
+        );
+
+        Ok(TerminalWriterTraceProofPreflightSummary {
+            journal: journal_summary,
+            target_payload_bytes: source_payload.len(),
+            terminal_requirement_observed: observed_requirement.is_some(),
+            selection_status,
+            payload_match_count,
+            writer_handoff_verdict,
+            writer_handoff_observed,
+            source_record_offset,
+            source_read_buffer_cursor,
+            source_read_buffer_end,
+            source_fragment_bit_start,
+            source_fragment_bit_end,
+            source_fragment_bit_count,
+            emitted_read_buffer_cursor,
+            emitted_read_buffer_end,
+            emitted_fragment_bit_start,
+            emitted_fragment_bit_end,
+            emitted_fragment_bit_count,
+            proof_join_ready,
+            exact_final_validator_accepted,
+            candidate_payload_bytes: exact_final_validator_accepted.then_some(candidate.len()),
+            candidate_fragment_bit_end: candidate_layout.map(|layout| layout.fragment_valid_bits),
+            candidate_fragment_final_bits: candidate_layout
+                .map(|layout| (layout.fragment_valid_bits % 8) as u8),
+            terminal_exact_writer_rewrites,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn load_terminal_writer_trace_proof_payload(
+    path: &Path,
+) -> Result<Vec<u8>, TerminalWriterTraceProofPayloadStatus> {
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(WINDOWS_FILE_SHARE_READ)
+        .open(path)
+        .map_err(|error| match error.raw_os_error() {
+            Some(32) | Some(33) => TerminalWriterTraceProofPayloadStatus::WriterStillOpen,
+            _ => TerminalWriterTraceProofPayloadStatus::ReadFailed,
+        })?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| TerminalWriterTraceProofPayloadStatus::ReadFailed)?;
+    let payload_len = usize::try_from(metadata.len())
+        .map_err(|_| TerminalWriterTraceProofPayloadStatus::TooLarge)?;
+    if payload_len > MAX_REASONABLE_LIVE_PAYLOAD_BYTES {
+        return Err(TerminalWriterTraceProofPayloadStatus::TooLarge);
+    }
+    let read_limit = u64::try_from(MAX_REASONABLE_LIVE_PAYLOAD_BYTES)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut payload = Vec::with_capacity(payload_len.min(MAX_REASONABLE_LIVE_PAYLOAD_BYTES));
+    file.take(read_limit)
+        .read_to_end(&mut payload)
+        .map_err(|_| TerminalWriterTraceProofPayloadStatus::ReadFailed)?;
+    if payload.len() > MAX_REASONABLE_LIVE_PAYLOAD_BYTES {
+        return Err(TerminalWriterTraceProofPayloadStatus::TooLarge);
+    }
+    validated_packet_layout(&payload)
+        .is_some()
+        .then_some(payload)
+        .ok_or(TerminalWriterTraceProofPayloadStatus::InvalidFormat)
 }
 
 pub(crate) fn terminal_writer_trace_configured() -> bool {
@@ -1651,6 +1882,7 @@ mod tests {
             rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
                 &mut unique_payload,
                 None,
+                super::super::LiveObjectUpdateDiagnostics::InheritEnvironment,
                 |requirement, source_payload| {
                     assert_eq!(
                         (
@@ -1716,6 +1948,7 @@ mod tests {
                 rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
                     &mut candidate,
                     None,
+                    super::super::LiveObjectUpdateDiagnostics::InheritEnvironment,
                     |requirement, source_payload| {
                         let correlation = correlate_loaded_terminal_writer_trace_journal(
                             requirement,
@@ -1742,6 +1975,154 @@ mod tests {
                 "zero or ambiguous payload matches must leave source transactional"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn proof_preflight_runs_the_exact_terminal_plan_and_classifies_missing_evidence() {
+        let (source, record_offset) = coherent_payload();
+        let payload_path = temp_artifact_path("proof-payload");
+        std::fs::write(&payload_path, &source).expect("write stopped proof payload");
+
+        let unique_path = temp_artifact_path("proof-unique");
+        std::fs::write(&unique_path, artifact_text(&source, record_offset))
+            .expect("write unique stopped journal");
+        let unique = preflight_terminal_writer_trace_proof_paths(&unique_path, &payload_path)
+            .expect("unique source and exact EE plan should preflight");
+        assert!(unique.ready());
+        assert_eq!(unique.journal.artifact_count, 1);
+        assert_eq!(unique.target_payload_bytes, 246);
+        assert!(unique.terminal_requirement_observed);
+        assert_eq!(
+            unique.selection_status,
+            TerminalWriterTraceSelectionStatus::UniquePayloadMatch.as_str()
+        );
+        assert_eq!(unique.payload_match_count, 1);
+        assert_eq!(
+            unique.writer_handoff_verdict,
+            LiveObjectUpdateTerminalWriterHandoffVerdict::ExactObservedHandoff.as_str()
+        );
+        assert!(unique.writer_handoff_observed);
+        assert_eq!(unique.source_record_offset, Some(166));
+        assert_eq!(unique.source_read_buffer_cursor, Some(229));
+        assert_eq!(unique.source_read_buffer_end, Some(229));
+        assert_eq!(unique.source_fragment_bit_start, Some(63));
+        assert_eq!(unique.source_fragment_bit_end, Some(76));
+        assert_eq!(unique.source_fragment_bit_count, Some(13));
+        assert_eq!(unique.emitted_read_buffer_cursor, Some(243));
+        assert_eq!(unique.emitted_read_buffer_end, Some(243));
+        assert_eq!(unique.emitted_fragment_bit_start, Some(71));
+        assert_eq!(unique.emitted_fragment_bit_end, Some(88));
+        assert_eq!(unique.emitted_fragment_bit_count, Some(17));
+        assert!(unique.proof_join_ready);
+        assert!(unique.exact_final_validator_accepted);
+        assert_eq!(unique.candidate_payload_bytes, Some(259));
+        assert_eq!(unique.candidate_fragment_bit_end, Some(71));
+        assert_eq!(unique.candidate_fragment_final_bits, Some(7));
+        assert_eq!(unique.terminal_exact_writer_rewrites, 1);
+        assert_eq!(
+            std::fs::read(&payload_path).expect("reread proof payload"),
+            source,
+            "preflight must translate only an owned copy"
+        );
+
+        let mut unrelated = source.clone();
+        unrelated[7] ^= 0x01;
+        let no_match_path = temp_artifact_path("proof-no-match");
+        std::fs::write(
+            &no_match_path,
+            artifact_text_for_identity(
+                &unrelated,
+                record_offset,
+                TerminalWriterTraceIdentity {
+                    trace_id: 18,
+                    message_id: 0x0000_0000_1234_ABCE,
+                    component_sha256: [0xB6; 32],
+                },
+            ),
+        )
+        .expect("write stopped nonmatching journal");
+        let no_match = preflight_terminal_writer_trace_proof_paths(&no_match_path, &payload_path)
+            .expect("a valid journal with no target match should return not-ready evidence");
+        assert!(!no_match.ready());
+        assert_eq!(
+            no_match.selection_status,
+            TerminalWriterTraceSelectionStatus::NoPayloadMatch.as_str()
+        );
+        assert_eq!(no_match.payload_match_count, 0);
+        assert_eq!(
+            no_match.writer_handoff_verdict,
+            LiveObjectUpdateTerminalWriterHandoffVerdict::PacketMismatch.as_str()
+        );
+        assert!(!no_match.proof_join_ready);
+        assert!(!no_match.exact_final_validator_accepted);
+        assert_eq!(no_match.candidate_payload_bytes, None);
+        assert_eq!(no_match.terminal_exact_writer_rewrites, 0);
+
+        let ambiguous_path = temp_artifact_path("proof-ambiguous");
+        std::fs::write(
+            &ambiguous_path,
+            format!(
+                "{}{}",
+                artifact_text(&source, record_offset),
+                artifact_text_for_identity(
+                    &source,
+                    83,
+                    TerminalWriterTraceIdentity {
+                        trace_id: 19,
+                        message_id: 0x0000_0000_1234_ABCF,
+                        component_sha256: [0xC7; 32],
+                    },
+                )
+            ),
+        )
+        .expect("write stopped ambiguous journal");
+        let ambiguous = preflight_terminal_writer_trace_proof_paths(&ambiguous_path, &payload_path)
+            .expect("ambiguous exact payloads should return not-ready evidence");
+        assert!(!ambiguous.ready());
+        assert_eq!(
+            ambiguous.selection_status,
+            TerminalWriterTraceSelectionStatus::AmbiguousPayloadMatch.as_str()
+        );
+        assert_eq!(ambiguous.payload_match_count, 2);
+        assert!(!ambiguous.writer_handoff_observed);
+        assert!(!ambiguous.proof_join_ready);
+        assert!(!ambiguous.exact_final_validator_accepted);
+
+        for path in [unique_path, no_match_path, ambiguous_path, payload_path] {
+            std::fs::remove_file(path).expect("remove stopped preflight fixture");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn proof_preflight_rejects_a_payload_still_open_for_append() {
+        use std::{io::Write, os::windows::fs::OpenOptionsExt};
+
+        let (source, record_offset) = coherent_payload();
+        let journal_path = temp_artifact_path("proof-closed-journal");
+        std::fs::write(&journal_path, artifact_text(&source, record_offset))
+            .expect("write stopped journal");
+        let payload_path = temp_artifact_path("proof-active-payload");
+        let mut producer = std::fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .share_mode(WINDOWS_FILE_SHARE_READ)
+            .open(&payload_path)
+            .expect("open retained proof-payload producer handle");
+        producer
+            .write_all(&source)
+            .expect("append complete proof payload");
+        producer.sync_all().expect("flush proof payload");
+
+        assert_eq!(
+            preflight_terminal_writer_trace_proof_paths(&journal_path, &payload_path),
+            Err("proof-payload-writer-still-open")
+        );
+
+        drop(producer);
+        std::fs::remove_file(journal_path).expect("remove stopped journal");
+        std::fs::remove_file(payload_path).expect("remove stopped proof payload");
     }
 
     #[test]

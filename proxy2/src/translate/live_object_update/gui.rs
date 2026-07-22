@@ -987,7 +987,9 @@ pub(super) fn promote_legacy_live_gui_item_fragment_span_for_ee(
     record_end: &mut usize,
     bit_cursor: usize,
 ) -> Option<LiveGuiItemFragmentSpanPromotion> {
-    let debug = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     if offset >= *record_end || *record_end >= bytes.len() {
         if debug {
             eprintln!(

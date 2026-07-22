@@ -885,7 +885,9 @@ pub(super) fn repair_missing_current_player_2a00_opcode_after_4408_for_ee(
     ) {
         Some(candidate) => candidate,
         None => {
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) {
                 eprintln!(
                     "live-object missing current-player inventory repair rejected: reason=byte-shape offset={record_offset} preview={:02X?}",
                     bytes
@@ -926,7 +928,9 @@ pub(super) fn repair_missing_current_player_2a00_opcode_after_4408_for_ee(
     )
     .is_none()
     {
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        ) {
             eprintln!(
                 "live-object missing current-player inventory repair rejected: reason=fragment-proof offset={record_offset} record_end={record_end} bit_cursor={bit_cursor} next_bits={:?}",
                 fragment_bits
@@ -938,7 +942,9 @@ pub(super) fn repair_missing_current_player_2a00_opcode_after_4408_for_ee(
         return None;
     }
     *fragment_bits = proof_bits;
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object missing current-player inventory repair accepted: offset={record_offset} record_end={record_end} bit_cursor={bit_cursor} proof_cursor={proof_cursor}"
         );
@@ -1280,7 +1286,9 @@ fn try_parse_inventory_2700_zero_count_feature25_shape(
     // The large deterministic inventory masks still use the generic reader
     // order; keep this 0x2700 path local so a capture-specific mixed branch
     // does not change unrelated masks such as D5FF.
-    let trace = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let trace = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     let mut cursor = record_offset.checked_add(7)?;
     let mut fragment_bits = 0usize;
 

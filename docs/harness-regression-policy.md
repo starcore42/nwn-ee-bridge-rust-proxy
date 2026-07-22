@@ -59,6 +59,71 @@ Diamond direct capture is a separate legacy truth source used when the 1.69
 wire behavior is the question; it does not by itself satisfy the EE-through-
 proxy gameplay gate below.
 
+Latest gate audit (`2026-07-23T01:14:00+10:00`): the newest live HG attempt is
+still
+`C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
+last written `2026-07-22T20:00:34.0528616+10:00` and 5 hours 13 minutes 26
+seconds old. It reached typed character selection, `Module_Loaded`, two native
+`Area_AreaLoaded` messages, and 78 exact live-object accepts through 137.818
+seconds after final area completion, with 514 strict allows and empty
+stderr/quarantine. No newer failed live attempt exists, so this remains the
+qualifying gameplay capture until `2026-07-23T20:00:34.0528616+10:00`.
+
+For a terminal-writer session, structural journal preflight alone is not proof
+that the stopped journal contains the target interaction. Before networking,
+exercise the real production proof path against the exact captured
+`P/05/01` payload:
+
+```powershell
+.\target\release\hgbridge_proxy2.exe `
+  --terminal-writer-trace C:\secure\terminal-writer-v2.tsv `
+  --terminal-writer-trace-preflight `
+  --terminal-writer-trace-proof-payload C:\secure\sequence-95-live-object.bin
+```
+
+Success is exactly one TSV row beginning
+`terminal-writer-trace-proof-preflight\tstatus\tready\tsnapshot_integrity\twindows-deny-write`;
+the process then exits zero before logging, NWSync, or socket initialization.
+The row must also report one unique payload match, exact observed handoff,
+proof join and final validator ready, and one exact writer rewrite. Payload
+bytes are never printed, including when inherited live-object debug flags are
+enabled, and the input file is never modified. A stopped but
+wrong journal produces a bounded `status=not-ready` row and a nonzero exit;
+`no-payload-match` means the deployed producer did not capture this exact
+message, while `ambiguous-payload-match` means more than one trace block has
+the same complete payload and none may be selected. `proof-payload-writer-still-open`,
+oversize, invalid format, missing terminal requirement, writer cursor/bit
+mismatch, proof-join failure, or final-validator failure all stop before
+networking. Stop both producers and transfer complete files; do not infer
+readiness from file existence or a structural `status=loaded` result.
+
+The live harness applies the same guard when both paths are supplied. It quotes
+proxy arguments using Windows command-line rules, so paths containing spaces
+are safe, and its `-Configuration` value selects the matching Rust Cargo
+profile as well as the native bridge profile:
+
+```powershell
+.\tools\test-hg-bridge.ps1 `
+  <normal credentialed HG arguments> `
+  -TerminalWriterTracePath C:\secure\terminal-writer-v2.tsv `
+  -TerminalWriterTraceProofPayloadPath C:\secure\sequence-95-live-object.bin
+```
+
+The retained stock-Diamond journal currently fails this stronger check against
+the real 246-byte sequence-95 payload with `no-payload-match`, zero matches,
+and `packet-mismatch`. The target itself still yields source record offset 166,
+read cursor `229..229`, MSB-first source fragment `63..76` (13 bits), emitted
+read cursor `243..243`, and emitted residual `71..88` (17 bits). That is the
+expected fail-closed result until the v2 producer runs on the actual HG
+component; it is not a harness connection failure and does not authorize a
+translator change.
+
+Canonical strict replay on 2026-07-23 retained the stopped journal unchanged
+and passed 164 packet files with 339 strict allows, zero strict/semantic
+quarantine, zero quarantine files, zero terminal residuals, and empty proxy
+stderr. Its summary is
+`C:\nwnbridge\codex-proxy2-replay-terminal-proof-preflight-20260723-0212\replay-summary.json`.
+
 Latest gate audit (`2026-07-22T20:06:53+10:00`): the run began from qualifying
 gameplay evidence at
 `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,

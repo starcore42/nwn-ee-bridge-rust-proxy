@@ -16,6 +16,14 @@ use anyhow::Context;
 use clap::Parser;
 use config::Config;
 
+fn optional_usize(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn optional_u8(value: Option<u8>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
 fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
@@ -24,6 +32,56 @@ fn main() -> anyhow::Result<()> {
             .terminal_writer_trace
             .as_deref()
             .expect("clap requires --terminal-writer-trace for preflight");
+        if let Some(proof_payload_path) = config.terminal_writer_trace_proof_payload.as_deref() {
+            let summary =
+                translate::live_object_update::preflight_terminal_writer_trace_proof_paths(
+                    path,
+                    proof_payload_path,
+                )
+                .map_err(|reason| {
+                    anyhow::anyhow!(
+                        "terminal writer trace proof preflight journal={} payload={}: {reason}",
+                        path.display(),
+                        proof_payload_path.display()
+                    )
+                })?;
+            let ready = summary.ready();
+            println!(
+                "terminal-writer-trace-proof-preflight\tstatus\t{}\tsnapshot_integrity\twindows-deny-write\tartifact_count\t{}\tdistinct_finalized_payload_count\t{}\tduplicate_payload_group_count\t{}\tmax_payload_match_count\t{}\ttarget_payload_bytes\t{}\tterminal_requirement_observed\t{}\tselection_status\t{}\tpayload_match_count\t{}\twriter_handoff_verdict\t{}\twriter_handoff_observed\t{}\tsource_record_offset\t{}\tsource_read_buffer_cursor\t{}\tsource_read_buffer_end\t{}\tsource_fragment_bit_start\t{}\tsource_fragment_bit_end\t{}\tsource_fragment_bit_count\t{}\temitted_read_buffer_cursor\t{}\temitted_read_buffer_end\t{}\temitted_fragment_bit_start\t{}\temitted_fragment_bit_end\t{}\temitted_fragment_bit_count\t{}\tproof_join_ready\t{}\texact_final_validator_accepted\t{}\tcandidate_payload_bytes\t{}\tcandidate_fragment_bit_end\t{}\tcandidate_fragment_final_bits\t{}\tterminal_exact_writer_rewrites\t{}",
+                if ready { "ready" } else { "not-ready" },
+                summary.journal.artifact_count,
+                summary.journal.distinct_finalized_payload_count,
+                summary.journal.duplicate_payload_group_count,
+                summary.journal.max_payload_match_count,
+                summary.target_payload_bytes,
+                summary.terminal_requirement_observed,
+                summary.selection_status,
+                summary.payload_match_count,
+                summary.writer_handoff_verdict,
+                summary.writer_handoff_observed,
+                optional_usize(summary.source_record_offset),
+                optional_usize(summary.source_read_buffer_cursor),
+                optional_usize(summary.source_read_buffer_end),
+                optional_usize(summary.source_fragment_bit_start),
+                optional_usize(summary.source_fragment_bit_end),
+                optional_usize(summary.source_fragment_bit_count),
+                optional_usize(summary.emitted_read_buffer_cursor),
+                optional_usize(summary.emitted_read_buffer_end),
+                optional_usize(summary.emitted_fragment_bit_start),
+                optional_usize(summary.emitted_fragment_bit_end),
+                optional_usize(summary.emitted_fragment_bit_count),
+                summary.proof_join_ready,
+                summary.exact_final_validator_accepted,
+                optional_usize(summary.candidate_payload_bytes),
+                optional_usize(summary.candidate_fragment_bit_end),
+                optional_u8(summary.candidate_fragment_final_bits),
+                summary.terminal_exact_writer_rewrites,
+            );
+            if !ready {
+                anyhow::bail!("terminal writer trace proof preflight is not ready");
+            }
+            return Ok(());
+        }
         let summary = translate::live_object_update::preflight_terminal_writer_trace_path(path)
             .map_err(|reason| {
                 anyhow::anyhow!("terminal writer trace {}: {reason}", path.display())

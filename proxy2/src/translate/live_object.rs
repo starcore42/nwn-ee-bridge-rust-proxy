@@ -486,8 +486,9 @@ fn zero_declared_live_object_tail_split(payload: &[u8], live_bytes_offset: usize
         if split <= live_bytes_offset {
             break;
         }
-        let debug =
-            std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() && tail_len <= 32;
+        let debug = crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        ) && tail_len <= 32;
         if decode_cnw_msb_valid_bits(&payload[split..]).is_none() {
             if debug {
                 eprintln!(
@@ -579,7 +580,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     bits,
                     &mut bit_cursor,
                 ) {
-                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                    if crate::translate::live_object_update::live_object_debug_env_enabled("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM") {
                         eprintln!(
                             "live-object declared capacity rejected: reason=item-create offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
                         );
@@ -617,7 +618,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     bits,
                     &mut bit_cursor,
                 ) {
-                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                    if crate::translate::live_object_update::live_object_debug_env_enabled("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM") {
                         eprintln!(
                             "live-object declared capacity rejected: reason=item-update offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
                         );
@@ -666,7 +667,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                             bits,
                             &mut ee_cursor,
                         ) {
-                            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                            if crate::translate::live_object_update::live_object_debug_env_enabled("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM") {
                                 eprintln!(
                                     "live-object declared capacity rejected: reason=creature-update offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
                                 );
@@ -734,7 +735,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                         bytes, offset, end, bits, bit_cursor,
                     )
                 else {
-                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                    if crate::translate::live_object_update::live_object_debug_env_enabled("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM") {
                         eprintln!(
                             "live-object zero-declared GUI capacity rejected: reason=no-proven-end offset={offset} record_end={record_end} end={end} bit_cursor={bit_cursor}"
                         );
@@ -750,7 +751,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                                 record_end,
                             );
                 if proven_record_end != record_end && !zero_fragment_padding_after_gui {
-                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                    if crate::translate::live_object_update::live_object_debug_env_enabled("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM") {
                         eprintln!(
                             "live-object zero-declared GUI capacity rejected: reason=end-mismatch offset={offset} record_end={record_end} proven_record_end={proven_record_end} end={end} bit_cursor={bit_cursor}"
                         );
@@ -764,7 +765,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     bits,
                     &mut bit_cursor,
                 ) {
-                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                    if crate::translate::live_object_update::live_object_debug_env_enabled("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM") {
                         eprintln!(
                             "live-object zero-declared GUI capacity rejected: reason=advance offset={offset} record_end={proven_record_end} end={end} bit_cursor={bit_cursor}"
                         );
@@ -2044,8 +2045,9 @@ fn rewrite_creature_add_visual_transform_maps_inner(
                     legacy_door_model_tokens_removed = legacy_door_model_tokens_removed
                         .saturating_add(record_rewrite.legacy_door_model_tokens_removed);
                     fragment_bits_changed |= record_rewrite.fragment_bits_changed;
-                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
-                        && record_rewrite.fragment_bits_changed
+                    if crate::translate::live_object_update::live_object_debug_env_enabled(
+                        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                    ) && record_rewrite.fragment_bits_changed
                     {
                         eprintln!(
                             "live-object visual add fragment rewrite applied: offset={offset} record_end={record_end} bit_cursor_before={before_fragment_bit_cursor} bit_cursor_after={fragment_bit_cursor} bits_len_before={before_fragment_bits_len} bits_len_after={} rewrite={record_rewrite:?}",
@@ -2055,8 +2057,9 @@ fn rewrite_creature_add_visual_transform_maps_inner(
                     offset = record_end.max(offset + 1);
                     continue;
                 }
-                if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
-                    && live_bytes.get(offset).copied() == Some(b'A')
+                if crate::translate::live_object_update::live_object_debug_env_enabled(
+                    "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                ) && live_bytes.get(offset).copied() == Some(b'A')
                     && matches!(
                         live_bytes.get(offset + 1).copied(),
                         Some(DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE)
@@ -2164,7 +2167,9 @@ fn rewrite_creature_add_visual_transform_maps_inner(
         let Some(insert_offset) =
             legacy_add_visual_transform_insert_offset(&live_bytes, offset, record_end)
         else {
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) {
                 eprintln!(
                     "live-object visual add pass cursor lost: offset={offset} record_end={record_end} opcode=0x{:02X} marker=0x{:02X} bit_cursor={} preview={:02X?}",
                     live_bytes.get(offset).copied().unwrap_or_default(),
@@ -2251,7 +2256,9 @@ fn rewrite_creature_add_visual_transform_maps_inner(
         fragment_bits_trimmed,
         legacy_door_model_tokens_removed,
     };
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!("live-object visual rewrite summary before emit: {summary:?}");
     }
     *payload = rewritten;
@@ -3453,7 +3460,9 @@ fn rewrite_legacy_door_add_record_for_ee(
     }
 
     let name_shape = legacy_door_add_name_shape_at(bytes, name_offset, *record_end)?;
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object door rewrite candidate: offset={record_offset} record_end={} bit_cursor={} already_has_visual_map={} name_offset={} shape={:?} next_bits={:?} name_tail={:02X?}",
             *record_end,
@@ -3701,7 +3710,9 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             legacy_optional_object_bytes_present,
             "server->client live-object placeable add optional-object bit/byte mismatch"
         );
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD").is_some() {
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD",
+        ) {
             eprintln!(
                 "placeable-add optional mismatch record_offset={record_offset} record_end={} bit_cursor={} source_post_name_bit={source_post_name_bit} source_optional={} bytes_optional={} tail_offset={tail_offset} visual_offset={visual_offset} full_tail_end={full_tail_end} optional_tail_end={optional_tail_end}",
                 *record_end,
@@ -3831,7 +3842,9 @@ fn rewrite_legacy_placeable_add_record_for_ee(
 
     let already_has_ee_visual_map =
         has_ee_identity_visual_transform_map_at(bytes, visual_offset, *record_end);
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD",
+    ) {
         let post_name_bit = *bit_cursor + 1 + destination_name_inner_bits;
         eprintln!(
             "placeable-add rewrite decision record_offset={record_offset} record_end={} bit_cursor={} visual_offset={visual_offset} already_has_map={already_has_ee_visual_map} legacy_optional_bytes={legacy_optional_object_bytes_present} post_name_bit={post_name_bit} optional_bit={:?} final_bit={:?} direct_name_repair={direct_name_mode_repair} compact_tail={compact_tail_zero_extended}",

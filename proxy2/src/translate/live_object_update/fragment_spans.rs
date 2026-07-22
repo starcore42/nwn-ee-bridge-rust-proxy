@@ -729,7 +729,9 @@ pub(super) fn remove_trailing_zero_fragment_storage_after_verified_record_for_ee
     }
 
     let bytes_removed = span.len();
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object zero fragment storage removed: span_start={span_start} span_end={span_end} bytes_removed={bytes_removed}"
         );
@@ -777,7 +779,9 @@ pub(super) fn promote_trailing_fragment_prefix_after_verified_record_for_ee(
     *fragment_bytes = combined;
     *fragment_bits = combined_bits;
 
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object trailing fragment prefix promoted: span_start={span_start} bytes_promoted={} bits_promoted={bits_promoted}",
             prefix.len()
@@ -841,7 +845,9 @@ pub(super) fn promote_work_remaining_trailing_fragment_span_for_ee(
     *fragment_bytes = span;
     *fragment_bits = promoted_bits;
 
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object work-remaining trailing fragment span promoted: span_start={span_start} bytes_promoted={} bits_promoted={bits_promoted}",
             fragment_bytes.len()
@@ -966,7 +972,9 @@ pub(super) fn promote_boundary_collision_trailing_fragment_prefix_after_verified
 
     live_bytes.drain(span_start..);
 
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object boundary-collision trailing fragment prefix promoted: span_start={span_start} bytes_promoted={} bits_promoted={bits_promoted}",
             prefix.len()
@@ -1332,7 +1340,9 @@ fn trace_creature_update_interleaved_fragment_span_promotion(
     bits_promoted: usize,
     rewrite_bare_second_identity_string: bool,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     let raw_mask = read_u32_le(live_bytes, offset + 6).unwrap_or(0);
@@ -1364,7 +1374,9 @@ fn trace_creature_update_interleaved_fragment_span_proof(
 }
 
 fn debug_live_claim_enabled_for_offset(offset: usize) -> bool {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return false;
     }
     let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET") else {

@@ -173,7 +173,9 @@ pub(super) fn rewrite_update_record_for_ee(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<ItemUpdateRewrite> {
-    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug_live_claim = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     let result = rewrite_update_record_for_ee_inner(
         live_bytes,
         record_offset,

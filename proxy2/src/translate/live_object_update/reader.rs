@@ -213,7 +213,9 @@ pub(super) fn parse_legacy_inline_named_door_placeable_update_record_for_ee(
     }
 
     let mask = read_u32_le(bytes, offset + 6)?;
-    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug_live_claim = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     if (mask & LEGACY_UPDATE_NAME_MASK) == 0 {
         return None;
     }
@@ -498,7 +500,9 @@ fn parse_verified_door_placeable_update_record(
     bit_cursor: usize,
     dialect: DoorPlaceableUpdateReadDialect,
 ) -> Option<VerifiedEeDoorPlaceableUpdateRecord> {
-    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug_live_claim = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     if bit_cursor > fragment_bits.len() {
         if debug_live_claim {
             eprintln!(

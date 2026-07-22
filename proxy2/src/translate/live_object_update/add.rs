@@ -76,7 +76,9 @@ pub(super) fn advance_verified_add_record(
     let verified = shape_ok && cursor_ok;
 
     if !verified {
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        ) {
             eprintln!(
                 "live-object add claim rejected: offset={offset} record_end={record_end} marker=0x{:02X} bit_cursor={} shape_ok={shape_ok} cursor_ok={cursor_ok} next_bits={:?}",
                 bytes.get(offset + 1).copied().unwrap_or_default(),

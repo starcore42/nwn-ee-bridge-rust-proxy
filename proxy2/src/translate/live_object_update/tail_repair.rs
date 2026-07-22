@@ -283,7 +283,9 @@ fn trace_tail_repair_candidate(
     bit_cursor: usize,
     candidate_bits_len: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(
@@ -330,7 +332,9 @@ fn trace_tail_repair_accept(
     bytes_removed: usize,
     bits_inserted: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(
@@ -351,7 +355,9 @@ fn trace_tail_repair_reject(
     record_end: usize,
     bit_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(

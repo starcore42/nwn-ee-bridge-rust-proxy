@@ -143,7 +143,9 @@ pub(super) fn advance_legacy_add_record_bit_cursor_for_update_pass(
             let name_offset = record_offset + 6;
             let compact_cursor_shape =
                 compact_legacy_placeable_add_cursor_shape(bytes, name_offset, record_end, true);
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD",
+            ) {
                 eprintln!(
                     "placeable-add update-pass cursor candidate record_offset={record_offset} record_end={record_end} bit_cursor={} remaining_bits={} compact_cursor_shape={compact_cursor_shape} preview={:02X?}",
                     *bit_cursor,
@@ -463,7 +465,9 @@ fn advance_placeable_add_bit_cursor(
         bits,
         *bit_cursor,
     ) else {
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD").is_some() {
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD",
+        ) {
             eprintln!(
                 "placeable-add cursor reject record_offset={record_offset} record_end={record_end} bit_cursor={}",
                 *bit_cursor

@@ -4026,7 +4026,9 @@ fn trace_creature_update_cursor_accept(
 }
 
 fn debug_creature_update_cursor_trace_enabled(raw_mask: u32) -> bool {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return false;
     }
     let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_CREATURE_UPDATE_MASK") else {
@@ -5190,7 +5192,9 @@ fn try_simulate_creature_update_identity_optional_suffix(
 fn build_legacy_creature_update_identity_branch_candidate_states(
     mut cursor: LegacyCreatureUpdateCursor<'_>,
 ) -> Option<Vec<LegacyCreatureUpdateCursor<'_>>> {
-    let debug_identity = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_IDENTITY_ROWS").is_some();
+    let debug_identity = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_IDENTITY_ROWS",
+    );
     let identity_start_read_cursor = cursor.read_cursor;
     cursor.read_u16()?;
     cursor.read_cexo_string()?;
@@ -5460,7 +5464,9 @@ fn simulate_legacy_creature_update_action_post_state_followup(
 }
 
 fn trace_creature_update_action_branch(action_code: u16, read_cursor: usize, bit_cursor: usize) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(
@@ -5476,7 +5482,9 @@ fn trace_creature_update_action_followup(
     read_cursor: usize,
     bit_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(

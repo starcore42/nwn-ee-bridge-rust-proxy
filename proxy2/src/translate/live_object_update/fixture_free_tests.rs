@@ -1,5 +1,29 @@
 //! Fixture-free live-object update regression anchors.
 
+#[test]
+fn live_object_debug_output_suppression_is_scoped_and_nestable() {
+    const PRESENT_ENV_KEY: &str = "PATH";
+    assert!(
+        std::env::var_os(PRESENT_ENV_KEY).is_some(),
+        "the test runner must provide PATH"
+    );
+    assert!(super::live_object_debug_env_enabled(PRESENT_ENV_KEY));
+
+    let outer = super::LiveObjectDebugOutputSuppressionGuard::enter();
+    assert!(!super::live_object_debug_env_enabled(PRESENT_ENV_KEY));
+    {
+        let _inner = super::LiveObjectDebugOutputSuppressionGuard::enter();
+        assert!(!super::live_object_debug_env_enabled(PRESENT_ENV_KEY));
+    }
+    assert!(!super::live_object_debug_env_enabled(PRESENT_ENV_KEY));
+    drop(outer);
+
+    assert!(
+        super::live_object_debug_env_enabled(PRESENT_ENV_KEY),
+        "dropping the outer guard must restore inherited diagnostics"
+    );
+}
+
 fn bytes_from_hex(hex: &str) -> Vec<u8> {
     hex.split_whitespace()
         .map(|part| u8::from_str_radix(part, 16).expect("test hex byte"))

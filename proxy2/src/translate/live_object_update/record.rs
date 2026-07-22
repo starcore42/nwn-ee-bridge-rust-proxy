@@ -677,7 +677,9 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
         // all-bits masks are intentionally accepted at coarse boundary scan
         // time and normalized only after a bounded record parser owns them.
         if raw_mask != LEGACY_UPDATE_STATE_MASK {
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) {
                 tracing::trace!(
                     object_type,
                     object_id = format_args!("0x{object_id:08X}"),
@@ -3121,7 +3123,9 @@ fn debug_update_record_reject(
     translated_mask: u32,
     bit_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(
@@ -3172,8 +3176,9 @@ pub(super) fn advance_verified_update_record_for_ee(
         fragment_bits,
         *bit_cursor,
     ) else {
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
-            && offset + 2 <= live_bytes.len()
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        ) && offset + 2 <= live_bytes.len()
             && matches!(live_bytes[offset], b'U')
             && matches!(
                 live_bytes[offset + 1],

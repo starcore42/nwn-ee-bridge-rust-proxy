@@ -17,6 +17,62 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-23 payload-aware terminal proof preflight: the `01:14+10:00` live
+  gate rechecked
+  `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
+  last written `2026-07-22T20:00:34.0528616+10:00` and 5 hours 13 minutes 26
+  seconds old. It had selected typed `starcore-druid60`, reached
+  `Module_Loaded`, produced two native `Area_AreaLoaded` messages, and accepted
+  78 exact live-object packets through 137.818 seconds after final area
+  completion. Its 514 strict allows, empty stderr/quarantine, and absence of a
+  newer failed live attempt satisfied the gameplay gate without another HG
+  login.
+
+  The active writer-owner fix remains blocked on the stopped v2 journal from
+  the deployed HG component. Production now accepts
+  `--terminal-writer-trace-proof-payload <PATH>` only with terminal trace
+  preflight. It opens both journal and exact captured `P/05/01` payload through
+  bounded Windows deny-write snapshots, then exercises the ordinary unique
+  full-payload selector, opaque source token, typed EE residual-removal plan,
+  two-sided proof join, transactional apply, and final exact validator on an
+  owned copy. It configures no global journal, logging, NWSync, or network
+  state. The bounded TSV prints no payload bytes, even when inherited
+  live-object debug switches are set, and exits nonzero unless the complete
+  production path is ready. The live harness exposes the same guard
+  as `-TerminalWriterTraceProofPayloadPath` and refuses to start a trace-backed
+  network session when it is not ready.
+
+  The real 246-byte sequence-95 failure payload at
+  `C:\nwnbridge\codex-live-area-index-door-20260715-1455\harness-proxy-20260715-145143\quarantine\live-object-unclaimed-strict-family-GameObjUpdate_LiveObject-seq95-frames1-1784091225656.bin`
+  has SHA-256
+  `900F6CD0BEA6241C9331A11639EFF594F73876706AEDE43DBE3094E3F757223B`.
+  Against the stopped three-artifact stock-Diamond journal, target preflight
+  now reports `status=not-ready`, `selection_status=no-payload-match`, zero
+  matches, and `writer_handoff_verdict=packet-mismatch`, then exits 1 before
+  networking. It still derives the exact source contract at record offset 166,
+  read cursor `229..229`, MSB-first fragment `63..76` (13 bits), and emitted
+  contract at read cursor `243..243`, fragment `71..88` (17 bits), while
+  `proof_join_ready`, final validation, and rewrite count remain false/zero.
+  Synthetic tests prove the unique exact path ends at the typed EE cursor 71,
+  final-valid count 7, candidate length 259, and leaves the source file
+  unchanged; no-match, ambiguous, open-writer, and CLI dependency paths fail
+  closed. The harness now quotes the complete Windows proxy command line so
+  trace/log/resource paths with spaces survive `Start-Process`, and
+  `-Configuration Release` selects and builds the Rust release profile rather
+  than whichever debug/release executable happens to be newest. No gameplay
+  byte, field/BOOL order, cursor, claim, or runtime rewrite authority changed.
+
+  Strict canonical replay at
+  `C:\nwnbridge\codex-proxy2-replay-terminal-proof-preflight-20260723-0212\replay-summary.json`
+  passed with 164 packet files, 21 client and 144 server packets injected, 177
+  dummy-server and 175 dummy-client receives, 339 strict allows, zero strict or
+  semantic quarantine, zero quarantine files, zero terminal residuals, stable
+  journal bytes, and empty proxy stderr.
+
+  Next: deploy the existing v2 producer on the actual HG component, stop and
+  transfer its complete journal, rerun this exact payload preflight until it
+  reports one unique match and `status=ready`, then live-confirm the same door
+  `UseObject` path before treating the terminal writer rule as generalized.
 - 2026-07-22 stopped terminal-writer journal preflight: the `22:13+10:00` live
   gate used
   `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,

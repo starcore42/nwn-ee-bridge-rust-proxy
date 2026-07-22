@@ -35,6 +35,7 @@
 //!   is no generic inter-row fragment BOOL for shifted `A`/`U`/`D` ownership.
 
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{Mutex, OnceLock},
 };
@@ -111,8 +112,61 @@ pub(crate) use terminal_evidence::{
 pub(crate) use terminal_trace::format_live_object_update_terminal_tail9_handoff_capture;
 pub(crate) use terminal_writer_trace::{
     configure_terminal_writer_trace_path, preflight_terminal_writer_trace_path,
-    terminal_writer_trace_configured,
+    preflight_terminal_writer_trace_proof_paths, terminal_writer_trace_configured,
 };
+
+thread_local! {
+    static DEBUG_OUTPUT_SUPPRESSION_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Return whether one live-object diagnostic environment switch is active.
+///
+/// Every environment-gated diagnostic in this packet-family module must use
+/// this predicate. The terminal-writer proof preflight deliberately runs the
+/// real parser/translator/writer path with a scoped suppression guard so an
+/// inherited operator debug setting cannot disclose packet bytes or break the
+/// preflight's one-row output contract.
+pub(crate) fn live_object_debug_env_enabled(name: &str) -> bool {
+    DEBUG_OUTPUT_SUPPRESSION_DEPTH.with(|depth| depth.get() == 0)
+        && std::env::var_os(name).is_some()
+}
+
+struct LiveObjectDebugOutputSuppressionGuard {
+    previous_depth: u32,
+}
+
+impl LiveObjectDebugOutputSuppressionGuard {
+    fn enter() -> Self {
+        let previous_depth = DEBUG_OUTPUT_SUPPRESSION_DEPTH.with(|depth| {
+            let previous_depth = depth.get();
+            depth.set(
+                previous_depth
+                    .checked_add(1)
+                    .expect("live-object debug suppression overflow"),
+            );
+            previous_depth
+        });
+        Self { previous_depth }
+    }
+}
+
+impl Drop for LiveObjectDebugOutputSuppressionGuard {
+    fn drop(&mut self) {
+        DEBUG_OUTPUT_SUPPRESSION_DEPTH.with(|depth| {
+            debug_assert!(
+                depth.get() > self.previous_depth,
+                "live-object debug suppression guards dropped out of order"
+            );
+            depth.set(self.previous_depth);
+        });
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LiveObjectUpdateDiagnostics {
+    InheritEnvironment,
+    Suppressed,
+}
 
 pub(crate) fn looks_like_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
     world_status::is_work_remaining_record_at(bytes, offset)
@@ -20711,7 +20765,9 @@ fn claim_payload_if_verified_with_reject(
                 bit_cursor,
             ));
         }
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        ) {
             eprintln!(
                 "live-object claim boundary: offset={offset} record_end={record_end} bit_cursor={bit_cursor} opcode=0x{:02X} marker=0x{:02X} preview={:02X?}",
                 live_bytes.get(offset).copied().unwrap_or_default(),
@@ -21450,7 +21506,9 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
 
     let fragment_bytes = bits::pack_msb_valid_bits(fragment_bits, CNW_FRAGMENT_HEADER_BITS);
     summary.new_fragment_bytes = u32::try_from(fragment_bytes.len()).unwrap_or(u32::MAX);
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object add-name repair summary before emit: bit_cursor={bit_cursor} summary={summary:?}"
         );
@@ -21468,7 +21526,9 @@ fn trace_add_name_rewrite_reject(
     bit_cursor: usize,
     fragment_bits: &[bool],
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     let preview_limit = if reason == "missing-live-object-submessage-boundary" {
@@ -23083,7 +23143,9 @@ fn trace_claim_reject(
     record_end: usize,
     bit_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     let preview_end = record_end
@@ -23714,6 +23776,7 @@ pub fn rewrite_update_records_payload_with_area_context_attempt(
         return rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
             payload,
             area_context,
+            LiveObjectUpdateDiagnostics::InheritEnvironment,
             |requirement, source_payload| {
                 terminal_writer_trace::correlate_terminal_writer_trace(requirement, source_payload)
                     .exact_handoff
@@ -23735,6 +23798,7 @@ pub fn rewrite_update_records_payload_with_area_context_attempt(
 fn rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff<F>(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
+    diagnostics: LiveObjectUpdateDiagnostics,
     resolve_handoff: F,
 ) -> LiveObjectUpdateRewriteAttempt
 where
@@ -23743,6 +23807,8 @@ where
         &[u8],
     ) -> Option<terminal_writer_trace::ExactTerminalWriterHandoff>,
 {
+    let _debug_output_suppression = matches!(diagnostics, LiveObjectUpdateDiagnostics::Suppressed)
+        .then(LiveObjectDebugOutputSuppressionGuard::enter);
     let source_payload = payload.clone();
     let mut failure = None;
     let mut summary = rewrite_update_records_payload_with_area_context_inner(
@@ -23869,6 +23935,7 @@ pub(crate) fn rewrite_update_records_payload_with_area_context_exact_terminal_te
     rewrite_update_records_payload_with_area_context_attempt_and_terminal_handoff(
         payload,
         area_context,
+        LiveObjectUpdateDiagnostics::InheritEnvironment,
         |requirement, source_payload| {
             Some(
                 terminal_writer_trace::exact_terminal_writer_handoff_for_test(
@@ -23914,7 +23981,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
     >,
     mut terminal_staged_summary: Option<&mut Option<LiveObjectUpdateRewriteSummary>>,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object update rewrite entered: payload_len={} prefix={:02X?}",
             payload.len(),
@@ -24070,7 +24139,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
         let legacy_gui_rewrite_boundary = live_bytes.get(offset).copied() == Some(b'G')
             && gui::looks_like_legacy_live_gui_rewrite_boundary(&live_bytes, offset);
         if live_bytes.get(offset).copied() == Some(b'G')
-            && std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
+            && crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            )
         {
             eprintln!(
                 "live-object update rewrite GUI boundary probe: offset={offset} legacy={legacy_gui_rewrite_boundary} proven={:?} preview={:02X?}",
@@ -25343,7 +25414,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                             offset = record_end.max(offset + 1);
                             continue;
                         }
-                        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                        if crate::translate::live_object_update::live_object_debug_env_enabled(
+                            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                        ) {
                             eprintln!(
                                 "live-object add record bit claim accepted: offset={offset} record_end={record_end} family={} source_bits_consumed={source_fragment_bits} emitted_bits={emitted_fragment_bits} bits_inserted={add_extra_bits_inserted} bits_removed={add_extra_bits_removed}",
                                 add_ledger_family_override.unwrap_or("add-rewrite")
@@ -25794,7 +25867,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
         }
 
         if opcode == b'P' && object_type == 0x05 {
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) {
                 eprintln!(
                     "live-object creature-P rewrite state: offset={offset} record_end={record_end} bit_cursor={bit_cursor} bit_cursor_reliable={bit_cursor_reliable} already_ee={creature_appearance_already_ee_shaped} verified_ee={creature_appearance_verified_ee_shaped} legacy_end={creature_appearance_legacy_end:?}"
                 );
@@ -25865,7 +25940,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 && creature_appearance_already_ee_shaped
                 && !creature_appearance_verified_ee_shaped
             {
-                if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                if crate::translate::live_object_update::live_object_debug_env_enabled(
+                    "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                ) {
                     eprintln!(
                         "live-object creature-P already-EE repair considered: offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
                     );
@@ -26172,7 +26249,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     || appearance_bits_removed_for_tail_repair != 0)
                 && !appearance_tail_fragment_bits_adjusted
             {
-                if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                if crate::translate::live_object_update::live_object_debug_env_enabled(
+                    "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                ) {
                     eprintln!(
                         "live-object creature-P tail repair armed: offset={offset} bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair} removed_bits={appearance_bits_removed_for_tail_repair} reason=appearance-fragment-bits-changed"
                     );
@@ -26195,14 +26274,18 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         },
                     );
             } else if appearance_tail_fragment_bits_adjusted {
-                if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                if crate::translate::live_object_update::live_object_debug_env_enabled(
+                    "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                ) {
                     eprintln!(
                         "live-object creature-P tail repair cleared: offset={offset} reason=fragment-bits-adjusted bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair}"
                     );
                 }
                 pending_creature_p_tail_repair = None;
             } else if bit_cursor_reliable && creature_appearance_already_ee_shaped {
-                if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                if crate::translate::live_object_update::live_object_debug_env_enabled(
+                    "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                ) {
                     eprintln!(
                         "live-object creature-P tail repair armed: offset={offset} bit_cursor={bit_cursor} inserted_bits=0 reason=already-ee-shaped"
                     );
@@ -26221,8 +26304,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                             )
                         },
                     );
-            } else if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
-                && opcode == b'P'
+            } else if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) && opcode == b'P'
                 && object_type == 0x05
             {
                 eprintln!(
@@ -26486,7 +26570,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
-                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                    if crate::translate::live_object_update::live_object_debug_env_enabled(
+                        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+                    ) {
                         eprintln!(
                             "live-object creature update action2 optional-float repair applied: offset={offset} record_end={record_end} bit_rewritten={}",
                             action2_optional_float_rewrite.bit_rewritten
@@ -27307,7 +27393,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
             offset,
             area_context,
         ) else {
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) {
                 eprintln!(
                     "live-object update rewrite skipped: offset={offset} record_end={record_end} bit_cursor={bit_cursor} bit_cursor_reliable={bit_cursor_reliable} opcode=0x{:02X} marker=0x{:02X} mask={:?}",
                     live_bytes.get(offset).copied().unwrap_or_default(),
@@ -27431,7 +27519,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
         };
 
         if record_rewrite.rewritten {
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) {
                 eprintln!(
                     "live-object update record rewrite applied: offset={offset} record_end={record_end} bit_cursor={bit_cursor} rewrite={record_rewrite:?}"
                 );
@@ -27493,7 +27583,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 offset = record_end.max(offset + 1);
                 continue;
             }
-            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            if crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+            ) {
                 eprintln!(
                     "live-object update record bit claim accepted: offset={offset} record_end={record_end} family={} source_mask=0x{:08X} translated_mask=0x{:08X} source_bits_consumed={} emitted_bits={} bits_inserted={} bits_removed={}",
                     bit_claim.family,
@@ -27630,7 +27722,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
         // final cursor also proves the remaining bits are chunk-local fragment
         // storage. A prior rewrite in the stream is not enough evidence after
         // fragment-neutral GUI/delete/W records can take over the tail.
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        ) {
             let residual_bits = fragment_bits
                 .get(bit_cursor..bit_cursor.saturating_add(24).min(fragment_bits.len()))
                 .unwrap_or(&[]);
@@ -27694,8 +27788,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
     }
 
     if let Some(failure) = fatal_item_update_cursor_failure {
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
-            && let Some(neighbor) = failure.unowned_neighbor
+        if crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        ) && let Some(neighbor) = failure.unowned_neighbor
         {
             let orientation = neighbor
                 .orientation_vector
@@ -27772,7 +27867,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
         return None;
     }
 
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+    if crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         eprintln!(
             "live-object update rewrite summary before emit: bit_cursor_reliable={bit_cursor_reliable} bit_cursor={bit_cursor} fragment_bits={} live_bytes={} summary={summary:?}",
             fragment_bits.len(),
@@ -32946,7 +33043,9 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
     add_claim: VerifiedPlaceableAddExactClaim,
     carrier: ExactPlaceableUpdateAppearanceCarrier,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
 
@@ -38041,7 +38140,9 @@ fn trace_work_remaining_fragment_storage_removed(
     record_end: usize,
     removed: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(
@@ -38090,7 +38191,9 @@ fn trace_claim_accept(
     record_end: usize,
     bit_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     eprintln!(
@@ -38107,7 +38210,9 @@ fn trace_update_rewrite_cursor_unreliable(
     record_end: usize,
     bit_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return;
     }
     let preview_end = record_end
@@ -41565,7 +41670,9 @@ fn trace_unclassified_inter_record_span(
 }
 
 fn debug_live_claim_enabled_for_span(span_start: usize, span_end: usize) -> bool {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return false;
     }
     let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET") else {

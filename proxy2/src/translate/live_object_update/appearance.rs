@@ -1870,7 +1870,9 @@ pub(super) fn insert_ee_item_add_extras_for_ee(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
 ) -> Option<CreatureAppearanceExtraRewrite> {
-    let debug = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     let record = parse_legacy_item_add_record(bytes, offset, *record_end)?;
     if record.fragment_bits_consumed > fragment_bits.len().saturating_sub(bit_cursor)
         || !record
@@ -2110,7 +2112,9 @@ pub(super) fn try_get_legacy_gui_item_create_record_end_with_fragment_proof(
         {
             continue;
         }
-        let debug = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+        let debug = crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+        );
         let matching_records =
             parse_legacy_item_create_record_candidates(bytes, item_object_offset, record_end)
                 .into_iter()
@@ -2186,7 +2190,9 @@ pub(super) fn advance_legacy_gui_item_create_record(
     // fragment stream; the source cursor must therefore be proven from the
     // legacy record model, not guessed from how many bytes remain before the
     // next GUI sibling row.
-    let debug = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     let mut matching_records =
         parse_legacy_item_create_record_candidates(bytes, item_object_offset, record_end)
             .into_iter()
@@ -2278,7 +2284,9 @@ pub(super) fn advance_verified_ee_item_create_record(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    let debug = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    let debug = crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    );
     for record in parse_legacy_item_create_record_candidates(bytes, item_object_offset, record_end)
     {
         let Some(ee_bits) = record
@@ -4900,7 +4908,9 @@ fn build_zero_fragment_padding_trial(
 }
 
 fn debug_live_claim_enabled_for_offset(offset: usize) -> bool {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return false;
     }
     let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET") else {
@@ -4915,7 +4925,9 @@ fn debug_live_claim_enabled_for_offset(offset: usize) -> bool {
 }
 
 fn debug_live_claim_enabled_for_nearby_offset(offset: usize) -> bool {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
+    ) {
         return false;
     }
     let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET") else {
@@ -4930,7 +4942,9 @@ fn debug_live_claim_enabled_for_nearby_offset(offset: usize) -> bool {
 }
 
 fn debug_live_claim_verbose_trials_enabled_for_offset(offset: usize) -> bool {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_VERBOSE_TRIALS").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_VERBOSE_TRIALS",
+    ) {
         return false;
     }
     debug_live_claim_enabled_for_offset(offset)
@@ -4942,7 +4956,9 @@ fn trace_zero_fragment_padding_repair(
     ranges: &[ZeroFragmentPaddingRange],
 ) {
     if !debug_live_claim_enabled_for_offset(offset)
-        && std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_APPEARANCE_REPAIR").is_none()
+        && !crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_APPEARANCE_REPAIR",
+        )
     {
         return;
     }
@@ -7966,7 +7982,9 @@ fn trace_visible_equipment_bit_proof_reject(
     proof: AppearanceBitProof<'_>,
     read_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF",
+    ) {
         return;
     }
     if let Ok(min_cursor) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF_MIN_CURSOR") {
@@ -8024,7 +8042,9 @@ fn trace_visible_equipment_bit_proof_accept(
     proof: AppearanceBitProof<'_>,
     read_cursor: usize,
 ) {
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF_ACCEPT").is_none() {
+    if !crate::translate::live_object_update::live_object_debug_env_enabled(
+        "HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF_ACCEPT",
+    ) {
         return;
     }
     if let Ok(min_cursor) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_BIT_PROOF_MIN_CURSOR") {
