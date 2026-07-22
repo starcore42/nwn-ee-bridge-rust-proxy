@@ -43,6 +43,7 @@ mod quickbar_stream;
 mod reassembly;
 mod sequence;
 mod server_dispatch;
+mod server_replay;
 mod state;
 mod stream_continuation;
 mod synthetic_area;
@@ -391,6 +392,22 @@ fn validate_source_transport(view: &MFrameView, source: &'static str) -> anyhow:
     Ok(())
 }
 
+/// Retain peer-facing ACK truth once the server datagram has passed its CRC,
+/// length, and writer-shape boundary. A conflicting reliable payload is still
+/// rejected, but its independently valid ACK can release proxy-owned client
+/// work just as it would in the original receive window.
+fn observe_validated_server_source_ack(state: &mut SessionState, ack_sequence: u16) {
+    let ack_sequence =
+        server_replay::observe_peer_ack_sequence(&mut state.server_reliable_slots, ack_sequence);
+    inventory_equipment::observe_server_ack_for_client_gui_status(state, ack_sequence);
+    synthetic_area::maybe_queue_area_loaded_retransmit(
+        &mut state.synthetic_area.in_flight_area_loaded,
+        &mut state.synthetic_area.completed_area_loaded,
+        &mut state.sequence.pending_client_to_server_packets,
+        ack_sequence,
+    );
+}
+
 fn translate_duplicate_native_area_loaded_after_synthetic(
     state: &mut SessionState,
     bytes: Vec<u8>,
@@ -640,11 +657,46 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let source_view = MFrameView::parse(bytes)
         .ok_or_else(|| anyhow::anyhow!("server M frame failed reliable-window parse"))?;
     validate_source_transport(&source_view, "server")?;
+    let source_ack_sequence = source_view.ack_sequence;
     if state.client_emit_effect_snapshot.is_some()
         || state.client_emit_pending_validation.is_some()
         || state.pending_client_drain_effect_snapshot.is_some()
     {
         anyhow::bail!("client emit validation authority still active before server translation");
+    }
+    // FrameReceive pins a type-0 source slot before CNW gameplay dispatch.
+    // This ledger intentionally lives outside the speculative engine-facing
+    // snapshot, so a strict reader rejection can retry only the exact stored
+    // datagram (ACK/CRC/FrameSend bit 6 aside).
+    let prepared_server_source =
+        server_replay::prepare_source_slot(&mut state.server_reliable_slots, bytes, &source_view)?;
+    let server_origin_generation = prepared_server_source
+        .key()
+        .map(|key| key.origin_generation)
+        .unwrap_or(state.server_reliable_slots.origin_generation);
+    match prepared_server_source {
+        server_replay::PreparedServerReliableSource::Conflict(key) => {
+            observe_validated_server_source_ack(state, source_ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = source_ack_sequence,
+                "server reliable retransmit rejected because its pinned source slot carried different immutable bytes"
+            );
+            return Ok(Emit::Drop);
+        }
+        server_replay::PreparedServerReliableSource::OutsideWindow(key) => {
+            observe_validated_server_source_ack(state, source_ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = source_ack_sequence,
+                receive_start = state.server_reliable_slots.receive_start,
+                "server reliable datagram rejected outside the decompile-proven 16-frame receive window"
+            );
+            return Ok(Emit::Drop);
+        }
+        _ => {}
     }
     let parsed_view = Some(source_view);
     let parsed_sequence = parsed_view.as_ref().map(|view| view.sequence);
@@ -660,14 +712,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         (None, _) | (_, None) => None,
         (Some(sequence), Some(expected)) if sequence == expected => Some(expected),
         (Some(sequence), Some(expected)) if sequence_at_or_after(sequence, expected) => {
-            let view = MFrameView::parse(bytes).expect("validated reliable frame");
-            inventory_equipment::observe_server_ack_for_client_gui_status(state, view.ack_sequence);
-            synthetic_area::maybe_queue_area_loaded_retransmit(
-                &mut state.synthetic_area.in_flight_area_loaded,
-                &mut state.synthetic_area.completed_area_loaded,
-                &mut state.sequence.pending_client_to_server_packets,
-                view.ack_sequence,
-            );
+            observe_validated_server_source_ack(state, source_ack_sequence);
             tracing::warn!(
                 sequence,
                 expected_sequence = expected,
@@ -679,6 +724,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     };
     if let Some(fence_sequence) = fence_candidate_sequence {
         if state.deflate.ordered_successor_pending_validation.is_some() {
+            observe_validated_server_source_ack(state, source_ack_sequence);
             tracing::warn!(
                 sequence = fence_sequence,
                 "ordered server successor received before prior emit validation completed"
@@ -695,17 +741,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             if source_transport_identity.as_deref()
                 != Some(event.transport_payload_identity.as_slice())
             {
-                let view = MFrameView::parse(bytes).expect("validated reliable frame");
-                inventory_equipment::observe_server_ack_for_client_gui_status(
-                    state,
-                    view.ack_sequence,
-                );
-                synthetic_area::maybe_queue_area_loaded_retransmit(
-                    &mut state.synthetic_area.in_flight_area_loaded,
-                    &mut state.synthetic_area.completed_area_loaded,
-                    &mut state.sequence.pending_client_to_server_packets,
-                    view.ack_sequence,
-                );
+                observe_validated_server_source_ack(state, source_ack_sequence);
                 tracing::warn!(
                     sequence = parsed_sequence.unwrap_or(0),
                     "conflicting retransmit rejected by ordered successor identity fence"
@@ -734,7 +770,6 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             // it as the same raw transaction authority used for captured
             // successors; final validation must never advance an identity
             // that has no replayable slot.
-            let server_origin_generation = observe_server_origin_reliable_generation(state, view);
             let transport_payload_identity =
                 source_transport_identity.clone().ok_or_else(|| {
                     anyhow::anyhow!("ordered server successor left the type-0 data lane")
@@ -779,7 +814,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
                     && event.transport_payload_identity == transport_payload_identity
             })
             .map(|event| event.server_origin_generation)
-            .unwrap_or(state.direct_server_semantic_replays.origin_generation);
+            .unwrap_or(server_origin_generation);
         state.deflate.ordered_successor_pending_validation =
             Some(state::OrderedSuccessorValidationToken {
                 sequence: expected,
@@ -796,6 +831,12 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         // closed, so restore speculative state here while retaining the raw
         // ordered slot for a later exact retry.
         rollback_server_emit_effect_transaction(state);
+    }
+    if matches!(&emit, Emit::Drop) {
+        // A Drop has no candidate for the outer strict owner. Roll back the
+        // ordinary speculative boundary here while retaining the raw source
+        // slot pinned above for an exact retry.
+        rollback_ordinary_server_emit_after_drop(state);
     }
     Ok(emit)
 }
@@ -916,6 +957,10 @@ pub(super) fn begin_client_to_server_emit_validation(
             .then_some(view.sequence),
         source_origin_generation: prepared_source.key().map(|key| key.origin_generation),
         source_ack_sequence: view.ack_sequence,
+        server_origin_ack_sequence: unshift_ack_for_origin(
+            &state.sequence.server_sequence_shifts,
+            view.ack_sequence,
+        ),
     };
     let snapshot = capture_engine_facing_effect_snapshot(state);
     state.client_emit_effect_snapshot = Some(Box::new(snapshot));
@@ -1131,11 +1176,17 @@ pub(super) fn finish_client_to_server_emit_validation(state: &mut SessionState, 
     };
 
     if accepted {
+        let retired_server_slots = server_replay::retire_through_client_ack(
+            &mut state.server_reliable_slots,
+            token.server_origin_ack_sequence,
+        );
         commit_engine_facing_effect_transaction(state);
         tracing::trace!(
             source_sequence = token.source_reliable_sequence,
             source_origin_generation = token.source_origin_generation,
             source_ack_sequence = token.source_ack_sequence,
+            server_origin_ack_sequence = token.server_origin_ack_sequence,
+            retired_server_slots,
             "strict-validated client M committed speculative engine-facing effects"
         );
         return;
@@ -1163,7 +1214,22 @@ fn rollback_server_emit_effect_transaction(state: &mut SessionState) -> bool {
         return false;
     };
     restore_engine_facing_effect_snapshot(state, *snapshot);
+    // Another validated server datagram can arrive while the outer owner is
+    // deciding an earlier candidate. Reapply the newest independently valid
+    // peer ACK after restoring that older gameplay snapshot.
+    if let Some(ack_sequence) = state.server_reliable_slots.latest_peer_ack_sequence {
+        observe_validated_server_source_ack(state, ack_sequence);
+    }
     true
+}
+
+fn rollback_ordinary_server_emit_after_drop(state: &mut SessionState) -> bool {
+    if state.deflate.server_emit_effect_transaction_kind
+        != Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+    {
+        return false;
+    }
+    rollback_server_emit_effect_transaction(state)
 }
 
 fn commit_server_emit_effect_transaction(
@@ -1397,7 +1463,43 @@ fn translate_server_to_client_inner(
     // a payload-bearing control must not be dispatchable and then laundered
     // into an empty verified control by a semantic consumer.
     validate_source_transport(&view, "server")?;
-    let server_origin_generation = observe_server_origin_reliable_generation(state, &view);
+    // The public entry point performs this before ordered-fence handling; keep
+    // the same boundary here as well because focused core tests enter this
+    // dispatcher directly. An exact second prepare is an idempotent match.
+    let prepared_server_source =
+        server_replay::prepare_source_slot(&mut state.server_reliable_slots, bytes, &view)?;
+    let server_origin_generation = prepared_server_source
+        .key()
+        .map(|key| key.origin_generation)
+        .unwrap_or(state.server_reliable_slots.origin_generation);
+    match prepared_server_source {
+        server_replay::PreparedServerReliableSource::Conflict(key) => {
+            observe_validated_server_source_ack(state, view.ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = view.ack_sequence,
+                "server reliable retransmit rejected before route selection because its pinned source slot carried different immutable bytes"
+            );
+            return Ok(Emit::Drop);
+        }
+        server_replay::PreparedServerReliableSource::OutsideWindow(key) => {
+            observe_validated_server_source_ack(state, view.ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = view.ack_sequence,
+                receive_start = state.server_reliable_slots.receive_start,
+                "server reliable datagram rejected before route selection outside the 16-frame receive window"
+            );
+            return Ok(Emit::Drop);
+        }
+        _ => {}
+    }
+    let server_peer_ack_sequence = view.ack_sequence;
+    // ACK ownership is independent of gameplay-slot identity. Preserve it
+    // before every older direct/stream/fence conflict return below.
+    observe_validated_server_source_ack(state, server_peer_ack_sequence);
     if let Some(source_transport_identity) =
         transport_identity::server_reliable_data_transport_identity(bytes, &view)
     {
@@ -1458,17 +1560,6 @@ fn translate_server_to_client_inner(
         );
         return Ok(Emit::Drop);
     }
-    let server_peer_ack_sequence = view.ack_sequence;
-    // Preserve the peer-facing ACK before synthetic client-sequence intervals
-    // are hidden from EE. Inventory response ownership opens only once the
-    // legacy server has acknowledged the exact proxy-owned request sequence.
-    inventory_equipment::observe_server_ack_for_client_gui_status(state, server_peer_ack_sequence);
-    synthetic_area::maybe_queue_area_loaded_retransmit(
-        &mut state.synthetic_area.in_flight_area_loaded,
-        &mut state.synthetic_area.completed_area_loaded,
-        &mut state.sequence.pending_client_to_server_packets,
-        view.ack_sequence,
-    );
     if state.deflate.ordered_successor_next_sequence == Some(view.sequence) {
         // Transport truth above survives rejection. Everything below this
         // boundary is speculative client-facing dispatch/finalization state,
@@ -1505,7 +1596,8 @@ fn translate_server_to_client_inner(
         state.deflate.ordered_successor_effect_snapshot.is_none()
             && (ordinary_coalesced_window
                 || pending_server_drain_has_work(state, server_emit_started_at)
-                || source_can_queue_immediate_server_packet);
+                || source_can_queue_immediate_server_packet
+                || exact_direct_semantic_source_payload(&inbound, &view).is_some());
     if ordinary_server_emit_transaction {
         // A complete count-one stored window is one reader transaction. A due
         // or source-created proxy-owned server packet is likewise not emitted
@@ -2862,33 +2954,6 @@ fn exact_direct_semantic_source_payload<'a>(
     parse_window::primary_payload(bytes, view)
 }
 
-fn observe_server_origin_reliable_generation(state: &mut SessionState, view: &MFrameView) -> u64 {
-    let replay = &mut state.direct_server_semantic_replays;
-    if view.frame_type != 0 {
-        return replay.origin_generation;
-    }
-    let sequence = view.sequence;
-    let Some(latest) = replay.latest_origin_sequence else {
-        replay.latest_origin_sequence = Some(sequence);
-        return replay.origin_generation;
-    };
-    if sequence == latest {
-        return replay.origin_generation;
-    }
-    let forward_distance = sequence.wrapping_sub(latest);
-    if forward_distance < 0x8000 {
-        if sequence < latest {
-            replay.origin_generation = replay.origin_generation.saturating_add(1);
-        }
-        replay.latest_origin_sequence = Some(sequence);
-        replay.origin_generation
-    } else if sequence > latest && replay.origin_generation > 0 {
-        replay.origin_generation - 1
-    } else {
-        replay.origin_generation
-    }
-}
-
 fn replay_completed_direct_server_semantic_rewrite(
     bytes: &[u8],
     view: &MFrameView,
@@ -3456,6 +3521,7 @@ fn finalize_server_to_client_emit(
         // An unrelated due proxy-owned packet must not turn a rejected source
         // datagram into a successful outer batch. Leave it queued for the
         // session drain, whose own strict transaction can retry it exactly.
+        rollback_ordinary_server_emit_after_drop(state);
         return Ok(Emit::Drop);
     }
     let area_gate_after_current = area_gate_after_current_server_emit(state, &emit)?;
@@ -4416,6 +4482,67 @@ mod tests {
     }
 
     #[test]
+    fn pending_ordered_successor_preserves_newer_server_ack_through_rollback() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let first = client_reliable_m_frame(43, 75, &payload);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(state::InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 7,
+                synthetic_sequence: 76,
+                ..Default::default()
+            });
+        queue_ordered_successor_for_test(&mut state, &first);
+
+        let first_emit = translate_server_to_client(&first, &mut state)
+            .expect("ordered successor should await outer validation");
+        assert!(!matches!(first_emit, Emit::Drop));
+        assert_eq!(pending_ordered_successor_sequence(&state), Some(43));
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_update_index,
+            None
+        );
+
+        let retry = client_reliable_m_frame(43, 76, &payload);
+        assert!(matches!(
+            translate_server_to_client(&retry, &mut state)
+                .expect("pending successor retransmit should fail closed"),
+            Emit::Drop
+        ));
+        assert_eq!(
+            state.server_reliable_slots.latest_peer_ack_sequence,
+            Some(76)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_update_index,
+            Some(7)
+        );
+
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(pending_ordered_successor_sequence(&state), None);
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_update_index,
+            Some(7),
+            "rolling back the earlier candidate must retain the later valid ACK"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_server_ack_sequence,
+            Some(76)
+        );
+    }
+
+    #[test]
     fn coalesced_first_pass_error_rolls_back_complete_window_effects() {
         let source_payload = [
             0x50, 0x09, 0x01, 0x16, 0, 0, 0, 0xC3, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0, b'c', b'h', b'e',
@@ -4612,10 +4739,7 @@ mod tests {
         );
         assert!(translator.m_state.deflate.server_zlib_inflater.is_none());
         assert_eq!(
-            translator
-                .m_state
-                .direct_server_semantic_replays
-                .latest_origin_sequence,
+            translator.m_state.server_reliable_slots.receive_start,
             Some(47),
             "source reliable-generation observation remains transport truth above the effect boundary"
         );
@@ -5084,10 +5208,7 @@ mod tests {
             "a rejected batch must not become an ACK source for later synthetic client packets"
         );
         assert_eq!(
-            translator
-                .m_state
-                .direct_server_semantic_replays
-                .latest_origin_sequence,
+            translator.m_state.server_reliable_slots.receive_start,
             Some(45),
             "valid source reliable-window observation survives client-facing strict rejection"
         );
@@ -5403,6 +5524,7 @@ mod tests {
             translate_server_to_client(&area, &mut state).expect("buffer Area successor"),
             Emit::Consumed
         ));
+        finish_server_to_client_emit_validation(&mut state, true);
         let emitted = translate_server_to_client(&second, &mut state)
             .expect("complete predecessor and stage Area successor");
         assert!(!matches!(emitted, Emit::Drop));
@@ -5820,6 +5942,240 @@ mod tests {
     }
 
     #[test]
+    fn direct_loadbar_rejection_retains_source_slot_and_retries_from_clean_effects() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let first = client_reliable_m_frame(31, 74, &payload);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        let emitted = proof_packets(
+            translate_server_to_client(&first, &mut state)
+                .expect("direct LoadBar should reach final validation"),
+        );
+        assert_eq!(emitted.len(), 1);
+        assert!(emitted[0].0.contains_family(VerifiedFamily::LoadBar));
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+        assert_eq!(
+            state.deflate.server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+        );
+
+        finish_server_to_client_emit_validation(&mut state, false);
+
+        assert_eq!(state.semantic.area.loadbar_packets, 0);
+        assert!(state.direct_server_semantic_replays.completed.is_empty());
+        assert_eq!(
+            state.server_reliable_slots.slots.len(),
+            1,
+            "strict reader rejection must retain the raw receive-window slot"
+        );
+        assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
+
+        let retry = client_reliable_m_frame(31, 75, &payload);
+        let retried = proof_packets(
+            translate_server_to_client(&retry, &mut state)
+                .expect("exact direct LoadBar retransmit should retry"),
+        );
+        assert_eq!(retried.len(), 1);
+        assert!(retried[0].0.contains_family(VerifiedFamily::LoadBar));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+    }
+
+    #[test]
+    fn rejected_direct_loadbar_replay_restores_duplicate_counter() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        let first = client_reliable_m_frame(32, 74, &payload);
+        proof_packets(
+            translate_server_to_client(&first, &mut state)
+                .expect("seed direct LoadBar translation"),
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 0);
+
+        let replay = client_reliable_m_frame(32, 75, &payload);
+        proof_packets(
+            translate_server_to_client(&replay, &mut state)
+                .expect("direct LoadBar replay should reach final validation"),
+        );
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 1);
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
+        assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 0);
+
+        let retry = client_reliable_m_frame(32, 76, &payload);
+        proof_packets(
+            translate_server_to_client(&retry, &mut state)
+                .expect("rejected direct replay should retry exactly"),
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 1);
+    }
+
+    #[test]
+    fn server_slot_conflict_rejects_payload_but_preserves_ack_and_excludes_controls() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        proof_packets(
+            translate_server_to_client(&client_reliable_m_frame(33, 74, &payload), &mut state)
+                .expect("seed server source slot"),
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(state::InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 7,
+                synthetic_sequence: 75,
+                ..Default::default()
+            });
+
+        let conflicting_payload = crate::translate::loadbar::start_payload(3);
+        assert!(matches!(
+            translate_server_to_client(
+                &client_reliable_m_frame(33, 75, &conflicting_payload),
+                &mut state,
+            )
+            .expect("conflicting source slot should fail closed"),
+            Emit::Drop
+        ));
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_observed_client_gui_status_server_peer_ack_sequence,
+            Some(75)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_update_index,
+            Some(7)
+        );
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+
+        let control = reliable_server_m_frame(33, 76, 0x10, 0, &[]);
+        let control_packets = proof_packets(
+            translate_server_to_client(&control, &mut state)
+                .expect("exact ACK control should stay outside reliable slot ownership"),
+        );
+        assert_eq!(control_packets.len(), 1);
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+    }
+
+    #[test]
+    fn server_receive_window_rejects_stale_without_evicting_live_slots() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let mut state = SessionState::default();
+        for sequence in 100..116 {
+            let packet = client_reliable_m_frame(sequence, 74, &payload);
+            let view = MFrameView::parse(&packet).expect("server window source");
+            assert!(matches!(
+                server_replay::prepare_source_slot(
+                    &mut state.server_reliable_slots,
+                    &packet,
+                    &view,
+                )
+                .expect("pin in-window source"),
+                server_replay::PreparedServerReliableSource::Pinned(_)
+            ));
+        }
+        assert_eq!(
+            state.server_reliable_slots.slots.len(),
+            server_replay::MAX_SERVER_RELIABLE_SLOTS
+        );
+
+        let stale = client_reliable_m_frame(99, 75, &payload);
+        let stale_view = MFrameView::parse(&stale).expect("stale server source");
+        assert!(matches!(
+            server_replay::prepare_source_slot(
+                &mut state.server_reliable_slots,
+                &stale,
+                &stale_view,
+            )
+            .expect("classify stale source"),
+            server_replay::PreparedServerReliableSource::OutsideWindow(_)
+        ));
+        assert_eq!(
+            state.server_reliable_slots.slots.len(),
+            server_replay::MAX_SERVER_RELIABLE_SLOTS
+        );
+
+        let conflict =
+            client_reliable_m_frame(100, 76, &crate::translate::loadbar::start_payload(3));
+        let conflict_view = MFrameView::parse(&conflict).expect("conflicting server source");
+        assert!(matches!(
+            server_replay::prepare_source_slot(
+                &mut state.server_reliable_slots,
+                &conflict,
+                &conflict_view,
+            )
+            .expect("classify occupied source"),
+            server_replay::PreparedServerReliableSource::Conflict(_)
+        ));
+    }
+
+    #[test]
+    fn server_receive_slot_retires_only_after_strict_accepted_client_ack() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let server = client_reliable_m_frame(35, 74, &payload);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        proof_packets(
+            translate_server_to_client(&server, &mut state).expect("seed translated server slot"),
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.server_reliable_slots.receive_start, Some(35));
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+
+        let client_ack = client_reliable_m_frame(1, 35, &[b'P', 0xFE, 0xFD]);
+        begin_client_to_server_emit_validation(&mut state, &client_ack)
+            .expect("begin rejected client ACK transaction");
+        finish_client_to_server_emit_validation(&mut state, false);
+        assert_eq!(state.server_reliable_slots.receive_start, Some(35));
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+
+        begin_client_to_server_emit_validation(&mut state, &client_ack)
+            .expect("begin accepted client ACK transaction");
+        finish_client_to_server_emit_validation(&mut state, true);
+        assert_eq!(state.server_reliable_slots.receive_start, Some(36));
+        assert!(state.server_reliable_slots.slots.is_empty());
+    }
+
+    #[test]
+    fn ordinary_unowned_direct_rejection_rolls_back_without_unpinning_source_slot() {
+        let source = client_reliable_m_frame(34, 74, &[b'P', 0xFE, 0xFE]);
+        let mut state = SessionState::default();
+        state.semantic.area.loadbar_packets = 1;
+
+        let emitted = translate_server_to_client(&source, &mut state)
+            .expect("unowned direct source should reach the outer strict owner");
+        assert!(!matches!(emitted, Emit::Drop));
+        assert_eq!(
+            state.deflate.server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+        );
+
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+        assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+    }
+
+    #[test]
     fn packetized_deflated_area_rejection_restores_partial_reassembly_and_source_effects() {
         let payload =
             include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
@@ -6016,13 +6372,18 @@ mod tests {
         assert!(state.deflate.server_reassembly.is_none());
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
 
-        state.direct_server_semantic_replays.latest_origin_sequence = Some(0xFFFE);
+        state.server_reliable_slots.receive_start = Some(0xFFFE);
         let wrapped = client_reliable_m_frame(5, 75, payload);
         let wrapped_view = MFrameView::parse(&wrapped).expect("wrapped frame");
-        assert_eq!(
-            observe_server_origin_reliable_generation(&mut state, &wrapped_view),
-            1
-        );
+        let wrapped_key = server_replay::prepare_source_slot(
+            &mut state.server_reliable_slots,
+            &wrapped,
+            &wrapped_view,
+        )
+        .expect("pin wrapped server reliable source")
+        .key()
+        .expect("type-0 source key");
+        assert_eq!(wrapped_key.origin_generation, 1);
         assert!(
             replay_completed_direct_server_semantic_rewrite(
                 &wrapped,
@@ -6677,7 +7038,8 @@ mod tests {
             assert!(state.sequence.server_sequence_shifts.is_empty());
             assert!(state.sequence.pending_client_to_server_packets.is_empty());
             assert!(state.direct_server_semantic_replays.completed.is_empty());
-            assert_eq!(state.direct_server_semantic_replays.origin_generation, 0);
+            assert_eq!(state.server_reliable_slots.origin_generation, 0);
+            assert!(state.server_reliable_slots.slots.is_empty());
             assert!(state.semantic.recent_events.is_empty());
             assert!(state.synthetic_area.pending_area_loaded.is_none());
             assert!(state.synthetic_area.in_flight_area_loaded.is_none());

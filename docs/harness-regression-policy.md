@@ -110,6 +110,28 @@ recorded 503 strict allows. Reliable conflicts, datagram/quarantine files,
 pre-seeded NWSync cache. This is current gameplay evidence and remains within
 the 24-hour gate until `2026-07-23T10:37:58.7634802+10:00`.
 
+The `2026-07-22T13:13:58+10:00` gate rechecked that artifact at 2 hours 35
+minutes 59 seconds old, so no new HG login was required. Production now pins
+server type-0 sources before dispatch in the decompile-proven 16-slot circular
+receive window, rejects stale/outside or conflicting occupied identities
+without eviction, preserves valid carried ACKs across all fail-closed paths,
+and retires covered slots only after the translated EE client ACK passes outer
+strict validation. Direct semantic effects and replay disposition are also
+speculative until their complete output validates. Diamond proof is at lines
+750687-750694, 750769-750775, 751482-751549, and 751677-751724; EE proof is at
+lines 891083-891086, 891172-891173, 878891-878952, and 879090-879135.
+
+Current-code strict replay is
+`C:\nwnbridge\codex-proxy2-replay-server-window-atomic-20260722-141017`: all
+164 packet files produced 304 strict allows, 143 generated ACK controls, 97
+exact live-object claims, 19 exact rewrites, and ten Area rewrites, with zero
+outside-window/conflict drops, strict/semantic quarantine, quarantine files,
+errors, or stderr. Formatting, `cargo check`, all 73 root M-frame tests, both
+Release builds, and focused transport/rollback tests pass. The next production
+path remains the live terminal proof: deploy the v2 terminal-writer trace
+producer on the actual HG component and capture a unique sequence-95 door
+`UseObject` interaction.
+
 Current-code strict replay is
 `C:\nwnbridge\codex-proxy2-replay-server-bit6-20260722-1046`: all 164 packet
 files produced 319 strict allows, 143 generated ACK controls, 97 exact

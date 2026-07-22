@@ -17,6 +17,51 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 server receive-window ownership and direct-reader atomicity: the
+  `13:13:58+10:00` live gate rechecked
+  `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,
+  last written `2026-07-22T10:37:58.7634802+10:00` and 2 hours 35 minutes 59
+  seconds old. It remains current gameplay evidence: typed
+  `starcore-druid60`, `Module_Loaded`, one native `Area_AreaLoaded`, 88 exact
+  live-object accepts through 168.164 seconds post-area, 503 strict allows,
+  and zero reliable conflict, quarantine, `BNDP`, ERROR, or stderr. No fresh
+  HG login was required.
+
+  Server type-0 source bytes are now pinned before semantic dispatch in a
+  decompile-backed 16-slot circular window. Stale/outside packets cannot
+  allocate or evict; an occupied slot accepts only the same canonical
+  identity, where CRC, ACK, and FrameSend bit 6 may refresh but low flags,
+  packetized metadata, gameplay bytes, tails, length, sequence, and generation
+  remain exact. Because proxy2 translates an end-to-end reliable lane rather
+  than terminating it, an exact retransmit can replay until the EE client's
+  source-facing ACK itself passes strict validation; only then are covered
+  server slots retired. Conflict, stale, future-fence, and pending-validation
+  drops still preserve an independently valid server ACK, including across
+  rollback of an older speculative emit.
+
+  Direct count-one semantic packets now open the ordinary server effect
+  transaction before dispatch. Semantic state and direct replay disposition
+  therefore commit only with the complete strict-accepted output and restore
+  together on rejection; the raw source slot and validated ACK remain
+  transport truth. Diamond receive-window initialization/admission/ACK proof is
+  at lines 750687-750694, 750769-750775, 751482-751549, and 751677-751724; EE
+  proof is at lines 891083-891086, 891172-891173, 878891-878952, and
+  879090-879135. This slice changes no CNW gameplay field order, bit width or
+  order, cursor movement, optional branch, string/nested-object boundary,
+  signedness, endian, scale, or gameplay payload bit.
+
+  Formatting, `cargo check`, all 73 root M-frame tests, focused stale/conflict,
+  ACK-retirement/rollback, direct-retry, and wrap tests, the Rust Release build,
+  and the full native Release build pass. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-server-window-atomic-20260722-141017`
+  processed all 164 packet files with 304 strict allows, 143 generated ACK
+  controls, 97 exact live-object claims, 19 exact rewrites, and ten Area
+  rewrites. It produced zero outside-window/conflict drops, strict or semantic
+  quarantine, quarantine files, errors, or stderr.
+
+  The next generalized production path remains the external live terminal
+  blocker: deploy the v2 terminal-writer trace producer on the actual HG
+  component and capture a unique sequence-95 door `UseObject` interaction.
 - 2026-07-22 server reliable FrameSend bit-6 replay identity: the newest prior
   gameplay capture was stale at the `10:09+10:00` gate, so a fresh HG run was
   required. The first refresh,
