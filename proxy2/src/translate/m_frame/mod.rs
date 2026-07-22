@@ -26,6 +26,7 @@ use crate::{
     },
 };
 
+mod ack_carrier;
 mod ack_delivery;
 mod client_ack;
 mod client_filters;
@@ -482,6 +483,55 @@ fn validate_source_transport(view: &MFrameView, source: &'static str) -> anyhow:
         anyhow::bail!("{source} M control frame has an impossible writer shape");
     }
     Ok(())
+}
+
+/// Snapshot the client frame's mapped ACK before semantic translation can add
+/// any new proxy-owned server sequence shifts. The returned type-1 carrier is
+/// still conditional: it is inserted only if the final outgoing batch does not
+/// already carry that exact ACK in the Diamond server's domain. A numerically
+/// newer ACK can be sparse and must not suppress this independently valid fact.
+pub(super) fn prepare_direct_client_source_ack_carrier(
+    state: &SessionState,
+    bytes: &[u8],
+) -> anyhow::Result<Option<ack_carrier::PreparedSourceAckCarrier>> {
+    let view = MFrameView::parse(bytes)
+        .ok_or_else(|| anyhow::anyhow!("client M frame failed ACK-carrier parse"))?;
+    validate_source_transport(&view, "client")?;
+    if view.frame_kind() != Some(MFrameType::ReliableData) {
+        return Ok(None);
+    }
+    let mapped_ack_sequence =
+        unshift_ack_for_origin(&state.sequence.server_sequence_shifts, view.ack_sequence);
+    ack_carrier::prepare(view.ack_sequence, mapped_ack_sequence).map(Some)
+}
+
+/// Snapshot the server frame's mapped ACK before semantic translation can add
+/// client sequence shifts or elisions. The mapped value is in the EE client's
+/// original source-sequence domain.
+pub(super) fn prepare_direct_server_source_ack_carrier(
+    state: &SessionState,
+    bytes: &[u8],
+) -> anyhow::Result<Option<ack_carrier::PreparedSourceAckCarrier>> {
+    let view = MFrameView::parse(bytes)
+        .ok_or_else(|| anyhow::anyhow!("server M frame failed ACK-carrier parse"))?;
+    validate_source_transport(&view, "server")?;
+    if view.frame_kind() != Some(MFrameType::ReliableData) {
+        return Ok(None);
+    }
+    let mapped_ack_sequence = unshift_ack_for_origin_with_elisions(
+        &state.sequence.client_sequence_shifts,
+        &state.sequence.client_sequence_elisions,
+        view.ack_sequence,
+    );
+    ack_carrier::prepare(view.ack_sequence, mapped_ack_sequence).map(Some)
+}
+
+pub(super) fn ensure_direct_source_ack_carrier(
+    emit: Emit,
+    prepared: ack_carrier::PreparedSourceAckCarrier,
+    source_lane: &'static str,
+) -> Emit {
+    ack_carrier::ensure_carried(emit, prepared, source_lane)
 }
 
 /// Retain peer-facing ACK truth once the server datagram has passed its CRC,
@@ -1266,15 +1316,31 @@ fn reapply_validated_client_source_transport(
 /// rejection because it belongs to the proxy-facing transport lane, not to the
 /// rejected legacy emit.
 pub(super) fn finish_client_to_server_emit_validation(state: &mut SessionState, accepted: bool) {
-    finish_client_to_server_effect_validation(state, accepted);
+    finish_client_to_server_emit_validation_outcomes(state, accepted, accepted);
+}
+
+/// Finish the client payload transaction and destination-facing ACK delivery
+/// independently. An exact ACK-only carrier can pass strict validation even
+/// when the source payload disposition was fail-closed; that must retire the
+/// acknowledged server slots without committing speculative gameplay effects.
+pub(super) fn finish_client_to_server_emit_validation_outcomes(
+    state: &mut SessionState,
+    effects_accepted: bool,
+    ack_output_accepted: bool,
+) {
+    finish_client_to_server_effect_validation(state, effects_accepted, ack_output_accepted);
     finish_ack_delivery(
         state,
         ack_delivery::AckDeliveryOwner::DirectClient,
-        accepted,
+        ack_output_accepted,
     );
 }
 
-fn finish_client_to_server_effect_validation(state: &mut SessionState, accepted: bool) {
+fn finish_client_to_server_effect_validation(
+    state: &mut SessionState,
+    effects_accepted: bool,
+    ack_output_accepted: bool,
+) {
     let token = state.client_emit_pending_validation.take();
     let snapshot = state.client_emit_effect_snapshot.take();
     let has_token = token.is_some();
@@ -1282,7 +1348,8 @@ fn finish_client_to_server_effect_validation(state: &mut SessionState, accepted:
     let (Some(token), Some(snapshot)) = (token, snapshot) else {
         if has_token || has_snapshot {
             tracing::warn!(
-                accepted,
+                effects_accepted,
+                ack_output_accepted,
                 has_token,
                 has_snapshot,
                 "client M validation authority cleared with an incomplete transaction"
@@ -1291,7 +1358,7 @@ fn finish_client_to_server_effect_validation(state: &mut SessionState, accepted:
         return;
     };
 
-    if accepted {
+    if effects_accepted {
         commit_engine_facing_effect_transaction(state);
         tracing::trace!(
             source_sequence = token.source_reliable_sequence,
@@ -1304,12 +1371,21 @@ fn finish_client_to_server_effect_validation(state: &mut SessionState, accepted:
 
     restore_engine_facing_effect_snapshot(state, *snapshot);
     reapply_validated_client_source_transport(state, token);
-    tracing::warn!(
-        source_sequence = token.source_reliable_sequence,
-        source_origin_generation = token.source_origin_generation,
-        source_ack_sequence = token.source_ack_sequence,
-        "client M engine-facing effects rolled back after final strict emit validation rejected the complete batch"
-    );
+    if ack_output_accepted {
+        tracing::info!(
+            source_sequence = token.source_reliable_sequence,
+            source_origin_generation = token.source_origin_generation,
+            source_ack_sequence = token.source_ack_sequence,
+            "client M payload effects rolled back while its independent ACK-only output passed strict validation"
+        );
+    } else {
+        tracing::warn!(
+            source_sequence = token.source_reliable_sequence,
+            source_origin_generation = token.source_origin_generation,
+            source_ack_sequence = token.source_ack_sequence,
+            "client M engine-facing effects rolled back after final strict emit validation rejected the complete batch"
+        );
+    }
 }
 
 fn rollback_server_emit_effect_transaction(state: &mut SessionState) -> bool {
@@ -1371,11 +1447,22 @@ fn commit_server_emit_effect_transaction(
 /// its inner translator returned plausible packets: the complete emitted shape
 /// must pass the final strict owner first.
 pub(super) fn finish_server_to_client_emit_validation(state: &mut SessionState, accepted: bool) {
-    finish_server_to_client_effect_validation(state, accepted);
+    finish_server_to_client_emit_validation_outcomes(state, accepted, accepted);
+}
+
+/// Finish server payload effects separately from the exact client-facing ACK
+/// carrier. This keeps conflict/outside-window payload rejection fail-closed
+/// while preserving independently valid peer ACK progress.
+pub(super) fn finish_server_to_client_emit_validation_outcomes(
+    state: &mut SessionState,
+    effects_accepted: bool,
+    ack_output_accepted: bool,
+) {
+    finish_server_to_client_effect_validation(state, effects_accepted);
     finish_ack_delivery(
         state,
         ack_delivery::AckDeliveryOwner::DirectServer,
-        accepted,
+        ack_output_accepted,
     );
 }
 
@@ -4769,7 +4856,15 @@ mod tests {
 
         let emit = translator.translate(crate::packet::Direction::ServerToClient, &packet);
 
-        assert!(matches!(emit, Emit::Drop));
+        let Emit::Packets(packets) = emit else {
+            panic!("strict-rejected successor batch should leave one exact ACK carrier");
+        };
+        assert_eq!(packets.len(), 1);
+        let carrier = MFrameView::parse(&packets[0]).expect("strict-rejection ACK carrier");
+        assert_eq!(carrier.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(carrier.sequence, 0);
+        assert_eq!(carrier.ack_sequence, 75);
+        assert!(carrier.is_exact_control_frame());
         assert!(
             translator
                 .m_state
@@ -5304,7 +5399,15 @@ mod tests {
 
         let emit = translator.translate(crate::packet::Direction::ServerToClient, &packet);
 
-        assert!(matches!(emit, Emit::Drop));
+        let Emit::Packets(packets) = emit else {
+            panic!("strict-rejected successor batch should leave one exact ACK carrier");
+        };
+        assert_eq!(packets.len(), 1);
+        let carrier = MFrameView::parse(&packets[0]).expect("strict-rejection ACK carrier");
+        assert_eq!(carrier.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(carrier.sequence, 0);
+        assert_eq!(carrier.ack_sequence, 75);
+        assert!(carrier.is_exact_control_frame());
         assert_eq!(
             pending_ordered_successor_sequence(&translator.m_state),
             None
@@ -6319,6 +6422,175 @@ mod tests {
     }
 
     #[test]
+    fn mapped_client_ack_carrier_retires_only_after_its_strict_acceptance() {
+        let server_source =
+            client_reliable_m_frame(35, 74, &crate::translate::loadbar::start_payload(2));
+        let server_view = MFrameView::parse(&server_source).expect("ACK-carrier server slot");
+        let mut state = SessionState::default();
+        assert!(matches!(
+            server_replay::prepare_source_slot(
+                &mut state.server_reliable_slots,
+                &server_source,
+                &server_view,
+            )
+            .expect("pin ACK-carrier server slot"),
+            server_replay::PreparedServerReliableSource::Pinned(_)
+        ));
+        state
+            .sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 35, delta: 2 });
+        let client_source = client_reliable_m_frame(8, 37, &[b'P', 0xfe, 0xfd]);
+
+        let prepared = prepare_direct_client_source_ack_carrier(&state, &client_source)
+            .expect("prepare mapped client ACK carrier")
+            .expect("ACK 37 should map to active server slot 35");
+        let rejected_emit =
+            ensure_direct_source_ack_carrier(Emit::Consumed, prepared, "test_client_to_server");
+        let rejected_packets = proof_packets(rejected_emit.clone());
+        assert_eq!(rejected_packets.len(), 1);
+        let rejected_view =
+            MFrameView::parse(&rejected_packets[0].1).expect("mapped client ACK carrier");
+        assert_eq!(rejected_view.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(rejected_view.sequence, 0);
+        assert_eq!(rejected_view.ack_sequence, 35);
+        assert!(rejected_view.is_exact_control_frame());
+
+        stage_direct_client_ack_delivery(&mut state, &rejected_emit)
+            .expect("stage rejected ACK-only client output");
+        finish_client_to_server_emit_validation_outcomes(&mut state, true, false);
+        assert_eq!(state.server_reliable_slots.receive_start, Some(35));
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+
+        let prepared = prepare_direct_client_source_ack_carrier(&state, &client_source)
+            .expect("prepare retry mapped client ACK carrier")
+            .expect("rejected carrier must leave active server slot");
+        let accepted_emit =
+            ensure_direct_source_ack_carrier(Emit::Consumed, prepared, "test_client_to_server");
+        stage_direct_client_ack_delivery(&mut state, &accepted_emit)
+            .expect("stage accepted ACK-only client output");
+        finish_client_to_server_emit_validation_outcomes(&mut state, true, true);
+        assert_eq!(state.server_reliable_slots.receive_start, Some(36));
+        assert!(state.server_reliable_slots.slots.is_empty());
+
+        let retry_after_retirement =
+            prepare_direct_client_source_ack_carrier(&state, &client_source)
+                .expect("prepare duplicate client ACK after local retirement")
+                .expect(
+                    "UDP delivery uncertainty requires duplicate type-0 ACKs to remain deliverable",
+                );
+        let retry_emit = ensure_direct_source_ack_carrier(
+            Emit::Consumed,
+            retry_after_retirement,
+            "test_client_to_server",
+        );
+        let retry_packets = proof_packets(retry_emit);
+        assert_eq!(retry_packets.len(), 1);
+        assert_eq!(
+            MFrameView::parse(&retry_packets[0].1)
+                .expect("duplicate ACK carrier")
+                .ack_sequence,
+            35
+        );
+    }
+
+    #[test]
+    fn dropped_server_payload_carrier_commits_ack_without_gameplay_effects() {
+        let mut state = SessionState::default();
+        for sequence in 7..=9 {
+            let packet = client_reliable_m_frame(sequence, 30, &[0x70, 0x0d, 0x01, 0]);
+            let view = MFrameView::parse(&packet).expect("client ACK-carrier source slot");
+            assert!(matches!(
+                client_replay::prepare_source_slot(
+                    &mut state.client_reliable_replays,
+                    &packet,
+                    &view,
+                )
+                .expect("pin client ACK-carrier source slot"),
+                client_replay::PreparedClientReliableSource::Pending(_)
+            ));
+        }
+        state
+            .sequence
+            .client_sequence_shifts
+            .push(SequenceShift { base: 7, delta: 2 });
+        state
+            .sequence
+            .client_sequence_elisions
+            .push(SequenceElision { sequence: 8 });
+        state.semantic.area.loadbar_packets = 1;
+        let server_source = client_reliable_m_frame(50, 10, &[b'P', 0xfe, 0xfd]);
+
+        let prepared = prepare_direct_server_source_ack_carrier(&state, &server_source)
+            .expect("prepare mapped server ACK carrier")
+            .expect("ACK 10 should map to contiguous EE client slot 9");
+        begin_ordinary_server_emit_effect_transaction(&mut state)
+            .expect("begin rejected server payload effects");
+        state.semantic.area.loadbar_packets = 99;
+        let emit = ensure_direct_source_ack_carrier(Emit::Drop, prepared, "test_server_to_client");
+        let packets = proof_packets(emit.clone());
+        assert_eq!(packets.len(), 1);
+        let view = MFrameView::parse(&packets[0].1).expect("mapped server ACK carrier");
+        assert_eq!(view.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(view.ack_sequence, 9);
+
+        stage_direct_server_ack_delivery(&mut state, &emit)
+            .expect("stage accepted ACK-only server output");
+        finish_server_to_client_emit_validation_outcomes(&mut state, false, true);
+        assert_eq!(
+            state.semantic.area.loadbar_packets, 1,
+            "ACK acceptance must not commit a dropped payload's speculative effects"
+        );
+        assert_eq!(state.client_reliable_replays.receive_start, Some(10));
+        assert!(state.client_reliable_replays.slots.is_empty());
+    }
+
+    #[test]
+    fn sparse_future_ack_emits_but_cannot_retire_and_controls_add_no_sibling() {
+        let mut state = SessionState::default();
+        for sequence in [7, 9] {
+            let packet = client_reliable_m_frame(sequence, 30, &[0x70, 0x0d, 0x01, 0]);
+            let view = MFrameView::parse(&packet).expect("sparse client source slot");
+            client_replay::prepare_source_slot(&mut state.client_reliable_replays, &packet, &view)
+                .expect("pin sparse client source slot");
+        }
+
+        let sparse_server_source = client_reliable_m_frame(50, 9, &[b'P', 0xfe, 0xfd]);
+        let prepared = prepare_direct_server_source_ack_carrier(&state, &sparse_server_source)
+            .expect("classify sparse future ACK")
+            .expect("every validated type-0 source ACK remains destination-facing truth");
+        let emit = ensure_direct_source_ack_carrier(Emit::Drop, prepared, "test_server_to_client");
+        stage_direct_server_ack_delivery(&mut state, &emit)
+            .expect("stage sparse future ACK carrier");
+        finish_server_to_client_emit_validation_outcomes(&mut state, false, true);
+        assert_eq!(state.client_reliable_replays.receive_start, Some(7));
+        assert_eq!(state.client_reliable_replays.slots.len(), 2);
+
+        let control = reliable_server_m_frame(0, 7, 0x10, 0, &[]);
+        assert!(
+            prepare_direct_server_source_ack_carrier(&state, &control)
+                .expect("classify exact type-1 source")
+                .is_none(),
+            "an existing control must never acquire a synthetic control sibling"
+        );
+
+        let resend_control = reliable_server_m_frame(0, 7, 0x20, 0, &[]);
+        assert!(
+            prepare_direct_server_source_ack_carrier(&state, &resend_control)
+                .expect("classify exact type-2 source")
+                .is_none(),
+            "an existing resend control must never acquire an ACK-control sibling"
+        );
+
+        let mut corrupt = sparse_server_source;
+        *corrupt.last_mut().expect("source CRC byte") ^= 0x01;
+        assert!(
+            prepare_direct_server_source_ack_carrier(&state, &corrupt).is_err(),
+            "a malformed source cannot create independently trusted ACK intent"
+        );
+    }
+
+    #[test]
     fn foreign_validation_callback_preserves_pending_ack_delivery_owner() {
         let client_source = client_reliable_m_frame(7, 30, &[0x70, 0x0D, 0x01, 0]);
         let client_view = MFrameView::parse(&client_source).expect("pending-owner client slot");
@@ -6942,7 +7214,15 @@ mod tests {
         translator.m_state.sequence.latest_client_ack_from_client = Some(40);
 
         let rejected = translator.translate(crate::packet::Direction::ClientToServer, &packet);
-        assert!(matches!(rejected, Emit::Drop));
+        let Emit::Packets(rejected_packets) = rejected else {
+            panic!("strict-rejected gameplay payload should leave one exact ACK carrier");
+        };
+        assert_eq!(rejected_packets.len(), 1);
+        let rejected_carrier =
+            MFrameView::parse(&rejected_packets[0]).expect("strict-rejection ACK carrier");
+        assert_eq!(rejected_carrier.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(rejected_carrier.ack_sequence, 41);
+        assert!(rejected_carrier.is_exact_control_frame());
         assert_eq!(
             translator
                 .m_state
@@ -6968,10 +7248,17 @@ mod tests {
         conflict[5..7].copy_from_slice(&42u16.to_be_bytes());
         *conflict.last_mut().unwrap() = 0xAB;
         assert!(encode_legacy_m_crc(&mut conflict));
-        assert!(matches!(
-            translator.translate(crate::packet::Direction::ClientToServer, &conflict),
-            Emit::Drop
-        ));
+        let conflict_emit =
+            translator.translate(crate::packet::Direction::ClientToServer, &conflict);
+        let Emit::Packets(conflict_packets) = conflict_emit else {
+            panic!("occupied payload conflict should preserve its ACK in an exact carrier");
+        };
+        assert_eq!(conflict_packets.len(), 1);
+        let conflict_carrier =
+            MFrameView::parse(&conflict_packets[0]).expect("occupied-conflict ACK carrier");
+        assert_eq!(conflict_carrier.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(conflict_carrier.ack_sequence, 42);
+        assert!(conflict_carrier.is_exact_control_frame());
         assert_eq!(
             translator.m_state.sequence.latest_client_ack_from_client,
             Some(42),
@@ -6983,6 +7270,60 @@ mod tests {
                 .replay
                 .is_none()
         );
+    }
+
+    #[test]
+    fn session_translator_preserves_ack_when_client_semantic_translation_errors() {
+        // A raw one-byte payload is transport-valid type-0 data, but it has
+        // neither a complete `P major minor` header nor a verified raw/admin
+        // identity, so client semantic dispatch fails closed after FrameReceive
+        // has already accepted the cumulative ACK.
+        let source = client_reliable_m_frame(92, 43, &[0xff]);
+        let source_view = MFrameView::parse(&source).expect("transport-valid semantic-error seed");
+        assert!(source_view.crc_valid);
+        assert_eq!(source_view.frame_kind(), Some(MFrameType::ReliableData));
+        assert!(source_view.high.is_none());
+        let direct_error = translate_client_to_server(&source, &mut SessionState::default())
+            .expect_err("raw payload without an identity must fail semantic dispatch");
+        assert!(
+            direct_error
+                .to_string()
+                .contains("no high-level translator or transport identity owner")
+        );
+        let mut translator = strict_session_translator_for_test();
+        translator.bn_state.remember_nwsync_advertised_to_client();
+        translator.bn_state.remember_bncs_udp_port(5122);
+        translator.bn_state.remember_bnvr_result(true);
+        assert!(translator.bn_state.should_consume_nwsync_handoff_bndm());
+
+        let emit = translator.translate(crate::packet::Direction::ClientToServer, &source);
+        let Emit::Packets(packets) = emit else {
+            panic!("semantic failure should leave one exact ACK-only output");
+        };
+        assert_eq!(packets.len(), 1);
+        let carrier = MFrameView::parse(&packets[0]).expect("semantic-error ACK carrier");
+        assert_eq!(carrier.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(carrier.sequence, 0);
+        assert_eq!(carrier.ack_sequence, 43);
+        assert!(carrier.is_exact_control_frame());
+        assert_eq!(
+            translator.m_state.sequence.latest_client_ack_from_client,
+            Some(43)
+        );
+        assert!(translator.m_state.semantic.recent_events.is_empty());
+        assert!(translator.m_state.client_emit_effect_snapshot.is_none());
+        assert!(translator.m_state.client_emit_pending_validation.is_none());
+        assert!(
+            !translator.bn_state.should_consume_nwsync_handoff_bndm(),
+            "transport-valid gameplay must close the NWSync handoff allowance even when semantic dispatch fails"
+        );
+
+        let disconnect = translator.translate(crate::packet::Direction::ClientToServer, b"BNDM");
+        let Emit::PacketRetireSession { packet, reason } = disconnect else {
+            panic!("post-gameplay BNDM must become a real legacy disconnect");
+        };
+        assert_eq!(&packet[..4], b"BNDS");
+        assert_eq!(reason, "post-gameplay-bndm-disconnect");
     }
 
     #[test]
@@ -8758,7 +9099,15 @@ mod tests {
 
         let emit = translator.translate(crate::packet::Direction::ServerToClient, &source);
 
-        assert!(matches!(emit, Emit::Drop));
+        let Emit::Packets(packets) = emit else {
+            panic!("strict-rejected direct batch should leave one exact ACK carrier");
+        };
+        assert_eq!(packets.len(), 1);
+        let carrier = MFrameView::parse(&packets[0]).expect("strict-rejection ACK carrier");
+        assert_eq!(carrier.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(carrier.sequence, 0);
+        assert_eq!(carrier.ack_sequence, 75);
+        assert!(carrier.is_exact_control_frame());
         assert!(
             translator
                 .m_state

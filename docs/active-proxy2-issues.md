@@ -17,6 +17,77 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-22 exact ACK carrier across rejected payloads: the `19:12:41+10:00`
+  live gate found the newest qualifying artifact at
+  `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,
+  last written `2026-07-22T10:37:58.7634802+10:00` and 8 hours 34 minutes 43
+  seconds old. It had reached typed `starcore-druid60`, `Module_Loaded`, native
+  `Area_AreaLoaded`, and sustained exact live-object traffic, so ordinary
+  feature work could start without a pre-work login.
+
+  Every validated source type-0 frame now snapshots its independently valid
+  peer ACK in the destination sequence domain before semantic translation can
+  add shifts or elisions. If the final translated batch does not already carry
+  that exact mapped ACK, proxy2 appends the original writer's fixed 12-byte
+  type-1 control shape: `M`, CRC16-BE, sequence zero, ACK-BE, flags `0x10`,
+  packetized sequence zero, and payload length zero. Type-1/type-2 source
+  controls never receive a sibling, session-retiring dispositions suppress it,
+  and duplicate type-0 ACKs remain deliverable because a prior UDP carrier may
+  have been lost. Gameplay-effect acceptance and ACK-output acceptance finish
+  independently, so a rejected payload rolls back engine-facing state while a
+  strict-accepted carrier alone may retire only the contiguous mirrored
+  receive frontier. A semantic-dispatch error keeps the independently valid
+  carrier, and an outer strict rejection discards the mixed gameplay batch
+  before validating the carrier alone. The semantic-error path also records
+  that reliable gameplay was observed, so a following `BNDM` cannot be
+  misclassified as the one-shot NWSync handoff. Existing local ACK producers
+  share the exact writer.
+
+  Diamond `sub_5F36E0` lines 751193-751321 plus zero-sequence type-1 callsites
+  752003-752009 and 753771-753780 prove the writer shape; receive/ACK cleanup is
+  at 751482-751549 and 751677-751763. EE `CNetLayerWindow::FrameSend` lines
+  879829-879929 plus callsites 880555-880563 and 903893-903900 prove the same
+  shape; receive/cleanup is at 878825-878952 and 879090-879135. This is only
+  the outer reliable-window header: no CNW gameplay field order, bit width,
+  BOOL order, cursor, optional branch, padding, string/nested-object boundary,
+  endian, signedness, scale, or payload bit changed.
+
+  Final formatting, all 81 root M-frame tests, `cargo check`, debug and Release
+  builds pass. The optional full package executable remained CPU-active but did
+  not finish inside its ten-minute bound and reported no failure before
+  termination. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-ack-carrier-final-20260722-2031` processed all
+  164 packet files with 339 strict allows, 21 inserted carriers, 143 generated
+  client ACK controls, 97 exact live-object claims, 19 rewrites, and ten Area
+  rewrites. It produced zero skipped server packets, strict/semantic
+  quarantine, quarantine files, residuals, warnings, errors, or stderr.
+
+  Fresh Release confirmation is
+  `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
+  last written `2026-07-22T20:00:34.0528616+10:00`. Typed
+  `starcore-druid60` reached `Module_Loaded`, two native `Area_AreaLoaded`
+  messages, 78 exact live-object accepts through 137.818 seconds after the
+  final area completion, and 514 strict allows. Fifty-four carriers passed the
+  live path. In particular, stale client sequence 15 behind receive start 31
+  preserved ACK 0, and stale server sequence 21 behind receive start 30 mapped
+  ACK 74 to 73; both rejected payloads produced strict-accepted carriers and no
+  datagram drop. Conflicts, strict/semantic quarantine, quarantine files,
+  `BNDP`, errors, timeouts, and stderr were zero. The four warnings were the
+  declared pre-seeded NWSync cache, the two deliberate outside-window payload
+  rejections, and one now-corrected diagnostic that had described the
+  independently accepted ACK batch as rejected. The final diagnostic wording
+  changes no wire behavior. This capture qualifies until
+  `2026-07-23T20:00:34.0528616+10:00`.
+
+  The stale/outside-window carrier path is fixed and live-confirmed. The final
+  semantic-error and outer-strict fallback was added after that live run; the
+  canonical replay used the final binary but contained no such rejection seed,
+  while focused regressions prove both directions, effect rollback, ACK-only
+  acceptance, and malformed-gameplay-then-`BNDM` handling. The active next
+  production path returns to the external terminal blocker: deploy the
+  documented v2 terminal-writer trace producer on the HG component and capture
+  a unique sequence-95 door `UseObject` interaction for the exact source/EE
+  writer join.
 - 2026-07-22 client 16-slot receive window and destination-confirmed ACK
   retirement: the `16:14:53+10:00` live gate rechecked
   `C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,

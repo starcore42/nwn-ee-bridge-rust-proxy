@@ -488,28 +488,112 @@ impl SessionTranslator {
             );
             return Emit::Drop;
         }
-        let emit = match self.translate_known(direction, bytes) {
-            Ok(translated) => translated,
+        // Capture the source ACK mapping before semantic translation can add
+        // sequence shifts/elisions. The prepared exact type-1 frame is used
+        // only when the eventual outgoing batch does not already carry this
+        // exact cumulative ACK.
+        let prepared_source_ack_carrier = if finish_client_m_validation {
+            m_frame::prepare_direct_client_source_ack_carrier(&self.m_state, bytes)
+                .map(|prepared| prepared.map(|prepared| (prepared, "client_to_server")))
+        } else if finish_server_m_validation {
+            m_frame::prepare_direct_server_source_ack_carrier(&self.m_state, bytes)
+                .map(|prepared| prepared.map(|prepared| (prepared, "server_to_client")))
+        } else {
+            Ok(None)
+        };
+        let prepared_source_ack_carrier = match prepared_source_ack_carrier {
+            Ok(prepared) => prepared,
             Err(err) => {
                 tracing::warn!(
                     direction = direction.as_str(),
                     error = %err,
-                    "strict semantic translation failed"
+                    "M source ACK carrier preparation failed before semantic translation"
                 );
-                if finish_server_m_validation {
-                    m_frame::finish_server_to_client_emit_validation(&mut self.m_state, false);
-                }
                 if finish_client_m_validation {
                     m_frame::finish_client_to_server_emit_validation(&mut self.m_state, false);
                 }
                 return Emit::Drop;
             }
         };
+        let (emit, semantic_translation_succeeded) = match self.translate_known(direction, bytes) {
+            Ok(translated) => (translated, true),
+            Err(err) => {
+                tracing::warn!(
+                    direction = direction.as_str(),
+                    error = %err,
+                    "strict semantic translation failed"
+                );
+                // FrameReceive handles the cumulative peer ACK before type-0
+                // gameplay dispatch. A source that passed the transport
+                // boundary can therefore retain that ACK even when its CNW
+                // payload has no safe translation.
+                if prepared_source_ack_carrier.is_some() {
+                    // The same accepted reliable-window observation ends the
+                    // one-shot NWSync BNDM handoff allowance. Otherwise a
+                    // disconnect after malformed gameplay could be consumed
+                    // as though gameplay had never started.
+                    self.bn_state.remember_reliable_gameplay_seen();
+                    (Emit::Drop, false)
+                } else {
+                    if finish_server_m_validation {
+                        m_frame::finish_server_to_client_emit_validation(&mut self.m_state, false);
+                    }
+                    if finish_client_m_validation {
+                        m_frame::finish_client_to_server_emit_validation(&mut self.m_state, false);
+                    }
+                    return Emit::Drop;
+                }
+            }
+        };
 
+        // A carrier can validate independently of a fail-closed payload. Keep
+        // the original payload disposition so final validation cannot turn an
+        // ACK-only success into a gameplay-effect commit.
+        let mut translated_effects_candidate =
+            semantic_translation_succeeded && !matches!(&emit, Emit::Drop);
+        // A strict-rejected gameplay packet must not take its appended or
+        // embedded ACK down with it. Retain one fresh carrier intent only for
+        // ordinary payload-bearing output; ACK-only and session-retiring
+        // dispositions already have their final transport behavior.
+        let strict_rejection_ack_fallback = if matches!(
+            &emit,
+            Emit::Drop
+                | Emit::Consumed
+                | Emit::PacketRetireSession { .. }
+                | Emit::ConsumedRetireSession { .. }
+        ) {
+            None
+        } else {
+            prepared_source_ack_carrier.clone()
+        };
+        let emit = if let Some((prepared, source_lane)) = prepared_source_ack_carrier {
+            m_frame::ensure_direct_source_ack_carrier(emit, prepared, source_lane)
+        } else {
+            emit
+        };
+
+        let mut validated = self.validate_emit(direction, emit);
+        if matches!(&validated, Emit::Drop)
+            && let Some((prepared, source_lane)) = strict_rejection_ack_fallback
+        {
+            translated_effects_candidate = false;
+            tracing::info!(
+                direction = direction.as_str(),
+                source_lane,
+                "strict-rejected M payload replaced by its independently valid ACK-only carrier"
+            );
+            let fallback =
+                m_frame::ensure_direct_source_ack_carrier(Emit::Drop, prepared, source_lane);
+            validated = self.validate_emit(direction, fallback);
+        }
+
+        // Stage retirement only from the final strict result. In particular,
+        // an invalid mixed payload/carrier batch must be discarded before the
+        // separately validated fallback carrier becomes the delivery owner.
         let ack_delivery = if finish_client_m_validation {
-            m_frame::stage_direct_client_ack_delivery(&mut self.m_state, &emit)
+            m_frame::stage_direct_client_ack_delivery(&mut self.m_state, &validated)
         } else if finish_server_m_validation {
-            m_frame::stage_direct_server_ack_delivery(&mut self.m_state, &emit)
+            m_frame::stage_direct_server_ack_delivery(&mut self.m_state, &validated)
         } else {
             Ok(())
         };
@@ -528,17 +612,20 @@ impl SessionTranslator {
             return Emit::Drop;
         }
 
-        let validated = self.validate_emit(direction, emit);
+        let ack_output_accepted = !matches!(&validated, Emit::Drop);
+        let effects_accepted = translated_effects_candidate && ack_output_accepted;
         if finish_server_m_validation {
-            m_frame::finish_server_to_client_emit_validation(
+            m_frame::finish_server_to_client_emit_validation_outcomes(
                 &mut self.m_state,
-                !matches!(&validated, Emit::Drop),
+                effects_accepted,
+                ack_output_accepted,
             );
         }
         if finish_client_m_validation {
-            m_frame::finish_client_to_server_emit_validation(
+            m_frame::finish_client_to_server_emit_validation_outcomes(
                 &mut self.m_state,
-                !matches!(&validated, Emit::Drop),
+                effects_accepted,
+                ack_output_accepted,
             );
         }
         validated

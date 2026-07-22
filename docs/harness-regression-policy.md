@@ -59,6 +59,46 @@ Diamond direct capture is a separate legacy truth source used when the 1.69
 wire behavior is the question; it does not by itself satisfy the EE-through-
 proxy gameplay gate below.
 
+Latest gate audit (`2026-07-22T20:06:53+10:00`): the run began from qualifying
+gameplay evidence at
+`C:\nwnbridge\codex-live-server-bit6-20260722-1045\harness-proxy-20260722-103431\proxy.structured.log`,
+timestamp `2026-07-22T10:37:58.7634802+10:00` and about 8 hours 35 minutes old.
+After implementing exact mapped ACK-only carriers, the Release proxy was
+rechecked live at
+`C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`.
+That artifact was last written `2026-07-22T20:00:34.0528616+10:00`, selected the
+typed `starcore-druid60`, reached `Module_Loaded`, produced two native
+`Area_AreaLoaded` messages, and accepted 78 exact live-object packets through
+137.818 seconds after the final area completion. It recorded 514 strict allows
+and 54 exact ACK-carrier insertions.
+
+The capture directly exercised both directions of the repaired failure mode.
+A stale client type-0 sequence 15 behind receive start 31 retained ACK 0 in a
+strict-accepted type-1 carrier; a stale server sequence 21 behind receive start
+30 retained mapped ACK 73 from source ACK 74 in another strict-accepted
+carrier. Neither rejected payload became a datagram drop. Reliable identity
+conflicts, strict/semantic quarantine, quarantine files, `BNDP`, errors,
+timeouts, and stderr were zero. The four warnings comprise the declared
+pre-seeded NWSync cache, both intentional outside-window payload rejections,
+and one pre-final diagnostic line that called the separately accepted ACK batch
+rejected; final production wording now distinguishes payload-effect rollback
+from ACK-output acceptance without changing bytes. The artifact qualifies as
+fresh gameplay evidence until `2026-07-23T20:00:34.0528616+10:00`.
+
+Canonical strict replay is
+`C:\nwnbridge\codex-proxy2-replay-ack-carrier-final-20260722-2031`: all 164 packet
+files produced 339 strict allows and 21 inserted carriers, alongside 143
+generated client ACK controls, 97 exact live-object claims, 19 exact rewrites,
+and ten Area rewrites. Skipped packets, strict/semantic quarantine, quarantine
+files, terminal/fixed-width residuals, warnings, errors, and stderr were zero.
+The final binary additionally retries an independently valid type-1 carrier
+alone when semantic dispatch errors or outer strict validation rejects its
+gameplay batch. The replay had no semantic/strict rejection seed for those two
+fallbacks; all 81 root M-frame tests cover them, including rollback in both
+directions and a malformed reliable gameplay frame followed by real `BNDM`
+disconnect handling. The live capture directly confirms the stale/outside-
+window path and remains the current gameplay gate.
+
 For real HG/Diamond source traffic, use:
 
 ```powershell

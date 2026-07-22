@@ -165,27 +165,14 @@ pub(super) fn retire_through_server_ack(
     state: &mut ClientReliableReplayState,
     ack_sequence: u16,
 ) -> usize {
+    let retired = retirable_prefix_len(state, ack_sequence);
+    if retired == 0 {
+        return 0;
+    }
     let Some(receive_start) = state.receive_start else {
         return 0;
     };
     let distance = ack_sequence.wrapping_sub(receive_start) as usize;
-    if distance >= MAX_CLIENT_RELIABLE_SLOTS {
-        return 0;
-    }
-    // The originals compare the cumulative ACK with the active send interval,
-    // not with the window's spare capacity. A future ACK inside the 16-slot
-    // allocation cannot advance across a source sequence that was never
-    // pinned (including a gap created by out-of-order UDP delivery).
-    if !(0..=distance).all(|offset| {
-        let sequence = receive_start.wrapping_add(offset as u16);
-        let generation = generation_for_sequence(state, receive_start, sequence, offset);
-        state
-            .slots
-            .iter()
-            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
-    }) {
-        return 0;
-    }
 
     let before = state.slots.len();
     state
@@ -207,6 +194,35 @@ pub(super) fn retire_through_server_ack(
         "strict-accepted Diamond ACK advanced the mirrored client receive window"
     );
     retired
+}
+
+/// Return the exact contiguous active prefix an ACK would retire, without
+/// mutating transport state. Delivery may still repeat a valid ACK carrier
+/// because prior UDP output can be lost; only retirement is bounded by this
+/// contiguous-prefix proof.
+pub(super) fn retirable_prefix_len(state: &ClientReliableReplayState, ack_sequence: u16) -> usize {
+    let Some(receive_start) = state.receive_start else {
+        return 0;
+    };
+    let distance = ack_sequence.wrapping_sub(receive_start) as usize;
+    if distance >= MAX_CLIENT_RELIABLE_SLOTS {
+        return 0;
+    }
+    // The originals compare the cumulative ACK with the active send interval,
+    // not with the window's spare capacity. A future ACK inside the 16-slot
+    // allocation cannot advance across a source sequence that was never
+    // pinned (including a gap created by out-of-order UDP delivery).
+    if !(0..=distance).all(|offset| {
+        let sequence = receive_start.wrapping_add(offset as u16);
+        let generation = generation_for_sequence(state, receive_start, sequence, offset);
+        state
+            .slots
+            .iter()
+            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
+    }) {
+        return 0;
+    }
+    distance.saturating_add(1)
 }
 
 pub(super) fn stage_translation(

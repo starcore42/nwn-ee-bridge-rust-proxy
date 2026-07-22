@@ -8,13 +8,12 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{
-    crc::{encode_legacy_m_crc, write_be_u16},
-    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
-    translate::VerifiedFamily,
-};
+use crate::translate::VerifiedFamily;
 
-use super::synthetic_area::{PendingServerPacket, PendingServerPacketPlacement};
+use super::{
+    ack_carrier::build_exact_ack_control_frame,
+    synthetic_area::{PendingServerPacket, PendingServerPacketPlacement},
+};
 
 pub(super) const PROXY_OWNED_CLIENT_ACK_REASON: &str =
     "proxy-owned ACK for consumed EE-only client reliable frame";
@@ -88,7 +87,7 @@ pub(super) fn take_due_consumed_ee_only_ack_packets(
         return Vec::new();
     }
 
-    let Some(packet) = build_ack_control_frame(pending.ack_sequence) else {
+    let Ok(packet) = build_exact_ack_control_frame(pending.ack_sequence) else {
         let dropped = ack_state
             .pending_consumed_ee_only_ack
             .take()
@@ -121,27 +120,4 @@ pub(super) fn take_due_consumed_ee_only_ack_packets(
         reason: PROXY_OWNED_CLIENT_ACK_REASON,
         placement: PendingServerPacketPlacement::BeforeCurrentEmit,
     }]
-}
-
-fn build_ack_control_frame(ack_sequence: u16) -> Option<Vec<u8>> {
-    let mut packet = vec![0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
-    packet[0] = b'M';
-    write_be_u16(&mut packet, 3, 0).then_some(())?;
-    write_be_u16(&mut packet, 5, ack_sequence).then_some(())?;
-    packet[7] = 0x10;
-    write_be_u16(&mut packet, 8, 0).then_some(())?;
-    write_be_u16(&mut packet, 10, 0).then_some(())?;
-    encode_legacy_m_crc(&mut packet).then_some(())?;
-
-    let view = MFrameView::parse(&packet)?;
-    if view.sequence != 0
-        || view.ack_sequence != ack_sequence
-        || view.flags != 0x10
-        || view.payload_length != 0
-        || view.trailing_payload_length != 0
-    {
-        return None;
-    }
-
-    Some(packet)
 }

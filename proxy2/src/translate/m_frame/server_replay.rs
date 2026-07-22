@@ -141,26 +141,14 @@ pub(super) fn retire_through_client_ack(
     state: &mut ServerReliableSlotState,
     ack_sequence: u16,
 ) -> usize {
+    let retired = retirable_prefix_len(state, ack_sequence);
+    if retired == 0 {
+        return 0;
+    }
     let Some(receive_start) = state.receive_start else {
         return 0;
     };
     let distance = ack_sequence.wrapping_sub(receive_start) as usize;
-    if distance >= MAX_SERVER_RELIABLE_SLOTS {
-        return 0;
-    }
-    // Diamond/EE bound cumulative ACK cleanup by the active send interval,
-    // not by unused capacity in the 16-slot allocation. Never advance over a
-    // source sequence the proxy has not actually pinned.
-    if !(0..=distance).all(|offset| {
-        let sequence = receive_start.wrapping_add(offset as u16);
-        let generation = generation_for_sequence(state, receive_start, sequence, offset);
-        state
-            .slots
-            .iter()
-            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
-    }) {
-        return 0;
-    }
 
     let before = state.slots.len();
     state
@@ -182,6 +170,32 @@ pub(super) fn retire_through_client_ack(
         "strict-accepted EE ACK advanced the mirrored server receive window"
     );
     retired
+}
+
+/// Return the exact contiguous active prefix an ACK would retire without
+/// mutating the mirrored server-source window.
+pub(super) fn retirable_prefix_len(state: &ServerReliableSlotState, ack_sequence: u16) -> usize {
+    let Some(receive_start) = state.receive_start else {
+        return 0;
+    };
+    let distance = ack_sequence.wrapping_sub(receive_start) as usize;
+    if distance >= MAX_SERVER_RELIABLE_SLOTS {
+        return 0;
+    }
+    // Diamond/EE bound cumulative ACK cleanup by the active send interval,
+    // not by unused capacity in the 16-slot allocation. Never advance over a
+    // source sequence the proxy has not actually pinned.
+    if !(0..=distance).all(|offset| {
+        let sequence = receive_start.wrapping_add(offset as u16);
+        let generation = generation_for_sequence(state, receive_start, sequence, offset);
+        state
+            .slots
+            .iter()
+            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
+    }) {
+        return 0;
+    }
+    distance.saturating_add(1)
 }
 
 fn generation_for_sequence(
