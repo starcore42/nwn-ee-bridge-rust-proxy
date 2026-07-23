@@ -178,6 +178,16 @@ pub(super) fn retire_through_client_ack(
     retired_sources
 }
 
+/// Exact first source identity not yet cumulatively retired. The receive
+/// window owns this generation; callers must not reconstruct it from the bare
+/// wrapped sequence when coordinating a second destination-facing window.
+pub(super) fn receive_floor(state: &ServerReliableSlotState) -> Option<ServerReliableSlotKey> {
+    state.receive_start.map(|sequence| ServerReliableSlotKey {
+        sequence,
+        origin_generation: state.origin_generation,
+    })
+}
+
 /// Return the exact contiguous active prefix an ACK would retire without
 /// mutating the mirrored server-source window.
 pub(super) fn retirable_prefix_len(state: &ServerReliableSlotState, ack_sequence: u16) -> usize {

@@ -66,6 +66,20 @@ impl EeServerSendKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EeServerAckObservation {
+    /// Exact destination-generation identity resolved from the active window
+    /// or from the last cumulatively retired slot. A raw `u16` ACK that cannot
+    /// be placed in either interval remains unresolved instead of borrowing a
+    /// generation through half-range arithmetic.
+    pub(super) acknowledged: Option<EeServerSendKey>,
+    /// First destination identity that remains unacknowledged. When the active
+    /// window is empty this is the retained next-new key, so a later sequence
+    /// wrap cannot erase the epoch boundary needed by the sequence mapper.
+    pub(super) destination_floor: Option<EeServerSendKey>,
+    pub(super) retired_slots: usize,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct EeServerSendSlot {
     pub(super) key: EeServerSendKey,
@@ -103,6 +117,10 @@ pub(super) struct EeServerSendWindowState {
     /// Next new reliable destination identity.  Retain it while the window is
     /// empty so a post-ACK sequence jump cannot silently create a new epoch.
     next_key: Option<EeServerSendKey>,
+    /// Exact terminal identity most recently retired by a raw EE cumulative
+    /// ACK. Keep it after the active window becomes empty so an identical ACK
+    /// remains generation-resolvable without guessing from a bare `u16`.
+    pub(super) last_retired_key: Option<EeServerSendKey>,
     pub(super) pending: Option<PendingEeServerSend>,
     pub(super) retired_slots: u64,
     pub(super) retransmitted_slots: u64,
@@ -287,41 +305,67 @@ pub(super) fn finish(
     committed
 }
 
-/// Retire only an ACK that lands inside the current contiguous active interval.
-/// A stale ACK or an impossible ACK beyond the last transmitted slot changes
-/// no state, matching the original circular-window boundary.
+/// Resolve and retire only an ACK that lands inside the current contiguous
+/// active interval. A duplicate of the last cumulative ACK retains its exact
+/// generation even after the window empties. Any other stale or impossible
+/// bare `u16` ACK stays unresolved and changes no state.
 pub(super) fn retire_through_raw_client_ack(
     state: &mut EeServerSendWindowState,
     ack_sequence: u16,
-) -> usize {
+) -> EeServerAckObservation {
+    let unresolved = |state: &EeServerSendWindowState| EeServerAckObservation {
+        acknowledged: state
+            .last_retired_key
+            .filter(|key| key.sequence == ack_sequence),
+        destination_floor: destination_floor(state),
+        retired_slots: 0,
+    };
     let Some(first) = state.slots.front().map(|slot| slot.key) else {
-        return 0;
+        return unresolved(state);
     };
     let distance = ack_sequence.wrapping_sub(first.sequence) as usize;
     if distance >= state.slots.len() || distance >= MAX_EE_SERVER_SEND_SLOTS {
-        return 0;
+        return unresolved(state);
     }
     if state
         .slots
         .get(distance)
         .is_none_or(|slot| slot.key.sequence != ack_sequence)
     {
-        return 0;
+        return unresolved(state);
     }
 
+    let acknowledged = state
+        .slots
+        .get(distance)
+        .map(|slot| slot.key)
+        .expect("validated EE ACK distance still identifies its terminal slot");
     let retired = distance + 1;
     for _ in 0..retired {
         let _ = state.slots.pop_front();
     }
+    state.last_retired_key = Some(acknowledged);
     state.retired_slots = state.retired_slots.saturating_add(retired as u64);
+    let destination_floor = destination_floor(state);
     tracing::trace!(
         ack_sequence,
+        ack_generation = acknowledged.generation,
         retired_slots = retired,
         retained_slots = state.slots.len(),
+        destination_floor_sequence = ?destination_floor.map(|key| key.sequence),
+        destination_floor_generation = ?destination_floor.map(|key| key.generation),
         total_retired_slots = state.retired_slots,
         "raw EE ACK advanced the destination reliable send window"
     );
-    retired
+    EeServerAckObservation {
+        acknowledged: Some(acknowledged),
+        destination_floor,
+        retired_slots: retired,
+    }
+}
+
+pub(super) fn destination_floor(state: &EeServerSendWindowState) -> Option<EeServerSendKey> {
+    state.slots.front().map(|slot| slot.key).or(state.next_key)
 }
 
 /// Return at most one expired retry per network-loop pass, as the original
@@ -456,11 +500,54 @@ mod tests {
         assert_eq!(state.slots.len(), 3);
         assert_eq!(state.slots[2].key.generation, 1);
 
-        assert_eq!(retire_through_raw_client_ack(&mut state, 0xFFFD), 0);
-        assert_eq!(retire_through_raw_client_ack(&mut state, 0xFFFF), 2);
+        let stale = retire_through_raw_client_ack(&mut state, 0xFFFD);
+        assert_eq!(stale.acknowledged, None);
+        assert_eq!(stale.retired_slots, 0);
+        assert_eq!(
+            stale.destination_floor,
+            Some(EeServerSendKey {
+                sequence: 0xFFFE,
+                generation: 0,
+            })
+        );
+        let pre_wrap = retire_through_raw_client_ack(&mut state, 0xFFFF);
+        assert_eq!(
+            pre_wrap.acknowledged,
+            Some(EeServerSendKey {
+                sequence: 0xFFFF,
+                generation: 0,
+            })
+        );
+        assert_eq!(pre_wrap.retired_slots, 2);
         assert_eq!(state.slots.front().map(|slot| slot.key.sequence), Some(0));
-        assert_eq!(retire_through_raw_client_ack(&mut state, 0), 1);
+        let wrapped = retire_through_raw_client_ack(&mut state, 0);
+        assert_eq!(
+            wrapped.acknowledged,
+            Some(EeServerSendKey {
+                sequence: 0,
+                generation: 1,
+            })
+        );
+        assert_eq!(
+            wrapped.destination_floor,
+            Some(EeServerSendKey {
+                sequence: 1,
+                generation: 1,
+            })
+        );
+        assert_eq!(wrapped.retired_slots, 1);
         assert!(state.slots.is_empty());
+
+        let duplicate = retire_through_raw_client_ack(&mut state, 0);
+        assert_eq!(duplicate.acknowledged, wrapped.acknowledged);
+        assert_eq!(duplicate.destination_floor, wrapped.destination_floor);
+        assert_eq!(duplicate.retired_slots, 0);
+        assert_eq!(state.last_retired_key, wrapped.acknowledged);
+
+        let unresolvable = retire_through_raw_client_ack(&mut state, u16::MAX);
+        assert_eq!(unresolvable.acknowledged, None);
+        assert_eq!(unresolvable.destination_floor, wrapped.destination_floor);
+        assert_eq!(unresolvable.retired_slots, 0);
     }
 
     #[test]

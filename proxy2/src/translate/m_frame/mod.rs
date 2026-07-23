@@ -63,9 +63,9 @@ use reassembly::{
     InflatedGameplayPayload, ServerDeflatedReassembly,
 };
 use sequence::{
-    SequenceElision, SequenceShift, record_forward_progress, sequence_at_or_after,
-    shift_sequence_for_peer, shift_sequence_for_peer_with_elisions, trim_sequence_elisions,
-    trim_sequence_shifts, unshift_ack_for_origin_with_elisions,
+    SequenceElision, SequenceEpochKey, SequenceShift, record_forward_progress,
+    sequence_at_or_after, shift_sequence_for_peer, shift_sequence_for_peer_with_elisions,
+    trim_sequence_elisions, trim_sequence_shifts, unshift_ack_for_origin_with_elisions,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -297,6 +297,11 @@ fn finish_ack_delivery(
                 &mut state.server_reliable_slots,
                 *ack_sequence,
             );
+            if !retired_sources.is_empty() {
+                state.sequence.server_sequence_epoch_source_floor =
+                    server_replay::receive_floor(&state.server_reliable_slots);
+                compact_ordered_server_sequence_epochs_if_ready(state);
+            }
             retired_output_ack_spans = retired_output_ack_spans.saturating_add(
                 output_reliability::retire_server_output_ack_spans(
                     &mut state.sequence.server_output_ack_spans,
@@ -318,6 +323,56 @@ fn finish_ack_delivery(
         retired_output_ack_spans,
         "strict-accepted outgoing M batch committed destination-facing ACK delivery"
     );
+}
+
+fn compact_ordered_server_sequence_epochs_if_ready(state: &mut SessionState) {
+    let (Some(source_floor), Some(destination_floor)) = (
+        state.sequence.server_sequence_epoch_source_floor,
+        state.sequence.server_sequence_epoch_destination_floor,
+    ) else {
+        return;
+    };
+    let (Ok(source_generation), Ok(destination_generation)) = (
+        i64::try_from(source_floor.origin_generation),
+        i64::try_from(destination_floor.generation),
+    ) else {
+        tracing::warn!(
+            source_origin_generation = source_floor.origin_generation,
+            destination_generation = destination_floor.generation,
+            "ordered server sequence epoch floors exceed supported exact generation range"
+        );
+        return;
+    };
+    let source_floor = SequenceEpochKey::new(source_floor.sequence, source_generation);
+    let destination_floor =
+        SequenceEpochKey::new(destination_floor.sequence, destination_generation);
+    match state
+        .sequence
+        .ordered_server_sequence_epochs
+        .compact(source_floor, destination_floor)
+    {
+        Ok(0) => {}
+        Ok(compacted) => tracing::info!(
+            compacted,
+            source_floor_sequence = source_floor.sequence,
+            source_floor_generation = source_floor.generation,
+            destination_floor_sequence = destination_floor.sequence,
+            destination_floor_generation = destination_floor.generation,
+            active_insertions = state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
+            "compacted two-sided ordered server sequence epoch prefix"
+        ),
+        Err(err) => tracing::warn!(
+            error = %err,
+            source_floor_sequence = source_floor.sequence,
+            source_floor_generation = source_floor.generation,
+            destination_floor_sequence = destination_floor.sequence,
+            destination_floor_generation = destination_floor.generation,
+            "ordered server sequence epoch compaction stayed fail-closed"
+        ),
+    }
 }
 
 fn pending_server_drain_has_work(state: &SessionState, now: Instant) -> bool {
@@ -1327,6 +1382,16 @@ fn restore_engine_facing_effect_snapshot(
     state: &mut SessionState,
     snapshot: state::EngineFacingEffectSnapshot,
 ) {
+    // These observations are exact transport truth owned by the two reliable
+    // windows, not speculative CNW-reader effects. The destination window is
+    // deliberately outside this snapshot and may already have retired slots
+    // through a valid raw EE ACK while the client payload later fails strict
+    // validation. Preserve the matching epoch coordinates across rollback,
+    // then re-run compaction against the restored insertion ledger.
+    let server_sequence_epoch_source_floor = state.sequence.server_sequence_epoch_source_floor;
+    let server_sequence_epoch_destination_floor =
+        state.sequence.server_sequence_epoch_destination_floor;
+    let latest_raw_ee_server_ack = state.sequence.latest_raw_ee_server_ack;
     state.deflate.server_reassembly = snapshot.server_reassembly;
     state.deflate.completed_server_stream_windows = snapshot.completed_server_stream_windows;
     state.deflate.completed_server_reliable_stream_slots =
@@ -1339,6 +1404,11 @@ fn restore_engine_facing_effect_snapshot(
     state.quickbar = snapshot.quickbar;
     state.live_object = snapshot.live_object;
     state.sequence = snapshot.sequence;
+    state.sequence.server_sequence_epoch_source_floor = server_sequence_epoch_source_floor;
+    state.sequence.server_sequence_epoch_destination_floor =
+        server_sequence_epoch_destination_floor;
+    state.sequence.latest_raw_ee_server_ack = latest_raw_ee_server_ack;
+    compact_ordered_server_sequence_epochs_if_ready(state);
     state.client_reliable_replays = snapshot.client_reliable_replays;
     state.client_ack.pending = snapshot.client_ack;
     state.direct_server_semantic_replays = snapshot.direct_server_semantic_replays;
@@ -3026,10 +3096,17 @@ fn observe_client_window_state(
         &mut state.sequence.latest_client_ack_from_client,
         view.ack_sequence,
     );
-    let _ = ee_send_window::retire_through_raw_client_ack(
+    let destination_ack = ee_send_window::retire_through_raw_client_ack(
         &mut state.ee_server_send_window,
         view.ack_sequence,
     );
+    if let Some(acknowledged) = destination_ack.acknowledged {
+        state.sequence.latest_raw_ee_server_ack = Some(acknowledged);
+    }
+    if destination_ack.destination_floor.is_some() {
+        state.sequence.server_sequence_epoch_destination_floor = destination_ack.destination_floor;
+        compact_ordered_server_sequence_epochs_if_ready(state);
+    }
 }
 
 fn shift_client_sequence_for_server(
@@ -4336,6 +4413,128 @@ mod tests {
         );
         assert_eq!(replayed.ack_sequence, 82);
         assert!(replayed.crc_valid);
+    }
+
+    #[test]
+    fn expanded_stateless_deflated_retransmit_replays_without_its_own_shift() {
+        let inflated = include_bytes!(
+            "../../../fixtures/area/hg_docksofascension_client_area_legacy_missing_height.bin"
+        );
+        let compressed = deflate_zlib(inflated).expect("large Area payload should deflate");
+        let mut source_payload = (inflated.len() as u32).to_le_bytes().to_vec();
+        source_payload.extend_from_slice(&compressed);
+        let source = reliable_server_m_frame(10, 74, 0x0C, 1, &source_payload);
+        let source_view = MFrameView::parse(&source).expect("stateless deflated source");
+        assert_ne!(source_view.flags & 0x04, 0);
+        assert_eq!(source_view.flags & 0x01, 0);
+
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        let first_emit = translate_server_to_client(&source, &mut state)
+            .expect("expanded stateless Area should translate");
+        let first_packets = proof_packets(first_emit.clone());
+        assert!(
+            first_packets
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
+        assert!(
+            first_packets.len() > 1,
+            "large translated Area must cross the EE-safe reliable-frame cap"
+        );
+        let first_sequences = first_packets
+            .iter()
+            .map(|(_, packet)| {
+                MFrameView::parse(packet)
+                    .expect("expanded output frame")
+                    .sequence
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            first_sequences,
+            (0..first_packets.len())
+                .map(|index| 10u16.wrapping_add(index as u16))
+                .collect::<Vec<_>>()
+        );
+        stage_direct_server_send_window(&mut state, &first_emit)
+            .expect("stage expanded destination slots");
+        stage_direct_server_ack_delivery(&mut state, &first_emit)
+            .expect("stage expanded source ACK");
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        let committed_shifts = state
+            .sequence
+            .server_sequence_shifts
+            .iter()
+            .map(|shift| (shift.base, shift.delta))
+            .collect::<Vec<_>>();
+        let committed_epoch_insertions = state
+            .sequence
+            .ordered_server_sequence_epochs
+            .active_insertions();
+        let committed_cache_windows = state.deflate.completed_server_stream_windows.len();
+        let committed_destination_slots = state.ee_server_send_window.slots.len();
+        assert_eq!(committed_shifts.len(), 1);
+        assert_eq!(
+            committed_epoch_insertions, 0,
+            "partial producer coverage must not enter the authoritative epoch coordinate system"
+        );
+        assert_eq!(committed_cache_windows, 1);
+        assert_eq!(committed_destination_slots, first_packets.len());
+
+        let mut retransmit = source.clone();
+        assert!(write_be_u16(&mut retransmit, 5, 75));
+        assert!(encode_legacy_m_crc(&mut retransmit));
+        let replay_emit = translate_server_to_client(&retransmit, &mut state)
+            .expect("exact expanded stateless source should replay");
+        let replay_packets = proof_packets(replay_emit.clone());
+        assert_eq!(
+            replay_packets
+                .iter()
+                .map(|(_, packet)| {
+                    MFrameView::parse(packet)
+                        .expect("expanded replay frame")
+                        .sequence
+                })
+                .collect::<Vec<_>>(),
+            first_sequences,
+            "cached synthetic suffix must not pass through its own committed shift"
+        );
+        assert!(replay_packets.iter().all(|(_, packet)| {
+            MFrameView::parse(packet).is_some_and(|view| view.ack_sequence == 75 && view.crc_valid)
+        }));
+        stage_direct_server_send_window(&mut state, &replay_emit)
+            .expect("stage exact destination refresh");
+        stage_direct_server_ack_delivery(&mut state, &replay_emit)
+            .expect("stage refreshed source ACK");
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        assert_eq!(
+            state
+                .sequence
+                .server_sequence_shifts
+                .iter()
+                .map(|shift| (shift.base, shift.delta))
+                .collect::<Vec<_>>(),
+            committed_shifts
+        );
+        assert_eq!(
+            state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
+            committed_epoch_insertions
+        );
+        assert_eq!(
+            state.deflate.completed_server_stream_windows.len(),
+            committed_cache_windows
+        );
+        assert_eq!(
+            state.ee_server_send_window.slots.len(),
+            committed_destination_slots,
+            "exact replay refreshes retained slots instead of creating new ones"
+        );
+        assert_eq!(state.semantic.area.client_area_packets, 1);
     }
 
     #[test]
@@ -6933,12 +7132,15 @@ mod tests {
         let server = client_reliable_m_frame(35, 74, &payload);
         let mut state = SessionState::default();
         state.synthetic_area.synthesize_loadbar = false;
-        proof_packets(
-            translate_server_to_client(&server, &mut state).expect("seed translated server slot"),
-        );
+        let server_emit =
+            translate_server_to_client(&server, &mut state).expect("seed translated server slot");
+        proof_packets(server_emit.clone());
+        stage_direct_server_send_window(&mut state, &server_emit)
+            .expect("stage translated server destination slot");
         finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(state.server_reliable_slots.receive_start, Some(35));
         assert_eq!(state.server_reliable_slots.slots.len(), 1);
+        assert_eq!(state.ee_server_send_window.slots.len(), 1);
 
         let client_ack = client_reliable_m_frame(1, 35, &[b'P', 0xFE, 0xFD]);
         begin_client_to_server_emit_validation(&mut state, &client_ack)
@@ -6950,6 +7152,24 @@ mod tests {
         finish_client_to_server_emit_validation(&mut state, false);
         assert_eq!(state.server_reliable_slots.receive_start, Some(35));
         assert_eq!(state.server_reliable_slots.slots.len(), 1);
+        assert_eq!(state.sequence.server_sequence_epoch_source_floor, None);
+        assert_eq!(
+            state.sequence.latest_raw_ee_server_ack,
+            Some(ee_send_window::EeServerSendKey {
+                sequence: 35,
+                generation: 0,
+            }),
+            "raw destination ACK identity must survive client-effect rollback"
+        );
+        assert_eq!(
+            state.sequence.server_sequence_epoch_destination_floor,
+            Some(ee_send_window::EeServerSendKey {
+                sequence: 36,
+                generation: 0,
+            }),
+            "retired destination window and exact floor must not diverge"
+        );
+        assert!(state.ee_server_send_window.slots.is_empty());
 
         begin_client_to_server_emit_validation(&mut state, &client_ack)
             .expect("begin accepted client ACK transaction");
@@ -6960,6 +7180,13 @@ mod tests {
         finish_client_to_server_emit_validation(&mut state, true);
         assert_eq!(state.server_reliable_slots.receive_start, Some(36));
         assert!(state.server_reliable_slots.slots.is_empty());
+        assert_eq!(
+            state.sequence.server_sequence_epoch_source_floor,
+            Some(server_replay::ServerReliableSlotKey {
+                sequence: 36,
+                origin_generation: 0,
+            })
+        );
     }
 
     #[test]
@@ -7124,6 +7351,78 @@ mod tests {
                 .deflate
                 .ordered_successor_effect_snapshot
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn raw_ee_ack_keeps_exact_destination_generation_after_window_empties() {
+        let mut state = SessionState::default();
+        let outputs = vec![
+            reliable_server_m_frame(u16::MAX, 7, 0x08, 1, b"pre-wrap"),
+            reliable_server_m_frame(0, 7, 0x08, 1, b"wrapped"),
+        ];
+        ee_send_window::stage(
+            &mut state.ee_server_send_window,
+            ee_send_window::EeServerSendOwner::DirectServer,
+            &Emit::Packets(outputs),
+            Instant::now(),
+        )
+        .expect("stage wrapped EE destination interval");
+        assert_eq!(
+            ee_send_window::finish(
+                &mut state.ee_server_send_window,
+                ee_send_window::EeServerSendOwner::DirectServer,
+                true,
+            ),
+            2
+        );
+
+        let pre_wrap_ack = client_reliable_m_frame(1, u16::MAX, &[b'P', 0xFE, 0xFD]);
+        let pre_wrap_view = MFrameView::parse(&pre_wrap_ack).expect("pre-wrap ACK source");
+        observe_client_window_state(&mut state, &pre_wrap_view, true);
+        assert_eq!(
+            state.sequence.latest_raw_ee_server_ack,
+            Some(ee_send_window::EeServerSendKey {
+                sequence: u16::MAX,
+                generation: 0,
+            })
+        );
+        assert_eq!(
+            state.sequence.server_sequence_epoch_destination_floor,
+            Some(ee_send_window::EeServerSendKey {
+                sequence: 0,
+                generation: 1,
+            })
+        );
+
+        let wrapped_ack = client_reliable_m_frame(2, 0, &[b'P', 0xFE, 0xFD]);
+        let wrapped_view = MFrameView::parse(&wrapped_ack).expect("wrapped ACK source");
+        observe_client_window_state(&mut state, &wrapped_view, true);
+        let wrapped_key = ee_send_window::EeServerSendKey {
+            sequence: 0,
+            generation: 1,
+        };
+        assert_eq!(state.sequence.latest_raw_ee_server_ack, Some(wrapped_key));
+        assert_eq!(
+            state.sequence.server_sequence_epoch_destination_floor,
+            Some(ee_send_window::EeServerSendKey {
+                sequence: 1,
+                generation: 1,
+            })
+        );
+        assert!(state.ee_server_send_window.slots.is_empty());
+
+        observe_client_window_state(&mut state, &wrapped_view, true);
+        assert_eq!(
+            state.sequence.latest_raw_ee_server_ack,
+            Some(wrapped_key),
+            "an identical cumulative ACK remains exact after active slots empty"
+        );
+        observe_client_window_state(&mut state, &pre_wrap_view, true);
+        assert_eq!(
+            state.sequence.latest_raw_ee_server_ack,
+            Some(wrapped_key),
+            "a stale bare sequence cannot borrow the prior destination generation"
         );
     }
 
@@ -7567,8 +7866,9 @@ mod tests {
 
         let retry_emit = translate_server_to_client(&second, &mut state)
             .expect("exact completion retransmit should retry from the restored source window");
+        let retry_packets = proof_packets(retry_emit);
         assert!(
-            proof_packets(retry_emit)
+            retry_packets
                 .iter()
                 .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
         );
@@ -7578,6 +7878,69 @@ mod tests {
         assert_eq!(
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
+        );
+
+        let committed_shifts = state
+            .sequence
+            .server_sequence_shifts
+            .iter()
+            .map(|shift| (shift.base, shift.delta))
+            .collect::<Vec<_>>();
+        let committed_epoch_insertions = state
+            .sequence
+            .ordered_server_sequence_epochs
+            .active_insertions();
+        let committed_identities = retry_packets
+            .iter()
+            .map(|(_, packet)| server_transport_identity_for_test(packet))
+            .collect::<Vec<_>>();
+
+        let mut first_retransmit = first.clone();
+        assert!(write_be_u16(&mut first_retransmit, 5, 80));
+        assert!(encode_legacy_m_crc(&mut first_retransmit));
+        assert!(matches!(
+            translate_server_to_client(&first_retransmit, &mut state)
+                .expect("exact stateless first member retransmit should buffer"),
+            Emit::Consumed
+        ));
+        let mut second_retransmit = second.clone();
+        assert!(write_be_u16(&mut second_retransmit, 5, 81));
+        assert!(encode_legacy_m_crc(&mut second_retransmit));
+        let replay_packets = proof_packets(
+            translate_server_to_client(&second_retransmit, &mut state)
+                .expect("exact stateless completion retransmit should replay committed output"),
+        );
+        let replay_identities = replay_packets
+            .iter()
+            .map(|(_, packet)| server_transport_identity_for_test(packet))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            replay_identities,
+            committed_identities[..replay_packets.len()],
+            "stateless deflated retransmit must keep the committed sequence/payload identity"
+        );
+        assert_eq!(
+            state
+                .sequence
+                .server_sequence_shifts
+                .iter()
+                .map(|shift| (shift.base, shift.delta))
+                .collect::<Vec<_>>(),
+            committed_shifts,
+            "exact replay must not register the same legacy insertion twice"
+        );
+        assert_eq!(
+            state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
+            committed_epoch_insertions,
+            "exact replay must not acquire a second ordered insertion owner"
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state.semantic.area.client_area_packets, 1,
+            "cached stateless replay must not repeat semantic effects"
         );
     }
 
@@ -11267,18 +11630,21 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             "failed to queue confirmed deflated ClientGui status Inventory replay"
         );
     }
-    if used_server_stream {
-        reassembly::remember_completed_server_stream_window_with_disposition(
-            state,
-            &reassembly,
-            source_compressed_length,
-            inserted_extra_output_frames,
-            CompletedDeflatedReplay::VerifiedProofPackets {
-                proof: verified_proof.clone(),
-                packets: outputs.clone(),
-            },
-        );
-    }
+    // Stateless and persistent deflated windows share reliable source-slot
+    // replay ownership. In particular, an expanded stateless retransmit must
+    // return these exact committed packets: rebuilding it after its own legacy
+    // insertion was recorded would shift the synthetic suffix a second time
+    // and collide with the next real source.
+    reassembly::remember_completed_server_stream_window_with_disposition(
+        state,
+        &reassembly,
+        source_compressed_length,
+        inserted_extra_output_frames,
+        CompletedDeflatedReplay::VerifiedProofPackets {
+            proof: verified_proof.clone(),
+            packets: outputs.clone(),
+        },
+    );
     // The completing reliable source and its first contiguous typed successor
     // form one receive-window transaction. The pre-completion snapshot protects
     // both predecessor and successor effects; promotion below only adds exact

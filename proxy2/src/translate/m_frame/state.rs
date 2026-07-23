@@ -19,7 +19,9 @@ use super::{
     reassembly::{
         BufferedInterleavedServerPacket, CompletedDeflatedStreamWindow, ServerDeflatedReassembly,
     },
-    sequence::{CoalescedSplitSequenceShift, SequenceElision, SequenceShift},
+    sequence::{
+        CoalescedSplitSequenceShift, OrderedServerSequenceEpochs, SequenceElision, SequenceShift,
+    },
     server_replay, synthetic_area,
 };
 
@@ -192,6 +194,20 @@ pub(super) struct SequenceState {
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
     pub(super) client_sequence_elisions: Vec<SequenceElision>,
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
+    /// Exact two-window coordinates retained for the ordered server sequence
+    /// epoch migration. The source floor advances only after a mapped ACK
+    /// survives final validation; the destination floor and ACK identity come
+    /// only from the raw EE-facing send window. Bare wrapped `u16` values are
+    /// never promoted into an epoch by inference.
+    pub(super) server_sequence_epoch_source_floor: Option<server_replay::ServerReliableSlotKey>,
+    pub(super) server_sequence_epoch_destination_floor: Option<ee_send_window::EeServerSendKey>,
+    pub(super) latest_raw_ee_server_ack: Option<ee_send_window::EeServerSendKey>,
+    /// Generation-aware coordinate transform prepared for migration from the
+    /// legacy bare-`u16` shift list. It deliberately remains empty in
+    /// production until every insertion producer can supply an exact owner and
+    /// committed EE destination range. Mixing registered-only coordinates with
+    /// omitted legacy shifts would make destination-floor compaction unsound.
+    pub(super) ordered_server_sequence_epochs: OrderedServerSequenceEpochs,
     pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
     /// Exact `1 -> N` server rewrites that keep EE-derived partial ACKs before
     /// the source until EE cumulatively ACKs the final rebuilt reliable frame.
