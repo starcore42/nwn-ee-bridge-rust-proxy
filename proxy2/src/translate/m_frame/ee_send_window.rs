@@ -143,11 +143,22 @@ pub(super) fn stage(
         );
     }
 
-    let mut prospective = state.slots.iter().cloned().collect::<Vec<_>>();
-    let mut new_slots = Vec::new();
-    let mut refreshed_slots = Vec::<PendingEeServerRefresh>::new();
-    let mut next_key = state.next_key;
+    #[derive(Debug)]
+    struct ReliableCandidate {
+        sequence: u16,
+        packet: Vec<u8>,
+        transport_identity: Vec<u8>,
+        send_window_bit6: u8,
+    }
 
+    // Diamond and EE allocate 16 sequence-indexed outgoing slots before the
+    // datagram scheduler transmits their bytes (Diamond 750687-750695 and
+    // 751243-751389; EE 891083-891087 and 879824-879987). One final proxy Emit
+    // can therefore visit those already-assigned sequences in wire-scheduling
+    // order rather than slot order. Collect the complete batch first, then
+    // prove that its new reliable members are exactly one contiguous interval.
+    // This changes no CNW payload bytes, BOOL/bit order, or outgoing Emit order.
+    let mut candidates = Vec::<ReliableCandidate>::new();
     visit_emit_packets(emit, &mut |packet| {
         let view = MFrameView::parse(packet)
             .ok_or_else(|| anyhow::anyhow!("EE send-window candidate is not a complete M frame"))?;
@@ -164,24 +175,38 @@ pub(super) fn stage(
             return Ok(());
         }
 
-        let identity = transport_identity::server_reliable_data_transport_identity(packet, &view)
-            .ok_or_else(|| {
-            anyhow::anyhow!("EE send-window candidate left the reliable type-0 lane")
-        })?;
-        if let Some(existing) = prospective
+        let transport_identity = transport_identity::server_reliable_data_transport_identity(
+            packet, &view,
+        )
+        .ok_or_else(|| anyhow::anyhow!("EE send-window candidate left the reliable type-0 lane"))?;
+        candidates.push(ReliableCandidate {
+            sequence: view.sequence,
+            packet: packet.to_vec(),
+            transport_identity,
+            send_window_bit6: view.flags & transport_identity::SEND_WINDOW_BIT6_MASK,
+        });
+        Ok(())
+    })?;
+
+    let mut unique_new = Vec::<ReliableCandidate>::new();
+    let mut refreshed_slots = Vec::<PendingEeServerRefresh>::new();
+    let mut same_batch_new_refreshes = 0usize;
+    for candidate in candidates {
+        if let Some(existing) = state
+            .slots
             .iter()
-            .find(|slot| slot.key.sequence == view.sequence)
+            .find(|slot| slot.key.sequence == candidate.sequence)
         {
-            if existing.transport_identity != identity {
+            if existing.transport_identity != candidate.transport_identity {
                 anyhow::bail!(
                     "EE send-window sequence {} conflicts with retained validated bytes",
-                    view.sequence
+                    candidate.sequence
                 );
             }
             let refresh = PendingEeServerRefresh {
                 key: existing.key,
-                packet: packet.to_vec(),
-                send_window_bit6: view.flags & transport_identity::SEND_WINDOW_BIT6_MASK,
+                packet: candidate.packet,
+                send_window_bit6: candidate.send_window_bit6,
                 next_retransmit_at: now + EE_SERVER_RETRANSMIT_DELAY,
             };
             if let Some(staged) = refreshed_slots
@@ -192,47 +217,109 @@ pub(super) fn stage(
             } else {
                 refreshed_slots.push(refresh);
             }
-            return Ok(());
+            continue;
         }
 
-        let key = next_key.unwrap_or(EeServerSendKey {
-            sequence: view.sequence,
+        if let Some(staged) = unique_new
+            .iter_mut()
+            .find(|staged| staged.sequence == candidate.sequence)
+        {
+            if staged.transport_identity != candidate.transport_identity {
+                anyhow::bail!(
+                    "EE send-window sequence {} conflicts inside one validated batch",
+                    candidate.sequence
+                );
+            }
+            // Match FrameSend's latest wire image for a repeated slot in the
+            // same batch: ACK, bit 6, CRC, and retry deadline are refreshed,
+            // while the immutable transport identity remains unchanged.
+            staged.packet = candidate.packet;
+            staged.send_window_bit6 = candidate.send_window_bit6;
+            same_batch_new_refreshes = same_batch_new_refreshes.saturating_add(1);
+            continue;
+        }
+        unique_new.push(candidate);
+    }
+
+    if state.slots.len().saturating_add(unique_new.len()) > MAX_EE_SERVER_SEND_SLOTS {
+        anyhow::bail!(
+            "EE server send window exceeded {} unacknowledged reliable frames",
+            MAX_EE_SERVER_SEND_SLOTS
+        );
+    }
+
+    if state.next_key.is_none() && !state.slots.is_empty() {
+        anyhow::bail!("EE send-window active slots have no exact next-sequence anchor");
+    }
+    let interval_first = state.next_key.or_else(|| {
+        unique_new.first().map(|candidate| EeServerSendKey {
+            sequence: candidate.sequence,
             generation: 0,
-        });
-        if view.sequence != key.sequence {
+        })
+    });
+    let mut ordered_new = Vec::<Option<ReliableCandidate>>::new();
+    ordered_new.resize_with(unique_new.len(), || None);
+    if let Some(interval_first) = interval_first {
+        for candidate in unique_new {
+            let distance = candidate.sequence.wrapping_sub(interval_first.sequence) as usize;
+            if distance >= ordered_new.len() || distance >= MAX_EE_SERVER_SEND_SLOTS {
+                anyhow::bail!(
+                    "EE send-window new output is not one contiguous interval from sequence {}",
+                    interval_first.sequence
+                );
+            }
+            if ordered_new[distance].is_some() {
+                anyhow::bail!(
+                    "EE send-window sequence {} is ambiguous inside one validated batch",
+                    candidate.sequence
+                );
+            }
+            ordered_new[distance] = Some(candidate);
+        }
+    }
+    if ordered_new.iter().any(Option::is_none) {
+        anyhow::bail!("EE send-window new output contains a reliable sequence gap");
+    }
+
+    let mut key = interval_first;
+    let mut new_slots = Vec::with_capacity(ordered_new.len());
+    for candidate in ordered_new {
+        let candidate =
+            candidate.expect("complete contiguous EE send interval retains every candidate");
+        let slot_key = key.ok_or_else(|| {
+            anyhow::anyhow!("EE send-window new output has no exact sequence anchor")
+        })?;
+        if candidate.sequence != slot_key.sequence {
             anyhow::bail!(
                 "EE send-window output is noncontiguous: expected sequence {}, got {}",
-                key.sequence,
-                view.sequence
+                slot_key.sequence,
+                candidate.sequence
             );
         }
-        if prospective.len() >= MAX_EE_SERVER_SEND_SLOTS {
-            anyhow::bail!(
-                "EE server send window exceeded {} unacknowledged reliable frames",
-                MAX_EE_SERVER_SEND_SLOTS
-            );
-        }
-
-        let slot = EeServerSendSlot {
-            key,
-            packet: packet.to_vec(),
-            transport_identity: identity,
-            send_window_bit6: view.flags & transport_identity::SEND_WINDOW_BIT6_MASK,
+        new_slots.push(EeServerSendSlot {
+            key: slot_key,
+            packet: candidate.packet,
+            transport_identity: candidate.transport_identity,
+            send_window_bit6: candidate.send_window_bit6,
             next_retransmit_at: now + EE_SERVER_RETRANSMIT_DELAY,
             retransmits: 0,
-        };
-        prospective.push(slot.clone());
-        new_slots.push(slot);
-        next_key = Some(key.successor());
-        Ok(())
-    })?;
+        });
+        key = Some(slot_key.successor());
+    }
+    let next_key = if new_slots.is_empty() {
+        state.next_key
+    } else {
+        key
+    };
 
     tracing::trace!(
         owner = owner.as_str(),
         new_slots = new_slots.len(),
-        refreshed_slots = refreshed_slots.len(),
+        refreshed_slots = refreshed_slots
+            .len()
+            .saturating_add(same_batch_new_refreshes),
         retained_slots = state.slots.len(),
-        prospective_slots = prospective.len(),
+        prospective_slots = state.slots.len().saturating_add(new_slots.len()),
         "staged strictly validated server output for the EE reliable send window"
     );
     state.pending = Some(PendingEeServerSend {
@@ -548,6 +635,190 @@ mod tests {
         assert_eq!(unresolvable.acknowledged, None);
         assert_eq!(unresolvable.destination_floor, wrapped.destination_floor);
         assert_eq!(unresolvable.retired_slots, 0);
+    }
+
+    #[test]
+    fn known_next_key_admits_permuted_contiguous_batch_in_exact_slot_order() {
+        let now = Instant::now();
+        let mut state = EeServerSendWindowState {
+            next_key: Some(EeServerSendKey {
+                sequence: 61,
+                generation: 4,
+            }),
+            ..EeServerSendWindowState::default()
+        };
+        let wire_sequences = [61u16, 65, 62, 63, 64];
+        let wire_packets = wire_sequences
+            .into_iter()
+            .map(|sequence| reliable(sequence, 7, &[sequence as u8]))
+            .collect::<Vec<_>>();
+        let emit = Emit::Packets(wire_packets.clone());
+
+        stage(&mut state, EeServerSendOwner::DirectServer, &emit, now)
+            .expect("one permuted contiguous destination interval should stage");
+
+        let pending = state.pending.as_ref().expect("permuted batch pending");
+        assert_eq!(
+            pending
+                .new_slots
+                .iter()
+                .map(|slot| slot.key)
+                .collect::<Vec<_>>(),
+            (61..=65)
+                .map(|sequence| EeServerSendKey {
+                    sequence,
+                    generation: 4,
+                })
+                .collect::<Vec<_>>()
+        );
+        let Emit::Packets(staged_wire_packets) = &emit else {
+            panic!("test Emit shape changed during send-window admission");
+        };
+        assert_eq!(
+            staged_wire_packets, &wire_packets,
+            "send-window admission must not reorder the outgoing Emit"
+        );
+
+        assert_eq!(
+            finish(&mut state, EeServerSendOwner::DirectServer, true),
+            wire_sequences.len()
+        );
+        assert_eq!(
+            state
+                .slots
+                .iter()
+                .map(|slot| slot.key.sequence)
+                .collect::<Vec<_>>(),
+            vec![61, 62, 63, 64, 65]
+        );
+        assert_eq!(
+            state.next_key,
+            Some(EeServerSendKey {
+                sequence: 66,
+                generation: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn permuted_batch_with_a_sequence_gap_fails_atomically() {
+        let now = Instant::now();
+        let mut state = EeServerSendWindowState {
+            next_key: Some(EeServerSendKey {
+                sequence: 61,
+                generation: 2,
+            }),
+            ..EeServerSendWindowState::default()
+        };
+        let baseline_next_key = state.next_key;
+
+        assert!(
+            stage(
+                &mut state,
+                EeServerSendOwner::DirectServer,
+                &Emit::Packets(vec![reliable(61, 7, b"first"), reliable(63, 7, b"gap"),]),
+                now,
+            )
+            .is_err()
+        );
+        assert!(state.pending.is_none());
+        assert!(state.slots.is_empty());
+        assert_eq!(state.next_key, baseline_next_key);
+    }
+
+    #[test]
+    fn permuted_contiguous_batch_preserves_exact_generation_across_wrap() {
+        let now = Instant::now();
+        let mut state = EeServerSendWindowState {
+            next_key: Some(EeServerSendKey {
+                sequence: u16::MAX - 1,
+                generation: 7,
+            }),
+            ..EeServerSendWindowState::default()
+        };
+
+        commit(
+            &mut state,
+            now,
+            vec![
+                reliable(u16::MAX - 1, 7, b"fffe"),
+                reliable(1, 7, b"one"),
+                reliable(u16::MAX, 7, b"ffff"),
+                reliable(0, 7, b"zero"),
+            ],
+        )
+        .expect("wrapped permutation should commit");
+
+        assert_eq!(
+            state.slots.iter().map(|slot| slot.key).collect::<Vec<_>>(),
+            vec![
+                EeServerSendKey {
+                    sequence: u16::MAX - 1,
+                    generation: 7,
+                },
+                EeServerSendKey {
+                    sequence: u16::MAX,
+                    generation: 7,
+                },
+                EeServerSendKey {
+                    sequence: 0,
+                    generation: 8,
+                },
+                EeServerSendKey {
+                    sequence: 1,
+                    generation: 8,
+                },
+            ]
+        );
+        assert_eq!(
+            state.next_key,
+            Some(EeServerSendKey {
+                sequence: 2,
+                generation: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn unseeded_rotated_interval_and_same_sequence_conflict_fail_atomically() {
+        let now = Instant::now();
+        let mut rotated = EeServerSendWindowState::default();
+        assert!(
+            stage(
+                &mut rotated,
+                EeServerSendOwner::DirectServer,
+                &Emit::Packets(
+                    [65u16, 61, 62, 63, 64]
+                        .into_iter()
+                        .map(|sequence| reliable(sequence, 7, &[sequence as u8]))
+                        .collect(),
+                ),
+                now,
+            )
+            .is_err(),
+            "an unseeded window must not guess an anchor before the first new sequence"
+        );
+        assert!(rotated.pending.is_none());
+        assert!(rotated.slots.is_empty());
+        assert_eq!(rotated.next_key, None);
+
+        let mut conflict = EeServerSendWindowState::default();
+        assert!(
+            stage(
+                &mut conflict,
+                EeServerSendOwner::DirectServer,
+                &Emit::Packets(vec![
+                    reliable(40, 3, b"first"),
+                    reliable(40, 8, b"different"),
+                ]),
+                now,
+            )
+            .is_err(),
+            "one new sequence cannot claim two immutable identities"
+        );
+        assert!(conflict.pending.is_none());
+        assert!(conflict.slots.is_empty());
+        assert_eq!(conflict.next_key, None);
     }
 
     #[test]
