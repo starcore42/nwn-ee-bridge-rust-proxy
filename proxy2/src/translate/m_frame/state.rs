@@ -13,7 +13,7 @@ use crate::translate::{
 use super::{
     ack_delivery, client_ack, client_replay, deferred_module_resources,
     deflate::PersistentServerInflater,
-    live_stream,
+    ee_send_window, live_stream,
     output_reliability::ServerOutputAckSpan,
     quickbar_stream,
     reassembly::{
@@ -772,6 +772,10 @@ pub struct SessionState {
     /// deliberately excluded from `EngineFacingEffectSnapshot`. A rejected
     /// CNW reader may retry the pinned bytes but cannot replace the slot.
     pub(super) server_reliable_slots: server_replay::ServerReliableSlotState,
+    /// Exact strictly validated server outputs stay in a separate EE-facing
+    /// send window until a raw EE ACK retires them. This is destination
+    /// transport truth and is deliberately outside engine-facing snapshots.
+    pub(super) ee_server_send_window: ee_send_window::EeServerSendWindowState,
     /// ACK delivery is owned by the exact outgoing batch, independently of
     /// whichever semantic/effect transaction produced that batch.
     pub(super) ack_delivery: ack_delivery::AckDeliveryState,
@@ -808,6 +812,7 @@ impl SessionState {
             sequence: SequenceState::default(),
             client_reliable_replays: client_replay::ClientReliableReplayState::default(),
             server_reliable_slots: server_replay::ServerReliableSlotState::default(),
+            ee_server_send_window: ee_send_window::EeServerSendWindowState::default(),
             ack_delivery: ack_delivery::AckDeliveryState::default(),
             client_emit_effect_snapshot: None,
             client_emit_pending_validation: None,

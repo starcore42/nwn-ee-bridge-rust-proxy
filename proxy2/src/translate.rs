@@ -434,6 +434,16 @@ impl SessionTranslator {
 
     pub fn take_pending_server_to_client_packets(&mut self) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
+        match m_frame::take_due_ee_server_retransmit(&mut self.m_state) {
+            Ok(Some(packet)) => packets.push(packet),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "EE server send-window retransmit failed closed"
+                );
+            }
+        }
         for packet in self.bn_state.take_pending_server_to_client_packets() {
             packets.extend(packets_from_emit(self.validate_emit(
                 Direction::ServerToClientSynthetic,
@@ -452,7 +462,17 @@ impl SessionTranslator {
                     );
                     return packets;
                 }
-                let validated = self.validate_emit(Direction::ServerToClientSynthetic, emit);
+                let mut validated = self.validate_emit(Direction::ServerToClientSynthetic, emit);
+                if !matches!(&validated, Emit::Drop)
+                    && let Err(err) =
+                        m_frame::stage_pending_server_send_window(&mut self.m_state, &validated)
+                {
+                    tracing::warn!(
+                        error = %err,
+                        "pending server output could not enter the EE reliable send window"
+                    );
+                    validated = Emit::Drop;
+                }
                 m_frame::finish_pending_server_drain_emit_validation(
                     &mut self.m_state,
                     !matches!(&validated, Emit::Drop),
@@ -574,7 +594,7 @@ impl SessionTranslator {
 
         let mut validated = self.validate_emit(direction, emit);
         if matches!(&validated, Emit::Drop)
-            && let Some((prepared, source_lane)) = strict_rejection_ack_fallback
+            && let Some((prepared, source_lane)) = strict_rejection_ack_fallback.clone()
         {
             translated_effects_candidate = false;
             tracing::info!(
@@ -590,6 +610,37 @@ impl SessionTranslator {
         // Stage retirement only from the final strict result. In particular,
         // an invalid mixed payload/carrier batch must be discarded before the
         // separately validated fallback carrier becomes the delivery owner.
+        if finish_server_m_validation
+            && !matches!(&validated, Emit::Drop)
+            && let Err(err) =
+                m_frame::stage_direct_server_send_window(&mut self.m_state, &validated)
+        {
+            translated_effects_candidate = false;
+            tracing::warn!(
+                direction = direction.as_str(),
+                error = %err,
+                "validated server payload could not enter the EE reliable send window"
+            );
+            if let Some((prepared, source_lane)) = strict_rejection_ack_fallback.clone() {
+                let fallback =
+                    m_frame::ensure_direct_source_ack_carrier(Emit::Drop, prepared, source_lane);
+                validated = self.validate_emit(direction, fallback);
+                if !matches!(&validated, Emit::Drop)
+                    && let Err(fallback_err) =
+                        m_frame::stage_direct_server_send_window(&mut self.m_state, &validated)
+                {
+                    tracing::warn!(
+                        direction = direction.as_str(),
+                        error = %fallback_err,
+                        "ACK-only fallback could not stage an empty EE reliable send-window batch"
+                    );
+                    validated = Emit::Drop;
+                }
+            } else {
+                validated = Emit::Drop;
+            }
+        }
+
         let ack_delivery = if finish_client_m_validation {
             m_frame::stage_direct_client_ack_delivery(&mut self.m_state, &validated)
         } else if finish_server_m_validation {

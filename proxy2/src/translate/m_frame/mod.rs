@@ -34,6 +34,7 @@ mod client_replay;
 mod coalesced;
 mod deferred_module_resources;
 mod deflate;
+mod ee_send_window;
 mod inventory_equipment;
 mod live_stream;
 mod live_update;
@@ -230,6 +231,51 @@ pub(super) fn stage_pending_server_ack_delivery(
         &mut state.ack_delivery,
         ack_delivery::AckDeliveryOwner::PendingServerDrain,
         emit,
+    )
+}
+
+pub(super) fn stage_direct_server_send_window(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    ee_send_window::stage(
+        &mut state.ee_server_send_window,
+        ee_send_window::EeServerSendOwner::DirectServer,
+        emit,
+        Instant::now(),
+    )
+}
+
+pub(super) fn stage_pending_server_send_window(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    ee_send_window::stage(
+        &mut state.ee_server_send_window,
+        ee_send_window::EeServerSendOwner::PendingServerDrain,
+        emit,
+        Instant::now(),
+    )
+}
+
+pub(super) fn take_due_ee_server_retransmit(
+    state: &mut SessionState,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let current_client_source_ack =
+        state
+            .server_reliable_slots
+            .latest_peer_ack_sequence
+            .map(|ack| {
+                unshift_ack_for_origin_with_elisions(
+                    &state.sequence.client_sequence_shifts,
+                    &state.sequence.client_sequence_elisions,
+                    ack,
+                )
+            });
+    ee_send_window::take_due_retransmit(
+        &mut state.ee_server_send_window,
+        Instant::now(),
+        current_client_source_ack,
     )
 }
 
@@ -1491,6 +1537,11 @@ pub(super) fn finish_server_to_client_emit_validation_outcomes(
         ack_delivery::AckDeliveryOwner::DirectServer,
         ack_output_accepted,
     );
+    let _ = ee_send_window::finish(
+        &mut state.ee_server_send_window,
+        ee_send_window::EeServerSendOwner::DirectServer,
+        ack_output_accepted,
+    );
 }
 
 fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted: bool) {
@@ -1659,6 +1710,11 @@ pub(super) fn finish_pending_server_drain_emit_validation(
     finish_ack_delivery(
         state,
         ack_delivery::AckDeliveryOwner::PendingServerDrain,
+        accepted,
+    );
+    let _ = ee_send_window::finish(
+        &mut state.ee_server_send_window,
+        ee_send_window::EeServerSendOwner::PendingServerDrain,
         accepted,
     );
 }
@@ -1845,13 +1901,23 @@ fn translate_server_to_client_inner(
                         .inventory_equipment
                         .pending_confirmed_inventory_replay
                         .is_some())));
+    // A verified transport-only source can itself become a type-0 destination
+    // output without entering a CNW semantic reader. Destination send-window
+    // admission is still a final owner, so capture its sequence/publication
+    // effects before finalization. Exclude active/new incomplete reassembly:
+    // those calls emit nothing and retain their source window immediately.
+    let unreassembled_transport_output = state.deflate.server_reassembly.is_none()
+        && !starts_server_deflated_reassembly
+        && view.frame_kind() == Some(MFrameType::ReliableData)
+        && transport_identity::claim_server_frame_if_verified(&view).is_some();
     let ordinary_server_emit_transaction =
         state.deflate.ordered_successor_effect_snapshot.is_none()
             && (ordinary_coalesced_window
                 || (pending_server_drain_has_work(state, server_emit_started_at)
                     && !active_server_reassembly_duplicate)
                 || source_can_queue_immediate_server_packet
-                || exact_direct_semantic_source_payload(&inbound, &view).is_some());
+                || exact_direct_semantic_source_payload(&inbound, &view).is_some()
+                || unreassembled_transport_output);
     if ordinary_server_emit_transaction {
         // A complete count-one stored window is one reader transaction. A due
         // or source-created proxy-owned server packet is likewise not emitted
@@ -2958,6 +3024,10 @@ fn observe_client_window_state(
     }
     record_forward_progress(
         &mut state.sequence.latest_client_ack_from_client,
+        view.ack_sequence,
+    );
+    let _ = ee_send_window::retire_through_raw_client_ack(
+        &mut state.ee_server_send_window,
         view.ack_sequence,
     );
 }
@@ -6986,6 +7056,75 @@ mod tests {
         let mapped = MFrameView::parse(&ack).expect("parse mapped ACK control");
         assert_eq!(mapped.ack_sequence, 60);
         assert!(mapped.crc_valid);
+    }
+
+    #[test]
+    fn full_ee_send_window_rolls_back_unsent_empty_shell_sequence() {
+        let mut translator = strict_session_translator_for_test();
+        let retained = (0..ee_send_window::MAX_EE_SERVER_SEND_SLOTS)
+            .map(|sequence| reliable_server_m_frame(sequence as u16, 0, 0x08, 1, b"retained"))
+            .collect::<Vec<_>>();
+        ee_send_window::stage(
+            &mut translator.m_state.ee_server_send_window,
+            ee_send_window::EeServerSendOwner::DirectServer,
+            &Emit::Packets(retained),
+            Instant::now(),
+        )
+        .expect("seed full destination window");
+        assert_eq!(
+            ee_send_window::finish(
+                &mut translator.m_state.ee_server_send_window,
+                ee_send_window::EeServerSendOwner::DirectServer,
+                true,
+            ),
+            ee_send_window::MAX_EE_SERVER_SEND_SLOTS
+        );
+        translator.m_state.sequence.latest_server_sequence_to_client = Some(15);
+
+        let source = reliable_server_m_frame(16, 0, 0x08, 0, &[]);
+        let rejected = translator.translate(crate::packet::Direction::ServerToClient, &source);
+
+        let fallback = crate::translate::packets_from_emit(rejected);
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(
+            MFrameView::parse(&fallback[0])
+                .expect("independent fallback carrier")
+                .frame_kind(),
+            Some(MFrameType::AckControl),
+            "the unsent reliable shell may preserve only its independent ACK"
+        );
+        assert_eq!(
+            translator.m_state.sequence.latest_server_sequence_to_client,
+            Some(15),
+            "a shell rejected by destination admission was never emitted"
+        );
+        assert_eq!(
+            translator.m_state.ee_server_send_window.slots.len(),
+            ee_send_window::MAX_EE_SERVER_SEND_SLOTS
+        );
+        assert!(
+            translator
+                .m_state
+                .server_reliable_slots
+                .slots
+                .iter()
+                .any(|slot| slot.key.sequence == 16),
+            "validated raw source transport remains pinned for exact retry"
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .deflate
+                .server_emit_effect_transaction_kind,
+            None
+        );
+        assert!(
+            translator
+                .m_state
+                .deflate
+                .ordered_successor_effect_snapshot
+                .is_none()
+        );
     }
 
     #[test]
