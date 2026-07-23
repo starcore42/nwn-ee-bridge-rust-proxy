@@ -13,7 +13,9 @@ use crate::translate::{
 use super::{
     ack_delivery, client_ack, client_replay, deferred_module_resources,
     deflate::PersistentServerInflater,
-    live_stream, quickbar_stream,
+    live_stream,
+    output_reliability::ServerOutputAckSpan,
+    quickbar_stream,
     reassembly::{
         BufferedInterleavedServerPacket, CompletedDeflatedStreamWindow, ServerDeflatedReassembly,
     },
@@ -191,6 +193,12 @@ pub(super) struct SequenceState {
     pub(super) client_sequence_elisions: Vec<SequenceElision>,
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
     pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
+    /// Exact `1 -> N` server rewrites that keep EE-derived partial ACKs before
+    /// the source until EE cumulatively ACKs the final rebuilt reliable frame.
+    /// Proxy-local progress ACKs never retire these owners; retransmitting the
+    /// retained EE-facing outputs remains the next downstream-send-window
+    /// implementation slice.
+    pub(super) server_output_ack_spans: Vec<ServerOutputAckSpan>,
     pub(super) pending_client_to_server_packets: Vec<PendingClientPacket>,
 }
 

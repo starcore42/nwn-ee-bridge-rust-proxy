@@ -30,7 +30,12 @@ impl AckDeliveryOwner {
     }
 
     pub(super) fn acknowledges_server_sources(self) -> bool {
-        matches!(self, Self::DirectClient | Self::PendingClientDrain)
+        // Only a batch derived from a validated EE client datagram proves
+        // downstream receipt. Timer/session-owned client packets may carry a
+        // coherent ACK toward Diamond, but their acceptance by the upstream
+        // socket cannot retire the proxy's retained server source or an owned
+        // multi-frame EE output span.
+        matches!(self, Self::DirectClient)
     }
 }
 

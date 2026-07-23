@@ -12,7 +12,7 @@ use std::{
 use crate::{
     crc::{encode_legacy_m_crc, read_be_u16, write_be_u16},
     packet::m::{
-        DeflatedEnvelope, HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView,
+        DeflatedEnvelope, HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameType, MFrameView,
         parse_packetized_spans,
     },
     translate::{ContinuationOwner, VerifiedFamily, VerifiedProof},
@@ -21,7 +21,7 @@ use crate::{
 use super::{
     CNW_LENGTH_BYTES, SessionState, deferred_module_resources,
     deflate::deflate_zlib,
-    hex_prefix, inflated_cnw_fragment_offset_valid, login_waypoint,
+    hex_prefix, inflated_cnw_fragment_offset_valid, login_waypoint, output_reliability,
     queue_area_client_area_side_effects_for_window,
     reassembly::{
         self, BufferedFrame, EE_SAFE_M_FRAME_DATAGRAM_BYTES, InflatedGameplayPayload,
@@ -32,6 +32,7 @@ use super::{
         trim_coalesced_split_sequence_shifts, trim_sequence_shifts,
     },
     server_dispatch,
+    server_replay::ServerReliableSlotKey,
     state::{
         CompletedCoalescedDeflatedRecord, CompletedCoalescedDirectRecord, CompletedCoalescedWindow,
     },
@@ -277,8 +278,14 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         "server coalesced M window spans rewritten for strict EE delivery"
     );
     if should_split_module_info_resource_window_records(&record_proofs) {
-        let (split_packets, pre_shifted) =
-            split_rewritten_coalesced_records(record_rewrites, state)?;
+        let (split_packets, pre_shifted) = split_rewritten_coalesced_records(
+            record_rewrites,
+            state,
+            ServerReliableSlotKey {
+                sequence: view.sequence,
+                origin_generation: server_origin_generation,
+            },
+        )?;
         tracing::info!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -301,8 +308,14 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         &record_proofs,
         state.synthetic_area.server_hold_gate.is_some(),
     ) {
-        let (split_packets, pre_shifted) =
-            split_rewritten_coalesced_records(record_rewrites, state)?;
+        let (split_packets, pre_shifted) = split_rewritten_coalesced_records(
+            record_rewrites,
+            state,
+            ServerReliableSlotKey {
+                sequence: view.sequence,
+                origin_generation: server_origin_generation,
+            },
+        )?;
         tracing::info!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -329,7 +342,14 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         }));
     }
 
-    let (split_packets, pre_shifted) = split_rewritten_coalesced_records(record_rewrites, state)?;
+    let (split_packets, pre_shifted) = split_rewritten_coalesced_records(
+        record_rewrites,
+        state,
+        ServerReliableSlotKey {
+            sequence: view.sequence,
+            origin_generation: server_origin_generation,
+        },
+    )?;
     tracing::info!(
         sequence = view.sequence,
         ack_sequence = view.ack_sequence,
@@ -410,6 +430,7 @@ fn family_is_area_load_gate_owned(family: VerifiedFamily) -> bool {
 fn split_rewritten_coalesced_records(
     records: Vec<CoalescedRecordRewrite>,
     state: &mut SessionState,
+    source: ServerReliableSlotKey,
 ) -> anyhow::Result<(Vec<(VerifiedProof, Vec<u8>)>, bool)> {
     let Some(first_record) = records.first() else {
         return Ok((Vec::new(), false));
@@ -466,7 +487,7 @@ fn split_rewritten_coalesced_records(
                 packet,
                 &state.sequence.server_sequence_shifts,
                 &state.sequence.coalesced_split_sequence_shifts,
-                base_sequence,
+                source,
             )?;
         }
         assigned_output_frames = assigned_output_frames
@@ -486,6 +507,41 @@ fn split_rewritten_coalesced_records(
     if inserted_extra_packets == 0 {
         return Ok((packets, false));
     }
+    if source.sequence != base_sequence {
+        anyhow::bail!("coalesced split source key does not match the primary reliable sequence");
+    }
+    let mut destination_sequences = packets.iter().map(|(_, packet)| {
+        let view = MFrameView::parse(packet)
+            .ok_or_else(|| anyhow::anyhow!("coalesced split output failed ACK-span parse"))?;
+        if view.frame_kind() != Some(MFrameType::ReliableData) {
+            anyhow::bail!("coalesced split output is not reliable data");
+        }
+        Ok(view.sequence)
+    });
+    let destination_first = destination_sequences
+        .next()
+        .transpose()?
+        .ok_or_else(|| anyhow::anyhow!("coalesced split has no reliable output"))?;
+    let mut destination_last = destination_first;
+    for sequence in destination_sequences {
+        let sequence = sequence?;
+        let forward_distance = sequence.wrapping_sub(destination_last);
+        if forward_distance == 0 || forward_distance >= 0x8000 {
+            anyhow::bail!("coalesced split outputs are not in forward reliable ACK order");
+        }
+        destination_last = sequence;
+    }
+    // Proxy-owned reliable packets (for example, an injected load-bar trio)
+    // may be assigned between two standalone records produced from this one
+    // source. The source completes only at its final output, so ownership is
+    // the forward completion range rather than a claim that every sequence in
+    // the range came from this source.
+    output_reliability::register_server_output_ack_span(
+        &mut state.sequence.server_output_ack_spans,
+        source,
+        destination_first,
+        destination_last,
+    )?;
 
     let base = future_shift_base;
     // Apply pre-existing server sequence shifts before recording the new
@@ -498,12 +554,11 @@ fn split_rewritten_coalesced_records(
         .sequence
         .coalesced_split_sequence_shifts
         .iter()
-        .any(|shift| {
-            shift.source_sequence == base_sequence && shift.base == base && shift.delta == delta
-        })
+        .any(|shift| coalesced_split_shift_matches_source(shift, source, base, delta))
     {
         tracing::info!(
             source_sequence = base_sequence,
+            source_origin_generation = source.origin_generation,
             shift_base = base,
             inserted_extra_packets,
             shifts = state.sequence.server_sequence_shifts.len(),
@@ -522,6 +577,7 @@ fn split_rewritten_coalesced_records(
         .coalesced_split_sequence_shifts
         .push(CoalescedSplitSequenceShift {
             source_sequence: base_sequence,
+            source_origin_generation: source.origin_generation,
             base,
             delta,
         });
@@ -529,6 +585,7 @@ fn split_rewritten_coalesced_records(
     trim_coalesced_split_sequence_shifts(&mut state.sequence.coalesced_split_sequence_shifts);
     tracing::info!(
         source_sequence = base_sequence,
+        source_origin_generation = source.origin_generation,
         shift_base = base,
         inserted_extra_packets,
         shifts = state.sequence.server_sequence_shifts.len(),
@@ -621,7 +678,7 @@ fn shift_packet_sequence_for_existing_server_shifts(
     packet: &mut [u8],
     shifts: &[SequenceShift],
     coalesced_split_shifts: &[CoalescedSplitSequenceShift],
-    current_source_sequence: u16,
+    current_source: ServerReliableSlotKey,
 ) -> anyhow::Result<()> {
     if shifts.is_empty() {
         return Ok(());
@@ -633,7 +690,8 @@ fn shift_packet_sequence_for_existing_server_shifts(
     }
     let mut shifted = shift_sequence_for_peer(shifts, view.sequence);
     for split_shift in coalesced_split_shifts {
-        if split_shift.source_sequence == current_source_sequence
+        if split_shift.source_sequence == current_source.sequence
+            && split_shift.source_origin_generation == current_source.origin_generation
             && split_shift.delta != 0
             && sequence_at_or_after(view.sequence, split_shift.base)
         {
@@ -650,6 +708,18 @@ fn shift_packet_sequence_for_existing_server_shifts(
         .then_some(())
         .ok_or_else(|| anyhow::anyhow!("failed to repair pre-shifted split coalesced CRC"))?;
     Ok(())
+}
+
+fn coalesced_split_shift_matches_source(
+    shift: &CoalescedSplitSequenceShift,
+    source: ServerReliableSlotKey,
+    base: u16,
+    delta: u16,
+) -> bool {
+    shift.source_sequence == source.sequence
+        && shift.source_origin_generation == source.origin_generation
+        && shift.base == base
+        && shift.delta == delta
 }
 
 struct CoalescedRecordRewrite {
@@ -1820,7 +1890,11 @@ mod tests {
         write_be_u16(&mut wrapped_data, 8, 1);
         assert!(encode_legacy_m_crc(&mut wrapped_data));
 
-        shift_packet_sequence_for_existing_server_shifts(&mut wrapped_data, &shifts, &[], 0)
+        let source = ServerReliableSlotKey {
+            sequence: 0,
+            origin_generation: 0,
+        };
+        shift_packet_sequence_for_existing_server_shifts(&mut wrapped_data, &shifts, &[], source)
             .expect("wrapped type-0 data should shift");
         let shifted = MFrameView::parse(&wrapped_data).expect("shifted type-0 data frame");
         assert_eq!(shifted.sequence, 1);
@@ -1834,7 +1908,7 @@ mod tests {
         assert!(encode_legacy_m_crc(&mut control));
         let before = control.clone();
 
-        shift_packet_sequence_for_existing_server_shifts(&mut control, &shifts, &[], 0)
+        shift_packet_sequence_for_existing_server_shifts(&mut control, &shifts, &[], source)
             .expect("type-1 control should bypass data shifts");
         assert_eq!(control, before);
     }
@@ -2558,6 +2632,10 @@ mod tests {
                 },
             ],
             &mut state,
+            ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 0,
+            },
         )
         .expect("split coalesced records should promote to standalone M frames");
 
@@ -2566,6 +2644,18 @@ mod tests {
         assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
         assert_eq!(state.sequence.server_sequence_shifts[0].base, 62);
         assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.server_output_ack_spans.len(), 1);
+        assert_eq!(
+            state.sequence.server_output_ack_spans[0],
+            output_reliability::ServerOutputAckSpan {
+                source: ServerReliableSlotKey {
+                    sequence: 61,
+                    origin_generation: 0,
+                },
+                destination_first: 61,
+                destination_last: 62,
+            }
+        );
         assert_eq!(packets[0].0, VerifiedProof::family(VerifiedFamily::Chat));
         assert_eq!(
             packets[1].0,
@@ -2579,6 +2669,72 @@ mod tests {
             assert_eq!(view.ack_sequence, 81);
             assert_eq!(view.payload_length, 3);
         }
+    }
+
+    #[test]
+    fn split_rewritten_coalesced_records_allows_proxy_owned_sequences_between_outputs() {
+        let mut primary = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 3];
+        primary[0] = b'M';
+        primary[3..5].copy_from_slice(&61u16.to_be_bytes());
+        primary[5..7].copy_from_slice(&81u16.to_be_bytes());
+        primary[7] = 0x0A;
+        primary[8..10].copy_from_slice(&1u16.to_be_bytes());
+        primary[10..12].copy_from_slice(&3u16.to_be_bytes());
+        primary[12..15].copy_from_slice(&[b'P', 0x09, 0x05]);
+
+        let mut span = primary.clone();
+        span[3..5].copy_from_slice(&62u16.to_be_bytes());
+        span[12..15].copy_from_slice(&[b'P', 0x05, 0x02]);
+
+        let mut state = SessionState::default();
+        state
+            .sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 62, delta: 3 });
+        let (packets, pre_shifted) = split_rewritten_coalesced_records(
+            vec![
+                CoalescedRecordRewrite {
+                    record: primary,
+                    proof: VerifiedProof::family(VerifiedFamily::AreaClientArea),
+                    changed: true,
+                    dropped: false,
+                    rewritten_deflated: false,
+                    abort_window_if_primary_consumed: false,
+                },
+                CoalescedRecordRewrite {
+                    record: span,
+                    proof: VerifiedProof::family(VerifiedFamily::SetCustomToken),
+                    changed: true,
+                    dropped: false,
+                    rewritten_deflated: false,
+                    abort_window_if_primary_consumed: false,
+                },
+            ],
+            &mut state,
+            ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 0,
+            },
+        )
+        .expect("proxy-owned insertion gap should remain a valid completion range");
+
+        assert!(pre_shifted);
+        let sequences = packets
+            .iter()
+            .map(|(_, packet)| MFrameView::parse(packet).unwrap().sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![61, 65]);
+        assert_eq!(
+            state.sequence.server_output_ack_spans,
+            vec![output_reliability::ServerOutputAckSpan {
+                source: ServerReliableSlotKey {
+                    sequence: 61,
+                    origin_generation: 0,
+                },
+                destination_first: 61,
+                destination_last: 65,
+            }]
+        );
     }
 
     #[test]
@@ -2626,6 +2782,10 @@ mod tests {
         let (first_packets, first_pre_shifted) = split_rewritten_coalesced_records(
             make_records(primary.clone(), span.clone()),
             &mut state,
+            ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 0,
+            },
         )
         .expect("first split should promote records");
 
@@ -2637,6 +2797,10 @@ mod tests {
         assert_eq!(
             state.sequence.coalesced_split_sequence_shifts[0].source_sequence,
             61
+        );
+        assert_eq!(
+            state.sequence.coalesced_split_sequence_shifts[0].source_origin_generation,
+            0
         );
         assert_eq!(state.sequence.coalesced_split_sequence_shifts[0].base, 62);
         assert_eq!(state.sequence.coalesced_split_sequence_shifts[0].delta, 1);
@@ -2651,9 +2815,15 @@ mod tests {
             .collect();
         assert_eq!(first_sequences, vec![61, 62]);
 
-        let (second_packets, second_pre_shifted) =
-            split_rewritten_coalesced_records(make_records(primary, span), &mut state)
-                .expect("replayed split should reuse existing future shift");
+        let (second_packets, second_pre_shifted) = split_rewritten_coalesced_records(
+            make_records(primary, span),
+            &mut state,
+            ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 0,
+            },
+        )
+        .expect("replayed split should reuse existing future shift");
 
         assert!(second_pre_shifted);
         assert_eq!(
@@ -2665,6 +2835,11 @@ mod tests {
             state.sequence.coalesced_split_sequence_shifts.len(),
             1,
             "the companion replay guard should stay one-to-one with the recorded future shift"
+        );
+        assert_eq!(
+            state.sequence.server_output_ack_spans.len(),
+            1,
+            "the exact source generation must reuse its downstream ACK span"
         );
         let second_sequences: Vec<u16> = second_packets
             .iter()
@@ -2679,6 +2854,35 @@ mod tests {
             vec![61, 62],
             "replaying the same source window must emit the same reliable sequence numbers"
         );
+    }
+
+    #[test]
+    fn coalesced_split_shift_replay_guard_includes_source_generation() {
+        let shift = CoalescedSplitSequenceShift {
+            source_sequence: 61,
+            source_origin_generation: 4,
+            base: 62,
+            delta: 1,
+        };
+
+        assert!(coalesced_split_shift_matches_source(
+            &shift,
+            ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 4,
+            },
+            62,
+            1,
+        ));
+        assert!(!coalesced_split_shift_matches_source(
+            &shift,
+            ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 5,
+            },
+            62,
+            1,
+        ));
     }
 
     #[test]
@@ -2719,6 +2923,10 @@ mod tests {
                 },
             ],
             &mut state,
+            ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 0,
+            },
         )
         .expect("split coalesced records should assign standalone reliable sequences");
 
@@ -3100,6 +3308,10 @@ mod tests {
                 },
             ],
             &mut state,
+            ServerReliableSlotKey {
+                sequence: 100,
+                origin_generation: 0,
+            },
         )
         .expect("oversized deflated coalesced record should be split into safe M frames");
 

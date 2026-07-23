@@ -39,6 +39,7 @@ mod live_stream;
 mod live_update;
 mod local_ack;
 mod login_waypoint;
+mod output_reliability;
 mod parse_window;
 mod quickbar_materialization;
 mod quickbar_stream;
@@ -63,7 +64,7 @@ use reassembly::{
 use sequence::{
     SequenceElision, SequenceShift, record_forward_progress, sequence_at_or_after,
     shift_sequence_for_peer, shift_sequence_for_peer_with_elisions, trim_sequence_elisions,
-    trim_sequence_shifts, unshift_ack_for_origin, unshift_ack_for_origin_with_elisions,
+    trim_sequence_shifts, unshift_ack_for_origin_with_elisions,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -243,12 +244,20 @@ fn finish_ack_delivery(
     }
 
     let mut retired_slots = 0usize;
+    let mut retired_output_ack_spans = 0usize;
     for ack_sequence in &ack_sequences {
         retired_slots = retired_slots.saturating_add(if owner.acknowledges_server_sources() {
-            server_replay::retire_through_client_ack(
+            let retired_sources = server_replay::retire_through_client_ack(
                 &mut state.server_reliable_slots,
                 *ack_sequence,
-            )
+            );
+            retired_output_ack_spans = retired_output_ack_spans.saturating_add(
+                output_reliability::retire_server_output_ack_spans(
+                    &mut state.sequence.server_output_ack_spans,
+                    &retired_sources,
+                ),
+            );
+            retired_sources.len()
         } else {
             client_replay::retire_through_server_ack(
                 &mut state.client_reliable_replays,
@@ -260,6 +269,7 @@ fn finish_ack_delivery(
         owner = owner.as_str(),
         ack_sequences = ?ack_sequences,
         retired_slots,
+        retired_output_ack_spans,
         "strict-accepted outgoing M batch committed destination-facing ACK delivery"
     );
 }
@@ -502,8 +512,11 @@ pub(super) fn prepare_direct_client_source_ack_carrier(
     if view.frame_kind() != Some(MFrameType::ReliableData) {
         return Ok(None);
     }
-    let mapped_ack_sequence =
-        unshift_ack_for_origin(&state.sequence.server_sequence_shifts, view.ack_sequence);
+    let mapped_ack_sequence = output_reliability::map_client_ack_for_server(
+        &state.sequence.server_sequence_shifts,
+        &state.sequence.server_output_ack_spans,
+        view.ack_sequence,
+    );
     ack_carrier::prepare(view.ack_sequence, mapped_ack_sequence).map(Some)
 }
 
@@ -3034,12 +3047,17 @@ fn unshift_client_ack_for_server(
     packet: &mut [u8],
     view: &MFrameView,
 ) -> anyhow::Result<()> {
-    if state.sequence.server_sequence_shifts.is_empty() {
+    if state.sequence.server_sequence_shifts.is_empty()
+        && state.sequence.server_output_ack_spans.is_empty()
+    {
         return Ok(());
     }
 
-    let unshifted =
-        unshift_ack_for_origin(&state.sequence.server_sequence_shifts, view.ack_sequence);
+    let unshifted = output_reliability::map_client_ack_for_server(
+        &state.sequence.server_sequence_shifts,
+        &state.sequence.server_output_ack_spans,
+        view.ack_sequence,
+    );
     if unshifted == view.ack_sequence {
         return Ok(());
     }
@@ -6875,6 +6893,149 @@ mod tests {
     }
 
     #[test]
+    fn expanded_server_output_retires_only_after_terminal_ee_ack_is_accepted() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let server = client_reliable_m_frame(61, 74, &payload);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        proof_packets(
+            translate_server_to_client(&server, &mut state).expect("seed expanded server source"),
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        let source = state.server_reliable_slots.slots[0].key;
+        state
+            .sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 62, delta: 1 });
+        output_reliability::register_server_output_ack_span(
+            &mut state.sequence.server_output_ack_spans,
+            source,
+            61,
+            62,
+        )
+        .expect("register two-frame downstream output");
+
+        let partial_client_ack = client_reliable_m_frame(1, 61, &[b'P', 0xFE, 0xFD]);
+        begin_client_to_server_emit_validation(&mut state, &partial_client_ack)
+            .expect("begin partial client ACK transaction");
+        let partial_emit = translate_client_to_server(&partial_client_ack, &mut state)
+            .expect("translate partial client ACK");
+        let partial_packets = proof_packets(partial_emit.clone());
+        assert!(
+            partial_packets
+                .iter()
+                .all(|(_, packet)| MFrameView::parse(packet).unwrap().ack_sequence == 60),
+            "ACK of the first rebuilt output must remain before the source sequence"
+        );
+        stage_direct_client_ack_delivery(&mut state, &partial_emit)
+            .expect("stage partial client ACK");
+        finish_client_to_server_emit_validation(&mut state, true);
+        assert_eq!(state.server_reliable_slots.receive_start, Some(61));
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+        assert_eq!(state.sequence.server_output_ack_spans.len(), 1);
+
+        let terminal_client_ack = client_reliable_m_frame(2, 62, &[b'P', 0xFE, 0xFD]);
+        begin_client_to_server_emit_validation(&mut state, &terminal_client_ack)
+            .expect("begin rejected terminal client ACK transaction");
+        let rejected_terminal_emit = translate_client_to_server(&terminal_client_ack, &mut state)
+            .expect("translate rejected terminal client ACK");
+        assert!(
+            proof_packets(rejected_terminal_emit.clone())
+                .iter()
+                .all(|(_, packet)| MFrameView::parse(packet).unwrap().ack_sequence == 61)
+        );
+        stage_direct_client_ack_delivery(&mut state, &rejected_terminal_emit)
+            .expect("stage rejected terminal client ACK");
+        finish_client_to_server_emit_validation(&mut state, false);
+        assert_eq!(state.server_reliable_slots.slots.len(), 1);
+        assert_eq!(state.sequence.server_output_ack_spans.len(), 1);
+
+        begin_client_to_server_emit_validation(&mut state, &terminal_client_ack)
+            .expect("begin accepted terminal client ACK transaction");
+        let accepted_terminal_emit = translate_client_to_server(&terminal_client_ack, &mut state)
+            .expect("translate accepted terminal client ACK");
+        stage_direct_client_ack_delivery(&mut state, &accepted_terminal_emit)
+            .expect("stage accepted terminal client ACK");
+        finish_client_to_server_emit_validation(&mut state, true);
+        assert_eq!(state.server_reliable_slots.receive_start, Some(62));
+        assert!(state.server_reliable_slots.slots.is_empty());
+        assert!(state.sequence.server_output_ack_spans.is_empty());
+    }
+
+    #[test]
+    fn client_ack_control_honors_owned_output_span_without_sequence_shift() {
+        let mut state = SessionState::default();
+        output_reliability::register_server_output_ack_span(
+            &mut state.sequence.server_output_ack_spans,
+            server_replay::ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 4,
+            },
+            61,
+            62,
+        )
+        .expect("register output-only completion span");
+        let mut ack = empty_reliable_m_frame(0);
+        assert!(write_be_u16(&mut ack, 5, 61));
+        assert!(encode_legacy_m_crc(&mut ack));
+        let view = MFrameView::parse(&ack).expect("parse exact ACK control");
+
+        unshift_client_ack_for_server(&state, &mut ack, &view)
+            .expect("map ACK through output ownership");
+
+        let mapped = MFrameView::parse(&ack).expect("parse mapped ACK control");
+        assert_eq!(mapped.ack_sequence, 60);
+        assert!(mapped.crc_valid);
+    }
+
+    #[test]
+    fn area_loaded_timer_maps_latest_emitted_ee_sequence_into_legacy_ack_domain() {
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state.sequence.latest_client_ack_from_client = None;
+        state.sequence.latest_server_sequence_to_client = Some(62);
+        state
+            .sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 62, delta: 1 });
+        output_reliability::register_server_output_ack_span(
+            &mut state.sequence.server_output_ack_spans,
+            server_replay::ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 4,
+            },
+            61,
+            62,
+        )
+        .expect("register expanded server output span");
+        state.synthetic_area.pending_area_loaded = Some(synthetic_area::PendingAreaLoaded {
+            server_ack_sequence: 61,
+            release_client_ack_sequence: 62,
+            release_at: Instant::now() - std::time::Duration::from_millis(1),
+            require_client_ack_before_release: false,
+            native_completion_grace_after_ack: std::time::Duration::ZERO,
+            client_ack_observed_at: None,
+            gate_opened_for_native_probe_at: None,
+            reason: synthetic_area::AreaLoadedFallbackReason::ExactEeAreaNameModeBitForce,
+        });
+
+        assert!(
+            maybe_queue_area_loaded_fallback_from_timer(&mut state, "sequence-domain test")
+                .expect("queue due Area_AreaLoaded fallback")
+        );
+        let pending = state
+            .sequence
+            .pending_client_to_server_packets
+            .pop()
+            .expect("queued Area_AreaLoaded packet");
+        let view = MFrameView::parse(&pending.packet).expect("parse queued fallback frame");
+        assert_eq!(
+            view.ack_sequence, 61,
+            "an EE-facing emitted sequence must never be copied directly into the Diamond ACK field"
+        );
+    }
+
+    #[test]
     fn consumed_client_output_does_not_deliver_its_source_ack() {
         let server_source =
             client_reliable_m_frame(35, 74, &crate::translate::loadbar::start_payload(2));
@@ -8283,11 +8444,11 @@ mod tests {
             ));
         }
         assert_eq!(
-            server_replay::retire_through_client_ack(&mut server_state, 48),
+            server_replay::retire_through_client_ack(&mut server_state, 48).len(),
             0
         );
         assert_eq!(
-            server_replay::retire_through_client_ack(&mut server_state, 42),
+            server_replay::retire_through_client_ack(&mut server_state, 42).len(),
             0
         );
         assert_eq!(server_state.receive_start, Some(40));
@@ -8300,7 +8461,7 @@ mod tests {
             server_replay::PreparedServerReliableSource::Pinned(_)
         ));
         assert_eq!(
-            server_replay::retire_through_client_ack(&mut server_state, 42),
+            server_replay::retire_through_client_ack(&mut server_state, 42).len(),
             3
         );
         assert_eq!(server_state.receive_start, Some(43));
@@ -9282,7 +9443,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_client_drain_validates_typed_batch_and_restores_on_reject() {
+    fn pending_client_drain_validates_typed_batch_without_claiming_ee_receipt() {
         let mut translator = strict_session_translator_for_test();
         let server_source =
             client_reliable_m_frame(74, 12, &crate::translate::loadbar::start_payload(2));
@@ -9373,9 +9534,10 @@ mod tests {
         );
         assert_eq!(
             translator.m_state.server_reliable_slots.receive_start,
-            Some(75)
+            Some(74),
+            "a proxy-owned upstream packet cannot prove that EE received the server output"
         );
-        assert!(translator.m_state.server_reliable_slots.slots.is_empty());
+        assert_eq!(translator.m_state.server_reliable_slots.slots.len(), 1);
 
         assert!(
             translator
@@ -10034,9 +10196,18 @@ fn maybe_queue_area_loaded_fallback_from_timer(
     }
 
     let observed_client_ack = state.sequence.latest_client_ack_from_client;
-    let origin_ack_sequence = observed_client_ack
-        .map(|ack| unshift_ack_for_origin(&state.sequence.server_sequence_shifts, ack))
-        .or(state.sequence.latest_server_sequence_to_client)
+    // Both values are EE-facing destination sequences. The emitted-sequence
+    // fallback is only a sequence-domain fallback, not proof that EE received
+    // the frame; downstream delivery ownership remains a separate concern.
+    let destination_ack = observed_client_ack.or(state.sequence.latest_server_sequence_to_client);
+    let origin_ack_sequence = destination_ack
+        .map(|ack| {
+            output_reliability::map_client_ack_for_server(
+                &state.sequence.server_sequence_shifts,
+                &state.sequence.server_output_ack_spans,
+                ack,
+            )
+        })
         .unwrap_or(u16::MAX);
 
     let Some(packet) = synthetic_area::maybe_build_area_loaded_client_packet(

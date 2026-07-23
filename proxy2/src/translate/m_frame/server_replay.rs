@@ -140,16 +140,22 @@ pub(super) fn prepare_source_slot(
 pub(super) fn retire_through_client_ack(
     state: &mut ServerReliableSlotState,
     ack_sequence: u16,
-) -> usize {
+) -> Vec<ServerReliableSlotKey> {
     let retired = retirable_prefix_len(state, ack_sequence);
     if retired == 0 {
-        return 0;
+        return Vec::new();
     }
     let Some(receive_start) = state.receive_start else {
-        return 0;
+        return Vec::new();
     };
     let distance = ack_sequence.wrapping_sub(receive_start) as usize;
 
+    let retired_sources = state
+        .slots
+        .iter()
+        .filter(|slot| slot.key.sequence.wrapping_sub(receive_start) as usize <= distance)
+        .map(|slot| slot.key)
+        .collect::<Vec<_>>();
     let before = state.slots.len();
     state
         .slots
@@ -169,7 +175,7 @@ pub(super) fn retire_through_client_ack(
         retained_slots = state.slots.len(),
         "strict-accepted EE ACK advanced the mirrored server receive window"
     );
-    retired
+    retired_sources
 }
 
 /// Return the exact contiguous active prefix an ACK would retire without

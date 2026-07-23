@@ -16,6 +16,7 @@ use crate::translate::{
 };
 
 use super::{
+    output_reliability,
     sequence::{
         SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
     },
@@ -807,9 +808,23 @@ fn queue_client_gui_status_output_with_claim(
         &state.sequence.client_sequence_shifts,
         trigger_client_sequence,
     );
+    // Both candidates below are EE-facing destination sequences. Convert the
+    // selected destination ACK as one value so the latest emitted fallback
+    // cannot leak an inserted EE sequence into the Diamond ACK field. An
+    // explicit `server_sequence_to_ack` is already source-domain state.
+    let destination_ack = state
+        .sequence
+        .latest_client_ack_from_client
+        .or(state.sequence.latest_server_sequence_to_client);
+    let mapped_destination_ack = destination_ack.map(|ack| {
+        output_reliability::map_client_ack_for_server(
+            &state.sequence.server_sequence_shifts,
+            &state.sequence.server_output_ack_spans,
+            ack,
+        )
+    });
     let ack_sequence = server_sequence_to_ack
-        .or(state.sequence.latest_client_ack_from_client)
-        .or(state.sequence.latest_server_sequence_to_client)
+        .or(mapped_destination_ack)
         .unwrap_or(u16::MAX);
     let packet =
         synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
@@ -1178,6 +1193,69 @@ mod tests {
             1
         );
         assert_eq!(state.inventory_equipment.queued_outputs, 0);
+    }
+
+    #[test]
+    fn non_server_client_gui_output_maps_ee_facing_ack_through_expansion_span() {
+        let queued_ack = |observed_ee_ack: Option<u16>, latest_server_sequence: Option<u16>| {
+            let mut update = ready_server_inventory_update();
+            update.consumer = ClientGuiInventory;
+            update.server_inventory_claim = None;
+            let claim = InventoryEquipmentClientGuiInventoryClaim {
+                kind: InventoryEquipmentClientGuiInventoryClaimKind::Status,
+                object_id: Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID),
+                panel: None,
+                player_inventory_gui: Some(true),
+                rewritten_self_object_id: true,
+            };
+            update.client_gui_inventory_claim = Some(claim);
+
+            let mut state = SessionState::default();
+            state.sequence.latest_client_sequence_from_client = Some(10);
+            state.sequence.latest_client_ack_from_client = observed_ee_ack;
+            state.sequence.latest_server_sequence_to_client = latest_server_sequence;
+            state
+                .sequence
+                .server_sequence_shifts
+                .push(SequenceShift { base: 62, delta: 1 });
+            output_reliability::register_server_output_ack_span(
+                &mut state.sequence.server_output_ack_spans,
+                super::super::server_replay::ServerReliableSlotKey {
+                    sequence: 61,
+                    origin_generation: 4,
+                },
+                61,
+                62,
+            )
+            .expect("register expanded server output span");
+
+            queue_client_gui_status_output_with_claim(&mut state, update, claim, 10, None)
+                .expect("queue non-server ClientGui status output");
+            let pending = state
+                .sequence
+                .pending_client_to_server_packets
+                .pop()
+                .expect("queued client packet");
+            MFrameView::parse(&pending.packet)
+                .expect("queued client packet should parse")
+                .ack_sequence
+        };
+
+        assert_eq!(
+            queued_ack(Some(61), None),
+            60,
+            "the first rebuilt destination frame is only a partial source ACK"
+        );
+        assert_eq!(
+            queued_ack(Some(62), None),
+            61,
+            "the terminal rebuilt destination frame completes the source ACK"
+        );
+        assert_eq!(
+            queued_ack(None, Some(62)),
+            61,
+            "the latest emitted EE destination fallback must also enter the legacy sequence domain"
+        );
     }
 
     #[test]

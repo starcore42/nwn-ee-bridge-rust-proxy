@@ -15,6 +15,7 @@ pub(super) struct SequenceShift {
 #[derive(Debug, Clone)]
 pub(super) struct CoalescedSplitSequenceShift {
     pub(super) source_sequence: u16,
+    pub(super) source_origin_generation: u64,
     pub(super) base: u16,
     pub(super) delta: u16,
 }
