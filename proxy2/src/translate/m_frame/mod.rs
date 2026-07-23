@@ -788,6 +788,18 @@ fn active_server_reassembly_will_complete_on_frame(
     if view.frame_type != 0 {
         return false;
     }
+    // An exact retransmit can contribute transport evidence for bounded
+    // incomplete-window salvage, but it does not by itself complete the
+    // declared member set. Keep that evidence outside the speculative
+    // gameplay transaction; a positive clone proof opens the transaction just
+    // before the real inflater and semantic state are allowed to advance.
+    if reassembly
+        .frames
+        .iter()
+        .any(|frame| frame.sequence == view.sequence)
+    {
+        return false;
+    }
     let distance = view.sequence.wrapping_sub(reassembly.first_sequence) as usize;
     distance < reassembly.expected_frames
         && reassembly.frames.len().saturating_add(1) >= reassembly.expected_frames
@@ -1796,6 +1808,17 @@ fn translate_server_to_client_inner(
             || (state.deflate.server_reassembly.is_none()
                 && starts_server_deflated_reassembly
                 && view.packetized_sequence <= 1);
+    let active_server_reassembly_duplicate =
+        state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .is_some_and(|reassembly| {
+                reassembly
+                    .frames
+                    .iter()
+                    .any(|frame| frame.sequence == view.sequence)
+            });
     let ordinary_coalesced_window = view.packetized_sequence == 1
         && view.trailing_payload_length > 0
         && state.deflate.ordered_successor_effect_snapshot.is_none();
@@ -1812,7 +1835,8 @@ fn translate_server_to_client_inner(
     let ordinary_server_emit_transaction =
         state.deflate.ordered_successor_effect_snapshot.is_none()
             && (ordinary_coalesced_window
-                || pending_server_drain_has_work(state, server_emit_started_at)
+                || (pending_server_drain_has_work(state, server_emit_started_at)
+                    && !active_server_reassembly_duplicate)
                 || source_can_queue_immediate_server_packet
                 || exact_direct_semantic_source_payload(&inbound, &view).is_some());
     if ordinary_server_emit_transaction {
@@ -5345,8 +5369,20 @@ mod tests {
         let first = stream_frame(180, 80, 1, &first_inflated, &first_compressed);
         // The source claims two packetized frames even though its first stored
         // datagram already contains one complete history-dependent member.
-        let incomplete = stream_frame(181, 81, 2, &salvaged_inflated, &salvaged_compressed);
-        let following = stream_frame(182, 84, 1, &following_inflated, &following_compressed);
+        let split = (salvaged_compressed.len() / 2).clamp(1, salvaged_compressed.len() - 1);
+        // The live stall retained four contiguous members of a declared-five
+        // stream. Use the smallest equivalent multi-member shape here: two
+        // exact buffered members, one declared terminal member absent.
+        let incomplete_first = stream_frame(
+            181,
+            81,
+            3,
+            &salvaged_inflated,
+            &salvaged_compressed[..split],
+        );
+        let incomplete_second =
+            reliable_server_m_frame(182, 81, 0x48, 0, &salvaged_compressed[split..]);
+        let following = stream_frame(183, 85, 1, &following_inflated, &following_compressed);
         let mut state = SessionState::default();
         state.synthetic_area.synthesize_loadbar = false;
 
@@ -5364,8 +5400,13 @@ mod tests {
         let baseline_events = state.semantic.recent_events.len();
 
         assert!(matches!(
-            translate_server_to_client(&incomplete, &mut state)
-                .expect("overdeclared stream member should remain pending"),
+            translate_server_to_client(&incomplete_first, &mut state)
+                .expect("overdeclared stream first member should remain pending"),
+            Emit::Consumed
+        ));
+        assert!(matches!(
+            translate_server_to_client(&incomplete_second, &mut state)
+                .expect("overdeclared stream second member should remain pending"),
             Emit::Consumed
         ));
         assert_eq!(
@@ -5383,15 +5424,51 @@ mod tests {
                 .server_reassembly
                 .as_ref()
                 .map(|reassembly| (reassembly.frames.len(), reassembly.expected_frames)),
-            Some((1, 2))
+            Some((2, 3))
         );
 
-        let mut duplicate = incomplete.clone();
-        assert!(write_be_u16(&mut duplicate, 5, 82));
-        assert!(encode_legacy_m_crc(&mut duplicate));
-        let speculative_emit = translate_server_to_client(&duplicate, &mut state)
-            .expect("duplicate should salvage through a cloned inflater probe");
+        let mut first_duplicate = incomplete_first.clone();
+        assert!(write_be_u16(&mut first_duplicate, 5, 82));
+        assert!(encode_legacy_m_crc(&mut first_duplicate));
+        assert!(matches!(
+            translate_server_to_client(&first_duplicate, &mut state)
+                .expect("a partial retransmission round should remain pending"),
+            Emit::Consumed
+        ));
+        let pending = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("partial retransmission round should retain reassembly");
+        assert_eq!(pending.incomplete_salvage_probe_attempts, 0);
+        assert!(pending.frames[0].exact_retransmit_observed);
+        assert!(!pending.frames[1].exact_retransmit_observed);
+
+        let due_packet =
+            client_reliable_m_frame(240, 83, &crate::translate::loadbar::start_payload(2));
+        state.synthetic_area.pending_server_to_client_packets.push(
+            synthetic_area::PendingServerPacket {
+                family: VerifiedFamily::LoadBar,
+                packet: due_packet.clone(),
+                due_at: Instant::now(),
+                reason: "incomplete salvage transaction ordering regression",
+                placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
+            },
+        );
+
+        let mut second_duplicate = incomplete_second.clone();
+        assert!(write_be_u16(&mut second_duplicate, 5, 83));
+        assert!(encode_legacy_m_crc(&mut second_duplicate));
+        let speculative_emit = translate_server_to_client(&second_duplicate, &mut state)
+            .expect("complete retransmission round should run the cloned inflater probe");
         assert!(!matches!(speculative_emit, Emit::Drop | Emit::Consumed));
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty(),
+            "the due synthetic packet should join the speculative salvage batch"
+        );
         let advanced_totals = (
             baseline_totals.0 + salvaged_compressed.len() as u64,
             baseline_totals.1 + salvaged_inflated.len() as u64,
@@ -5410,7 +5487,11 @@ mod tests {
             state.deflate.completed_server_stream_windows.len(),
             baseline_windows + 1
         );
-        assert_eq!(state.semantic.recent_events.len(), baseline_events + 1);
+        assert_eq!(
+            state.semantic.recent_events.len(),
+            baseline_events + 2,
+            "the speculative batch should observe both salvage and due LoadBar payloads"
+        );
 
         finish_server_to_client_emit_validation(&mut state, false);
         assert_eq!(
@@ -5428,8 +5509,26 @@ mod tests {
                 .server_reassembly
                 .as_ref()
                 .map(|reassembly| (reassembly.frames.len(), reassembly.expected_frames)),
-            Some((1, 2)),
+            Some((2, 3)),
             "strict rejection must restore the still-incomplete source window"
+        );
+        let restored = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("strict rejection should restore retransmission evidence");
+        assert!(restored.frames[0].exact_retransmit_observed);
+        assert!(restored.frames[1].exact_retransmit_observed);
+        assert_eq!(restored.incomplete_salvage_probe_attempts, 1);
+        assert_eq!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .iter()
+                .map(|pending| pending.packet.as_slice())
+                .collect::<Vec<_>>(),
+            vec![due_packet.as_slice()],
+            "strict rejection must restore the due packet without rolling back retransmission evidence"
         );
         assert_eq!(
             state.deflate.completed_server_stream_windows.len(),
@@ -5437,12 +5536,19 @@ mod tests {
         );
         assert_eq!(state.semantic.recent_events.len(), baseline_events);
 
-        let mut retry = incomplete.clone();
-        assert!(write_be_u16(&mut retry, 5, 83));
+        let mut retry = incomplete_second.clone();
+        assert!(write_be_u16(&mut retry, 5, 84));
         assert!(encode_legacy_m_crc(&mut retry));
         let retry_emit = translate_server_to_client(&retry, &mut state)
             .expect("exact retry should salvage from the restored inflater checkpoint");
         assert!(!matches!(retry_emit, Emit::Drop | Emit::Consumed));
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty(),
+            "the retry should stage the restored due packet again"
+        );
         assert_eq!(
             state
                 .deflate
@@ -5453,6 +5559,13 @@ mod tests {
         );
         finish_server_to_client_emit_validation(&mut state, true);
         assert!(state.deflate.server_reassembly.is_none());
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty(),
+            "accepted retry must commit removal of the due synthetic packet"
+        );
         assert_eq!(
             state
                 .deflate
@@ -5478,6 +5591,157 @@ mod tests {
             ))
         );
         finish_server_to_client_emit_validation(&mut state, true);
+    }
+
+    #[test]
+    fn incomplete_salvage_requires_a_contiguous_multi_frame_retransmission_round() {
+        let inflated = crate::translate::loadbar::start_payload(2);
+        let compressed = deflate_zlib(&inflated).expect("test payload should deflate");
+
+        let mut single_payload = (inflated.len() as u32).to_le_bytes().to_vec();
+        single_payload.extend_from_slice(&compressed);
+        let single = reliable_server_m_frame(210, 70, 0x0D, 2, &single_payload);
+        let mut single_state = SessionState::default();
+        single_state.synthetic_area.synthesize_loadbar = false;
+        assert!(matches!(
+            translate_server_to_client(&single, &mut single_state)
+                .expect("single overdeclared member should buffer"),
+            Emit::Consumed
+        ));
+        let mut single_duplicate = single.clone();
+        assert!(write_be_u16(&mut single_duplicate, 5, 71));
+        assert!(encode_legacy_m_crc(&mut single_duplicate));
+        assert!(matches!(
+            translate_server_to_client(&single_duplicate, &mut single_state)
+                .expect("unsupported single-member salvage should stay pending"),
+            Emit::Consumed
+        ));
+        let single_pending = single_state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("single-member candidate should remain buffered");
+        assert_eq!(single_pending.incomplete_salvage_probe_attempts, 0);
+        assert!(single_pending.frames[0].exact_retransmit_observed);
+
+        let split = (compressed.len() / 2).clamp(1, compressed.len() - 1);
+        let mut gap_first_payload = (inflated.len() as u32).to_le_bytes().to_vec();
+        gap_first_payload.extend_from_slice(&compressed[..split]);
+        let gap_first = reliable_server_m_frame(220, 72, 0x0D, 3, &gap_first_payload);
+        let gap_terminal = reliable_server_m_frame(222, 72, 0x48, 0, &compressed[split..]);
+        let mut gap_state = SessionState::default();
+        gap_state.synthetic_area.synthesize_loadbar = false;
+        assert!(matches!(
+            translate_server_to_client(&gap_first, &mut gap_state)
+                .expect("gap first member should buffer"),
+            Emit::Consumed
+        ));
+        assert!(matches!(
+            translate_server_to_client(&gap_terminal, &mut gap_state)
+                .expect("out-of-order terminal member should buffer behind the gap"),
+            Emit::Consumed
+        ));
+        for (packet, ack) in [(&gap_terminal, 73u16), (&gap_first, 74u16)] {
+            let mut duplicate = packet.clone();
+            assert!(write_be_u16(&mut duplicate, 5, ack));
+            assert!(encode_legacy_m_crc(&mut duplicate));
+            assert!(matches!(
+                translate_server_to_client(&duplicate, &mut gap_state)
+                    .expect("gap retransmit should remain pending"),
+                Emit::Consumed
+            ));
+        }
+        let gap_pending = gap_state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("interior gap must prevent salvage");
+        assert_eq!(gap_pending.incomplete_salvage_probe_attempts, 0);
+        assert!(
+            gap_pending
+                .frames
+                .iter()
+                .all(|frame| frame.exact_retransmit_observed)
+        );
+    }
+
+    #[test]
+    fn incomplete_salvage_caches_negative_probe_for_unchanged_membership() {
+        let mut first_payload = 64u32.to_le_bytes().to_vec();
+        first_payload.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x7F]);
+        let first = reliable_server_m_frame(230, 75, 0x0D, 3, &first_payload);
+        let second = reliable_server_m_frame(231, 75, 0x48, 0, &[0x13, 0x37, 0xFF, 0x00]);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        assert!(matches!(
+            translate_server_to_client(&first, &mut state)
+                .expect("invalid first member should still buffer as transport"),
+            Emit::Consumed
+        ));
+        assert!(matches!(
+            translate_server_to_client(&second, &mut state)
+                .expect("invalid second member should still buffer as transport"),
+            Emit::Consumed
+        ));
+
+        let mut conflict = first.clone();
+        *conflict.last_mut().expect("conflict payload byte") ^= 0x01;
+        assert!(encode_legacy_m_crc(&mut conflict));
+        assert!(matches!(
+            translate_server_to_client(&conflict, &mut state)
+                .expect("conflicting retransmit should fail closed"),
+            Emit::Drop
+        ));
+        assert!(
+            state
+                .deflate
+                .server_reassembly
+                .as_ref()
+                .is_some_and(|pending| !pending.frames[0].exact_retransmit_observed)
+        );
+
+        let mut first_duplicate = first.clone();
+        assert!(write_be_u16(&mut first_duplicate, 5, 76));
+        first_duplicate[7] ^= 0x40;
+        assert!(encode_legacy_m_crc(&mut first_duplicate));
+        assert!(matches!(
+            translate_server_to_client(&first_duplicate, &mut state)
+                .expect("first exact retransmit should refresh transport fields"),
+            Emit::Consumed
+        ));
+        let mut second_duplicate = second.clone();
+        assert!(write_be_u16(&mut second_duplicate, 5, 77));
+        assert!(encode_legacy_m_crc(&mut second_duplicate));
+        assert!(matches!(
+            translate_server_to_client(&second_duplicate, &mut state)
+                .expect("complete invalid round should cache its negative probe"),
+            Emit::Consumed
+        ));
+        let pending = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("negative probe should preserve pending reassembly");
+        assert_eq!(pending.incomplete_salvage_probe_attempts, 1);
+        assert!(pending.incomplete_salvage_probe_rejected);
+
+        for (packet, ack) in [(&first, 78u16), (&second, 79u16)] {
+            let mut duplicate = packet.clone();
+            assert!(write_be_u16(&mut duplicate, 5, ack));
+            assert!(encode_legacy_m_crc(&mut duplicate));
+            assert!(matches!(
+                translate_server_to_client(&duplicate, &mut state)
+                    .expect("cached negative round should only re-ack"),
+                Emit::Consumed
+            ));
+        }
+        let pending = state
+            .deflate
+            .server_reassembly
+            .as_ref()
+            .expect("cached negative should retain reassembly");
+        assert_eq!(pending.incomplete_salvage_probe_attempts, 1);
+        assert!(pending.incomplete_salvage_probe_rejected);
     }
 
     #[test]
@@ -5711,6 +5975,8 @@ mod tests {
             frames: Vec::new(),
             interleaved_packets: Vec::new(),
             interleaved_events: vec![event.clone()],
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         };
         let mut state = SessionState::default();
 
@@ -5753,6 +6019,8 @@ mod tests {
                 server_origin_generation: 0,
                 transport_payload_identity: server_transport_identity_for_test(&later),
             }],
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         };
 
         arm_withheld_reassembly_successors(&mut state, &reassembly)
@@ -5789,6 +6057,8 @@ mod tests {
                 server_origin_generation: 0,
                 transport_payload_identity: server_transport_identity_for_test(&conflicting),
             }],
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         };
 
         assert!(arm_withheld_reassembly_successors(&mut state, &reassembly).is_err());
@@ -10762,7 +11032,46 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
     };
     let buffered_frames = reassembly.frames.len();
     let expected_frames = reassembly.expected_frames;
-    if buffered_frames == 0 || buffered_frames >= expected_frames {
+    let first_sequence = reassembly.first_sequence;
+    let packetized_sequence = reassembly.packetized_sequence;
+    let inflated_length = reassembly.inflated_length;
+    let zlib_stream = reassembly.zlib_stream;
+    let exactly_one_terminal_member_missing =
+        buffered_frames >= 2 && buffered_frames.checked_add(1) == Some(expected_frames);
+    let contiguous_prefix = reassembly.frames.iter().enumerate().all(|(index, frame)| {
+        usize::from(frame.sequence.wrapping_sub(reassembly.first_sequence)) == index
+    });
+    let complete_exact_retransmission_round = reassembly
+        .frames
+        .iter()
+        .all(|frame| frame.exact_retransmit_observed);
+    if !exactly_one_terminal_member_missing
+        || !contiguous_prefix
+        || !complete_exact_retransmission_round
+    {
+        tracing::debug!(
+            first_sequence,
+            packetized_sequence,
+            buffered_frames,
+            expected_frames,
+            exactly_one_terminal_member_missing,
+            contiguous_prefix,
+            complete_exact_retransmission_round,
+            reason,
+            "incomplete server deflated M salvage deferred: exact multi-frame retransmission evidence is incomplete"
+        );
+        return Ok(None);
+    }
+    if reassembly.incomplete_salvage_probe_rejected {
+        tracing::debug!(
+            first_sequence,
+            packetized_sequence,
+            buffered_frames,
+            expected_frames,
+            probe_attempts = reassembly.incomplete_salvage_probe_attempts,
+            reason,
+            "incomplete server deflated M salvage reused cached negative clone proof"
+        );
         return Ok(None);
     }
 
@@ -10771,18 +11080,31 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
         .iter()
         .flat_map(|frame| frame.compressed_chunk.iter().copied())
         .collect::<Vec<_>>();
+    let probe_attempt = {
+        let Some(reassembly) = state.deflate.server_reassembly.as_mut() else {
+            return Ok(None);
+        };
+        reassembly.incomplete_salvage_probe_attempts = reassembly
+            .incomplete_salvage_probe_attempts
+            .saturating_add(1);
+        reassembly.incomplete_salvage_probe_attempts
+    };
     // `PersistentServerInflater` is a deep-cloneable miniz state, including
     // its dictionary and bit/Huffman cursor. Probe the incomplete candidate
     // against an exact clone of the live stream so history-dependent raw
-    // continuations can be recognized without advancing committed state. The
-    // ordinary completion path below replays the bytes against the real
-    // inflater under the outer strict-validation transaction; that remains the
-    // only advancement which can commit.
+    // continuations can be recognized without advancing committed state. A
+    // full exact retransmission round is deliberately required first: filling
+    // the declared output length alone does not prove that a missing terminal
+    // frame owns no deflate flush/alignment bytes. This remains an
+    // evidence-bounded recovery rule for the observed HG stall, not a general
+    // deflate boundary predicate. The ordinary completion path below replays
+    // the bytes against the real inflater under the outer strict-validation
+    // transaction; that remains the only advancement which can commit.
     let mut probe_inflater = state.deflate.server_zlib_inflater.clone();
     match reassembly::inflate_gameplay_payload(
         &compressed,
-        reassembly.inflated_length,
-        reassembly.zlib_stream,
+        inflated_length,
+        zlib_stream,
         &mut probe_inflater,
     ) {
         Ok(probe) => {
@@ -10792,12 +11114,16 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
                 if HighLevel::parse(&wrapped).is_none()
                     && !(probe.used_server_stream && state.deflate.server_zlib_stream_proxy_owned)
                 {
+                    if let Some(reassembly) = state.deflate.server_reassembly.as_mut() {
+                        reassembly.incomplete_salvage_probe_rejected = true;
+                    }
                     tracing::debug!(
-                        first_sequence = reassembly.first_sequence,
-                        packetized_sequence = reassembly.packetized_sequence,
+                        first_sequence,
+                        packetized_sequence,
                         buffered_frames,
                         expected_frames,
                         inflated = probe.bytes.len(),
+                        probe_attempt,
                         reason,
                         prefix = %hex_prefix(&probe.bytes, 32),
                         "incomplete server deflated M salvage deferred: inflated bytes do not yet form a semantic high-level payload"
@@ -10807,12 +11133,16 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
             }
         }
         Err(error) => {
+            if let Some(reassembly) = state.deflate.server_reassembly.as_mut() {
+                reassembly.incomplete_salvage_probe_rejected = true;
+            }
             tracing::debug!(
-                first_sequence = reassembly.first_sequence,
-                packetized_sequence = reassembly.packetized_sequence,
+                first_sequence,
+                packetized_sequence,
                 buffered_frames,
                 expected_frames,
                 compressed = compressed.len(),
+                probe_attempt,
                 reason,
                 error = %error,
                 "incomplete server deflated M salvage deferred: buffered bytes do not inflate cleanly"
@@ -10821,6 +11151,26 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
         }
     }
 
+    match (
+        state.deflate.ordered_successor_effect_snapshot.is_some(),
+        state.deflate.server_emit_effect_transaction_kind,
+    ) {
+        (false, None) => begin_ordinary_server_emit_effect_transaction(state)?,
+        (
+            true,
+            Some(
+                state::ServerEmitEffectTransactionKind::OrdinaryServerEmit
+                | state::ServerEmitEffectTransactionKind::OrderedSuccessor,
+            ),
+        ) => {}
+        (has_snapshot, transaction_kind) => {
+            anyhow::bail!(
+                "incomplete server deflated salvage found incompatible effect transaction: snapshot={} kind={:?}",
+                has_snapshot,
+                transaction_kind
+            );
+        }
+    }
     let Some(reassembly) = state.deflate.server_reassembly.as_mut() else {
         return Ok(None);
     };
@@ -10831,8 +11181,9 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
         packetized_sequence = reassembly.packetized_sequence,
         original_expected_frames,
         salvaged_frames = reassembly.expected_frames,
+        probe_attempt,
         reason,
-        "server deflated M reassembly salvaged with fewer frames after exact inflate preflight"
+        "server deflated M reassembly salvaged after a complete retransmission round and exact clone preflight"
     );
     emit_completed_server_deflated_reassembly(state).map(Some)
 }

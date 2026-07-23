@@ -729,9 +729,12 @@ mod tests {
                 server_peer_ack_sequence: 90,
                 ack_sequence: 90,
                 compressed_chunk: compressed_chunk.clone(),
+                exact_retransmit_observed: false,
             }],
             interleaved_packets: Vec::new(),
             interleaved_events: Vec::new(),
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         };
         let mut state = SessionState::default();
         state.quickbar.pending_stream = Some(PendingQuickbarStream {

@@ -585,9 +585,12 @@ fn split_oversized_deflated_coalesced_record(
             server_peer_ack_sequence: view.ack_sequence,
             ack_sequence: view.ack_sequence,
             compressed_chunk,
+            exact_retransmit_observed: false,
         }],
         interleaved_packets: Vec::new(),
         interleaved_events: Vec::new(),
+        incomplete_salvage_probe_attempts: 0,
+        incomplete_salvage_probe_rejected: false,
     };
     let outputs = reassembly::build_server_deflated_output_frames(
         &reassembly,

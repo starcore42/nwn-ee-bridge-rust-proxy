@@ -58,6 +58,12 @@ pub(super) struct ServerDeflatedReassembly {
     /// window has a successful typed disposition; only then may the parent
     /// dispatcher translate these events in source-sequence order.
     pub(super) interleaved_events: Vec<BufferedInterleavedServerPacket>,
+    /// Number of clone probes attempted for the current immutable buffered
+    /// member set. A negative result is deterministic while reassembly owns
+    /// the persistent inflater, so exact retransmits must not repeat the same
+    /// potentially expensive inflate.
+    pub(super) incomplete_salvage_probe_attempts: u32,
+    pub(super) incomplete_salvage_probe_rejected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +87,10 @@ pub(super) struct BufferedFrame {
     pub(super) server_peer_ack_sequence: u16,
     pub(super) ack_sequence: u16,
     pub(super) compressed_chunk: Vec<u8>,
+    /// Set only after an exact immutable retransmit of this buffered member.
+    /// ACK, CRC, and FrameSend-owned bit 6 may refresh without changing the
+    /// member identity.
+    pub(super) exact_retransmit_observed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +286,8 @@ pub(super) fn start_server_deflated_reassembly(
         frames: Vec::with_capacity(expected_frames),
         interleaved_packets: Vec::new(),
         interleaved_events: Vec::new(),
+        incomplete_salvage_probe_attempts: 0,
+        incomplete_salvage_probe_rejected: false,
     };
     reassembly.frames.push(frame);
     state.deflate.server_reassembly = Some(reassembly);
@@ -480,6 +492,8 @@ pub(super) fn continue_server_deflated_reassembly(
             );
             return Ok(Emit::Drop);
         }
+        let mut refreshed = refreshed;
+        refreshed.exact_retransmit_observed = true;
         reassembly.frames[index] = refreshed;
         let buffered_frames = reassembly.frames.len();
         let expected_frames = reassembly.expected_frames;
@@ -496,7 +510,7 @@ pub(super) fn continue_server_deflated_reassembly(
         if buffered_frames + 1 >= expected_frames {
             if let Some(emit) = super::try_emit_salvaged_incomplete_server_deflated_reassembly(
                 state,
-                "duplicate retransmit while one packetized frame is missing",
+                "complete exact retransmission round while one packetized frame is missing",
             )? {
                 return Ok(emit);
             }
@@ -522,6 +536,14 @@ pub(super) fn continue_server_deflated_reassembly(
             existing.sequence.wrapping_sub(reassembly.first_sequence) > distance as u16
         })
         .unwrap_or(reassembly.frames.len());
+    // A new immutable member changes the salvage candidate. Evidence gathered
+    // for the previous prefix cannot authorize truncating this larger window,
+    // and a prior negative clone probe no longer describes these bytes.
+    for buffered in &mut reassembly.frames {
+        buffered.exact_retransmit_observed = false;
+    }
+    reassembly.incomplete_salvage_probe_attempts = 0;
+    reassembly.incomplete_salvage_probe_rejected = false;
     reassembly.frames.insert(insert_index, frame);
 
     if reassembly.frames.len() < reassembly.expected_frames {
@@ -623,6 +645,7 @@ fn buffered_frame_from_view(
         server_peer_ack_sequence,
         ack_sequence: view.ack_sequence,
         compressed_chunk: bytes[compressed_start..payload_end].to_vec(),
+        exact_retransmit_observed: false,
     })
 }
 
@@ -877,6 +900,7 @@ mod tests {
                     server_peer_ack_sequence: 75,
                     ack_sequence: 75,
                     compressed_chunk: Vec::new(),
+                    exact_retransmit_observed: false,
                 }
             })
             .collect::<Vec<_>>();
@@ -891,6 +915,8 @@ mod tests {
             frames,
             interleaved_packets: Vec::new(),
             interleaved_events: Vec::new(),
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         }
     }
 

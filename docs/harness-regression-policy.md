@@ -59,15 +59,25 @@ Diamond direct capture is a separate legacy truth source used when the 1.69
 wire behavior is the question; it does not by itself satisfy the EE-through-
 proxy gameplay gate below.
 
-Latest gate audit (`2026-07-23T04:55:16+10:00`): the newest live HG attempt is
+Latest gate audit (`2026-07-23T10:15:00+10:00`): the newest live HG attempt is
 still
 `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
-last written `2026-07-22T20:00:34.0528616+10:00` and 8 hours 54 minutes 43
-seconds old. It reached typed character selection, `Module_Loaded`, two native
+last written `2026-07-22T20:00:34.0528616+10:00` and 14 hours 14 minutes
+25.9471384 seconds old. It reached typed character selection, `Module_Loaded`, two native
 `Area_AreaLoaded` messages, and 78 exact live-object accepts through 137.818
 seconds after final area completion, with 514 strict allows and empty
 stderr/quarantine. No newer failed live attempt exists, so this remains the
 qualifying gameplay capture until `2026-07-23T20:00:34.0528616+10:00`.
+
+Latest strict canonical replay (`2026-07-23T10:46+10:00`):
+`C:\nwnbridge\codex-proxy2-replay-salvage-round-20260723-104316\replay-summary.json`
+processed all 164 files (21 client, 144 server), produced 339 strict allows,
+143 generated client ACK controls, 97 exact live-object claims, and 10 area
+rewrites, with zero strict/semantic quarantine, quarantine files, terminal
+residuals, skipped server packets, output-wait timeouts, warnings, errors,
+`BNDP`, or stderr. The bounded diagnostic terminal-writer journal remained
+exactly 5,825 bytes with SHA-256
+`5C045379D8451132180DCCE60C383A277D894A5ACEDE68A811976B6421C1F0FA`.
 
 For a terminal-writer session, structural journal preflight alone is not proof
 that the stopped journal contains the target interaction. Before networking,
@@ -2698,6 +2708,7 @@ work.
 | First-area gameplay succeeds, then a following `Area_ClientArea` reports width 11 / packet height 0 / inferred height 14 with three legacy zero-count/single-resref sound rows; EE ACK progress stops, HG retransmits the following window, and eventually sends `BNDP CE 16 00 00` without a quarantine file | The exact missing-height repair ran before sound-row normalization. It correctly rejected the still-legacy tail; the sound repair later committed, but no height retry rebuilt the final EE area shape | Fixed 2026-07-19: after a nonzero independently proven sound repair, retry only the exact missing-height repair once when height is still zero. Diagnose recurrences by comparing `packet_height`, `inferred_height`, `sound_count_zero_one_repairs`, client ACK progression, and the final EE cursor proof. The combined captured fixture proves both repairs and full fragment exhaustion; the post-fix live run sustained Docks gameplay with no disconnect/quarantine, although its source arrived already normalized. |
 | Automation starts in an empty Google Drive folder | Wrong cwd | Switch to `D:\Codex Projects\NWN EE Bridge` and fail visibly if the populated checkout is absent. |
 | Packet dumps stop at BN/login/vault traffic | Harness did not reach character/module/gameplay | Treat as a harness blocker, record the stage, and fix or instrument the connection path before unrelated proxy work. |
+| One incomplete deflated M window repeatedly logs `persistent zlib stream cannot be probed without mutating inflater state`; duplicate reliable sequences cycle while `buffered_frames` stays below `expected_frames` and gameplay/ACK progress stalls | The buffered bytes may already form one complete raw-deflate member that depends on the accepted persistent inflater dictionary, but the old incomplete-window preflight could only use a fresh inflater and therefore deferred forever | Fixed in production code 2026-07-23: clone the complete miniz inflater state for exact inflate/semantic preflight, then replay only through the ordinary strict transaction so the real inflater advances once or rolls back completely. Historical regression seed `logs/proxy2-driver-20260509-064539/proxy2.log` repeats the symptom 128 times for sequences 37--40 with four of five declared frames. On recurrence, require `server deflated M reassembly salvaged`, continued strict acceptance/ACK progress, no doubled inflater totals, and no quarantine. |
 | A 735-byte `Area_ClientArea` unit with a stale 220-byte declared read window is logged or quarantined as a persistent-zlib continuation after `Module_Info` | Transport correctly proved the direct CNW window incomplete, but continuation ownership ran before the bounded typed Area repair and swallowed the real three-byte final fragment | Fixed 2026-07-13: before continuation ownership, the coalesced path tries only the strict incomplete-Area translator. It accepts a replacement boundary only when one bounded final-fragment candidate has an exact legacy parse and exact EE LoadArea cursor. Context-free candidate proof prevents repeated module-resource scans. The private stale-window fixture passes; require a live recurrence of the stale declaration for direct live confirmation. |
 | A vault-scouting run reaches `BNVR A` but never sends `CharList_Request` | `-AutoCharacter` was empty or the discovery placeholder exceeded the engine's 16-byte `CResRef` limit, so auto-character was disabled | Use a non-real placeholder of at most 16 characters such as `vaultprobe`. Require proxy2's `validated character vault list` row and use only its typed resrefs for the later gameplay run. |
 | `-DiamondAccount 1` selects an account-1 character, but proxy startup logs `C:\NWN\Config\5.nwncdkey.ini` or the launcher injects the wrong player name | The proxy starts before the launcher and inherited stale/default account-5 identity; native app-manager state can also retain the previous name | Fixed 2026-07-12: `test-hg-bridge.ps1` resolves and exports the selected account's CD-key/player paths before proxy startup, restores the prior environment afterward, and the bridge prefers the launcher-selected name. Require matching proxy and launcher identity rows on every alternate-account run. |

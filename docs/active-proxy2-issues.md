@@ -17,6 +17,100 @@ not as standalone workaround targets.
   capture before ordinary proxy work. If the previous capture did not reach
   gameplay, fix the harness/server-connection blocker first, update
   `docs/harness-regression-policy.md`, and rerun.
+- 2026-07-23 incomplete persistent-stream salvage evidence hardening: the
+  `10:15+10:00` live gate rechecked
+  `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
+  last written `2026-07-22T20:00:34.0528616+10:00` and 14 hours 14 minutes
+  25.9471384 seconds old. Typed `starcore-druid60` reached `Module_Loaded`, two
+  native `Area_AreaLoaded` messages, and 78 exact live-object accepts through
+  137.818 seconds after final area completion. Its 514 strict allows, 54 ACK
+  carriers, empty stderr/quarantine, and absence of a newer failed live run
+  keep it qualifying until `2026-07-23T20:00:34.0528616+10:00`.
+
+  The historical HG stall retained sequences 37--40 as a contiguous prefix of
+  a declared-five deflated window. Diamond `sub_5F5830` (packetizer) and EE
+  `CNetLayerInternal::PacketizeSendMessageToPlayer` both use strict-greater-than
+  packet-count math, so an exact multiple does not create a legal empty final
+  frame; Diamond `sub_5F3FC0` nevertheless waits for the declared count, while
+  retransmit draining in `sub_5F3580` provides a stronger recovery signal. The
+  shared salvage path now requires at least two buffered members, exactly one
+  missing terminal member, a contiguous prefix, and one exact immutable
+  retransmission of every buffered member since membership last changed.
+  Conflicting bytes earn no credit. New membership clears the evidence and a
+  cached negative clone/semantic probe; unchanged failed candidates are
+  re-ACKed without repeating inflate work.
+
+  A positive clone proof now opens or reuses the ordinary ordered effect
+  transaction only after those transport markers exist. Strict rejection can
+  restore gameplay/inflater effects without erasing the retransmission round
+  or its probe count. This is an evidence-bounded recovery rule, not a claim
+  that reaching the declared output length proves a deflate boundary: an
+  absent terminal member could still own zero-output flush/alignment bits. No
+  CNW field, BOOL/bit order, width, cursor, padding, nested boundary, or emitted
+  wire shape changed.
+
+  The focused salvage tests and all 84 root M-frame tests pass, as do formatting,
+  `cargo check`, Rust/native Release builds, and diff checks. Canonical strict
+  replay at
+  `C:\nwnbridge\codex-proxy2-replay-salvage-round-20260723-104316\replay-summary.json`
+  processed all 164 files with 339 strict allows, 143 generated ACK controls,
+  97 exact live-object claims, and 10 area rewrites. It had zero skips,
+  strict/semantic quarantine, quarantine files, terminal residuals,
+  output-wait timeouts, warnings, errors, `BNDP`, or stderr, and kept the
+  stopped writer journal byte-stable.
+
+  Next: require a natural HG recurrence to confirm that the complete
+  retransmission round salvages once and sustains gameplay. Separately, replace
+  proxy-local progress retirement with downstream translated-output reliability
+  so upstream reliable slots cannot retire before EE acknowledges rebuilt
+  output. The external terminal-writer blocker still requires a stopped v2
+  journal from the deployed HG component.
+- 2026-07-23 persistent-stream incomplete-window salvage: the `07:17+10:00`
+  live gate rechecked
+  `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,
+  last written `2026-07-22T20:00:34.0528616+10:00` and 11 hours 16 minutes
+  42.842473 seconds old. Typed `starcore-druid60` reached `Module_Loaded`, two
+  native `Area_AreaLoaded` messages, and 78 exact live-object accepts through
+  137.818 seconds after final area completion. The capture has 514 strict
+  allows, 54 ACK carriers, empty stderr/quarantine, and no newer failed live
+  attempt, so it remains qualifying gameplay evidence until
+  `2026-07-23T20:00:34.0528616+10:00`.
+
+  Historical live HG log
+  `logs/proxy2-driver-20260509-064539/proxy2.log` contains 128 deferred salvage
+  probes between `2026-05-08T20:46:04.450416Z` and
+  `20:47:53.438748Z`: sequences 37--40 repeatedly supplied four stored frames
+  for a window declaring five (`first_sequence=37`,
+  `packetized_sequence=5`, `compressed=3788`), but the old preflight refused
+  to inspect the complete history-dependent raw-deflate member because a live
+  persistent inflater already existed. The shared incomplete-window path now
+  probes an exact deep clone of that inflater, including its dictionary and
+  bit/Huffman cursor. A successful probe still replays the bytes through the
+  ordinary completion path; only that real inflater advancement can commit,
+  and outer strict rejection restores the inflater, reassembly, completed
+  window, and semantic-event checkpoints.
+
+  Diamond `sub_5F3FC0` and EE
+  `CNetLayerWindow::UnpacketizeFullMessages` prove that complete stored frames
+  are assembled before uncompression. This slice changes only the proxy's
+  speculative transport preflight; no gameplay field sequence, BOOL/bit order,
+  width, cursor, padding, string/object boundary, or emitted writer shape
+  changed. The focused history-dependent regression proves no mutation while
+  buffering, no double advancement during clone probe plus real replay, exact
+  rollback/retry, and a following member that requires the committed history.
+  Formatting, `cargo check`, focused tests, Rust/native Release builds, and
+  diff checks pass. Canonical strict replay at
+  `C:\nwnbridge\codex-proxy2-replay-inflater-clone-salvage-20260723-0733\replay-summary.json`
+  processed all 164 packet files (21 client, 144 server), retained 339 strict
+  allows, 143 generated ACK controls, 97 exact live-object claims and 10 area
+  rewrites, kept the diagnostic writer journal byte-stable, and produced zero
+  strict/semantic quarantine, quarantine files, terminal residuals, or stderr.
+
+  Next: require the next natural live recurrence of an incomplete persistent
+  stream window to log an exact salvage and sustain ACK/gameplay progress with
+  no duplicate inflater totals. The overriding terminal-writer blocker remains
+  obtaining a stopped HG-side v2 journal for the real sequence-95 door
+  `UseObject` payload.
 - 2026-07-23 exact runtime terminal-proof scope: the `04:55+10:00` live gate
   rechecked
   `C:\nwnbridge\codex-live-ack-carrier-20260722-195721\harness-proxy-20260722-195723\proxy.structured.log`,

@@ -986,6 +986,8 @@ mod tests {
             frames: Vec::new(),
             interleaved_packets: Vec::new(),
             interleaved_events: Vec::new(),
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         };
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
@@ -1030,6 +1032,8 @@ mod tests {
             frames: Vec::new(),
             interleaved_packets: Vec::new(),
             interleaved_events: Vec::new(),
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         };
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
@@ -1093,6 +1097,8 @@ mod tests {
             frames: Vec::new(),
             interleaved_packets: Vec::new(),
             interleaved_events: Vec::new(),
+            incomplete_salvage_probe_attempts: 0,
+            incomplete_salvage_probe_rejected: false,
         };
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_cepv23_starter_seq17_lance_lute_patron_liveobject_20260523_unclaimed.bin"
