@@ -202,11 +202,12 @@ pub(super) struct SequenceState {
     pub(super) server_sequence_epoch_source_floor: Option<server_replay::ServerReliableSlotKey>,
     pub(super) server_sequence_epoch_destination_floor: Option<ee_send_window::EeServerSendKey>,
     pub(super) latest_raw_ee_server_ack: Option<ee_send_window::EeServerSendKey>,
-    /// Generation-aware coordinate transform prepared for migration from the
-    /// legacy bare-`u16` shift list. It deliberately remains empty in
-    /// production until every insertion producer can supply an exact owner and
-    /// committed EE destination range. Mixing registered-only coordinates with
-    /// omitted legacy shifts would make destination-floor compaction unsound.
+    /// Generation-aware coordinate transform shadowing the legacy bare-`u16`
+    /// shift list. A complete strict-accepted server transaction reconstructs
+    /// all of its appended producer shifts, orders them by exact source epoch,
+    /// and commits them here atomically. The legacy transform remains
+    /// byte-authoritative until replay/live parity proves both sequence and ACK
+    /// directions, so this ledger can fail closed without changing gameplay.
     pub(super) ordered_server_sequence_epochs: OrderedServerSequenceEpochs,
     pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
     /// Exact `1 -> N` server rewrites that keep EE-derived partial ACKs before

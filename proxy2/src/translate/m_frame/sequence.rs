@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SequenceShift {
     pub(super) base: u16,
     pub(super) delta: u16,
@@ -81,6 +81,20 @@ impl SequenceEpochKey {
             .ok_or_else(|| anyhow::anyhow!("reliable sequence ordinal underflow"))?;
         Self::from_ordinal(ordinal)
     }
+
+    /// Place a nearby wrapping sequence in this exact generation domain.
+    ///
+    /// Reliable producer windows are bounded well below half of the 16-bit
+    /// space. The shortest signed distance from an exact transaction owner is
+    /// therefore unambiguous, including a source interval that crosses wrap.
+    pub(super) fn nearby(self, sequence: u16) -> anyhow::Result<Self> {
+        let forward = sequence.wrapping_sub(self.sequence);
+        if forward < 0x8000 {
+            self.checked_advance(u64::from(forward))
+        } else {
+            self.checked_retreat(u64::from(self.sequence.wrapping_sub(sequence)))
+        }
+    }
 }
 
 /// Stable identity for one proxy-owned server-lane insertion.
@@ -108,6 +122,106 @@ pub(super) struct ServerSequenceInsertionRange {
     /// First destination sequence after the proxy insertion. This is also the
     /// destination sequence of `source_base`.
     pub(super) destination_after: SequenceEpochKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlannedServerSequenceInsertion {
+    source_base: SequenceEpochKey,
+    count: u16,
+    discovery_order: u64,
+}
+
+/// Complete insertion delta discovered by one speculative server transaction.
+///
+/// Existing producers still append bare `SequenceShift` records at the point
+/// where their semantic branch is discovered. That discovery order is not a
+/// transport order: a coalesced transaction can discover an inventory suffix
+/// before a deferred-resource prefix. This plan captures the whole append
+/// delta, restores exact generations relative to the reliable source owner,
+/// and sorts by source position before touching the ordered epoch ledger.
+///
+/// It is intentionally a shadow migration boundary for now. The legacy
+/// transform remains byte-authoritative until sequence and ACK parity have
+/// been exercised against replay and live traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ServerSequenceInsertionPlan {
+    owner_source: SequenceEpochKey,
+    insertions: Vec<PlannedServerSequenceInsertion>,
+}
+
+impl ServerSequenceInsertionPlan {
+    const LEGACY_SHADOW_OPERATION_TAG: u64 = 0x4C53_0000_0000_0000;
+
+    /// Recover only the shifts appended by the current transaction.
+    ///
+    /// `trim_sequence_shifts` may remove a prefix after appending, so compare
+    /// the retained baseline suffix with the current prefix. A nonempty
+    /// baseline with no retained overlap is ambiguous and fails closed.
+    pub(super) fn from_legacy_append_delta(
+        owner_source: SequenceEpochKey,
+        baseline: &[SequenceShift],
+        current: &[SequenceShift],
+    ) -> anyhow::Result<Option<Self>> {
+        let maximum_overlap = baseline.len().min(current.len());
+        let overlap = (0..=maximum_overlap)
+            .rev()
+            .find(|overlap| {
+                baseline[baseline.len().saturating_sub(*overlap)..] == current[..*overlap]
+            })
+            .unwrap_or(0);
+        if !baseline.is_empty() && overlap == 0 {
+            anyhow::bail!(
+                "legacy server sequence shift history lost every transaction baseline entry"
+            );
+        }
+
+        let appended = &current[overlap..];
+        if appended.is_empty() {
+            return Ok(None);
+        }
+        let mut insertions = appended
+            .iter()
+            .enumerate()
+            .map(|(index, shift)| {
+                if shift.delta == 0 {
+                    anyhow::bail!("legacy server sequence shift appended a zero-width insertion");
+                }
+                Ok(PlannedServerSequenceInsertion {
+                    source_base: owner_source.nearby(shift.base)?,
+                    count: shift.delta,
+                    discovery_order: u64::try_from(index)
+                        .map_err(|_| anyhow::anyhow!("insertion plan index overflow"))?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        insertions.sort_by_key(|insertion| (insertion.source_base, insertion.discovery_order));
+        Ok(Some(Self {
+            owner_source,
+            insertions,
+        }))
+    }
+
+    pub(super) fn insertion_count(&self) -> usize {
+        self.insertions.len()
+    }
+
+    pub(super) fn apply_atomically(
+        &self,
+        epochs: &OrderedServerSequenceEpochs,
+    ) -> anyhow::Result<OrderedServerSequenceEpochs> {
+        let mut candidate = epochs.clone();
+        for insertion in &self.insertions {
+            let operation = Self::LEGACY_SHADOW_OPERATION_TAG
+                .checked_add(insertion.discovery_order)
+                .ok_or_else(|| anyhow::anyhow!("insertion plan operation identity overflow"))?;
+            candidate.insert_before(
+                ServerSequenceInsertionOwner::new(self.owner_source, operation),
+                insertion.source_base,
+                insertion.count,
+            )?;
+        }
+        Ok(candidate)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +612,102 @@ mod tests {
         operation: u64,
     ) -> ServerSequenceInsertionOwner {
         ServerSequenceInsertionOwner::new(epoch(sequence, generation), operation)
+    }
+
+    #[test]
+    fn transaction_plan_orders_suffix_discovered_before_prefix() {
+        let owner = epoch(40, 3);
+        let baseline = [SequenceShift { base: 12, delta: 2 }];
+        // Semantic discovery order is deliberately opposite reliable-source
+        // placement: a suffix at 42 is found before a prefix at 40.
+        let current = [
+            SequenceShift { base: 12, delta: 2 },
+            SequenceShift { base: 42, delta: 1 },
+            SequenceShift { base: 40, delta: 3 },
+        ];
+        let plan =
+            ServerSequenceInsertionPlan::from_legacy_append_delta(owner, &baseline, &current)
+                .expect("complete transaction plan")
+                .expect("two insertions");
+        assert_eq!(plan.insertion_count(), 2);
+
+        let epochs = plan
+            .apply_atomically(&OrderedServerSequenceEpochs::identity_at(owner))
+            .expect("source-ordered transaction");
+        assert_eq!(
+            epochs
+                .map_source(epoch(40, 3))
+                .expect("map prefixed source"),
+            epoch(43, 3)
+        );
+        assert_eq!(
+            epochs
+                .map_source(epoch(42, 3))
+                .expect("map suffixed source"),
+            epoch(46, 3)
+        );
+    }
+
+    #[test]
+    fn transaction_plan_recovers_append_after_legacy_prefix_trim() {
+        let owner = epoch(17, 0);
+        let baseline = (1..=16)
+            .map(|base| SequenceShift { base, delta: 1 })
+            .collect::<Vec<_>>();
+        let mut current = baseline.clone();
+        current.push(SequenceShift { base: 17, delta: 1 });
+        trim_sequence_shifts(&mut current);
+
+        let plan =
+            ServerSequenceInsertionPlan::from_legacy_append_delta(owner, &baseline, &current)
+                .expect("trim-aware transaction plan")
+                .expect("seventeenth insertion");
+        assert_eq!(plan.insertion_count(), 1);
+        let mut epochs = OrderedServerSequenceEpochs::identity();
+        for base in 1..=16u16 {
+            epochs
+                .insert_before(insertion_owner(base, 0, u64::from(base)), epoch(base, 0), 1)
+                .expect("seed ordered insertion");
+        }
+        let migrated = plan
+            .apply_atomically(&epochs)
+            .expect("seventeenth transaction");
+        assert_eq!(
+            migrated
+                .map_source(epoch(17, 0))
+                .expect("map after legacy trim"),
+            epoch(34, 0)
+        );
+    }
+
+    #[test]
+    fn transaction_plan_is_atomic_when_an_entry_conflicts() {
+        let owner = epoch(10, 0);
+        let plan = ServerSequenceInsertionPlan::from_legacy_append_delta(
+            owner,
+            &[],
+            &[
+                SequenceShift { base: 10, delta: 1 },
+                SequenceShift { base: 9, delta: 1 },
+            ],
+        )
+        .expect("sortable transaction plan")
+        .expect("insertions");
+        let mut epochs = OrderedServerSequenceEpochs::identity_at(owner);
+        epochs
+            .insert_before(
+                ServerSequenceInsertionOwner::new(
+                    owner,
+                    ServerSequenceInsertionPlan::LEGACY_SHADOW_OPERATION_TAG,
+                ),
+                epoch(10, 0),
+                2,
+            )
+            .expect("conflicting preexisting owner");
+        let baseline = epochs.clone();
+
+        assert!(plan.apply_atomically(&epochs).is_err());
+        assert_eq!(epochs, baseline);
     }
 
     #[test]

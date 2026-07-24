@@ -451,6 +451,32 @@ pub(super) fn retire_through_raw_client_ack(
     }
 }
 
+/// Resolve a raw cumulative ACK to its exact destination generation without
+/// mutating the send window. This is used by the ordered-epoch shadow mapper
+/// before final client-frame validation; retirement remains owned exclusively
+/// by `retire_through_raw_client_ack`.
+pub(super) fn resolve_raw_client_ack(
+    state: &EeServerSendWindowState,
+    ack_sequence: u16,
+) -> Option<EeServerSendKey> {
+    let Some(first) = state.slots.front().map(|slot| slot.key) else {
+        return state
+            .last_retired_key
+            .filter(|key| key.sequence == ack_sequence);
+    };
+    let distance = ack_sequence.wrapping_sub(first.sequence) as usize;
+    if distance >= state.slots.len() || distance >= MAX_EE_SERVER_SEND_SLOTS {
+        return state
+            .last_retired_key
+            .filter(|key| key.sequence == ack_sequence);
+    }
+    state
+        .slots
+        .get(distance)
+        .map(|slot| slot.key)
+        .filter(|key| key.sequence == ack_sequence)
+}
+
 pub(super) fn destination_floor(state: &EeServerSendWindowState) -> Option<EeServerSendKey> {
     state.slots.front().map(|slot| slot.key).or(state.next_key)
 }
@@ -607,6 +633,14 @@ mod tests {
         );
         assert_eq!(pre_wrap.retired_slots, 2);
         assert_eq!(state.slots.front().map(|slot| slot.key.sequence), Some(0));
+        assert_eq!(
+            resolve_raw_client_ack(&state, 0),
+            Some(EeServerSendKey {
+                sequence: 0,
+                generation: 1,
+            }),
+            "read-only resolver must preserve the active wrapped generation"
+        );
         let wrapped = retire_through_raw_client_ack(&mut state, 0);
         assert_eq!(
             wrapped.acknowledged,
@@ -629,6 +663,7 @@ mod tests {
         assert_eq!(duplicate.acknowledged, wrapped.acknowledged);
         assert_eq!(duplicate.destination_floor, wrapped.destination_floor);
         assert_eq!(duplicate.retired_slots, 0);
+        assert_eq!(resolve_raw_client_ack(&state, 0), wrapped.acknowledged);
         assert_eq!(state.last_retired_key, wrapped.acknowledged);
 
         let unresolvable = retire_through_raw_client_ack(&mut state, u16::MAX);

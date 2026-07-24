@@ -63,9 +63,10 @@ use reassembly::{
     InflatedGameplayPayload, ServerDeflatedReassembly,
 };
 use sequence::{
-    SequenceElision, SequenceEpochKey, SequenceShift, record_forward_progress,
-    sequence_at_or_after, shift_sequence_for_peer, shift_sequence_for_peer_with_elisions,
-    trim_sequence_elisions, trim_sequence_shifts, unshift_ack_for_origin_with_elisions,
+    SequenceElision, SequenceEpochKey, SequenceShift, ServerSequenceInsertionPlan,
+    record_forward_progress, sequence_at_or_after, shift_sequence_for_peer,
+    shift_sequence_for_peer_with_elisions, trim_sequence_elisions, trim_sequence_shifts,
+    unshift_ack_for_origin_with_elisions,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -375,6 +376,79 @@ fn compact_ordered_server_sequence_epochs_if_ready(state: &mut SessionState) {
     }
 }
 
+fn pending_server_source_epoch(state: &SessionState) -> anyhow::Result<SequenceEpochKey> {
+    let key = state
+        .server_reliable_slots
+        .pending_dispatch_key
+        .ok_or_else(|| {
+            anyhow::anyhow!("server insertion transaction lacks an exact source owner")
+        })?;
+    let generation = i64::try_from(key.origin_generation)
+        .map_err(|_| anyhow::anyhow!("server source generation exceeds ordered epoch range"))?;
+    Ok(SequenceEpochKey::new(key.sequence, generation))
+}
+
+/// Reconstruct the complete current transaction's insertion delta without
+/// trusting semantic discovery order.
+///
+/// This is the shadow migration boundary for the legacy server shift list.
+/// The returned ledger is not authoritative for emitted bytes yet; callers use
+/// it for parity checks and commit it only when the same outer strict
+/// transaction commits the semantic effects that created the insertions.
+fn prospective_ordered_server_sequence_epochs(
+    state: &SessionState,
+) -> anyhow::Result<Option<(sequence::OrderedServerSequenceEpochs, usize)>> {
+    let Some(snapshot) = state.deflate.ordered_successor_effect_snapshot.as_ref() else {
+        return Ok(None);
+    };
+    let baseline = &snapshot.sequence.server_sequence_shifts;
+    let current = &state.sequence.server_sequence_shifts;
+    if baseline == current {
+        return Ok(None);
+    }
+    let owner = pending_server_source_epoch(state)?;
+    let Some(plan) =
+        ServerSequenceInsertionPlan::from_legacy_append_delta(owner, baseline, current)?
+    else {
+        return Ok(None);
+    };
+    if state
+        .sequence
+        .ordered_server_sequence_epochs
+        .checkpoint()
+        .is_none()
+        && !baseline.is_empty()
+    {
+        anyhow::bail!(
+            "ordered server shadow cannot seed after an already-trimmed legacy insertion history"
+        );
+    }
+    let insertion_count = plan.insertion_count();
+    let candidate = plan.apply_atomically(&state.sequence.ordered_server_sequence_epochs)?;
+    Ok(Some((candidate, insertion_count)))
+}
+
+fn commit_ordered_server_sequence_shadow_if_ready(state: &mut SessionState) {
+    match prospective_ordered_server_sequence_epochs(state) {
+        Ok(None) => {}
+        Ok(Some((candidate, inserted))) => {
+            state.sequence.ordered_server_sequence_epochs = candidate;
+            tracing::info!(
+                inserted,
+                active_insertions = state
+                    .sequence
+                    .ordered_server_sequence_epochs
+                    .active_insertions(),
+                "committed strict-accepted transaction to shadow ordered server sequence epochs"
+            );
+        }
+        Err(err) => tracing::warn!(
+            error = %err,
+            "shadow ordered server sequence transaction stayed fail-closed"
+        ),
+    }
+}
+
 fn pending_server_drain_has_work(state: &SessionState, now: Instant) -> bool {
     client_ack::has_due_consumed_ee_only_ack(&state.client_ack.pending, now)
         || state
@@ -618,6 +692,7 @@ pub(super) fn prepare_direct_client_source_ack_carrier(
         &state.sequence.server_output_ack_spans,
         view.ack_sequence,
     );
+    audit_ordered_server_ack_mapping(state, view.ack_sequence, mapped_ack_sequence);
     ack_carrier::prepare(view.ack_sequence, mapped_ack_sequence).map(Some)
 }
 
@@ -1652,6 +1727,10 @@ fn commit_server_emit_effect_transaction(
     if state.deflate.server_emit_effect_transaction_kind != Some(expected_kind) {
         return false;
     }
+    // The snapshot still contains the complete pre-transaction legacy shift
+    // history here. Reconstruct and atomically commit the generation-aware
+    // shadow plan before discarding that comparison authority.
+    commit_ordered_server_sequence_shadow_if_ready(state);
     state.deflate.server_emit_effect_transaction_kind = None;
     let Some(_snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
         tracing::warn!(
@@ -3302,6 +3381,7 @@ fn unshift_client_ack_for_server(
         &state.sequence.server_output_ack_spans,
         view.ack_sequence,
     );
+    audit_ordered_server_ack_mapping(state, view.ack_sequence, unshifted);
     if unshifted == view.ack_sequence {
         return Ok(());
     }
@@ -3320,6 +3400,77 @@ fn unshift_client_ack_for_server(
         "client M ack unshifted after proxy-owned server M insertion"
     );
     Ok(())
+}
+
+fn audit_ordered_server_ack_mapping(
+    state: &SessionState,
+    destination_ack_sequence: u16,
+    legacy_source_ack_sequence: u16,
+) {
+    // Expanded-output spans impose a stricter "terminal output completes the
+    // source" rule on top of generic insertions. Keep those spans out of this
+    // pure insertion parity check until they also carry exact destination
+    // generations.
+    if !state.sequence.server_output_ack_spans.is_empty()
+        || state
+            .sequence
+            .ordered_server_sequence_epochs
+            .checkpoint()
+            .is_none()
+    {
+        return;
+    }
+    let Some(destination) = ee_send_window::resolve_raw_client_ack(
+        &state.ee_server_send_window,
+        destination_ack_sequence,
+    ) else {
+        tracing::trace!(
+            destination_ack_sequence,
+            "shadow ordered server ACK transform skipped an unresolved raw destination generation"
+        );
+        return;
+    };
+    let Ok(destination_generation) = i64::try_from(destination.generation) else {
+        tracing::warn!(
+            destination_ack_sequence,
+            destination_generation = destination.generation,
+            "shadow ordered server ACK transform rejected an unsupported destination generation"
+        );
+        return;
+    };
+    let destination = SequenceEpochKey::new(destination_ack_sequence, destination_generation);
+    match state
+        .sequence
+        .ordered_server_sequence_epochs
+        .map_destination_ack(destination)
+    {
+        Ok(source) if source.sequence != legacy_source_ack_sequence => tracing::warn!(
+            destination_ack_sequence,
+            destination_generation,
+            legacy_source_ack_sequence,
+            ordered_source_ack_sequence = source.sequence,
+            ordered_source_generation = source.generation,
+            legacy_shifts = state.sequence.server_sequence_shifts.len(),
+            active_ordered_insertions = state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
+            "shadow ordered server ACK transform disagrees with legacy output"
+        ),
+        Ok(source) => tracing::trace!(
+            destination_ack_sequence,
+            destination_generation,
+            source_ack_sequence = source.sequence,
+            source_generation = source.generation,
+            "shadow ordered server ACK transform matched legacy output"
+        ),
+        Err(err) => tracing::warn!(
+            error = %err,
+            destination_ack_sequence,
+            destination_generation,
+            "shadow ordered server ACK transform stayed fail-closed"
+        ),
+    }
 }
 
 fn queue_area_client_area_side_effects(
@@ -3913,6 +4064,47 @@ fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> 
     }
 
     let shifted = shift_sequence_for_peer(&state.sequence.server_sequence_shifts, view.sequence);
+    let shadow_epochs = match prospective_ordered_server_sequence_epochs(state) {
+        Ok(Some((epochs, _))) => epochs,
+        Ok(None) => state.sequence.ordered_server_sequence_epochs.clone(),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "shadow ordered server sequence parity check stayed fail-closed"
+            );
+            state.sequence.ordered_server_sequence_epochs.clone()
+        }
+    };
+    if shadow_epochs.checkpoint().is_some()
+        && let Ok(source) =
+            pending_server_source_epoch(state).and_then(|owner| owner.nearby(view.sequence))
+    {
+        match shadow_epochs.map_source(source) {
+            Ok(ordered) if ordered.sequence != shifted => tracing::warn!(
+                source_sequence = source.sequence,
+                source_generation = source.generation,
+                legacy_destination_sequence = shifted,
+                ordered_destination_sequence = ordered.sequence,
+                ordered_destination_generation = ordered.generation,
+                legacy_shifts = state.sequence.server_sequence_shifts.len(),
+                active_ordered_insertions = shadow_epochs.active_insertions(),
+                "shadow ordered server sequence transform disagrees with legacy output"
+            ),
+            Ok(ordered) => tracing::trace!(
+                source_sequence = source.sequence,
+                source_generation = source.generation,
+                destination_sequence = ordered.sequence,
+                destination_generation = ordered.generation,
+                "shadow ordered server sequence transform matched legacy output"
+            ),
+            Err(err) => tracing::warn!(
+                error = %err,
+                source_sequence = source.sequence,
+                source_generation = source.generation,
+                "shadow ordered server sequence parity mapping stayed fail-closed"
+            ),
+        }
+    }
     if shifted == view.sequence {
         return Ok(());
     }
@@ -4573,8 +4765,8 @@ mod tests {
         let committed_destination_slots = state.ee_server_send_window.slots.len();
         assert_eq!(committed_shifts.len(), 1);
         assert_eq!(
-            committed_epoch_insertions, 0,
-            "partial producer coverage must not enter the authoritative epoch coordinate system"
+            committed_epoch_insertions, 1,
+            "strict acceptance must atomically shadow the complete transaction insertion"
         );
         assert_eq!(committed_cache_windows, 1);
         assert_eq!(committed_destination_slots, first_packets.len());
@@ -6775,6 +6967,14 @@ mod tests {
                 .is_empty()
         );
         assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(
+            state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
+            0,
+            "rejected semantic effects must not commit their shadow insertion plan"
+        );
         assert!(
             state
                 .synthetic_area
@@ -6805,6 +7005,14 @@ mod tests {
             "voyage"
         );
         assert!(!state.sequence.server_sequence_shifts.is_empty());
+        assert!(
+            state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions()
+                > 0,
+            "strict-accepted retry must commit the reconstructed insertion plan"
+        );
         assert!(state.synthetic_area.pending_area_loaded.is_some());
         assert!(state.synthetic_area.server_hold_gate.is_some());
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
