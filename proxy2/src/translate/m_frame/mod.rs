@@ -969,6 +969,41 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         }
         _ => {}
     }
+    let dispatch_ready_key = match server_replay::prepare_source_dispatch(
+        &mut state.server_reliable_slots,
+        prepared_server_source,
+    )? {
+        server_replay::ServerReliableDispatchAdmission::Future { key, expected } => {
+            // FrameReceive stores a future in-window type-0 datagram but does
+            // not hand it to UnpacketizeFullMessages until every earlier slot
+            // has drained. Preserve the independently valid peer ACK while the
+            // immutable raw slot waits for an exact retransmission after its
+            // predecessor commits.
+            observe_validated_server_source_ack(state, source_ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                expected_sequence = expected.sequence,
+                expected_origin_generation = expected.origin_generation,
+                ack_sequence = source_ack_sequence,
+                "future server reliable datagram retained without semantic dispatch behind a receive-window gap"
+            );
+            return Ok(Emit::Consumed);
+        }
+        server_replay::ServerReliableDispatchAdmission::Pending(key) => {
+            observe_validated_server_source_ack(state, source_ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = source_ack_sequence,
+                "server reliable retransmit retained while the same semantic dispatch awaits final validation"
+            );
+            return Ok(Emit::Drop);
+        }
+        server_replay::ServerReliableDispatchAdmission::Ready(key) => Some(key),
+        server_replay::ServerReliableDispatchAdmission::Replay(_)
+        | server_replay::ServerReliableDispatchAdmission::Excluded => None,
+    };
     let parsed_view = Some(source_view);
     let parsed_sequence = parsed_view.as_ref().map(|view| view.sequence);
     let parsed_frame_type = parsed_view.as_ref().map(|view| view.frame_type);
@@ -1058,11 +1093,15 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         }
     }
 
+    if let Some(key) = dispatch_ready_key {
+        server_replay::stage_source_dispatch(&mut state.server_reliable_slots, key)?;
+    }
     state.deflate.last_server_core_dispatch_accepted = false;
     let emit = match translate_server_to_client_inner(bytes, state) {
         Ok(emit) => emit,
         Err(err) => {
             rollback_server_emit_effect_transaction(state);
+            server_replay::finish_source_dispatch(&mut state.server_reliable_slots, false);
             return Err(err);
         }
     };
@@ -1108,6 +1147,32 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         // ordinary speculative boundary here while retaining the raw source
         // slot pinned above for an exact retry.
         rollback_ordinary_server_emit_after_drop(state);
+        server_replay::finish_source_dispatch(&mut state.server_reliable_slots, false);
+    } else if matches!(&emit, Emit::Consumed) {
+        let validation_owned_effects = state.deflate.server_emit_effect_transaction_kind.is_some()
+            || state.deflate.ordered_successor_effect_snapshot.is_some()
+            || state.deflate.ordered_successor_pending_validation.is_some();
+        if validation_owned_effects {
+            // SessionTranslator appends the independently valid source ACK
+            // carrier to a pure Consumed disposition. Keep the reliable
+            // dispatch identity pending with the same rollback-capable effect
+            // transaction until that carrier's strict result arrives.
+            tracing::trace!(
+                sequence = state
+                    .server_reliable_slots
+                    .pending_dispatch_key
+                    .map(|key| key.sequence),
+                origin_generation = state
+                    .server_reliable_slots
+                    .pending_dispatch_key
+                    .map(|key| key.origin_generation),
+                "consumed server reliable source retained at semantic frontier pending its effect transaction validation"
+            );
+        } else {
+            // No speculative effect transaction or outgoing gameplay packet
+            // remains. The transport/reassembly disposition is final.
+            server_replay::finish_source_dispatch(&mut state.server_reliable_slots, true);
+        }
     }
     Ok(emit)
 }
@@ -1601,7 +1666,8 @@ pub(super) fn finish_server_to_client_emit_validation_outcomes(
     effects_accepted: bool,
     ack_output_accepted: bool,
 ) {
-    finish_server_to_client_effect_validation(state, effects_accepted);
+    let effects_committed = finish_server_to_client_effect_validation(state, effects_accepted);
+    server_replay::finish_source_dispatch(&mut state.server_reliable_slots, effects_committed);
     finish_ack_delivery(
         state,
         ack_delivery::AckDeliveryOwner::DirectServer,
@@ -1614,7 +1680,7 @@ pub(super) fn finish_server_to_client_emit_validation_outcomes(
     );
 }
 
-fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted: bool) {
+fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted: bool) -> bool {
     if state.deflate.server_emit_effect_transaction_kind
         == Some(state::ServerEmitEffectTransactionKind::PendingServerDrain)
     {
@@ -1622,7 +1688,7 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
             accepted,
             "pending server synthetic drain ignored unrelated server-origin validation callback"
         );
-        return;
+        return false;
     }
     let token = state.deflate.ordered_successor_pending_validation.take();
     if !accepted {
@@ -1639,26 +1705,28 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
                 "server M engine-facing effects rolled back after final strict emit validation rejected the complete batch"
             );
         }
-        return;
+        return false;
     }
 
     let Some(token) = token else {
         match state.deflate.server_emit_effect_transaction_kind {
             Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit) => {
-                if commit_server_emit_effect_transaction(
+                let committed = commit_server_emit_effect_transaction(
                     state,
                     state::ServerEmitEffectTransactionKind::OrdinaryServerEmit,
-                ) {
+                );
+                if committed {
                     tracing::debug!(
                         "strict-validated ordinary server emit committed speculative engine-facing effects"
                     );
                 }
+                return committed;
             }
             Some(state::ServerEmitEffectTransactionKind::PendingServerDrain) => {
                 tracing::warn!(
                     "pending server synthetic transaction reached server-origin validation match after ownership guard"
                 );
-                return;
+                return false;
             }
             Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor) => {
                 let rolled_back_effects = rollback_server_emit_effect_transaction(state);
@@ -1674,10 +1742,12 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
                         rolled_back_effects,
                         "untagged server emit effect snapshot rolled back instead of accepting without ownership"
                     );
+                    return false;
                 }
+                return true;
             }
         }
-        return;
+        return false;
     };
     if state.deflate.server_emit_effect_transaction_kind
         != Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor)
@@ -1690,7 +1760,7 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
             rolled_back_effects,
             "ordered successor validation token rejected because its effect transaction kind did not match"
         );
-        return;
+        return false;
     }
     let expected = token.sequence;
     if state.deflate.ordered_successor_next_sequence != Some(expected) {
@@ -1701,7 +1771,7 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
             rolled_back_effects,
             "ordered server successor validation result ignored because the active fence changed"
         );
-        return;
+        return false;
     }
 
     let queued_identity = state
@@ -1724,7 +1794,7 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
             rolled_back_effects,
             "ordered server successor retained because its exact raw queue identity disappeared before final validation"
         );
-        return;
+        return false;
     };
     if !queued_identity_matches {
         let rolled_back_effects = rollback_server_emit_effect_transaction(state);
@@ -1735,13 +1805,20 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
             rolled_back_effects,
             "ordered server successor retained because validated token no longer matches raw queue identity"
         );
-        return;
+        return false;
     }
 
     let committed_effects = commit_server_emit_effect_transaction(
         state,
         state::ServerEmitEffectTransactionKind::OrderedSuccessor,
     );
+    if !committed_effects {
+        tracing::warn!(
+            sequence = expected,
+            "ordered server successor retained because its effect transaction could not commit"
+        );
+        return false;
+    }
 
     let final_sequence = state
         .deflate
@@ -1766,6 +1843,7 @@ fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted:
         committed_effects,
         "strict-validated server M committed ordered successor advancement"
     );
+    committed_effects
 }
 
 /// Commit or reject only the timer/session-drained synthetic server batch.
@@ -4711,6 +4789,7 @@ mod tests {
             1,
             "the translated type-0 stream should pin one reliable route"
         );
+        finish_server_to_client_emit_validation(&mut state, true);
 
         for ack_sequence in [2, 3] {
             let ack_control = reliable_server_m_frame(0, ack_sequence, 0x10, 0, &[]);
@@ -4747,6 +4826,7 @@ mod tests {
                 .iter()
                 .any(|(proof, _)| proof.contains_family(VerifiedFamily::LoadBar))
         );
+        finish_server_to_client_emit_validation(&mut state, true);
     }
 
     #[test]
@@ -4775,11 +4855,14 @@ mod tests {
 
         let first_inflated = crate::translate::loadbar::start_payload(2);
         let second_inflated = crate::translate::loadbar::start_payload(3);
+        let third_inflated = crate::translate::loadbar::start_payload(4);
         let mut compressor = flate2::Compress::new(flate2::Compression::default(), true);
         let first_compressed = compress_stream_chunk(&mut compressor, &first_inflated);
         let second_compressed = compress_stream_chunk(&mut compressor, &second_inflated);
+        let third_compressed = compress_stream_chunk(&mut compressor, &third_inflated);
         assert!(looks_like_zlib_wrapped_deflate(&first_compressed));
         assert!(!looks_like_zlib_wrapped_deflate(&second_compressed));
+        assert!(!looks_like_zlib_wrapped_deflate(&third_compressed));
 
         let first = stream_frame(140, 74, &first_inflated, &first_compressed);
         let mut state = SessionState::default();
@@ -4796,8 +4879,27 @@ mod tests {
         let totals_after_first = (inflater.total_in(), inflater.total_out());
         let owner_after_first = state.deflate.server_zlib_stream_owner;
         let owner_epoch_after_first = state.deflate.server_zlib_stream_epoch;
+        finish_server_to_client_emit_validation(&mut state, true);
 
-        let first_retransmit = stream_frame(140, 79, &first_inflated, &first_compressed);
+        let future = stream_frame(142, 79, &third_inflated, &third_compressed);
+        assert!(matches!(
+            translate_server_to_client(&future, &mut state)
+                .expect("future stream continuation should remain raw"),
+            Emit::Consumed
+        ));
+        let inflater = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .expect("future continuation must retain persistent inflater");
+        assert_eq!(
+            (inflater.total_in(), inflater.total_out()),
+            totals_after_first,
+            "future continuation cannot consume persistent dictionary input"
+        );
+        assert_eq!(state.deflate.server_zlib_stream_owner, owner_after_first);
+
+        let first_retransmit = stream_frame(140, 80, &first_inflated, &first_compressed);
         let replay_emit = translate_server_to_client(&first_retransmit, &mut state)
             .expect("header-bearing retransmit should replay");
         assert!(!matches!(replay_emit, Emit::Drop));
@@ -4815,6 +4917,7 @@ mod tests {
             state.deflate.server_zlib_stream_epoch,
             owner_epoch_after_first
         );
+        finish_server_to_client_emit_validation(&mut state, true);
 
         let mut wrong_stream_disposition = first_retransmit.clone();
         wrong_stream_disposition[7] &= !0x01;
@@ -4853,7 +4956,7 @@ mod tests {
             totals_after_first
         );
 
-        let second = stream_frame(141, 80, &second_inflated, &second_compressed);
+        let second = stream_frame(141, 81, &second_inflated, &second_compressed);
         let second_emit = translate_server_to_client(&second, &mut state)
             .expect("raw continuation should still use seeded inflater");
         assert!(!matches!(second_emit, Emit::Drop));
@@ -4869,6 +4972,21 @@ mod tests {
             state.deflate.server_zlib_stream_epoch,
             owner_epoch_after_first
         );
+        let totals_after_second = (inflater.total_in(), inflater.total_out());
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        let third_retry = stream_frame(142, 82, &third_inflated, &third_compressed);
+        let third_emit = translate_server_to_client(&third_retry, &mut state)
+            .expect("retained future continuation should dispatch after predecessor commit");
+        assert!(!matches!(third_emit, Emit::Drop));
+        let inflater = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .expect("third continuation must retain persistent inflater");
+        assert!(inflater.total_in() > totals_after_second.0);
+        assert!(inflater.total_out() > totals_after_second.1);
+        finish_server_to_client_emit_validation(&mut state, true);
     }
 
     #[test]
@@ -6415,18 +6533,32 @@ mod tests {
         let area_retransmit = client_reliable_m_frame(52, 76, area_payload);
         assert!(matches!(
             translate_server_to_client(&area_retransmit, &mut state)
-                .expect("refresh buffered Area transport"),
+                .expect("refresh retained future Area transport"),
             Emit::Consumed
         ));
-        assert_eq!(
+        assert!(
             state
                 .deflate
                 .server_reassembly
                 .as_ref()
                 .expect("pending predecessor")
                 .interleaved_events
-                .len(),
-            1
+                .is_empty(),
+            "future reliable frames must not enter packetized reassembly"
+        );
+        let retained = state
+            .server_reliable_slots
+            .slots
+            .iter()
+            .find(|slot| slot.key.sequence == 52)
+            .expect("future Area should remain in the receive window");
+        assert_eq!(retained.packet, area_retransmit);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(51)
         );
         assert!(
             state
@@ -6447,8 +6579,29 @@ mod tests {
             .iter()
             .filter_map(|(_, packet)| MFrameView::parse(packet).map(|view| view.sequence))
             .collect::<Vec<_>>();
-        assert_eq!(sequences, vec![50, 51, 52]);
-        let (area_proof, rewritten_area) = packets.last().expect("Area output after predecessor");
+        assert_eq!(sequences, vec![50, 51]);
+        assert!(
+            packets
+                .iter()
+                .all(|(proof, _)| !proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+        assert!(state.direct_server_semantic_replays.completed.is_empty());
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(52)
+        );
+
+        let area_packets = proof_packets(
+            translate_server_to_client(&area_retransmit, &mut state)
+                .expect("retry Area after its exact predecessor commits"),
+        );
+        let (area_proof, rewritten_area) =
+            area_packets.last().expect("Area output after predecessor");
         assert!(area_proof.contains_family(VerifiedFamily::AreaClientArea));
         let area_view = MFrameView::parse(rewritten_area).expect("rewritten Area frame");
         assert_eq!(area_view.ack_sequence, 76);
@@ -6465,13 +6618,18 @@ mod tests {
         assert!(state.synthetic_area.server_hold_gate.is_some());
         assert!(state.synthetic_area.pending_area_loaded.is_some());
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
-        assert_eq!(pending_ordered_successor_sequence(&state), Some(52));
         finish_server_to_client_emit_validation(&mut state, true);
-        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
-        assert!(state.deflate.ordered_successor_events.is_empty());
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(53)
+        );
 
         translate_server_to_client(&client_reliable_m_frame(52, 77, area_payload), &mut state)
             .expect("post-commit Area retransmit should replay");
+        finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(state.semantic.area.client_area_packets, 1);
         assert_eq!(state.direct_server_semantic_replays.duplicates_replayed, 1);
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
@@ -6487,15 +6645,24 @@ mod tests {
 
         translate_server_to_client(&first, &mut state).expect("start predecessor");
         translate_server_to_client(&client_reliable_m_frame(57, 75, area_payload), &mut state)
-            .expect("buffer Area");
+            .expect("retain future Area");
         let packets = proof_packets(
             translate_server_to_client(&second, &mut state).expect("complete predecessor"),
         );
-        assert_eq!(pending_ordered_successor_sequence(&state), Some(57));
-        finish_server_to_client_emit_validation(&mut state, true);
-
         assert!(
             packets
+                .iter()
+                .all(|(proof, _)| !proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        let area_packets = proof_packets(
+            translate_server_to_client(&client_reliable_m_frame(57, 76, area_payload), &mut state)
+                .expect("dispatch Area after predecessor validation"),
+        );
+        assert!(
+            area_packets
                 .iter()
                 .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
         );
@@ -6504,6 +6671,7 @@ mod tests {
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
         );
+        finish_server_to_client_emit_validation(&mut state, true);
     }
 
     #[test]
@@ -6523,13 +6691,27 @@ mod tests {
             translate_server_to_client(&area, &mut state).expect("buffer Area successor"),
             Emit::Consumed
         ));
-        finish_server_to_client_emit_validation(&mut state, true);
         let emitted = translate_server_to_client(&second, &mut state)
-            .expect("complete predecessor and stage Area successor");
+            .expect("complete predecessor without dispatching future Area");
         assert!(!matches!(emitted, Emit::Drop));
-        assert_eq!(pending_ordered_successor_sequence(&state), Some(60));
-        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(60));
-        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+        assert!(state.direct_server_semantic_replays.completed.is_empty());
+        assert!(
+            state.deflate.server_reassembly.as_ref().is_none(),
+            "the exact predecessor should complete independently"
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(60)
+        );
+
+        let area_emit = translate_server_to_client(&area, &mut state)
+            .expect("dispatch retained Area at the receive frontier");
+        assert!(!matches!(area_emit, Emit::Drop));
         assert_eq!(state.semantic.area.client_area_packets, 1);
         assert_eq!(
             state.area_context.latest_area_placeables.area_resref,
@@ -6541,15 +6723,30 @@ mod tests {
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
         assert_eq!(
             state.deflate.server_emit_effect_transaction_kind,
-            Some(state::ServerEmitEffectTransactionKind::OrderedSuccessor)
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
         );
 
         finish_server_to_client_emit_validation(&mut state, false);
 
-        assert_eq!(pending_ordered_successor_sequence(&state), None);
-        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(60));
-        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
-        assert_eq!(state.deflate.ordered_successor_events[0].packet, area);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(60),
+            "strict rejection must retain the exact semantic frontier"
+        );
+        assert!(state.server_reliable_slots.pending_dispatch_key.is_none());
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .slots
+                .iter()
+                .find(|slot| slot.key.sequence == 60)
+                .expect("rejected Area remains in the receive window")
+                .packet,
+            area
+        );
         assert_eq!(state.semantic.area.client_area_packets, 0);
         assert!(
             state
@@ -6568,33 +6765,21 @@ mod tests {
         assert!(state.synthetic_area.pending_area_loaded.is_none());
         assert!(state.synthetic_area.server_hold_gate.is_none());
         assert!(state.direct_server_semantic_replays.completed.is_empty());
-        let restored_source = state
-            .deflate
-            .server_reassembly
-            .as_ref()
-            .expect("rejection must restore the partial predecessor source");
-        assert_eq!(restored_source.frames.len(), 1);
-        assert_eq!(restored_source.interleaved_events.len(), 1);
-        assert_eq!(restored_source.interleaved_events[0].packet, area);
-
-        let retry_emit = translate_server_to_client(&second, &mut state)
-            .expect("retransmitted source completion should retry the retained Area successor");
-        assert!(!matches!(retry_emit, Emit::Drop));
-        finish_server_to_client_emit_validation(&mut state, true);
-
         assert!(state.deflate.server_reassembly.is_none());
-        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(60));
-        assert_eq!(state.deflate.ordered_successor_events.len(), 1);
-        assert_eq!(state.semantic.area.client_area_packets, 0);
 
         let area_retry = client_reliable_m_frame(60, 76, area_payload);
         let area_retry_emit = translate_server_to_client(&area_retry, &mut state)
-            .expect("retained Area successor should retry through the full dispatcher");
+            .expect("rejected Area should retry through the full dispatcher");
         assert!(!matches!(area_retry_emit, Emit::Drop));
         finish_server_to_client_emit_validation(&mut state, true);
 
-        assert_eq!(state.deflate.ordered_successor_next_sequence, None);
-        assert!(state.deflate.ordered_successor_events.is_empty());
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(61)
+        );
         assert_eq!(state.semantic.area.client_area_packets, 1);
         assert_eq!(
             state.area_context.latest_area_placeables.area_resref,
@@ -6607,7 +6792,7 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_area_stays_fail_closed_after_predecessor_bit_cursor_rejection() {
+    fn future_area_stays_fail_closed_until_rejected_predecessor_dispatch_commits() {
         let mut predecessor = crate::translate::loadbar::start_payload(2);
         *predecessor.last_mut().expect("LoadBar fragment byte") = 0xE0;
         let (first, second) = two_frame_deflated_window(60, 74, &predecessor);
@@ -6628,11 +6813,23 @@ mod tests {
         let packets = proof_packets(
             translate_server_to_client(&second, &mut state).expect("reject predecessor"),
         );
-        let (area_proof, area_shell) = packets.last().expect("fail-closed Area shell");
-        assert!(area_proof.contains_family(VerifiedFamily::ConsumedEmptyMFrame));
-        let shell_view = MFrameView::parse(area_shell).expect("Area progress shell");
-        assert_eq!(shell_view.sequence, 62);
-        assert_eq!(shell_view.payload_length, 0);
+        let sequences = packets
+            .iter()
+            .map(|(_, packet)| MFrameView::parse(packet).expect("progress shell").sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![60, 61]);
+        assert!(
+            packets
+                .iter()
+                .all(|(proof, _)| !proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .pending_dispatch_key
+                .map(|key| key.sequence),
+            Some(61)
+        );
         assert!(
             state
                 .area_context
@@ -6644,6 +6841,26 @@ mod tests {
         assert!(state.synthetic_area.server_hold_gate.is_none());
         assert!(state.synthetic_area.pending_area_loaded.is_none());
         assert!(state.direct_server_semantic_replays.completed.is_empty());
+
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(62)
+        );
+        let area_packets = proof_packets(
+            translate_server_to_client(&client_reliable_m_frame(62, 76, area_payload), &mut state)
+                .expect("retry future Area after predecessor disposition commits"),
+        );
+        assert!(
+            area_packets
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.client_area_packets, 1);
     }
 
     #[test]
@@ -6722,10 +6939,16 @@ mod tests {
         assert!(matches!(
             translate_server_to_client(&area_frame, &mut state)
                 .expect("withhold repeated future Area"),
-            Emit::Drop
+            Emit::Consumed
         ));
         assert_eq!(state.semantic.area.client_area_packets, 0);
-        assert_eq!(state.deflate.ordered_successor_next_sequence, Some(72));
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(72)
+        );
 
         let missing = client_reliable_m_frame(72, 75, &crate::translate::loadbar::start_payload(3));
         let missing_packets = proof_packets(
@@ -6750,6 +6973,14 @@ mod tests {
         assert_eq!(
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(74)
         );
     }
 
@@ -6777,8 +7008,19 @@ mod tests {
             .iter()
             .map(|(_, packet)| MFrameView::parse(packet).expect("reliable packet").sequence)
             .collect::<Vec<_>>();
-        assert_eq!(sequences, vec![80, 81, 82]);
-        assert!(packets[2].0.contains_family(VerifiedFamily::AreaClientArea));
+        assert_eq!(sequences, vec![80, 81]);
+        assert_eq!(state.semantic.area.client_area_packets, 0);
+        finish_server_to_client_emit_validation(&mut state, true);
+
+        let area_packets = proof_packets(
+            translate_server_to_client(&client_reliable_m_frame(82, 76, area_payload), &mut state)
+                .expect("retry earlier Area at the receive frontier"),
+        );
+        assert!(
+            area_packets
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
+        );
         assert_eq!(state.semantic.area.client_area_packets, 1);
         assert_eq!(
             state.area_context.latest_area_placeables.area_resref,
@@ -6794,6 +7036,14 @@ mod tests {
             .expect("retry later semantic event after Area commit"),
         );
         assert!(retried[0].0.contains_family(VerifiedFamily::LoadBar));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(84)
+        );
     }
 
     #[test]
@@ -6983,6 +7233,235 @@ mod tests {
         assert_eq!(state.semantic.area.loadbar_packets, 1);
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
         assert_eq!(state.server_reliable_slots.slots.len(), 1);
+    }
+
+    #[test]
+    fn future_server_reliable_frame_waits_for_exact_committed_frontier() {
+        let payload_30 = crate::translate::loadbar::start_payload(2);
+        let payload_31 = crate::translate::loadbar::start_payload(3);
+        let payload_32 = crate::translate::loadbar::start_payload(4);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        let first = proof_packets(
+            translate_server_to_client(&client_reliable_m_frame(30, 74, &payload_30), &mut state)
+                .expect("frontier packet should translate"),
+        );
+        assert!(first[0].0.contains_family(VerifiedFamily::LoadBar));
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| (key.origin_generation, key.sequence)),
+            Some((0, 31))
+        );
+        let destination_sequence_before_future = state.sequence.latest_server_sequence_to_client;
+
+        let future = client_reliable_m_frame(32, 75, &payload_32);
+        assert!(matches!(
+            translate_server_to_client(&future, &mut state)
+                .expect("future packet should remain valid transport truth"),
+            Emit::Consumed
+        ));
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(
+            state.sequence.latest_server_sequence_to_client, destination_sequence_before_future,
+            "future input cannot mutate the EE-facing send position"
+        );
+        assert!(state.deflate.server_zlib_inflater.is_none());
+        assert!(state.server_reliable_slots.pending_dispatch_key.is_none());
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .slots
+                .iter()
+                .find(|slot| slot.key.sequence == 32)
+                .expect("future frame should be retained")
+                .packet,
+            future
+        );
+
+        let predecessor = client_reliable_m_frame(31, 76, &payload_31);
+        let predecessor_packets = proof_packets(
+            translate_server_to_client(&predecessor, &mut state)
+                .expect("missing predecessor should translate"),
+        );
+        assert!(
+            predecessor_packets[0]
+                .0
+                .contains_family(VerifiedFamily::LoadBar)
+        );
+        assert_eq!(state.semantic.area.loadbar_packets, 2);
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(state.semantic.area.loadbar_packets, 1);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| (key.origin_generation, key.sequence)),
+            Some((0, 31)),
+            "strict rejection must not skip the failed predecessor"
+        );
+
+        let predecessor_retry = client_reliable_m_frame(31, 77, &payload_31);
+        proof_packets(
+            translate_server_to_client(&predecessor_retry, &mut state)
+                .expect("exact predecessor retransmit should retry"),
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.loadbar_packets, 2);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| (key.origin_generation, key.sequence)),
+            Some((0, 32))
+        );
+
+        let future_retry = client_reliable_m_frame(32, 78, &payload_32);
+        let future_packets = proof_packets(
+            translate_server_to_client(&future_retry, &mut state)
+                .expect("retained future should dispatch after predecessor commit"),
+        );
+        assert!(future_packets[0].0.contains_family(VerifiedFamily::LoadBar));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.loadbar_packets, 3);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| (key.origin_generation, key.sequence)),
+            Some((0, 33))
+        );
+    }
+
+    #[test]
+    fn consumed_reassembly_frontier_waits_for_ack_carrier_effect_validation() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let (first, second) = two_frame_deflated_window(40, 74, &payload);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+        queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 17)
+            .expect("queue independently valid ACK output");
+
+        assert!(matches!(
+            translate_server_to_client(&first, &mut state)
+                .expect("first fragment should remain buffered"),
+            Emit::Consumed
+        ));
+        assert_eq!(
+            state.deflate.server_emit_effect_transaction_kind,
+            Some(state::ServerEmitEffectTransactionKind::OrdinaryServerEmit)
+        );
+        assert!(state.deflate.ordered_successor_effect_snapshot.is_some());
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .pending_dispatch_key
+                .map(|key| (key.origin_generation, key.sequence)),
+            Some((0, 40)),
+            "the source and its ACK-carrier effects share one validation boundary"
+        );
+        assert!(state.deflate.server_reassembly.is_some());
+
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| (key.origin_generation, key.sequence)),
+            Some((0, 40)),
+            "rejected carrier output cannot skip the rolled-back source fragment"
+        );
+        assert!(state.server_reliable_slots.pending_dispatch_key.is_none());
+        assert!(state.deflate.server_reassembly.is_none());
+        assert!(
+            state
+                .client_ack
+                .pending
+                .pending_consumed_ee_only_ack
+                .is_some()
+        );
+
+        assert!(matches!(
+            translate_server_to_client(&second, &mut state)
+                .expect("later fragment should remain raw behind the rejected frontier"),
+            Emit::Consumed
+        ));
+        assert!(state.deflate.server_reassembly.is_none());
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(40)
+        );
+
+        state.client_ack.pending.pending_consumed_ee_only_ack = None;
+        assert!(matches!(
+            translate_server_to_client(&first, &mut state)
+                .expect("exact first-fragment retry should rebuild reassembly"),
+            Emit::Consumed
+        ));
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(41)
+        );
+        assert!(state.deflate.server_reassembly.is_some());
+
+        let completed = proof_packets(
+            translate_server_to_client(&second, &mut state)
+                .expect("exact second-fragment retry should complete reassembly"),
+        );
+        assert!(
+            completed
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::LoadBar))
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| key.sequence),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn server_dispatch_frontier_advances_exact_generation_across_sequence_wrap() {
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        for (sequence, ack_sequence, area_id, expected_next) in [
+            (u16::MAX - 1, 74, 2, (0, u16::MAX)),
+            (u16::MAX, 75, 3, (1, 0)),
+            (0, 76, 4, (1, 1)),
+        ] {
+            let payload = crate::translate::loadbar::start_payload(area_id);
+            let packets = proof_packets(
+                translate_server_to_client(
+                    &client_reliable_m_frame(sequence, ack_sequence, &payload),
+                    &mut state,
+                )
+                .expect("wrapped frontier packet should translate"),
+            );
+            assert!(packets[0].0.contains_family(VerifiedFamily::LoadBar));
+            finish_server_to_client_emit_validation(&mut state, true);
+            assert_eq!(
+                state
+                    .server_reliable_slots
+                    .dispatch_next_key
+                    .map(|key| (key.origin_generation, key.sequence)),
+                Some(expected_next)
+            );
+        }
+        assert_eq!(state.semantic.area.loadbar_packets, 3);
     }
 
     #[test]

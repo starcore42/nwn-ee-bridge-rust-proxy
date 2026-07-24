@@ -18,15 +18,21 @@ use super::{sequence::record_forward_progress, transport_identity};
 /// 891083-891086 and 891172-891173.
 pub(super) const MAX_SERVER_RELIABLE_SLOTS: usize = 16;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ServerReliableSlotKey {
-    pub(super) sequence: u16,
     pub(super) origin_generation: u64,
+    pub(super) sequence: u16,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ServerReliableSlot {
     pub(super) key: ServerReliableSlotKey,
+    /// Latest exact datagram for this immutable reliable identity. ACK, CRC,
+    /// and FrameSend-owned bit 6 may refresh on retransmission, so the
+    /// canonical identity below remains the conflict authority. Retaining the
+    /// complete frame mirrors the original receive window and leaves a future
+    /// contiguous-drain path available without semantic predecode.
+    pub(super) packet: Vec<u8>,
     /// Exact bytes from flags onward with only the decompile-proven
     /// FrameSend-owned bit 6 canonicalized away. ACK and CRC are outside this
     /// identity; packetized metadata, low flags, payload, and trailing storage
@@ -48,6 +54,16 @@ pub(super) struct ServerReliableSlotState {
     /// transport truth, so it survives rollback of an older speculative
     /// server-to-client reader transaction.
     pub(super) latest_peer_ack_sequence: Option<u16>,
+    /// First reliable source identity not yet admitted to CNW/gameplay
+    /// dispatch. This is deliberately separate from `receive_start`: source
+    /// slots remain retained there until a strict-accepted EE ACK, while the
+    /// original receive window can dispatch later contiguous slots before that
+    /// downstream ACK arrives.
+    pub(super) dispatch_next_key: Option<ServerReliableSlotKey>,
+    /// Exact dispatch identity currently awaiting the proxy's outer strict
+    /// validator. Rejection leaves `dispatch_next_key` unchanged so only an
+    /// immutable retransmit can retry the same semantic position.
+    pub(super) pending_dispatch_key: Option<ServerReliableSlotKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +73,18 @@ pub(super) enum PreparedServerReliableSource {
     Matched(ServerReliableSlotKey),
     Conflict(ServerReliableSlotKey),
     OutsideWindow(ServerReliableSlotKey),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ServerReliableDispatchAdmission {
+    Excluded,
+    Ready(ServerReliableSlotKey),
+    Replay(ServerReliableSlotKey),
+    Pending(ServerReliableSlotKey),
+    Future {
+        key: ServerReliableSlotKey,
+        expected: ServerReliableSlotKey,
+    },
 }
 
 impl PreparedServerReliableSource {
@@ -109,15 +137,17 @@ pub(super) fn prepare_source_slot(
     if distance >= MAX_SERVER_RELIABLE_SLOTS {
         return Ok(PreparedServerReliableSource::OutsideWindow(key));
     }
-    if let Some(existing) = state.slots.iter().find(|slot| slot.key == key) {
+    if let Some(existing) = state.slots.iter_mut().find(|slot| slot.key == key) {
         if existing.transport_identity != transport_identity {
             return Ok(PreparedServerReliableSource::Conflict(key));
         }
+        existing.packet = packet.to_vec();
         return Ok(PreparedServerReliableSource::Matched(key));
     }
 
     state.slots.push_back(ServerReliableSlot {
         key,
+        packet: packet.to_vec(),
         transport_identity,
     });
     debug_assert!(state.slots.len() <= MAX_SERVER_RELIABLE_SLOTS);
@@ -129,6 +159,136 @@ pub(super) fn prepare_source_slot(
         "server reliable-data slot pinned inside the 16-frame receive window"
     );
     Ok(PreparedServerReliableSource::Pinned(key))
+}
+
+/// Admit one pinned type-0 source to semantic dispatch in reliable order.
+///
+/// Diamond `sub_5F3940` lines 751482-751549 store any free type-0 slot inside
+/// the 16-frame receive interval, then lines 751571-751673 dispatch only the
+/// occupied receive-frontier slot and loop across a contiguous occupied
+/// prefix. EE `CNetLayerWindow::FrameReceive` does the same at lines
+/// 878891-878952 and 879029-879088. Therefore a future in-window datagram is
+/// transport truth, but it cannot touch packetized reassembly, a persistent
+/// inflater, or gameplay state before every predecessor commits.
+pub(super) fn prepare_source_dispatch(
+    state: &mut ServerReliableSlotState,
+    prepared: PreparedServerReliableSource,
+) -> anyhow::Result<ServerReliableDispatchAdmission> {
+    let key = match prepared {
+        PreparedServerReliableSource::Excluded => {
+            return Ok(ServerReliableDispatchAdmission::Excluded);
+        }
+        PreparedServerReliableSource::Pinned(key) | PreparedServerReliableSource::Matched(key) => {
+            key
+        }
+        PreparedServerReliableSource::Conflict(key)
+        | PreparedServerReliableSource::OutsideWindow(key) => {
+            anyhow::bail!(
+                "server reliable source {} generation {} reached dispatch admission after transport rejection",
+                key.sequence,
+                key.origin_generation
+            );
+        }
+    };
+
+    let expected = *state.dispatch_next_key.get_or_insert(key);
+    if key > expected {
+        return Ok(ServerReliableDispatchAdmission::Future { key, expected });
+    }
+    if key < expected {
+        return Ok(ServerReliableDispatchAdmission::Replay(key));
+    }
+    if let Some(pending) = state.pending_dispatch_key {
+        if pending == key {
+            return Ok(ServerReliableDispatchAdmission::Pending(key));
+        }
+        anyhow::bail!(
+            "server reliable dispatch {} generation {} arrived while {} generation {} still awaits final validation",
+            key.sequence,
+            key.origin_generation,
+            pending.sequence,
+            pending.origin_generation
+        );
+    }
+    Ok(ServerReliableDispatchAdmission::Ready(key))
+}
+
+pub(super) fn stage_source_dispatch(
+    state: &mut ServerReliableSlotState,
+    key: ServerReliableSlotKey,
+) -> anyhow::Result<()> {
+    if state.dispatch_next_key != Some(key) {
+        anyhow::bail!(
+            "server reliable dispatch {} generation {} no longer matches frontier {:?}",
+            key.sequence,
+            key.origin_generation,
+            state.dispatch_next_key
+        );
+    }
+    if let Some(pending) = state.pending_dispatch_key {
+        anyhow::bail!(
+            "server reliable dispatch {} generation {} cannot stage while {} generation {} awaits final validation",
+            key.sequence,
+            key.origin_generation,
+            pending.sequence,
+            pending.origin_generation
+        );
+    }
+    state.pending_dispatch_key = Some(key);
+    Ok(())
+}
+
+/// Commit or reject the one semantic-dispatch identity staged above.
+pub(super) fn finish_source_dispatch(
+    state: &mut ServerReliableSlotState,
+    accepted: bool,
+) -> Option<ServerReliableSlotKey> {
+    let pending = state.pending_dispatch_key.take()?;
+    if !accepted {
+        tracing::trace!(
+            sequence = pending.sequence,
+            origin_generation = pending.origin_generation,
+            "server reliable semantic dispatch retained at the receive frontier after rejection"
+        );
+        return None;
+    }
+    if state.dispatch_next_key != Some(pending) {
+        tracing::warn!(
+            sequence = pending.sequence,
+            origin_generation = pending.origin_generation,
+            expected_sequence = state.dispatch_next_key.map(|key| key.sequence),
+            expected_origin_generation = state.dispatch_next_key.map(|key| key.origin_generation),
+            "server reliable semantic dispatch commit ignored because its frontier identity changed"
+        );
+        return None;
+    }
+
+    let next_origin_generation = if pending.sequence == u16::MAX {
+        let Some(next_generation) = pending.origin_generation.checked_add(1) else {
+            tracing::error!(
+                sequence = pending.sequence,
+                origin_generation = pending.origin_generation,
+                "server reliable semantic dispatch stopped at generation overflow"
+            );
+            return None;
+        };
+        next_generation
+    } else {
+        pending.origin_generation
+    };
+    let next = ServerReliableSlotKey {
+        sequence: pending.sequence.wrapping_add(1),
+        origin_generation: next_origin_generation,
+    };
+    state.dispatch_next_key = Some(next);
+    tracing::trace!(
+        sequence = pending.sequence,
+        origin_generation = pending.origin_generation,
+        next_sequence = next.sequence,
+        next_origin_generation = next.origin_generation,
+        "strict-accepted server reliable semantic dispatch advanced the contiguous receive frontier"
+    );
+    Some(pending)
 }
 
 /// Retire server source slots only after the EE client ACK carrying this
