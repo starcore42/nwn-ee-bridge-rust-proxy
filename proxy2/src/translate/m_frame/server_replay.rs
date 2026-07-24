@@ -38,6 +38,12 @@ pub(super) struct ServerReliableSlot {
     /// identity; packetized metadata, low flags, payload, and trailing storage
     /// remain immutable.
     pub(super) transport_identity: Vec<u8>,
+    /// The original receive loop stored this source behind a missing
+    /// predecessor. Once that predecessor commits, the network loop may
+    /// dispatch this exact raw datagram once without waiting for another UDP
+    /// retransmit. Any attempted dispatch clears the flag; strict rejection
+    /// therefore remains fail-closed until a real exact retransmit arrives.
+    pub(super) deferred_behind_gap: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -149,6 +155,7 @@ pub(super) fn prepare_source_slot(
         key,
         packet: packet.to_vec(),
         transport_identity,
+        deferred_behind_gap: false,
     });
     debug_assert!(state.slots.len() <= MAX_SERVER_RELIABLE_SLOTS);
     tracing::trace!(
@@ -193,6 +200,14 @@ pub(super) fn prepare_source_dispatch(
 
     let expected = *state.dispatch_next_key.get_or_insert(key);
     if key > expected {
+        let Some(slot) = state.slots.iter_mut().find(|slot| slot.key == key) else {
+            anyhow::bail!(
+                "future server reliable dispatch {} generation {} lost its retained raw slot",
+                key.sequence,
+                key.origin_generation
+            );
+        };
+        slot.deferred_behind_gap = true;
         return Ok(ServerReliableDispatchAdmission::Future { key, expected });
     }
     if key < expected {
@@ -234,8 +249,44 @@ pub(super) fn stage_source_dispatch(
             pending.origin_generation
         );
     }
+    let Some(slot) = state.slots.iter_mut().find(|slot| slot.key == key) else {
+        anyhow::bail!(
+            "server reliable dispatch {} generation {} lost its retained raw slot before staging",
+            key.sequence,
+            key.origin_generation
+        );
+    };
+    // A network retransmit can reach the frontier before the loop observes
+    // the deferred slot. Whichever path dispatches first owns the one attempt;
+    // rejection must wait for another exact retransmit rather than busy-loop.
+    slot.deferred_behind_gap = false;
     state.pending_dispatch_key = Some(key);
     Ok(())
+}
+
+/// Take one exact raw source that became contiguous after its predecessor
+/// committed.
+///
+/// Diamond `sub_5F3940` lines 751571-751673 and EE
+/// `CNetLayerWindow::FrameReceive` lines 879029-879088 immediately walk the
+/// occupied prefix after the receive-frontier slot is released. Proxy2 keeps
+/// final validation asynchronous, so the outer network loop takes at most one
+/// retained successor per pass and feeds it through the ordinary translator.
+/// Clearing the one-shot marker before that handoff prevents validator
+/// rejection from turning into an internal retry loop.
+pub(super) fn take_deferred_frontier_packet(
+    state: &mut ServerReliableSlotState,
+) -> Option<(ServerReliableSlotKey, Vec<u8>)> {
+    if state.pending_dispatch_key.is_some() {
+        return None;
+    }
+    let expected = state.dispatch_next_key?;
+    let slot = state
+        .slots
+        .iter_mut()
+        .find(|slot| slot.key == expected && slot.deferred_behind_gap)?;
+    slot.deferred_behind_gap = false;
+    Some((slot.key, slot.packet.clone()))
 }
 
 /// Commit or reject the one semantic-dispatch identity staged above.

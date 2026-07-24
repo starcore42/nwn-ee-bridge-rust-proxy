@@ -1177,6 +1177,25 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     Ok(emit)
 }
 
+/// Take one raw reliable source that was stored behind a receive gap and has
+/// become the exact semantic frontier after its predecessor committed.
+///
+/// The caller must feed this packet back through `translate_server_to_client`
+/// and the normal outer strict validator. It is deliberately not removed from
+/// the receive window here: only a strict-accepted EE ACK retires source
+/// storage, and a failed internal dispatch waits for a real exact retransmit.
+pub(super) fn take_deferred_server_dispatch_packet(state: &mut SessionState) -> Option<Vec<u8>> {
+    let (key, packet) =
+        server_replay::take_deferred_frontier_packet(&mut state.server_reliable_slots)?;
+    tracing::info!(
+        sequence = key.sequence,
+        origin_generation = key.origin_generation,
+        len = packet.len(),
+        "taking one retained contiguous server source for ordinary strict dispatch"
+    );
+    Some(packet)
+}
+
 fn begin_ordered_successor_effect_transaction(
     state: &mut SessionState,
     sequence: u16,
@@ -7240,6 +7259,7 @@ mod tests {
         let payload_30 = crate::translate::loadbar::start_payload(2);
         let payload_31 = crate::translate::loadbar::start_payload(3);
         let payload_32 = crate::translate::loadbar::start_payload(4);
+        let payload_33 = crate::translate::loadbar::start_payload(5);
         let mut state = SessionState::default();
         state.synthetic_area.synthesize_loadbar = false;
 
@@ -7282,8 +7302,14 @@ mod tests {
                 .packet,
             future
         );
+        let later_future = client_reliable_m_frame(33, 76, &payload_33);
+        assert!(matches!(
+            translate_server_to_client(&later_future, &mut state)
+                .expect("later future packet should also remain raw"),
+            Emit::Consumed
+        ));
 
-        let predecessor = client_reliable_m_frame(31, 76, &payload_31);
+        let predecessor = client_reliable_m_frame(31, 77, &payload_31);
         let predecessor_packets = proof_packets(
             translate_server_to_client(&predecessor, &mut state)
                 .expect("missing predecessor should translate"),
@@ -7304,8 +7330,12 @@ mod tests {
             Some((0, 31)),
             "strict rejection must not skip the failed predecessor"
         );
+        assert!(
+            take_deferred_server_dispatch_packet(&mut state).is_none(),
+            "a rejected frontier source must not busy-retry itself"
+        );
 
-        let predecessor_retry = client_reliable_m_frame(31, 77, &payload_31);
+        let predecessor_retry = client_reliable_m_frame(31, 78, &payload_31);
         proof_packets(
             translate_server_to_client(&predecessor_retry, &mut state)
                 .expect("exact predecessor retransmit should retry"),
@@ -7320,20 +7350,60 @@ mod tests {
             Some((0, 32))
         );
 
-        let future_retry = client_reliable_m_frame(32, 78, &payload_32);
+        let deferred = take_deferred_server_dispatch_packet(&mut state)
+            .expect("committed predecessor should release the first retained successor");
+        assert_eq!(
+            deferred, future,
+            "the drain must preserve the latest exact retained datagram"
+        );
         let future_packets = proof_packets(
-            translate_server_to_client(&future_retry, &mut state)
-                .expect("retained future should dispatch after predecessor commit"),
+            translate_server_to_client(&deferred, &mut state)
+                .expect("retained successor should use the ordinary dispatcher"),
         );
         assert!(future_packets[0].0.contains_family(VerifiedFamily::LoadBar));
-        finish_server_to_client_emit_validation(&mut state, true);
-        assert_eq!(state.semantic.area.loadbar_packets, 3);
+        assert!(
+            take_deferred_server_dispatch_packet(&mut state).is_none(),
+            "only one retained successor can await final validation"
+        );
+        finish_server_to_client_emit_validation(&mut state, false);
+        assert_eq!(state.semantic.area.loadbar_packets, 2);
         assert_eq!(
             state
                 .server_reliable_slots
                 .dispatch_next_key
                 .map(|key| (key.origin_generation, key.sequence)),
-            Some((0, 33))
+            Some((0, 32)),
+            "strict rejection must retain the drained source at the frontier"
+        );
+        assert!(
+            take_deferred_server_dispatch_packet(&mut state).is_none(),
+            "a rejected internal drain must wait for an exact network retransmit"
+        );
+
+        let future_retry = client_reliable_m_frame(32, 79, &payload_32);
+        proof_packets(
+            translate_server_to_client(&future_retry, &mut state)
+                .expect("exact retransmit should retry the rejected drained source"),
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.loadbar_packets, 3);
+
+        let later_deferred = take_deferred_server_dispatch_packet(&mut state)
+            .expect("committing sequence 32 should release sequence 33");
+        assert_eq!(later_deferred, later_future);
+        let later_packets = proof_packets(
+            translate_server_to_client(&later_deferred, &mut state)
+                .expect("second retained successor should dispatch on the next pass"),
+        );
+        assert!(later_packets[0].0.contains_family(VerifiedFamily::LoadBar));
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.semantic.area.loadbar_packets, 4);
+        assert_eq!(
+            state
+                .server_reliable_slots
+                .dispatch_next_key
+                .map(|key| (key.origin_generation, key.sequence)),
+            Some((0, 34))
         );
     }
 

@@ -260,85 +260,10 @@ fn drain_server_sockets(
                         .translate(Direction::ServerToClient, bytes);
                     send_pending_client_to_server_packets(session, server)?;
                     send_pending_server_to_client_packets(listen, session)?;
-                    match emit {
-                        Emit::Packet(outbound) => {
-                            let outbound = session
-                                .ee_crypto
-                                .encrypt_server_packet_if_needed(&outbound)
-                                .context("encrypting server packet for EE client")?;
-                            listen.send_to(&outbound, session.client).with_context(|| {
-                                format!("sending server datagram to client {}", session.client)
-                            })?;
-                        }
-                        Emit::PacketRetireSession { packet, reason } => {
-                            let outbound = session
-                                .ee_crypto
-                                .encrypt_server_packet_if_needed(&packet)
-                                .context("encrypting server retire packet for EE client")?;
-                            listen.send_to(&outbound, session.client).with_context(|| {
-                                format!(
-                                    "sending server retire datagram to client {}",
-                                    session.client
-                                )
-                            })?;
-                            retire_session_after_emit = Some(reason);
-                            break;
-                        }
-                        Emit::Packets(outbounds)
-                        | Emit::PacketsPreShifted(outbounds)
-                        | Emit::VerifiedPackets {
-                            packets: outbounds, ..
-                        }
-                        | Emit::VerifiedPacketsPreShifted {
-                            packets: outbounds, ..
-                        }
-                        | Emit::VerifiedProofPackets {
-                            packets: outbounds, ..
-                        }
-                        | Emit::VerifiedProofPacketsPreShifted {
-                            packets: outbounds, ..
-                        } => {
-                            for outbound in outbounds {
-                                let outbound = session
-                                    .ee_crypto
-                                    .encrypt_server_packet_if_needed(&outbound)
-                                    .context("encrypting server packet for EE client")?;
-                                listen.send_to(&outbound, session.client).with_context(|| {
-                                    format!("sending server datagram to client {}", session.client)
-                                })?;
-                            }
-                        }
-                        Emit::MixedVerifiedPackets(outbounds) => {
-                            for (_, outbound) in outbounds {
-                                let outbound = session
-                                    .ee_crypto
-                                    .encrypt_server_packet_if_needed(&outbound)
-                                    .context("encrypting server packet for EE client")?;
-                                listen.send_to(&outbound, session.client).with_context(|| {
-                                    format!("sending server datagram to client {}", session.client)
-                                })?;
-                            }
-                        }
-                        Emit::MixedVerifiedProofPackets(outbounds)
-                        | Emit::MixedVerifiedProofPacketsPreShifted(outbounds) => {
-                            for (_, outbound) in outbounds {
-                                let outbound = session
-                                    .ee_crypto
-                                    .encrypt_server_packet_if_needed(&outbound)
-                                    .context("encrypting server packet for EE client")?;
-                                listen.send_to(&outbound, session.client).with_context(|| {
-                                    format!("sending server datagram to client {}", session.client)
-                                })?;
-                            }
-                        }
-                        Emit::Consumed => {}
-                        Emit::ConsumedRetireSession { reason } => {
-                            retire_session_after_emit = Some(reason);
-                            break;
-                        }
-                        Emit::Drop => {
-                            tracing::warn!(%server, client = %session.client, "server datagram quarantined");
-                        }
+                    if let Some(reason) = send_server_emit_to_client(listen, session, server, emit)?
+                    {
+                        retire_session_after_emit = Some(reason);
+                        break;
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => break,
@@ -362,6 +287,87 @@ fn drain_server_sockets(
             sessions.remove(&client);
         }
     }
+    Ok(())
+}
+
+fn send_server_emit_to_client(
+    listen: &UdpSocket,
+    session: &mut Session,
+    server: SocketAddr,
+    emit: Emit,
+) -> Result<Option<&'static str>> {
+    match emit {
+        Emit::Packet(outbound) => {
+            send_server_plaintext_to_client(listen, session, &outbound, false)?;
+        }
+        Emit::PacketRetireSession { packet, reason } => {
+            send_server_plaintext_to_client(listen, session, &packet, true)?;
+            return Ok(Some(reason));
+        }
+        Emit::Packets(outbounds)
+        | Emit::PacketsPreShifted(outbounds)
+        | Emit::VerifiedPackets {
+            packets: outbounds, ..
+        }
+        | Emit::VerifiedPacketsPreShifted {
+            packets: outbounds, ..
+        }
+        | Emit::VerifiedProofPackets {
+            packets: outbounds, ..
+        }
+        | Emit::VerifiedProofPacketsPreShifted {
+            packets: outbounds, ..
+        } => {
+            for outbound in outbounds {
+                send_server_plaintext_to_client(listen, session, &outbound, false)?;
+            }
+        }
+        Emit::MixedVerifiedPackets(outbounds) => {
+            for (_, outbound) in outbounds {
+                send_server_plaintext_to_client(listen, session, &outbound, false)?;
+            }
+        }
+        Emit::MixedVerifiedProofPackets(outbounds)
+        | Emit::MixedVerifiedProofPacketsPreShifted(outbounds) => {
+            for (_, outbound) in outbounds {
+                send_server_plaintext_to_client(listen, session, &outbound, false)?;
+            }
+        }
+        Emit::Consumed => {}
+        Emit::ConsumedRetireSession { reason } => return Ok(Some(reason)),
+        Emit::Drop => {
+            tracing::warn!(%server, client = %session.client, "server datagram quarantined");
+        }
+    }
+    Ok(None)
+}
+
+fn send_server_plaintext_to_client(
+    listen: &UdpSocket,
+    session: &mut Session,
+    outbound: &[u8],
+    retire: bool,
+) -> Result<()> {
+    let outbound = session
+        .ee_crypto
+        .encrypt_server_packet_if_needed(outbound)
+        .with_context(|| {
+            if retire {
+                "encrypting server retire packet for EE client"
+            } else {
+                "encrypting server packet for EE client"
+            }
+        })?;
+    listen.send_to(&outbound, session.client).with_context(|| {
+        if retire {
+            format!(
+                "sending server retire datagram to client {}",
+                session.client
+            )
+        } else {
+            format!("sending server datagram to client {}", session.client)
+        }
+    })?;
     Ok(())
 }
 
@@ -407,9 +413,35 @@ fn drain_pending_proxy_packets_for_all_sessions(
     listen: &UdpSocket,
     sessions: &mut HashMap<SocketAddr, Session>,
 ) -> Result<()> {
-    for session in sessions.values_mut() {
+    let clients = sessions.keys().copied().collect::<Vec<_>>();
+    let mut retire = Vec::new();
+    for client in clients {
+        let Some(session) = sessions.get_mut(&client) else {
+            continue;
+        };
         send_pending_client_to_server_packets(session, config.server)?;
         send_pending_server_to_client_packets(listen, session)?;
+        let Some(emit) = session.translator.take_deferred_server_to_client_emit() else {
+            continue;
+        };
+
+        // Match the real server-datagram path: proxy-owned ACKs and synthetic
+        // packets created while translating this source are sent before its
+        // current output. The next retained successor waits for the following
+        // loop pass, after this output has reached the socket.
+        send_pending_client_to_server_packets(session, config.server)?;
+        send_pending_server_to_client_packets(listen, session)?;
+        if let Some(reason) = send_server_emit_to_client(listen, session, config.server, emit)? {
+            retire.push((client, reason));
+        }
+    }
+    for (client, reason) in retire {
+        tracing::info!(
+            %client,
+            reason,
+            "retiring proxy2 session after retained server dispatch control"
+        );
+        sessions.remove(&client);
     }
     Ok(())
 }
