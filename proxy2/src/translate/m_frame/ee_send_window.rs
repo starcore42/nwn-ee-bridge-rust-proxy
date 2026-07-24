@@ -331,6 +331,43 @@ pub(super) fn stage(
     Ok(())
 }
 
+/// Resolve one raw destination sequence through the exact batch currently
+/// staged for final validation.
+///
+/// New slots are already sorted into their contiguous generation-aware
+/// interval by `stage`; retained refreshes keep their previously assigned key.
+/// A bare sequence outside that exact owner remains unresolved. This is the
+/// binding authority for semantic `1 -> N` output-completion spans.
+pub(super) fn resolve_staged_key(
+    state: &EeServerSendWindowState,
+    owner: EeServerSendOwner,
+    sequence: u16,
+) -> Option<EeServerSendKey> {
+    let pending = state
+        .pending
+        .as_ref()
+        .filter(|pending| pending.owner == owner)?;
+    pending
+        .new_slots
+        .iter()
+        .find(|slot| slot.key.sequence == sequence)
+        .map(|slot| slot.key)
+        .or_else(|| {
+            pending
+                .refreshed_slots
+                .iter()
+                .find(|refresh| refresh.key.sequence == sequence)
+                .map(|refresh| refresh.key)
+        })
+        .or_else(|| {
+            state
+                .slots
+                .iter()
+                .find(|slot| slot.key.sequence == sequence)
+                .map(|slot| slot.key)
+        })
+}
+
 pub(super) fn finish(
     state: &mut EeServerSendWindowState,
     owner: EeServerSendOwner,
@@ -670,6 +707,55 @@ mod tests {
         assert_eq!(unresolvable.acknowledged, None);
         assert_eq!(unresolvable.destination_floor, wrapped.destination_floor);
         assert_eq!(unresolvable.retired_slots, 0);
+    }
+
+    #[test]
+    fn staged_key_resolver_exposes_exact_generation_before_commit() {
+        let now = Instant::now();
+        let mut state = EeServerSendWindowState::default();
+        stage(
+            &mut state,
+            EeServerSendOwner::DirectServer,
+            &Emit::Packets(vec![
+                reliable(u16::MAX, 7, b"pre-wrap"),
+                reliable(0, 7, b"wrapped"),
+            ]),
+            now,
+        )
+        .expect("stage wrapped destination interval");
+
+        assert_eq!(
+            resolve_staged_key(&state, EeServerSendOwner::DirectServer, u16::MAX),
+            Some(EeServerSendKey {
+                sequence: u16::MAX,
+                generation: 0,
+            })
+        );
+        assert_eq!(
+            resolve_staged_key(&state, EeServerSendOwner::DirectServer, 0),
+            Some(EeServerSendKey {
+                sequence: 0,
+                generation: 1,
+            })
+        );
+        assert_eq!(
+            resolve_staged_key(&state, EeServerSendOwner::PendingServerDrain, 0),
+            None,
+            "a foreign transaction cannot borrow staged generation identity"
+        );
+        assert_eq!(
+            resolve_staged_key(&state, EeServerSendOwner::DirectServer, 1),
+            None
+        );
+        assert_eq!(
+            finish(&mut state, EeServerSendOwner::DirectServer, false),
+            0
+        );
+        assert_eq!(
+            resolve_staged_key(&state, EeServerSendOwner::DirectServer, 0),
+            None,
+            "discarded staging cannot remain an exact-generation authority"
+        );
     }
 
     #[test]

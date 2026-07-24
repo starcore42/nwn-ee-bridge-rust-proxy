@@ -19,21 +19,50 @@
 //! nested object/string boundaries.
 
 use super::{
-    sequence::{SequenceShift, sequence_at_or_after, unshift_ack_for_origin},
+    sequence::{
+        OrderedServerSequenceEpochs, SequenceEpochKey, SequenceShift, sequence_at_or_after,
+        unshift_ack_for_origin,
+    },
     server_replay::ServerReliableSlotKey,
 };
 
 const MAX_SERVER_OUTPUT_ACK_SPANS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ServerOutputAckDestinationSpan {
+    /// The semantic producer has identified the final raw destination
+    /// sequences, but the complete output batch has not yet entered the
+    /// destination send window that assigns exact generations.
+    Pending { first: u16, last: u16 },
+    /// Exact destination coordinates assigned by the staged EE send window.
+    Exact {
+        first: SequenceEpochKey,
+        last: SequenceEpochKey,
+    },
+}
+
+impl ServerOutputAckDestinationSpan {
+    pub(super) fn sequences(self) -> (u16, u16) {
+        match self {
+            Self::Pending { first, last } => (first, last),
+            Self::Exact { first, last } => (first.sequence, last.sequence),
+        }
+    }
+
+    pub(super) fn exact(self) -> Option<(SequenceEpochKey, SequenceEpochKey)> {
+        match self {
+            Self::Pending { .. } => None,
+            Self::Exact { first, last } => Some((first, last)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ServerOutputAckSpan {
     pub(super) source: ServerReliableSlotKey,
-    /// First EE-facing reliable sequence produced from `source`.
-    pub(super) destination_first: u16,
-    /// Last EE-facing reliable sequence required to complete `source`.
-    ///
+    /// First and terminal EE-facing destinations produced from `source`.
     /// Intermediate sequence numbers may belong to proxy-owned insertions.
-    pub(super) destination_last: u16,
+    pub(super) destination: ServerOutputAckDestinationSpan,
 }
 
 pub(super) fn register_server_output_ack_span(
@@ -50,17 +79,16 @@ pub(super) fn register_server_output_ack_span(
     }
 
     if let Some(existing) = spans.iter().find(|span| span.source == source) {
-        if existing.destination_first == destination_first
-            && existing.destination_last == destination_last
-        {
+        if existing.destination.sequences() == (destination_first, destination_last) {
             return Ok(false);
         }
         anyhow::bail!("server reliable source already owns a different downstream ACK span");
     }
     if spans.iter().any(|span| {
+        let (existing_first, existing_last) = span.destination.sequences();
         forward_closed_ranges_intersect(
-            span.destination_first,
-            span.destination_last,
+            existing_first,
+            existing_last,
             destination_first,
             destination_last,
         )
@@ -76,8 +104,10 @@ pub(super) fn register_server_output_ack_span(
 
     spans.push(ServerOutputAckSpan {
         source,
-        destination_first,
-        destination_last,
+        destination: ServerOutputAckDestinationSpan::Pending {
+            first: destination_first,
+            last: destination_last,
+        },
     });
     tracing::info!(
         source_sequence = source.sequence,
@@ -88,6 +118,46 @@ pub(super) fn register_server_output_ack_span(
         "registered downstream ACK completion span for expanded server rewrite"
     );
     Ok(true)
+}
+
+/// Bind one producer-discovered completion range to the exact destination
+/// generations assigned by the staged EE send window.
+///
+/// The raw sequence pair remains part of the producer identity. Exact binding
+/// must therefore preserve both endpoints and the same forward distance,
+/// including a `0xFFFF -> 0x0000` wrap. Rebinding the same coordinates is
+/// idempotent; a different generation assignment is a transport conflict.
+pub(super) fn bind_server_output_ack_span_destination(
+    span: &mut ServerOutputAckSpan,
+    destination_first: SequenceEpochKey,
+    destination_last: SequenceEpochKey,
+) -> anyhow::Result<bool> {
+    let (expected_first, expected_last) = span.destination.sequences();
+    if destination_first.sequence != expected_first || destination_last.sequence != expected_last {
+        anyhow::bail!("exact server output ACK span changed its raw destination endpoints");
+    }
+    let distance = expected_last.wrapping_sub(expected_first);
+    if distance == 0 || distance >= 0x8000 {
+        anyhow::bail!("exact server output ACK span has an invalid forward width");
+    }
+    if destination_first.checked_advance(u64::from(distance))? != destination_last {
+        anyhow::bail!("exact server output ACK span generation disagrees with its forward width");
+    }
+
+    let exact = ServerOutputAckDestinationSpan::Exact {
+        first: destination_first,
+        last: destination_last,
+    };
+    match span.destination {
+        ServerOutputAckDestinationSpan::Pending { .. } => {
+            span.destination = exact;
+            Ok(true)
+        }
+        existing if existing == exact => Ok(false),
+        ServerOutputAckDestinationSpan::Exact { .. } => {
+            anyhow::bail!("server output ACK span was rebound to a different destination epoch")
+        }
+    }
 }
 
 /// Map an observed EE cumulative ACK into the Diamond server's source sequence
@@ -107,24 +177,66 @@ pub(super) fn map_client_ack_for_server(
     destination_ack: u16,
 ) -> u16 {
     for span in spans {
-        if sequence_in_forward_half_open(
-            destination_ack,
-            span.destination_first,
-            span.destination_last,
-        ) {
+        let (destination_first, destination_last) = span.destination.sequences();
+        if sequence_in_forward_half_open(destination_ack, destination_first, destination_last) {
             return span.source.sequence.wrapping_sub(1);
         }
     }
 
     if let Some(latest_completed) = spans
         .iter()
-        .filter(|span| sequence_at_or_after(destination_ack, span.destination_last))
-        .min_by_key(|span| destination_ack.wrapping_sub(span.destination_last))
+        .filter(|span| {
+            let (_, destination_last) = span.destination.sequences();
+            sequence_at_or_after(destination_ack, destination_last)
+        })
+        .min_by_key(|span| {
+            let (_, destination_last) = span.destination.sequences();
+            destination_ack.wrapping_sub(destination_last)
+        })
     {
         return latest_completed.source.sequence;
     }
 
     unshift_ack_for_origin(shifts, destination_ack)
+}
+
+/// Map an exact EE cumulative ACK into the exact Diamond source epoch.
+///
+/// Expanded sources add a completion boundary on top of ordinary insertion
+/// mapping: any ACK before the terminal rebuilt output stays at the source
+/// predecessor, while the terminal output completes exactly that source.
+/// Every active span must already have been bound by destination send-window
+/// staging; a pending bare sequence fails closed instead of borrowing a
+/// generation.
+pub(super) fn map_exact_client_ack_for_server(
+    epochs: &OrderedServerSequenceEpochs,
+    spans: &[ServerOutputAckSpan],
+    destination_ack: SequenceEpochKey,
+) -> anyhow::Result<SequenceEpochKey> {
+    let mut latest_completed = None::<(SequenceEpochKey, SequenceEpochKey)>;
+    for span in spans {
+        let (destination_first, destination_last) = span.destination.exact().ok_or_else(|| {
+            anyhow::anyhow!("server output ACK span has no exact destination generation")
+        })?;
+        let source_generation = i64::try_from(span.source.origin_generation)
+            .map_err(|_| anyhow::anyhow!("server output ACK source generation overflow"))?;
+        let source = SequenceEpochKey::new(span.source.sequence, source_generation);
+        if destination_ack >= destination_first && destination_ack < destination_last {
+            return source.checked_retreat(1);
+        }
+        if destination_last <= destination_ack
+            && latest_completed
+                .as_ref()
+                .is_none_or(|(latest_last, _)| destination_last > *latest_last)
+        {
+            latest_completed = Some((destination_last, source));
+        }
+    }
+
+    if let Some((_, source)) = latest_completed {
+        return Ok(source);
+    }
+    epochs.map_destination_ack(destination_ack)
 }
 
 pub(super) fn retire_server_output_ack_spans(
@@ -167,14 +279,28 @@ mod tests {
         }
     }
 
+    fn pending_span(
+        source: ServerReliableSlotKey,
+        destination_first: u16,
+        destination_last: u16,
+    ) -> ServerOutputAckSpan {
+        ServerOutputAckSpan {
+            source,
+            destination: ServerOutputAckDestinationSpan::Pending {
+                first: destination_first,
+                last: destination_last,
+            },
+        }
+    }
+
+    fn epoch(sequence: u16, generation: i64) -> SequenceEpochKey {
+        SequenceEpochKey::new(sequence, generation)
+    }
+
     #[test]
     fn partial_expanded_ack_stays_before_source_until_terminal_output() {
         let shifts = [SequenceShift { base: 62, delta: 1 }];
-        let spans = [ServerOutputAckSpan {
-            source: key(61, 4),
-            destination_first: 61,
-            destination_last: 62,
-        }];
+        let spans = [pending_span(key(61, 4), 61, 62)];
 
         assert_eq!(map_client_ack_for_server(&shifts, &spans, 60), 60);
         assert_eq!(map_client_ack_for_server(&shifts, &spans, 61), 60);
@@ -190,11 +316,7 @@ mod tests {
     #[test]
     fn wrapped_expanded_ack_waits_for_sequence_zero() {
         let shifts = [SequenceShift { base: 0, delta: 1 }];
-        let spans = [ServerOutputAckSpan {
-            source: key(u16::MAX, 9),
-            destination_first: u16::MAX,
-            destination_last: 0,
-        }];
+        let spans = [pending_span(key(u16::MAX, 9), u16::MAX, 0)];
 
         assert_eq!(
             map_client_ack_for_server(&shifts, &spans, u16::MAX),
@@ -205,11 +327,7 @@ mod tests {
 
     #[test]
     fn proxy_owned_sequences_between_outputs_do_not_complete_the_source() {
-        let spans = [ServerOutputAckSpan {
-            source: key(24, 0),
-            destination_first: 25,
-            destination_last: 29,
-        }];
+        let spans = [pending_span(key(24, 0), 25, 29)];
 
         for partial in 25..29 {
             assert_eq!(map_client_ack_for_server(&[], &spans, partial), 23);
@@ -242,11 +360,7 @@ mod tests {
         shifts.push(SequenceShift { base: 17, delta: 1 });
         super::super::sequence::trim_sequence_shifts(&mut shifts);
         assert_eq!(unshift_ack_for_origin(&shifts, 33), 17);
-        let spans = [ServerOutputAckSpan {
-            source: key(16, 0),
-            destination_first: 32,
-            destination_last: 33,
-        }];
+        let spans = [pending_span(key(16, 0), 32, 33)];
 
         assert_eq!(map_client_ack_for_server(&shifts, &spans, 32), 15);
         assert_eq!(map_client_ack_for_server(&shifts, &spans, 33), 16);
@@ -280,5 +394,67 @@ mod tests {
             register_server_output_ack_span(&mut spans, key(15, 1), u16::MAX - 1, 1).is_err(),
             "a wrapped range cannot partially contain an active wrapped owner"
         );
+    }
+
+    #[test]
+    fn exact_expanded_ack_mapping_preserves_both_destination_and_source_wraps() {
+        let mut spans = Vec::new();
+        register_server_output_ack_span(&mut spans, key(0, 9), u16::MAX, 0)
+            .expect("register wrapped expanded output");
+        assert!(
+            bind_server_output_ack_span_destination(
+                &mut spans[0],
+                epoch(u16::MAX, 3),
+                epoch(0, 4),
+            )
+            .expect("bind exact wrapped destination")
+        );
+        assert!(
+            !bind_server_output_ack_span_destination(
+                &mut spans[0],
+                epoch(u16::MAX, 3),
+                epoch(0, 4),
+            )
+            .expect("exact binding replay")
+        );
+
+        let epochs = OrderedServerSequenceEpochs::identity();
+        assert_eq!(
+            map_exact_client_ack_for_server(&epochs, &spans, epoch(u16::MAX, 3))
+                .expect("partial exact ACK"),
+            epoch(u16::MAX, 8),
+            "the first rebuilt output must stay before wrapped source zero"
+        );
+        assert_eq!(
+            map_exact_client_ack_for_server(&epochs, &spans, epoch(0, 4))
+                .expect("terminal exact ACK"),
+            epoch(0, 9)
+        );
+        assert_eq!(
+            map_exact_client_ack_for_server(&epochs, &spans, epoch(1, 4)).expect("later exact ACK"),
+            epoch(0, 9),
+            "an active completed owner conservatively caps later ACK progress"
+        );
+    }
+
+    #[test]
+    fn exact_span_binding_rejects_a_borrowed_destination_generation() {
+        let mut spans = Vec::new();
+        register_server_output_ack_span(&mut spans, key(u16::MAX, 2), u16::MAX, 0)
+            .expect("register wrapped output");
+
+        assert!(
+            bind_server_output_ack_span_destination(
+                &mut spans[0],
+                epoch(u16::MAX, 7),
+                epoch(0, 7),
+            )
+            .is_err(),
+            "a wrapped raw endpoint must advance the exact generation"
+        );
+        assert!(matches!(
+            spans[0].destination,
+            ServerOutputAckDestinationSpan::Pending { .. }
+        ));
     }
 }

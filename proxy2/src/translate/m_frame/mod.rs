@@ -239,24 +239,101 @@ pub(super) fn stage_direct_server_send_window(
     state: &mut SessionState,
     emit: &Emit,
 ) -> anyhow::Result<()> {
-    ee_send_window::stage(
-        &mut state.ee_server_send_window,
-        ee_send_window::EeServerSendOwner::DirectServer,
-        emit,
-        Instant::now(),
-    )
+    stage_server_send_window(state, ee_send_window::EeServerSendOwner::DirectServer, emit)
 }
 
 pub(super) fn stage_pending_server_send_window(
     state: &mut SessionState,
     emit: &Emit,
 ) -> anyhow::Result<()> {
-    ee_send_window::stage(
-        &mut state.ee_server_send_window,
+    stage_server_send_window(
+        state,
         ee_send_window::EeServerSendOwner::PendingServerDrain,
         emit,
-        Instant::now(),
     )
+}
+
+fn stage_server_send_window(
+    state: &mut SessionState,
+    owner: ee_send_window::EeServerSendOwner,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    ee_send_window::stage(
+        &mut state.ee_server_send_window,
+        owner,
+        emit,
+        Instant::now(),
+    )?;
+
+    // Expanded-output ownership is discovered while semantic writers still
+    // know which rebuilt frame completes one Diamond source. An exact EE
+    // destination coordinate exists only after at least one endpoint enters a
+    // staged send-window interval; the other follows by the producer-proven
+    // forward width and must match when a hold gate releases it later. Bind
+    // atomically at that boundary. A conflict discards the staged window and
+    // leaves semantic state available for ordinary strict-rejection rollback.
+    let mut spans = state.sequence.server_output_ack_spans.clone();
+    let binding = (|| {
+        let mut bound = 0usize;
+        for span in &mut spans {
+            let (first_sequence, last_sequence) = span.destination.sequences();
+            let first = ee_send_window::resolve_staged_key(
+                &state.ee_server_send_window,
+                owner,
+                first_sequence,
+            );
+            let last = ee_send_window::resolve_staged_key(
+                &state.ee_server_send_window,
+                owner,
+                last_sequence,
+            );
+            if first.is_none() && last.is_none() {
+                continue;
+            }
+            let distance = u64::from(last_sequence.wrapping_sub(first_sequence));
+            let first = match first {
+                Some(first) => server_destination_epoch(first)?,
+                None => server_destination_epoch(
+                    last.expect("one staged expanded-output endpoint remains"),
+                )?
+                .checked_retreat(distance)?,
+            };
+            let last = match last {
+                Some(last) => server_destination_epoch(last)?,
+                None => first.checked_advance(distance)?,
+            };
+            bound = bound.saturating_add(usize::from(
+                output_reliability::bind_server_output_ack_span_destination(span, first, last)?,
+            ));
+        }
+        Ok::<usize, anyhow::Error>(bound)
+    })();
+    match binding {
+        Ok(bound) => {
+            state.sequence.server_output_ack_spans = spans;
+            if bound != 0 {
+                tracing::info!(
+                    owner = owner.as_str(),
+                    bound,
+                    active_spans = state.sequence.server_output_ack_spans.len(),
+                    "bound expanded server output ACK spans to exact EE destination generations"
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let _ = ee_send_window::finish(&mut state.ee_server_send_window, owner, false);
+            Err(err)
+        }
+    }
+}
+
+fn server_destination_epoch(
+    key: ee_send_window::EeServerSendKey,
+) -> anyhow::Result<SequenceEpochKey> {
+    let generation = i64::try_from(key.generation)
+        .map_err(|_| anyhow::anyhow!("expanded-output destination generation overflow"))?;
+    Ok(SequenceEpochKey::new(key.sequence, generation))
 }
 
 pub(super) fn take_due_ee_server_retransmit(
@@ -3407,16 +3484,11 @@ fn audit_ordered_server_ack_mapping(
     destination_ack_sequence: u16,
     legacy_source_ack_sequence: u16,
 ) {
-    // Expanded-output spans impose a stricter "terminal output completes the
-    // source" rule on top of generic insertions. Keep those spans out of this
-    // pure insertion parity check until they also carry exact destination
-    // generations.
-    if !state.sequence.server_output_ack_spans.is_empty()
-        || state
-            .sequence
-            .ordered_server_sequence_epochs
-            .checkpoint()
-            .is_none()
+    if state
+        .sequence
+        .ordered_server_sequence_epochs
+        .checkpoint()
+        .is_none()
     {
         return;
     }
@@ -3439,11 +3511,11 @@ fn audit_ordered_server_ack_mapping(
         return;
     };
     let destination = SequenceEpochKey::new(destination_ack_sequence, destination_generation);
-    match state
-        .sequence
-        .ordered_server_sequence_epochs
-        .map_destination_ack(destination)
-    {
+    match output_reliability::map_exact_client_ack_for_server(
+        &state.sequence.ordered_server_sequence_epochs,
+        &state.sequence.server_output_ack_spans,
+        destination,
+    ) {
         Ok(source) if source.sequence != legacy_source_ack_sequence => tracing::warn!(
             destination_ack_sequence,
             destination_generation,
@@ -3451,6 +3523,7 @@ fn audit_ordered_server_ack_mapping(
             ordered_source_ack_sequence = source.sequence,
             ordered_source_generation = source.generation,
             legacy_shifts = state.sequence.server_sequence_shifts.len(),
+            exact_output_spans = state.sequence.server_output_ack_spans.len(),
             active_ordered_insertions = state
                 .sequence
                 .ordered_server_sequence_epochs
@@ -3462,12 +3535,14 @@ fn audit_ordered_server_ack_mapping(
             destination_generation,
             source_ack_sequence = source.sequence,
             source_generation = source.generation,
+            exact_output_spans = state.sequence.server_output_ack_spans.len(),
             "shadow ordered server ACK transform matched legacy output"
         ),
         Err(err) => tracing::warn!(
             error = %err,
             destination_ack_sequence,
             destination_generation,
+            output_spans = state.sequence.server_output_ack_spans.len(),
             "shadow ordered server ACK transform stayed fail-closed"
         ),
     }
@@ -8180,6 +8255,115 @@ mod tests {
             state.sequence.latest_raw_ee_server_ack,
             Some(wrapped_key),
             "a stale bare sequence cannot borrow the prior destination generation"
+        );
+    }
+
+    #[test]
+    fn staged_expanded_output_span_binds_exact_destination_wrap() {
+        let mut state = SessionState::default();
+        output_reliability::register_server_output_ack_span(
+            &mut state.sequence.server_output_ack_spans,
+            server_replay::ServerReliableSlotKey {
+                sequence: 0,
+                origin_generation: 9,
+            },
+            u16::MAX,
+            0,
+        )
+        .expect("register pending wrapped expanded output");
+        let outputs = Emit::Packets(vec![
+            reliable_server_m_frame(u16::MAX, 7, 0x08, 1, b"pre-wrap"),
+            reliable_server_m_frame(0, 7, 0x08, 1, b"terminal"),
+        ]);
+
+        stage_direct_server_send_window(&mut state, &outputs)
+            .expect("stage and bind wrapped expanded output");
+
+        assert_eq!(
+            state.sequence.server_output_ack_spans[0].destination,
+            output_reliability::ServerOutputAckDestinationSpan::Exact {
+                first: SequenceEpochKey::new(u16::MAX, 0),
+                last: SequenceEpochKey::new(0, 1),
+            }
+        );
+        assert_eq!(
+            output_reliability::map_exact_client_ack_for_server(
+                &sequence::OrderedServerSequenceEpochs::identity(),
+                &state.sequence.server_output_ack_spans,
+                SequenceEpochKey::new(u16::MAX, 0),
+            )
+            .expect("map partial exact ACK"),
+            SequenceEpochKey::new(u16::MAX, 8)
+        );
+        assert_eq!(
+            output_reliability::map_exact_client_ack_for_server(
+                &sequence::OrderedServerSequenceEpochs::identity(),
+                &state.sequence.server_output_ack_spans,
+                SequenceEpochKey::new(0, 1),
+            )
+            .expect("map terminal exact ACK"),
+            SequenceEpochKey::new(0, 9)
+        );
+        assert_eq!(
+            ee_send_window::finish(
+                &mut state.ee_server_send_window,
+                ee_send_window::EeServerSendOwner::DirectServer,
+                false,
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn split_delivery_span_binds_from_first_endpoint_and_verifies_terminal_later() {
+        let mut state = SessionState::default();
+        output_reliability::register_server_output_ack_span(
+            &mut state.sequence.server_output_ack_spans,
+            server_replay::ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 4,
+            },
+            61,
+            62,
+        )
+        .expect("register split-delivery completion range");
+
+        let first = Emit::Packet(reliable_server_m_frame(61, 7, 0x08, 1, b"released-now"));
+        stage_direct_server_send_window(&mut state, &first)
+            .expect("first staged endpoint establishes the exact pair");
+        assert_eq!(
+            state.sequence.server_output_ack_spans[0].destination,
+            output_reliability::ServerOutputAckDestinationSpan::Exact {
+                first: SequenceEpochKey::new(61, 0),
+                last: SequenceEpochKey::new(62, 0),
+            }
+        );
+        assert_eq!(
+            ee_send_window::finish(
+                &mut state.ee_server_send_window,
+                ee_send_window::EeServerSendOwner::DirectServer,
+                true,
+            ),
+            1
+        );
+
+        let terminal = Emit::Packet(reliable_server_m_frame(62, 7, 0x08, 1, b"released-later"));
+        stage_direct_server_send_window(&mut state, &terminal)
+            .expect("later terminal endpoint verifies the same exact pair");
+        assert_eq!(
+            state.sequence.server_output_ack_spans[0].destination,
+            output_reliability::ServerOutputAckDestinationSpan::Exact {
+                first: SequenceEpochKey::new(61, 0),
+                last: SequenceEpochKey::new(62, 0),
+            }
+        );
+        assert_eq!(
+            ee_send_window::finish(
+                &mut state.ee_server_send_window,
+                ee_send_window::EeServerSendOwner::DirectServer,
+                false,
+            ),
+            0
         );
     }
 

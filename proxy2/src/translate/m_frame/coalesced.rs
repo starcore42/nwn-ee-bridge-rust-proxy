@@ -2652,8 +2652,10 @@ mod tests {
                     sequence: 61,
                     origin_generation: 0,
                 },
-                destination_first: 61,
-                destination_last: 62,
+                destination: output_reliability::ServerOutputAckDestinationSpan::Pending {
+                    first: 61,
+                    last: 62,
+                },
             }
         );
         assert_eq!(packets[0].0, VerifiedProof::family(VerifiedFamily::Chat));
@@ -2731,8 +2733,10 @@ mod tests {
                     sequence: 61,
                     origin_generation: 0,
                 },
-                destination_first: 61,
-                destination_last: 65,
+                destination: output_reliability::ServerOutputAckDestinationSpan::Pending {
+                    first: 61,
+                    last: 65,
+                },
             }]
         );
     }

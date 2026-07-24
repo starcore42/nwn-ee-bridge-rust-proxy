@@ -212,9 +212,10 @@ pub(super) struct SequenceState {
     pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
     /// Exact `1 -> N` server rewrites that keep EE-derived partial ACKs before
     /// the source until EE cumulatively ACKs the final rebuilt reliable frame.
-    /// Proxy-local progress ACKs never retire these owners; retransmitting the
-    /// retained EE-facing outputs remains the next downstream-send-window
-    /// implementation slice.
+    /// Semantic discovery records raw output endpoints. Staging either endpoint
+    /// binds the exact contiguous destination epoch pair; a later hold-gate
+    /// release must verify the same pair. Proxy-local progress ACKs never retire
+    /// these owners.
     pub(super) server_output_ack_spans: Vec<ServerOutputAckSpan>,
     pub(super) pending_client_to_server_packets: Vec<PendingClientPacket>,
 }
