@@ -97,21 +97,69 @@ impl SequenceEpochKey {
     }
 }
 
-/// Stable identity for one proxy-owned server-lane insertion.
+/// Stable semantic identity for one proxy-owned server-lane insertion.
 ///
-/// `operation` is caller-owned and distinguishes independent insertions
-/// derived from the same exact reliable source. Replaying the same owner with
-/// the same shape is idempotent; reusing it with a different shape is a
-/// transport conflict.
+/// Variant order is also the deterministic order for equal source bases:
+/// before-current resources, current-window expansion, then after-current
+/// compatibility outputs. The fields identify the original producer event,
+/// not its output shape, so replaying one identity with a different base or
+/// count remains a hard conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ServerSequenceInsertionProducer {
+    DeferredModuleResources {
+        original_first_sequence: u16,
+        original_after_sequence: u16,
+    },
+    CoalescedSplit {
+        source_sequence: u16,
+        source_origin_generation: u64,
+    },
+    DeflatedRewrite {
+        first_sequence: u16,
+        original_frames: u16,
+    },
+    DeflatedProgressShellRetarget {
+        first_sequence: u16,
+        expected_frames: u16,
+    },
+    SyntheticAreaLoad {
+        original_first_sequence: u16,
+        original_last_sequence: u16,
+    },
+    InventoryEquipment {
+        update_index: u64,
+        trigger_sequence: u16,
+    },
+    ConfirmedInventoryReplay {
+        update_index: u64,
+        response_last_sequence: u16,
+    },
+    #[cfg(test)]
+    Test { operation: u64 },
+}
+
+/// Transaction-local producer claim recorded at the same boundary as the
+/// still-authoritative legacy shift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ServerSequenceInsertionIntent {
+    producer: ServerSequenceInsertionProducer,
+    source_base: u16,
+    count: u16,
+}
+
+/// Stable identity for one proxy-owned server-lane insertion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ServerSequenceInsertionOwner {
     pub(super) source: SequenceEpochKey,
-    pub(super) operation: u64,
+    pub(super) producer: ServerSequenceInsertionProducer,
 }
 
 impl ServerSequenceInsertionOwner {
-    pub(super) const fn new(source: SequenceEpochKey, operation: u64) -> Self {
-        Self { source, operation }
+    pub(super) const fn new(
+        source: SequenceEpochKey,
+        producer: ServerSequenceInsertionProducer,
+    ) -> Self {
+        Self { source, producer }
     }
 }
 
@@ -128,17 +176,17 @@ pub(super) struct ServerSequenceInsertionRange {
 struct PlannedServerSequenceInsertion {
     source_base: SequenceEpochKey,
     count: u16,
-    discovery_order: u64,
+    producer: ServerSequenceInsertionProducer,
 }
 
 /// Complete insertion delta discovered by one speculative server transaction.
 ///
-/// Existing producers still append bare `SequenceShift` records at the point
-/// where their semantic branch is discovered. That discovery order is not a
-/// transport order: a coalesced transaction can discover an inventory suffix
-/// before a deferred-resource prefix. This plan captures the whole append
-/// delta, restores exact generations relative to the reliable source owner,
-/// and sorts by source position before touching the ordered epoch ledger.
+/// Producers record typed intents beside the bare `SequenceShift` still used
+/// for legacy byte output. Semantic discovery order is not transport order: a
+/// coalesced transaction can discover an inventory suffix before a
+/// deferred-resource prefix. This plan restores exact generations relative to
+/// the reliable source owner and sorts by source position plus typed placement
+/// before touching the ordered epoch ledger.
 ///
 /// It is intentionally a shadow migration boundary for now. The legacy
 /// transform remains byte-authoritative until sequence and ACK parity have
@@ -150,55 +198,58 @@ pub(super) struct ServerSequenceInsertionPlan {
 }
 
 impl ServerSequenceInsertionPlan {
-    const LEGACY_SHADOW_OPERATION_TAG: u64 = 0x4C53_0000_0000_0000;
-
-    /// Recover only the shifts appended by the current transaction.
-    ///
-    /// `trim_sequence_shifts` may remove a prefix after appending, so compare
-    /// the retained baseline suffix with the current prefix. A nonempty
-    /// baseline with no retained overlap is ambiguous and fails closed.
-    pub(super) fn from_legacy_append_delta(
+    pub(super) fn from_typed_intents(
         owner_source: SequenceEpochKey,
-        baseline: &[SequenceShift],
-        current: &[SequenceShift],
+        intents: &[ServerSequenceInsertionIntent],
     ) -> anyhow::Result<Option<Self>> {
-        let maximum_overlap = baseline.len().min(current.len());
-        let overlap = (0..=maximum_overlap)
-            .rev()
-            .find(|overlap| {
-                baseline[baseline.len().saturating_sub(*overlap)..] == current[..*overlap]
-            })
-            .unwrap_or(0);
-        if !baseline.is_empty() && overlap == 0 {
-            anyhow::bail!(
-                "legacy server sequence shift history lost every transaction baseline entry"
-            );
-        }
-
-        let appended = &current[overlap..];
-        if appended.is_empty() {
+        if intents.is_empty() {
             return Ok(None);
         }
-        let mut insertions = appended
+        let mut insertions = intents
             .iter()
-            .enumerate()
-            .map(|(index, shift)| {
-                if shift.delta == 0 {
-                    anyhow::bail!("legacy server sequence shift appended a zero-width insertion");
+            .map(|intent| {
+                if intent.count == 0 {
+                    anyhow::bail!("typed server sequence insertion has zero width");
                 }
                 Ok(PlannedServerSequenceInsertion {
-                    source_base: owner_source.nearby(shift.base)?,
-                    count: shift.delta,
-                    discovery_order: u64::try_from(index)
-                        .map_err(|_| anyhow::anyhow!("insertion plan index overflow"))?,
+                    source_base: owner_source.nearby(intent.source_base)?,
+                    count: intent.count,
+                    producer: intent.producer,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        insertions.sort_by_key(|insertion| (insertion.source_base, insertion.discovery_order));
+        insertions.sort_by_key(|insertion| (insertion.source_base, insertion.producer));
         Ok(Some(Self {
             owner_source,
             insertions,
         }))
+    }
+
+    /// Prove every typed producer claim has one identical legacy append while
+    /// that list remains byte-authoritative. Prefix trimming is tolerated only
+    /// when a retained baseline suffix still identifies the append boundary.
+    pub(super) fn validate_legacy_append_delta(
+        &self,
+        baseline: &[SequenceShift],
+        current: &[SequenceShift],
+    ) -> anyhow::Result<()> {
+        let mut appended = legacy_append_delta(baseline, current)?
+            .iter()
+            .map(|shift| Ok((self.owner_source.nearby(shift.base)?, shift.delta)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut typed = self
+            .insertions
+            .iter()
+            .map(|insertion| (insertion.source_base, insertion.count))
+            .collect::<Vec<_>>();
+        appended.sort_by_key(|(source, count)| (*source, *count));
+        typed.sort_by_key(|(source, count)| (*source, *count));
+        if appended != typed {
+            anyhow::bail!(
+                "typed server insertion intents do not exactly cover the legacy append delta"
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn insertion_count(&self) -> usize {
@@ -211,17 +262,29 @@ impl ServerSequenceInsertionPlan {
     ) -> anyhow::Result<OrderedServerSequenceEpochs> {
         let mut candidate = epochs.clone();
         for insertion in &self.insertions {
-            let operation = Self::LEGACY_SHADOW_OPERATION_TAG
-                .checked_add(insertion.discovery_order)
-                .ok_or_else(|| anyhow::anyhow!("insertion plan operation identity overflow"))?;
             candidate.insert_before(
-                ServerSequenceInsertionOwner::new(self.owner_source, operation),
+                ServerSequenceInsertionOwner::new(self.owner_source, insertion.producer),
                 insertion.source_base,
                 insertion.count,
             )?;
         }
         Ok(candidate)
     }
+}
+
+fn legacy_append_delta<'a>(
+    baseline: &[SequenceShift],
+    current: &'a [SequenceShift],
+) -> anyhow::Result<&'a [SequenceShift]> {
+    let maximum_overlap = baseline.len().min(current.len());
+    let overlap = (0..=maximum_overlap)
+        .rev()
+        .find(|overlap| baseline[baseline.len().saturating_sub(*overlap)..] == current[..*overlap])
+        .unwrap_or(0);
+    if !baseline.is_empty() && overlap == 0 {
+        anyhow::bail!("legacy server sequence shift history lost every transaction baseline entry");
+    }
+    Ok(&current[overlap..])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,6 +581,44 @@ pub(super) fn shift_sequence_for_peer(shifts: &[SequenceShift], original_sequenc
     original_sequence.wrapping_add(delta)
 }
 
+/// Record one producer-owned insertion in both coordinate systems.
+///
+/// The legacy list remains authoritative for emitted bytes during migration;
+/// the typed intent is transaction-local and becomes the stable ordered-ledger
+/// owner only after the same outer strict validation succeeds.
+pub(super) fn record_server_sequence_insertion(
+    shifts: &mut Vec<SequenceShift>,
+    intents: &mut Vec<ServerSequenceInsertionIntent>,
+    producer: ServerSequenceInsertionProducer,
+    source_base: u16,
+    count: u16,
+) -> anyhow::Result<()> {
+    if count == 0 {
+        anyhow::bail!("server sequence insertion must own at least one destination sequence");
+    }
+    if let Some(existing) = intents.iter().find(|intent| intent.producer == producer) {
+        if existing.source_base == source_base && existing.count == count {
+            return Ok(());
+        }
+        anyhow::bail!("typed server sequence producer replayed with a conflicting shape");
+    }
+    if intents.len() >= OrderedServerSequenceEpochs::MAX_ACTIVE_INSERTIONS {
+        anyhow::bail!("server transaction exceeded typed insertion intent capacity");
+    }
+
+    shifts.push(SequenceShift {
+        base: source_base,
+        delta: count,
+    });
+    trim_sequence_shifts(shifts);
+    intents.push(ServerSequenceInsertionIntent {
+        producer,
+        source_base,
+        count,
+    });
+    Ok(())
+}
+
 pub(super) fn shift_sequence_for_peer_with_elisions(
     shifts: &[SequenceShift],
     elisions: &[SequenceElision],
@@ -611,24 +712,59 @@ mod tests {
         generation: i64,
         operation: u64,
     ) -> ServerSequenceInsertionOwner {
-        ServerSequenceInsertionOwner::new(epoch(sequence, generation), operation)
+        ServerSequenceInsertionOwner::new(
+            epoch(sequence, generation),
+            ServerSequenceInsertionProducer::Test { operation },
+        )
+    }
+
+    fn insertion_intent(
+        producer: ServerSequenceInsertionProducer,
+        source_base: u16,
+        count: u16,
+    ) -> ServerSequenceInsertionIntent {
+        ServerSequenceInsertionIntent {
+            producer,
+            source_base,
+            count,
+        }
     }
 
     #[test]
-    fn transaction_plan_orders_suffix_discovered_before_prefix() {
+    fn typed_transaction_plan_orders_mixed_suffix_before_prefix() {
         let owner = epoch(40, 3);
         let baseline = [SequenceShift { base: 12, delta: 2 }];
         // Semantic discovery order is deliberately opposite reliable-source
-        // placement: a suffix at 42 is found before a prefix at 40.
+        // placement: an inventory suffix at 42 is found before a deferred
+        // resource prefix at 40.
         let current = [
             SequenceShift { base: 12, delta: 2 },
             SequenceShift { base: 42, delta: 1 },
             SequenceShift { base: 40, delta: 3 },
         ];
-        let plan =
-            ServerSequenceInsertionPlan::from_legacy_append_delta(owner, &baseline, &current)
-                .expect("complete transaction plan")
-                .expect("two insertions");
+        let intents = [
+            insertion_intent(
+                ServerSequenceInsertionProducer::InventoryEquipment {
+                    update_index: 9,
+                    trigger_sequence: 41,
+                },
+                42,
+                1,
+            ),
+            insertion_intent(
+                ServerSequenceInsertionProducer::DeferredModuleResources {
+                    original_first_sequence: 40,
+                    original_after_sequence: 40,
+                },
+                40,
+                3,
+            ),
+        ];
+        let plan = ServerSequenceInsertionPlan::from_typed_intents(owner, &intents)
+            .expect("complete transaction plan")
+            .expect("two insertions");
+        plan.validate_legacy_append_delta(&baseline, &current)
+            .expect("typed producers cover legacy append");
         assert_eq!(plan.insertion_count(), 2);
 
         let epochs = plan
@@ -658,10 +794,16 @@ mod tests {
         current.push(SequenceShift { base: 17, delta: 1 });
         trim_sequence_shifts(&mut current);
 
-        let plan =
-            ServerSequenceInsertionPlan::from_legacy_append_delta(owner, &baseline, &current)
-                .expect("trim-aware transaction plan")
-                .expect("seventeenth insertion");
+        let intents = [insertion_intent(
+            ServerSequenceInsertionProducer::Test { operation: 17 },
+            17,
+            1,
+        )];
+        let plan = ServerSequenceInsertionPlan::from_typed_intents(owner, &intents)
+            .expect("trim-aware transaction plan")
+            .expect("seventeenth insertion");
+        plan.validate_legacy_append_delta(&baseline, &current)
+            .expect("typed producer survives legacy prefix trim");
         assert_eq!(plan.insertion_count(), 1);
         let mut epochs = OrderedServerSequenceEpochs::identity();
         for base in 1..=16u16 {
@@ -683,22 +825,23 @@ mod tests {
     #[test]
     fn transaction_plan_is_atomic_when_an_entry_conflicts() {
         let owner = epoch(10, 0);
-        let plan = ServerSequenceInsertionPlan::from_legacy_append_delta(
-            owner,
-            &[],
-            &[
-                SequenceShift { base: 10, delta: 1 },
-                SequenceShift { base: 9, delta: 1 },
-            ],
-        )
-        .expect("sortable transaction plan")
-        .expect("insertions");
+        let intents = [
+            insertion_intent(
+                ServerSequenceInsertionProducer::Test { operation: 1 },
+                10,
+                1,
+            ),
+            insertion_intent(ServerSequenceInsertionProducer::Test { operation: 2 }, 9, 1),
+        ];
+        let plan = ServerSequenceInsertionPlan::from_typed_intents(owner, &intents)
+            .expect("sortable transaction plan")
+            .expect("insertions");
         let mut epochs = OrderedServerSequenceEpochs::identity_at(owner);
         epochs
             .insert_before(
                 ServerSequenceInsertionOwner::new(
                     owner,
-                    ServerSequenceInsertionPlan::LEGACY_SHADOW_OPERATION_TAG,
+                    ServerSequenceInsertionProducer::Test { operation: 1 },
                 ),
                 epoch(10, 0),
                 2,
@@ -954,7 +1097,14 @@ mod tests {
         let baseline = overflow.clone();
         assert!(
             overflow
-                .insert_before(ServerSequenceInsertionOwner::new(maximum, 1), maximum, 1,)
+                .insert_before(
+                    ServerSequenceInsertionOwner::new(
+                        maximum,
+                        ServerSequenceInsertionProducer::Test { operation: 1 },
+                    ),
+                    maximum,
+                    1,
+                )
                 .is_err()
         );
         assert_eq!(overflow, baseline);

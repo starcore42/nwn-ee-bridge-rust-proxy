@@ -62,11 +62,13 @@ use reassembly::{
     CompletedServerReliableStreamRoute, CompletedServerReliableStreamSlotMatch,
     InflatedGameplayPayload, ServerDeflatedReassembly,
 };
+#[cfg(test)]
+use sequence::SequenceShift;
 use sequence::{
-    SequenceElision, SequenceEpochKey, SequenceShift, ServerSequenceInsertionPlan,
-    record_forward_progress, sequence_at_or_after, shift_sequence_for_peer,
-    shift_sequence_for_peer_with_elisions, trim_sequence_elisions, trim_sequence_shifts,
-    unshift_ack_for_origin_with_elisions,
+    SequenceElision, SequenceEpochKey, ServerSequenceInsertionPlan,
+    ServerSequenceInsertionProducer, record_forward_progress, record_server_sequence_insertion,
+    sequence_at_or_after, shift_sequence_for_peer, shift_sequence_for_peer_with_elisions,
+    trim_sequence_elisions, unshift_ack_for_origin_with_elisions,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -465,7 +467,7 @@ fn pending_server_source_epoch(state: &SessionState) -> anyhow::Result<SequenceE
     Ok(SequenceEpochKey::new(key.sequence, generation))
 }
 
-/// Reconstruct the complete current transaction's insertion delta without
+/// Resolve the complete current transaction's typed insertion claims without
 /// trusting semantic discovery order.
 ///
 /// This is the shadow migration boundary for the legacy server shift list.
@@ -480,15 +482,21 @@ fn prospective_ordered_server_sequence_epochs(
     };
     let baseline = &snapshot.sequence.server_sequence_shifts;
     let current = &state.sequence.server_sequence_shifts;
-    if baseline == current {
+    let intents = &state.sequence.pending_server_sequence_insertions;
+    if baseline == current && intents.is_empty() {
         return Ok(None);
     }
     let owner = pending_server_source_epoch(state)?;
-    let Some(plan) =
-        ServerSequenceInsertionPlan::from_legacy_append_delta(owner, baseline, current)?
-    else {
-        return Ok(None);
+    let Some(plan) = ServerSequenceInsertionPlan::from_typed_intents(owner, intents)? else {
+        anyhow::bail!("legacy server insertion changed without a typed producer intent");
     };
+    plan.validate_legacy_append_delta(baseline, current)?;
+    if baseline == current {
+        anyhow::bail!("typed server insertion intent has no matching legacy append");
+    }
+    if plan.insertion_count() == 0 {
+        return Ok(None);
+    }
     if state
         .sequence
         .ordered_server_sequence_epochs
@@ -506,7 +514,9 @@ fn prospective_ordered_server_sequence_epochs(
 }
 
 fn commit_ordered_server_sequence_shadow_if_ready(state: &mut SessionState) {
-    match prospective_ordered_server_sequence_epochs(state) {
+    let result = prospective_ordered_server_sequence_epochs(state);
+    state.sequence.pending_server_sequence_insertions.clear();
+    match result {
         Ok(None) => {}
         Ok(Some((candidate, inserted))) => {
             state.sequence.ordered_server_sequence_epochs = candidate;
@@ -1365,6 +1375,7 @@ fn begin_ordered_successor_effect_transaction(
     }
     if state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
+        || !state.sequence.pending_server_sequence_insertions.is_empty()
     {
         anyhow::bail!(
             "ordered successor effect transaction already active for sequence {}",
@@ -1417,6 +1428,7 @@ fn promote_or_begin_ordered_successor_effect_transaction(
 fn begin_ordinary_server_emit_effect_transaction(state: &mut SessionState) -> anyhow::Result<()> {
     if state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
+        || !state.sequence.pending_server_sequence_insertions.is_empty()
     {
         anyhow::bail!(
             "server emit effect transaction already active before ordinary coalesced dispatch"
@@ -1450,6 +1462,7 @@ pub(super) fn begin_client_to_server_emit_validation(
         || state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
         || state.deflate.ordered_successor_pending_validation.is_some()
+        || !state.sequence.pending_server_sequence_insertions.is_empty()
     {
         anyhow::bail!("M emit validation authority already active before client translation");
     }
@@ -1492,6 +1505,7 @@ fn begin_pending_client_drain_effect_transaction(state: &mut SessionState) -> an
         || state.deflate.ordered_successor_effect_snapshot.is_some()
         || state.deflate.server_emit_effect_transaction_kind.is_some()
         || state.deflate.ordered_successor_pending_validation.is_some()
+        || !state.sequence.pending_server_sequence_insertions.is_empty()
     {
         anyhow::bail!("M emit validation authority already active before pending client drain");
     }
@@ -1572,6 +1586,7 @@ fn ensure_pending_server_drain_can_start(state: &SessionState) -> anyhow::Result
         || state.client_emit_pending_validation.is_some()
         || state.pending_client_drain_effect_snapshot.is_some()
         || state.ack_delivery.pending.is_some()
+        || !state.sequence.pending_server_sequence_insertions.is_empty()
     {
         anyhow::bail!(
             "server emit validation authority already active before pending synthetic drain"
@@ -1805,8 +1820,9 @@ fn commit_server_emit_effect_transaction(
         return false;
     }
     // The snapshot still contains the complete pre-transaction legacy shift
-    // history here. Reconstruct and atomically commit the generation-aware
-    // shadow plan before discarding that comparison authority.
+    // history here. Validate the transaction-local typed producer claims
+    // against that byte-authoritative delta, then atomically commit the exact
+    // generation-aware shadow plan before discarding the comparison authority.
     commit_ordered_server_sequence_shadow_if_ready(state);
     state.deflate.server_emit_effect_transaction_kind = None;
     let Some(_snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
@@ -3579,7 +3595,7 @@ fn queue_area_client_area_side_effects_for_window(
     synthetic_area::queue_loadbar_and_area_loaded_fallback(
         &mut state.synthetic_area.pending_server_to_client_packets,
         &mut state.synthetic_area.pending_area_loaded,
-        &mut state.sequence.server_sequence_shifts,
+        &mut state.sequence,
         original_first_sequence,
         original_last_sequence,
         ack_sequence,
@@ -4839,6 +4855,10 @@ mod tests {
         let committed_cache_windows = state.deflate.completed_server_stream_windows.len();
         let committed_destination_slots = state.ee_server_send_window.slots.len();
         assert_eq!(committed_shifts.len(), 1);
+        assert!(
+            state.sequence.pending_server_sequence_insertions.is_empty(),
+            "committed deflated producer intent must not leak into the next transaction"
+        );
         assert_eq!(
             committed_epoch_insertions, 1,
             "strict acceptance must atomically shadow the complete transaction insertion"
@@ -7004,6 +7024,10 @@ mod tests {
             "voyage"
         );
         assert!(!state.sequence.server_sequence_shifts.is_empty());
+        assert!(
+            !state.sequence.pending_server_sequence_insertions.is_empty(),
+            "area side effects must stage typed insertion ownership before validation"
+        );
         assert!(state.synthetic_area.pending_area_loaded.is_some());
         assert!(state.synthetic_area.server_hold_gate.is_some());
         assert_eq!(state.direct_server_semantic_replays.completed.len(), 1);
@@ -7042,6 +7066,10 @@ mod tests {
                 .is_empty()
         );
         assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert!(
+            state.sequence.pending_server_sequence_insertions.is_empty(),
+            "strict rejection must restore transaction-local typed insertion claims"
+        );
         assert_eq!(
             state
                 .sequence
@@ -7081,12 +7109,16 @@ mod tests {
         );
         assert!(!state.sequence.server_sequence_shifts.is_empty());
         assert!(
+            state.sequence.pending_server_sequence_insertions.is_empty(),
+            "strict acceptance must drain typed claims into the ordered ledger"
+        );
+        assert!(
             state
                 .sequence
                 .ordered_server_sequence_epochs
                 .active_insertions()
                 > 0,
-            "strict-accepted retry must commit the reconstructed insertion plan"
+            "strict-accepted retry must commit the typed insertion plan"
         );
         assert!(state.synthetic_area.pending_area_loaded.is_some());
         assert!(state.synthetic_area.server_hold_gate.is_some());
@@ -12057,11 +12089,18 @@ fn record_extra_deflated_output_sequence_shift(
     let base = reassembly
         .first_sequence
         .wrapping_add(original_count as u16);
-    state.sequence.server_sequence_shifts.push(SequenceShift {
+    let original_frames = u16::try_from(original_count)
+        .map_err(|_| anyhow::anyhow!("deflated source frame count exceeds typed identity width"))?;
+    record_server_sequence_insertion(
+        &mut state.sequence.server_sequence_shifts,
+        &mut state.sequence.pending_server_sequence_insertions,
+        ServerSequenceInsertionProducer::DeflatedRewrite {
+            first_sequence: reassembly.first_sequence,
+            original_frames,
+        },
         base,
-        delta: inserted_extra_packets as u16,
-    });
-    trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
+        inserted_extra_packets as u16,
+    )?;
     tracing::info!(
         first_sequence = reassembly.first_sequence,
         original_frames = original_count,
@@ -12117,11 +12156,19 @@ fn retarget_completed_reassembly_packets_after_progress_shells(
     let future_shift_base = replacement_base.wrapping_add(1);
     let inserted_extra_packets = packets.len().saturating_sub(1);
     if inserted_extra_packets != 0 {
-        state.sequence.server_sequence_shifts.push(SequenceShift {
-            base: future_shift_base,
-            delta: inserted_extra_packets as u16,
-        });
-        trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
+        let expected_frames = u16::try_from(reassembly.expected_frames).map_err(|_| {
+            anyhow::anyhow!("deflated expected frame count exceeds typed identity width")
+        })?;
+        record_server_sequence_insertion(
+            &mut state.sequence.server_sequence_shifts,
+            &mut state.sequence.pending_server_sequence_insertions,
+            ServerSequenceInsertionProducer::DeflatedProgressShellRetarget {
+                first_sequence: reassembly.first_sequence,
+                expected_frames,
+            },
+            future_shift_base,
+            inserted_extra_packets as u16,
+        )?;
     }
     tracing::info!(
         first_sequence = reassembly.first_sequence,
@@ -12511,7 +12558,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             deferred_module_resources::queue_after_module_info_if_ready(
                 &mut state.deferred_module_resources.pending,
                 &mut state.synthetic_area.pending_server_to_client_packets,
-                &mut state.sequence.server_sequence_shifts,
+                &mut state.sequence,
                 first_frame.sequence,
                 last_frame.sequence,
                 last_frame.ack_sequence,

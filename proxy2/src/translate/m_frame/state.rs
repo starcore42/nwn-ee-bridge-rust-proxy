@@ -202,9 +202,14 @@ pub(super) struct SequenceState {
     pub(super) server_sequence_epoch_source_floor: Option<server_replay::ServerReliableSlotKey>,
     pub(super) server_sequence_epoch_destination_floor: Option<ee_send_window::EeServerSendKey>,
     pub(super) latest_raw_ee_server_ack: Option<ee_send_window::EeServerSendKey>,
+    /// Typed insertion claims created by the currently speculative server
+    /// transaction. They are restored with the effect snapshot on rejection
+    /// and drained into the ordered ledger only after final strict acceptance.
+    pub(super) pending_server_sequence_insertions:
+        Vec<super::sequence::ServerSequenceInsertionIntent>,
     /// Generation-aware coordinate transform shadowing the legacy bare-`u16`
-    /// shift list. A complete strict-accepted server transaction reconstructs
-    /// all of its appended producer shifts, orders them by exact source epoch,
+    /// shift list. A complete strict-accepted server transaction resolves its
+    /// typed producer claims into exact source epochs, orders them by placement,
     /// and commits them here atomically. The legacy transform remains
     /// byte-authoritative until replay/live parity proves both sequence and ACK
     /// directions, so this ledger can fail closed without changing gameplay.

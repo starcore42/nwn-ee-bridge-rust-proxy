@@ -18,7 +18,8 @@ use crate::translate::{
 use super::{
     output_reliability,
     sequence::{
-        SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
+        SequenceShift, ServerSequenceInsertionProducer, record_server_sequence_insertion,
+        sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
     },
     state::{
         InventoryEquipmentBridgeClientGuiStatusResponse, InventoryEquipmentBridgeOutputDecision,
@@ -203,11 +204,16 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
 
     let future_shift_base = trigger_sequence.wrapping_add(1);
-    state.sequence.server_sequence_shifts.push(SequenceShift {
-        base: future_shift_base,
-        delta: INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
-    });
-    trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
+    record_server_sequence_insertion(
+        &mut state.sequence.server_sequence_shifts,
+        &mut state.sequence.pending_server_sequence_insertions,
+        ServerSequenceInsertionProducer::InventoryEquipment {
+            update_index: update.update_index,
+            trigger_sequence,
+        },
+        future_shift_base,
+        INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
+    )?;
     state
         .synthetic_area
         .pending_server_to_client_packets
@@ -630,11 +636,16 @@ pub(super) fn maybe_queue_confirmed_inventory_replay(
         synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
 
     let future_shift_base = response_last_sequence.wrapping_add(1);
-    state.sequence.server_sequence_shifts.push(SequenceShift {
-        base: future_shift_base,
-        delta: INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
-    });
-    trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
+    record_server_sequence_insertion(
+        &mut state.sequence.server_sequence_shifts,
+        &mut state.sequence.pending_server_sequence_insertions,
+        ServerSequenceInsertionProducer::ConfirmedInventoryReplay {
+            update_index: pending.update_index,
+            response_last_sequence,
+        },
+        future_shift_base,
+        INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
+    )?;
     state
         .synthetic_area
         .pending_server_to_client_packets

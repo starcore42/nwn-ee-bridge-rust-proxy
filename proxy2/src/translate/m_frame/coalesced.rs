@@ -28,8 +28,9 @@ use super::{
         ServerDeflatedReassembly,
     },
     sequence::{
-        CoalescedSplitSequenceShift, SequenceShift, sequence_at_or_after, shift_sequence_for_peer,
-        trim_coalesced_split_sequence_shifts, trim_sequence_shifts,
+        CoalescedSplitSequenceShift, SequenceShift, ServerSequenceInsertionProducer,
+        record_server_sequence_insertion, sequence_at_or_after, shift_sequence_for_peer,
+        trim_coalesced_split_sequence_shifts,
     },
     server_dispatch,
     server_replay::ServerReliableSlotKey,
@@ -568,10 +569,16 @@ fn split_rewritten_coalesced_records(
         return Ok((packets, true));
     }
 
-    state
-        .sequence
-        .server_sequence_shifts
-        .push(SequenceShift { base, delta });
+    record_server_sequence_insertion(
+        &mut state.sequence.server_sequence_shifts,
+        &mut state.sequence.pending_server_sequence_insertions,
+        ServerSequenceInsertionProducer::CoalescedSplit {
+            source_sequence: source.sequence,
+            source_origin_generation: source.origin_generation,
+        },
+        base,
+        delta,
+    )?;
     state
         .sequence
         .coalesced_split_sequence_shifts
@@ -581,7 +588,6 @@ fn split_rewritten_coalesced_records(
             base,
             delta,
         });
-    trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
     trim_coalesced_split_sequence_shifts(&mut state.sequence.coalesced_split_sequence_shifts);
     tracing::info!(
         source_sequence = base_sequence,
@@ -1680,7 +1686,7 @@ fn queue_module_resources_after_coalesced_module_info_if_ready(
     deferred_module_resources::queue_after_module_info_if_ready(
         &mut state.deferred_module_resources.pending,
         &mut state.synthetic_area.pending_server_to_client_packets,
-        &mut state.sequence.server_sequence_shifts,
+        &mut state.sequence,
         record_sequence,
         record_sequence,
         record_ack_sequence,

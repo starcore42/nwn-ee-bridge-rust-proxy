@@ -28,8 +28,10 @@ use crate::{
 use super::{
     parse_window,
     sequence::{
-        SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
+        ServerSequenceInsertionProducer, record_server_sequence_insertion, sequence_at_or_after,
+        shift_sequence_for_peer,
     },
+    state::SequenceState,
     synthetic_area::{self, PendingServerPacket, PendingServerPacketPlacement},
 };
 
@@ -172,7 +174,7 @@ pub(super) fn capture_early_status_payload_if_needed(
 pub(super) fn queue_after_module_info_if_ready(
     state: &mut DeferredModuleResourcesState,
     pending_packets: &mut Vec<PendingServerPacket>,
-    server_sequence_shifts: &mut Vec<SequenceShift>,
+    sequence: &mut SequenceState,
     original_first_sequence: u16,
     original_after_sequence: u16,
     ack_sequence: u16,
@@ -204,7 +206,7 @@ pub(super) fn queue_after_module_info_if_ready(
         queue_verified_module_resources_packet(
             state,
             pending_packets,
-            server_sequence_shifts,
+            sequence,
             original_first_sequence,
             original_after_sequence,
             ack_sequence,
@@ -233,7 +235,7 @@ pub(super) fn queue_after_module_info_if_ready(
     queue_verified_module_resources_packet(
         state,
         pending_packets,
-        server_sequence_shifts,
+        sequence,
         original_first_sequence,
         original_after_sequence,
         ack_sequence,
@@ -247,7 +249,7 @@ pub(super) fn queue_after_module_info_if_ready(
 fn queue_verified_module_resources_packet(
     state: &mut DeferredModuleResourcesState,
     pending_packets: &mut Vec<PendingServerPacket>,
-    server_sequence_shifts: &mut Vec<SequenceShift>,
+    sequence: &mut SequenceState,
     original_first_sequence: u16,
     original_after_sequence: u16,
     ack_sequence: u16,
@@ -257,17 +259,22 @@ fn queue_verified_module_resources_packet(
     reason: &'static str,
 ) -> anyhow::Result<()> {
     let synthetic_sequence =
-        shift_sequence_for_peer(server_sequence_shifts, original_first_sequence);
+        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_first_sequence);
     let packet =
         synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
 
-    server_sequence_shifts.push(SequenceShift {
-        base: original_first_sequence,
-        delta: MODULE_RESOURCES_INSERTED_FRAME_COUNT,
-    });
-    trim_sequence_shifts(server_sequence_shifts);
+    record_server_sequence_insertion(
+        &mut sequence.server_sequence_shifts,
+        &mut sequence.pending_server_sequence_insertions,
+        ServerSequenceInsertionProducer::DeferredModuleResources {
+            original_first_sequence,
+            original_after_sequence,
+        },
+        original_first_sequence,
+        MODULE_RESOURCES_INSERTED_FRAME_COUNT,
+    )?;
     let shifted_after_sequence =
-        shift_sequence_for_peer(server_sequence_shifts, original_after_sequence);
+        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_after_sequence);
 
     let now = Instant::now();
 
@@ -549,12 +556,12 @@ mod tests {
             held_server_to_client_packets: Vec::new(),
         };
         let mut pending_packets = Vec::new();
-        let mut shifts = Vec::new();
+        let mut sequence = SequenceState::default();
 
         queue_after_module_info_if_ready(
             &mut state,
             &mut pending_packets,
-            &mut shifts,
+            &mut sequence,
             13,
             20,
             7,
@@ -563,9 +570,10 @@ mod tests {
         .expect("deferred resource packet should queue");
 
         assert!(state.pending_status.is_none());
-        assert_eq!(shifts.len(), 1);
-        assert_eq!(shifts[0].base, 13);
-        assert_eq!(shifts[0].delta, 1);
+        assert_eq!(sequence.server_sequence_shifts.len(), 1);
+        assert_eq!(sequence.server_sequence_shifts[0].base, 13);
+        assert_eq!(sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(sequence.pending_server_sequence_insertions.len(), 1);
         assert_eq!(pending_packets.len(), 1);
         assert_eq!(
             pending_packets[0].family,
@@ -612,12 +620,12 @@ mod tests {
             held_server_to_client_packets: Vec::new(),
         };
         let mut pending_packets = Vec::new();
-        let mut shifts = Vec::new();
+        let mut sequence = SequenceState::default();
 
         queue_after_module_info_if_ready(
             &mut state,
             &mut pending_packets,
-            &mut shifts,
+            &mut sequence,
             13,
             20,
             7,
@@ -648,12 +656,12 @@ mod tests {
         ));
         let mut state = DeferredModuleResourcesState::default();
         let mut pending_packets = Vec::new();
-        let mut shifts = Vec::new();
+        let mut sequence = SequenceState::default();
 
         queue_after_module_info_if_ready(
             &mut state,
             &mut pending_packets,
-            &mut shifts,
+            &mut sequence,
             5,
             12,
             4,
@@ -685,7 +693,7 @@ mod tests {
         queue_after_module_info_if_ready(
             &mut state,
             &mut pending_packets,
-            &mut shifts,
+            &mut sequence,
             5,
             12,
             4,
@@ -701,12 +709,12 @@ mod tests {
         assert!(runtime.observe_legacy_module_info_resources(&[], None));
         let mut state = DeferredModuleResourcesState::default();
         let mut pending_packets = Vec::new();
-        let mut shifts = Vec::new();
+        let mut sequence = SequenceState::default();
 
         queue_after_module_info_if_ready(
             &mut state,
             &mut pending_packets,
-            &mut shifts,
+            &mut sequence,
             5,
             12,
             4,
@@ -724,9 +732,10 @@ mod tests {
             pending_packets[0].placement,
             PendingServerPacketPlacement::BeforeCurrentEmit
         );
-        assert_eq!(shifts.len(), 1);
-        assert_eq!(shifts[0].base, 5);
-        assert_eq!(shifts[0].delta, 1);
+        assert_eq!(sequence.server_sequence_shifts.len(), 1);
+        assert_eq!(sequence.server_sequence_shifts[0].base, 5);
+        assert_eq!(sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(sequence.pending_server_sequence_insertions.len(), 1);
         assert_eq!(
             state
                 .hold_gate

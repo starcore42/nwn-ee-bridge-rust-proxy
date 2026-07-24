@@ -24,9 +24,10 @@ use crate::{
 };
 
 use super::sequence::{
-    SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
+    SequenceShift, ServerSequenceInsertionProducer, record_server_sequence_insertion,
+    sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
 };
-use super::state::PendingClientPacket;
+use super::state::{PendingClientPacket, SequenceState};
 
 const AREA_MAJOR: u8 = 0x04;
 const AREA_LOADED_MINOR: u8 = 0x03;
@@ -533,7 +534,7 @@ pub(super) fn maybe_queue_area_loaded_retransmit(
 pub(super) fn queue_loadbar_and_area_loaded_fallback(
     pending_packets: &mut Vec<PendingServerPacket>,
     pending_area_loaded: &mut Option<PendingAreaLoaded>,
-    server_sequence_shifts: &mut Vec<SequenceShift>,
+    sequence: &mut SequenceState,
     original_first_sequence: u16,
     original_last_sequence: u16,
     ack_sequence: u16,
@@ -541,9 +542,9 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
     synthesize_loadbar: bool,
 ) -> anyhow::Result<()> {
     let shifted_first_sequence =
-        shift_sequence_for_peer(server_sequence_shifts, original_first_sequence);
+        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_first_sequence);
     let shifted_last_sequence =
-        shift_sequence_for_peer(server_sequence_shifts, original_last_sequence);
+        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_last_sequence);
     let now = Instant::now();
     let (
         release_client_ack_sequence,
@@ -594,11 +595,16 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
 
         let end_due_at = now + LOADBAR_COMPLETION_FALLBACK_DELAY;
         let area_loaded_due_at = end_due_at + AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE;
-        server_sequence_shifts.push(SequenceShift {
-            base: original_last_sequence.wrapping_add(1),
-            delta: LOADBAR_WITH_STATUS_FRAME_COUNT,
-        });
-        trim_sequence_shifts(server_sequence_shifts);
+        record_server_sequence_insertion(
+            &mut sequence.server_sequence_shifts,
+            &mut sequence.pending_server_sequence_insertions,
+            ServerSequenceInsertionProducer::SyntheticAreaLoad {
+                original_first_sequence,
+                original_last_sequence,
+            },
+            original_last_sequence.wrapping_add(1),
+            LOADBAR_WITH_STATUS_FRAME_COUNT,
+        )?;
         pending_packets.push(PendingServerPacket {
             family: VerifiedFamily::LoadBar,
             packet: start_packet,
@@ -688,7 +694,7 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
             AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE.as_millis(),
         fallback_after_area_ack_grace_ms = AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE.as_millis(),
         pending_server_packets = pending_packets.len(),
-        shifts = server_sequence_shifts.len(),
+        shifts = sequence.server_sequence_shifts.len(),
         synthetic_loadbar = synthesize_loadbar,
         synthetic_area_loaded_enabled = area_loaded_fallback_reason.is_some(),
         area_loaded_fallback_reason =
@@ -1069,12 +1075,12 @@ mod tests {
     fn named_area_rewrite_arms_area_loaded_fallback_without_env_switch() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut server_sequence_shifts = Vec::new();
+        let mut sequence = SequenceState::default();
 
         queue_loadbar_and_area_loaded_fallback(
             &mut pending_packets,
             &mut pending_area_loaded,
-            &mut server_sequence_shifts,
+            &mut sequence,
             22,
             22,
             74,
@@ -1094,13 +1100,13 @@ mod tests {
     fn synthetic_loadbar_uses_area_screen_fade_stall_id_and_status_status() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut server_sequence_shifts = Vec::new();
+        let mut sequence = SequenceState::default();
         let queued_at = Instant::now();
 
         queue_loadbar_and_area_loaded_fallback(
             &mut pending_packets,
             &mut pending_area_loaded,
-            &mut server_sequence_shifts,
+            &mut sequence,
             22,
             22,
             74,
@@ -1116,12 +1122,13 @@ mod tests {
             pending_packets[2].family,
             VerifiedFamily::ServerStatusStatus
         );
-        assert_eq!(server_sequence_shifts.len(), 1);
-        assert_eq!(server_sequence_shifts[0].base, 23);
+        assert_eq!(sequence.server_sequence_shifts.len(), 1);
+        assert_eq!(sequence.server_sequence_shifts[0].base, 23);
         assert_eq!(
-            server_sequence_shifts[0].delta,
+            sequence.server_sequence_shifts[0].delta,
             LOADBAR_WITH_STATUS_FRAME_COUNT
         );
+        assert_eq!(sequence.pending_server_sequence_insertions.len(), 1);
         assert_eq!(
             pending_packets[0].placement,
             PendingServerPacketPlacement::AfterCurrentEmit
@@ -1185,12 +1192,15 @@ mod tests {
     fn synthetic_loadbar_does_not_split_multiframe_area_window() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut server_sequence_shifts = vec![SequenceShift { base: 16, delta: 1 }];
+        let mut sequence = SequenceState::default();
+        sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 16, delta: 1 });
 
         queue_loadbar_and_area_loaded_fallback(
             &mut pending_packets,
             &mut pending_area_loaded,
-            &mut server_sequence_shifts,
+            &mut sequence,
             22,
             26,
             74,
@@ -1203,7 +1213,7 @@ mod tests {
         let end = MFrameView::parse(&pending_packets[1].packet).expect("end frame");
         let status = MFrameView::parse(&pending_packets[2].packet).expect("status frame");
         let shifted_area_window = (22..=26)
-            .map(|sequence| shift_sequence_for_peer(&server_sequence_shifts, sequence))
+            .map(|source| shift_sequence_for_peer(&sequence.server_sequence_shifts, source))
             .collect::<Vec<_>>();
 
         assert_eq!(start.sequence, 28);
@@ -1222,12 +1232,12 @@ mod tests {
     fn synthetic_loadbar_area_loaded_fallback_does_not_require_loadbar_completion_ack() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut server_sequence_shifts = Vec::new();
+        let mut sequence = SequenceState::default();
 
         queue_loadbar_and_area_loaded_fallback(
             &mut pending_packets,
             &mut pending_area_loaded,
-            &mut server_sequence_shifts,
+            &mut sequence,
             22,
             22,
             74,
