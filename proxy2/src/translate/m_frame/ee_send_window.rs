@@ -95,6 +95,12 @@ pub(super) struct EeServerSendSlot {
     pub(super) retransmits: u32,
 }
 
+#[derive(Debug, Clone)]
+struct RetiredEeServerSendSlot {
+    key: EeServerSendKey,
+    transport_identity: Vec<u8>,
+}
+
 #[derive(Debug)]
 struct PendingEeServerRefresh {
     key: EeServerSendKey,
@@ -126,11 +132,202 @@ pub(super) struct EeServerSendWindowState {
     /// Reliable data can carry an older cumulative ACK after a newer type-1
     /// ACK has already emptied the active slots. Retaining the actual retired
     /// keys resolves that stale-but-valid carrier without inferring a
-    /// generation from half-range arithmetic.
-    retired_keys: VecDeque<EeServerSendKey>,
+    /// generation from half-range arithmetic. Retain the immutable FrameSend
+    /// identity with each key as well: a Diamond source retransmit can replay
+    /// an already-ACKed translated destination while a semantic hold gate is
+    /// still active, and that exact replay must collapse rather than reopen a
+    /// retired EE slot or weaken the next-new contiguous interval.
+    retired_history: VecDeque<RetiredEeServerSendSlot>,
     pub(super) pending: Option<PendingEeServerSend>,
     pub(super) retired_slots: u64,
     pub(super) retransmitted_slots: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct RetiredReplayCollapse {
+    pub(super) collapsed: usize,
+    pub(super) remaining_reliable: usize,
+}
+
+/// Remove exact reliable destination replays that the EE client has already
+/// cumulatively ACKed.
+///
+/// Diamond `sub_5F36E0` and EE `FrameSend` retain one immutable type-0 slot
+/// until the peer ACK retires it; a source retransmit cannot allocate that
+/// retired destination again. Proxy2 terminates both reliable lanes, so a
+/// cached source replay may still reconstruct the old translated packet after
+/// the destination slot is gone. The bounded retired history supplies the
+/// missing join: ACK/CRC/FrameSend bit 6 are excluded by the shared transport
+/// identity, an exact match collapses, and a same-sequence identity conflict
+/// fails closed. Active unacknowledged replays remain untouched so `stage`
+/// refreshes their retained slot normally.
+pub(super) fn collapse_retired_reliable_replays(
+    state: &EeServerSendWindowState,
+    emit: Emit,
+) -> anyhow::Result<(Emit, RetiredReplayCollapse)> {
+    let mut summary = RetiredReplayCollapse::default();
+    let mut keep = |packet: Vec<u8>| -> anyhow::Result<Option<Vec<u8>>> {
+        let view = MFrameView::parse(&packet).ok_or_else(|| {
+            anyhow::anyhow!("EE retired-replay candidate is not a complete M frame")
+        })?;
+        let Some(kind) = view.frame_kind() else {
+            anyhow::bail!("EE retired-replay candidate has unsupported M frame type");
+        };
+        if !view.crc_valid {
+            anyhow::bail!("EE retired-replay candidate has an invalid M CRC");
+        }
+        if kind != MFrameType::ReliableData {
+            if !view.is_exact_control_frame() {
+                anyhow::bail!("EE retired-replay candidate has an impossible control shape");
+            }
+            return Ok(Some(packet));
+        }
+        summary.remaining_reliable = summary.remaining_reliable.saturating_add(1);
+        let transport_identity =
+            transport_identity::server_reliable_data_transport_identity(&packet, &view)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("EE retired-replay candidate left the type-0 lane")
+                })?;
+
+        // An active slot is still owned by FrameSend and must reach `stage`,
+        // where an exact replay refreshes it and a conflict rejects the batch.
+        if state
+            .slots
+            .iter()
+            .any(|slot| slot.key.sequence == view.sequence)
+        {
+            return Ok(Some(packet));
+        }
+
+        let Some(retired) = state
+            .retired_history
+            .iter()
+            .rev()
+            .find(|retired| retired.key.sequence == view.sequence)
+        else {
+            return Ok(Some(packet));
+        };
+        if retired.transport_identity != transport_identity {
+            anyhow::bail!(
+                "EE retired send-window sequence {} conflicts with acknowledged validated bytes",
+                view.sequence
+            );
+        }
+        summary.collapsed = summary.collapsed.saturating_add(1);
+        summary.remaining_reliable = summary.remaining_reliable.saturating_sub(1);
+        Ok(None)
+    };
+
+    let emit = match emit {
+        Emit::Packet(packet) => match keep(packet)? {
+            Some(packet) => Emit::Packet(packet),
+            None => Emit::Consumed,
+        },
+        Emit::PacketRetireSession { packet, reason } => match keep(packet)? {
+            Some(packet) => Emit::PacketRetireSession { packet, reason },
+            None => Emit::ConsumedRetireSession { reason },
+        },
+        Emit::Packets(packets) => {
+            let packets = filter_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::Packets(packets)
+            }
+        }
+        Emit::PacketsPreShifted(packets) => {
+            let packets = filter_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::PacketsPreShifted(packets)
+            }
+        }
+        Emit::VerifiedPackets { family, packets } => {
+            let packets = filter_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::VerifiedPackets { family, packets }
+            }
+        }
+        Emit::VerifiedPacketsPreShifted { family, packets } => {
+            let packets = filter_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::VerifiedPacketsPreShifted { family, packets }
+            }
+        }
+        Emit::VerifiedProofPackets { proof, packets } => {
+            let packets = filter_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::VerifiedProofPackets { proof, packets }
+            }
+        }
+        Emit::VerifiedProofPacketsPreShifted { proof, packets } => {
+            let packets = filter_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::VerifiedProofPacketsPreShifted { proof, packets }
+            }
+        }
+        Emit::MixedVerifiedPackets(packets) => {
+            let packets = filter_tagged_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::MixedVerifiedPackets(packets)
+            }
+        }
+        Emit::MixedVerifiedProofPackets(packets) => {
+            let packets = filter_tagged_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::MixedVerifiedProofPackets(packets)
+            }
+        }
+        Emit::MixedVerifiedProofPacketsPreShifted(packets) => {
+            let packets = filter_tagged_packets(packets, &mut keep)?;
+            if packets.is_empty() {
+                Emit::Consumed
+            } else {
+                Emit::MixedVerifiedProofPacketsPreShifted(packets)
+            }
+        }
+        Emit::Consumed | Emit::ConsumedRetireSession { .. } | Emit::Drop => emit,
+    };
+    Ok((emit, summary))
+}
+
+fn filter_packets(
+    packets: Vec<Vec<u8>>,
+    keep: &mut impl FnMut(Vec<u8>) -> anyhow::Result<Option<Vec<u8>>>,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let mut filtered = Vec::with_capacity(packets.len());
+    for packet in packets {
+        if let Some(packet) = keep(packet)? {
+            filtered.push(packet);
+        }
+    }
+    Ok(filtered)
+}
+
+fn filter_tagged_packets<T>(
+    packets: Vec<(T, Vec<u8>)>,
+    keep: &mut impl FnMut(Vec<u8>) -> anyhow::Result<Option<Vec<u8>>>,
+) -> anyhow::Result<Vec<(T, Vec<u8>)>> {
+    let mut filtered = Vec::with_capacity(packets.len());
+    for (tag, packet) in packets {
+        if let Some(packet) = keep(packet)? {
+            filtered.push((tag, packet));
+        }
+    }
+    Ok(filtered)
 }
 
 /// Atomically preflight the reliable type-0 members of one final validated
@@ -472,9 +669,12 @@ pub(super) fn retire_through_raw_client_ack(
     let retired = distance + 1;
     for _ in 0..retired {
         if let Some(slot) = state.slots.pop_front() {
-            state.retired_keys.push_back(slot.key);
-            while state.retired_keys.len() > MAX_EE_SERVER_SEND_SLOTS {
-                let _ = state.retired_keys.pop_front();
+            state.retired_history.push_back(RetiredEeServerSendSlot {
+                key: slot.key,
+                transport_identity: slot.transport_identity,
+            });
+            while state.retired_history.len() > MAX_EE_SERVER_SEND_SLOTS {
+                let _ = state.retired_history.pop_front();
             }
         }
     }
@@ -525,10 +725,10 @@ fn resolve_retired_raw_client_ack(
     ack_sequence: u16,
 ) -> Option<EeServerSendKey> {
     state
-        .retired_keys
+        .retired_history
         .iter()
         .rev()
-        .copied()
+        .map(|retired| retired.key)
         .find(|key| key.sequence == ack_sequence)
         .or_else(|| {
             state
@@ -1125,5 +1325,113 @@ mod tests {
             state.slots[0].send_window_bit6,
             transport_identity::SEND_WINDOW_BIT6_MASK
         );
+    }
+
+    #[test]
+    fn acknowledged_replay_prefix_collapses_before_next_new_contiguous_slot() {
+        let now = Instant::now();
+        let mut state = EeServerSendWindowState::default();
+        let retired = reliable(31, 75, b"area");
+        commit(
+            &mut state,
+            now,
+            vec![retired.clone(), reliable(32, 75, b"loadbar")],
+        )
+        .expect("commit translated area interval");
+        assert_eq!(
+            retire_through_raw_client_ack(&mut state, 32).retired_slots,
+            2
+        );
+        assert!(state.slots.is_empty());
+        assert_eq!(
+            state.next_key,
+            Some(EeServerSendKey {
+                sequence: 33,
+                generation: 0,
+            })
+        );
+
+        let mut replay = retired;
+        assert!(write_be_u16(&mut replay, 5, 76));
+        replay[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut replay));
+        let next = reliable(33, 76, b"next");
+        let (filtered, summary) =
+            collapse_retired_reliable_replays(&state, Emit::Packets(vec![replay, next.clone()]))
+                .expect("exact retired replay should collapse");
+        assert_eq!(
+            summary,
+            RetiredReplayCollapse {
+                collapsed: 1,
+                remaining_reliable: 1,
+            }
+        );
+        let Emit::Packets(filtered) = filtered else {
+            panic!("one next-new reliable packet should remain");
+        };
+        assert_eq!(filtered, vec![next]);
+
+        stage(
+            &mut state,
+            EeServerSendOwner::DirectServer,
+            &Emit::Packets(filtered),
+            now,
+        )
+        .expect("retired prefix must not create a false destination gap");
+        assert_eq!(finish(&mut state, EeServerSendOwner::DirectServer, true), 1);
+        assert_eq!(state.slots.front().map(|slot| slot.key.sequence), Some(33));
+    }
+
+    #[test]
+    fn acknowledged_same_sequence_identity_conflict_fails_closed() {
+        let now = Instant::now();
+        let mut state = EeServerSendWindowState::default();
+        commit(&mut state, now, vec![reliable(40, 3, b"accepted")]).expect("commit accepted slot");
+        assert_eq!(
+            retire_through_raw_client_ack(&mut state, 40).retired_slots,
+            1
+        );
+
+        let error =
+            collapse_retired_reliable_replays(&state, Emit::Packet(reliable(40, 9, b"conflict")))
+                .expect_err("retired sequence cannot acquire different immutable bytes");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicts with acknowledged validated bytes")
+        );
+        assert!(state.slots.is_empty());
+        assert!(state.pending.is_none());
+    }
+
+    #[test]
+    fn active_unacknowledged_replay_still_refreshes_retained_slot() {
+        let now = Instant::now();
+        let mut state = EeServerSendWindowState::default();
+        let original = reliable(50, 3, b"active");
+        commit(&mut state, now, vec![original]).expect("commit active slot");
+
+        let mut replay = reliable(50, 9, b"active");
+        replay[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut replay));
+        let (filtered, summary) =
+            collapse_retired_reliable_replays(&state, Emit::Packet(replay.clone()))
+                .expect("active replay remains FrameSend-owned");
+        assert_eq!(
+            summary,
+            RetiredReplayCollapse {
+                collapsed: 0,
+                remaining_reliable: 1,
+            }
+        );
+        stage(
+            &mut state,
+            EeServerSendOwner::DirectServer,
+            &filtered,
+            now + Duration::from_millis(10),
+        )
+        .expect("active exact replay should stage as refresh");
+        assert_eq!(finish(&mut state, EeServerSendOwner::DirectServer, true), 0);
+        assert_eq!(state.slots[0].packet, replay);
     }
 }

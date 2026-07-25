@@ -245,6 +245,15 @@ pub(super) fn stage_direct_server_send_window(
     stage_server_send_window(state, ee_send_window::EeServerSendOwner::DirectServer, emit)
 }
 
+pub(super) fn collapse_acknowledged_server_reliable_replays(
+    state: &SessionState,
+    emit: Emit,
+) -> anyhow::Result<(Emit, usize, usize)> {
+    let (emit, summary) =
+        ee_send_window::collapse_retired_reliable_replays(&state.ee_server_send_window, emit)?;
+    Ok((emit, summary.collapsed, summary.remaining_reliable))
+}
+
 pub(super) fn stage_pending_server_send_window(
     state: &mut SessionState,
     emit: &Emit,

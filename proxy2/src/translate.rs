@@ -600,6 +600,35 @@ impl SessionTranslator {
         } else {
             emit
         };
+        let emit = if finish_server_m_validation {
+            match m_frame::collapse_acknowledged_server_reliable_replays(&self.m_state, emit) {
+                Ok((emit, collapsed_reliable_packets, remaining_reliable_packets)) => {
+                    if collapsed_reliable_packets != 0 {
+                        tracing::info!(
+                            collapsed_reliable_packets,
+                            remaining_reliable_packets,
+                            "collapsed exact translated server replay already cumulatively ACKed by EE"
+                        );
+                    }
+                    emit
+                }
+                Err(err) => {
+                    translated_effects_candidate = false;
+                    tracing::warn!(
+                        direction = direction.as_str(),
+                        error = %err,
+                        "translated server replay conflicted with the exact retired EE send window"
+                    );
+                    if let Some((prepared, source_lane)) = strict_rejection_ack_fallback.clone() {
+                        m_frame::ensure_direct_source_ack_carrier(Emit::Drop, prepared, source_lane)
+                    } else {
+                        Emit::Drop
+                    }
+                }
+            }
+        } else {
+            emit
+        };
 
         let mut validated = self.validate_emit(direction, emit);
         if matches!(&validated, Emit::Drop)
