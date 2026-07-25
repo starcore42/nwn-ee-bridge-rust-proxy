@@ -15,8 +15,9 @@ use crate::translate::{
     },
 };
 
+#[cfg(test)]
+use super::output_reliability;
 use super::{
-    output_reliability,
     sequence::{
         SequenceShift, ServerSequenceInsertionProducer, record_server_sequence_insertion,
         sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
@@ -827,13 +828,9 @@ fn queue_client_gui_status_output_with_claim(
         .sequence
         .latest_client_ack_from_client
         .or(state.sequence.latest_server_sequence_to_client);
-    let mapped_destination_ack = destination_ack.map(|ack| {
-        output_reliability::map_client_ack_for_server(
-            &state.sequence.server_sequence_shifts,
-            &state.sequence.server_output_ack_spans,
-            ack,
-        )
-    });
+    let mapped_destination_ack = destination_ack
+        .map(|ack| super::map_client_destination_ack_to_server_source(state, ack))
+        .transpose()?;
     let ack_sequence = server_sequence_to_ack
         .or(mapped_destination_ack)
         .unwrap_or(u16::MAX);
@@ -1239,6 +1236,22 @@ mod tests {
                 62,
             )
             .expect("register expanded server output span");
+            let expanded = crate::translate::Emit::Packets(vec![
+                synthetic_area::build_synthetic_gameplay_frame(61, 10, &[0x01, 0x01])
+                    .expect("build first expanded destination"),
+                synthetic_area::build_synthetic_gameplay_frame(62, 10, &[0x01, 0x01])
+                    .expect("build terminal expanded destination"),
+            ]);
+            super::super::stage_direct_server_send_window(&mut state, &expanded)
+                .expect("stage exact expanded EE destination interval");
+            assert_eq!(
+                super::super::ee_send_window::finish(
+                    &mut state.ee_server_send_window,
+                    super::super::ee_send_window::EeServerSendOwner::DirectServer,
+                    true,
+                ),
+                2
+            );
 
             queue_client_gui_status_output_with_claim(&mut state, update, claim, 10, None)
                 .expect("queue non-server ClientGui status output");
@@ -1946,6 +1959,13 @@ mod tests {
             })
         );
 
+        state.sequence.current_server_translation_source =
+            Some(super::super::server_replay::ServerReliableSlotKey {
+                sequence: 61,
+                origin_generation: 0,
+            });
+        super::super::begin_ordinary_server_emit_effect_transaction(&mut state)
+            .expect("begin source-owned confirmed replay transaction");
         assert!(
             maybe_queue_confirmed_inventory_replay(&mut state, 61, 82)
                 .expect("confirmed Inventory replay should queue")
@@ -2016,13 +2036,17 @@ mod tests {
             1
         );
 
-        let emit = super::super::take_pending_server_to_client_packets(&mut state)
-            .expect("pending confirmed inventory replay drain");
+        let emit = super::super::finalize_server_to_client_emit(
+            &mut state,
+            crate::translate::Emit::Consumed,
+            0,
+        )
+        .expect("confirmed inventory replay joins its source emit");
         assert!(matches!(
             emit,
-            crate::translate::Emit::MixedVerifiedProofPacketsPreShifted(_)
+            crate::translate::Emit::MixedVerifiedPackets(_)
         ));
-        super::super::finish_pending_server_drain_emit_validation(&mut state, true);
+        super::super::finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(
             state
                 .inventory_equipment

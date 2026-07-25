@@ -121,6 +121,13 @@ pub(super) struct EeServerSendWindowState {
     /// ACK. Keep it after the active window becomes empty so an identical ACK
     /// remains generation-resolvable without guessing from a bare `u16`.
     pub(super) last_retired_key: Option<EeServerSendKey>,
+    /// Exact identities from the decompile-proven 16-slot retirement window.
+    ///
+    /// Reliable data can carry an older cumulative ACK after a newer type-1
+    /// ACK has already emptied the active slots. Retaining the actual retired
+    /// keys resolves that stale-but-valid carrier without inferring a
+    /// generation from half-range arithmetic.
+    retired_keys: VecDeque<EeServerSendKey>,
     pub(super) pending: Option<PendingEeServerSend>,
     pub(super) retired_slots: u64,
     pub(super) retransmitted_slots: u64,
@@ -430,17 +437,15 @@ pub(super) fn finish(
 }
 
 /// Resolve and retire only an ACK that lands inside the current contiguous
-/// active interval. A duplicate of the last cumulative ACK retains its exact
-/// generation even after the window empties. Any other stale or impossible
-/// bare `u16` ACK stays unresolved and changes no state.
+/// active interval. A recently retired cumulative ACK retains its exact
+/// generation even after the window empties. Any older or impossible bare
+/// `u16` ACK stays unresolved and changes no state.
 pub(super) fn retire_through_raw_client_ack(
     state: &mut EeServerSendWindowState,
     ack_sequence: u16,
 ) -> EeServerAckObservation {
     let unresolved = |state: &EeServerSendWindowState| EeServerAckObservation {
-        acknowledged: state
-            .last_retired_key
-            .filter(|key| key.sequence == ack_sequence),
+        acknowledged: resolve_retired_raw_client_ack(state, ack_sequence),
         destination_floor: destination_floor(state),
         retired_slots: 0,
     };
@@ -466,7 +471,12 @@ pub(super) fn retire_through_raw_client_ack(
         .expect("validated EE ACK distance still identifies its terminal slot");
     let retired = distance + 1;
     for _ in 0..retired {
-        let _ = state.slots.pop_front();
+        if let Some(slot) = state.slots.pop_front() {
+            state.retired_keys.push_back(slot.key);
+            while state.retired_keys.len() > MAX_EE_SERVER_SEND_SLOTS {
+                let _ = state.retired_keys.pop_front();
+            }
+        }
     }
     state.last_retired_key = Some(acknowledged);
     state.retired_slots = state.retired_slots.saturating_add(retired as u64);
@@ -497,21 +507,34 @@ pub(super) fn resolve_raw_client_ack(
     ack_sequence: u16,
 ) -> Option<EeServerSendKey> {
     let Some(first) = state.slots.front().map(|slot| slot.key) else {
-        return state
-            .last_retired_key
-            .filter(|key| key.sequence == ack_sequence);
+        return resolve_retired_raw_client_ack(state, ack_sequence);
     };
     let distance = ack_sequence.wrapping_sub(first.sequence) as usize;
     if distance >= state.slots.len() || distance >= MAX_EE_SERVER_SEND_SLOTS {
-        return state
-            .last_retired_key
-            .filter(|key| key.sequence == ack_sequence);
+        return resolve_retired_raw_client_ack(state, ack_sequence);
     }
     state
         .slots
         .get(distance)
         .map(|slot| slot.key)
         .filter(|key| key.sequence == ack_sequence)
+}
+
+fn resolve_retired_raw_client_ack(
+    state: &EeServerSendWindowState,
+    ack_sequence: u16,
+) -> Option<EeServerSendKey> {
+    state
+        .retired_keys
+        .iter()
+        .rev()
+        .copied()
+        .find(|key| key.sequence == ack_sequence)
+        .or_else(|| {
+            state
+                .last_retired_key
+                .filter(|key| key.sequence == ack_sequence)
+        })
 }
 
 pub(super) fn destination_floor(state: &EeServerSendWindowState) -> Option<EeServerSendKey> {
@@ -703,7 +726,22 @@ mod tests {
         assert_eq!(resolve_raw_client_ack(&state, 0), wrapped.acknowledged);
         assert_eq!(state.last_retired_key, wrapped.acknowledged);
 
-        let unresolvable = retire_through_raw_client_ack(&mut state, u16::MAX);
+        let stale_but_retained = retire_through_raw_client_ack(&mut state, u16::MAX);
+        assert_eq!(
+            stale_but_retained.acknowledged,
+            Some(EeServerSendKey {
+                sequence: u16::MAX,
+                generation: 0,
+            }),
+            "a reliable data carrier may repeat a recent ACK after a newer control ACK"
+        );
+        assert_eq!(
+            stale_but_retained.destination_floor,
+            wrapped.destination_floor
+        );
+        assert_eq!(stale_but_retained.retired_slots, 0);
+
+        let unresolvable = retire_through_raw_client_ack(&mut state, 0xFFFD);
         assert_eq!(unresolvable.acknowledged, None);
         assert_eq!(unresolvable.destination_floor, wrapped.destination_floor);
         assert_eq!(unresolvable.retired_slots, 0);

@@ -139,7 +139,7 @@ pub(super) enum ServerSequenceInsertionProducer {
 }
 
 /// Transaction-local producer claim recorded at the same boundary as the
-/// still-authoritative legacy shift.
+/// compatibility-coordinate shift used by producer-local packet builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ServerSequenceInsertionIntent {
     producer: ServerSequenceInsertionProducer,
@@ -182,15 +182,11 @@ struct PlannedServerSequenceInsertion {
 /// Complete insertion delta discovered by one speculative server transaction.
 ///
 /// Producers record typed intents beside the bare `SequenceShift` still used
-/// for legacy byte output. Semantic discovery order is not transport order: a
-/// coalesced transaction can discover an inventory suffix before a
-/// deferred-resource prefix. This plan restores exact generations relative to
-/// the reliable source owner and sorts by source position plus typed placement
-/// before touching the ordered epoch ledger.
-///
-/// It is intentionally a shadow migration boundary for now. The legacy
-/// transform remains byte-authoritative until sequence and ACK parity have
-/// been exercised against replay and live traffic.
+/// by a few producer-local packet builders. Semantic discovery order is not
+/// transport order: a coalesced transaction can discover an inventory suffix
+/// before a deferred-resource prefix. This plan restores exact generations
+/// relative to the reliable source owner and sorts by source position plus
+/// typed placement before touching the ordered epoch ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServerSequenceInsertionPlan {
     owner_source: SequenceEpochKey,
@@ -225,9 +221,12 @@ impl ServerSequenceInsertionPlan {
         }))
     }
 
-    /// Prove every typed producer claim has one identical legacy append while
-    /// that list remains byte-authoritative. Prefix trimming is tolerated only
-    /// when a retained baseline suffix still identifies the append boundary.
+    /// Prove every typed producer claim has one identical compatibility append.
+    ///
+    /// The compatibility list is intentionally no longer prefix-trimmed. It is
+    /// not a wire transform, but retaining its complete cumulative history
+    /// keeps the remaining preassigned synthetic/coalesced packet builders
+    /// auditable until they migrate to exact insertion ranges.
     pub(super) fn validate_legacy_append_delta(
         &self,
         baseline: &[SequenceShift],
@@ -260,7 +259,21 @@ impl ServerSequenceInsertionPlan {
         &self,
         epochs: &OrderedServerSequenceEpochs,
     ) -> anyhow::Result<OrderedServerSequenceEpochs> {
-        let mut candidate = epochs.clone();
+        // An unseeded identity transform must be anchored at the exact outer
+        // source, not at the first insertion base. A common suffix insertion
+        // sits immediately after the current source; anchoring there would
+        // make the current packet itself appear stale even though identity
+        // mapping is exact on both sides of that first discontinuity.
+        let mut candidate = if epochs.checkpoint().is_none() {
+            // FrameReceive can complete a packetized source from any member
+            // retained in its 16-slot receive interval. Anchor the first exact
+            // transform at that whole decompile-proven window, so rebuilding
+            // an earlier member in the current transaction remains identity
+            // mapped before the first insertion discontinuity.
+            OrderedServerSequenceEpochs::identity_at(self.owner_source.checked_retreat(15)?)
+        } else {
+            epochs.clone()
+        };
         for insertion in &self.insertions {
             candidate.insert_before(
                 ServerSequenceInsertionOwner::new(self.owner_source, insertion.producer),
@@ -583,9 +596,11 @@ pub(super) fn shift_sequence_for_peer(shifts: &[SequenceShift], original_sequenc
 
 /// Record one producer-owned insertion in both coordinate systems.
 ///
-/// The legacy list remains authoritative for emitted bytes during migration;
-/// the typed intent is transaction-local and becomes the stable ordered-ledger
-/// owner only after the same outer strict validation succeeds.
+/// The typed intent becomes the authoritative ordered-ledger owner only after
+/// the same outer strict validation succeeds. The bare compatibility list is
+/// retained temporarily for producer-local packet preassignment and parity
+/// validation; it must keep complete history rather than silently dropping a
+/// cumulative prefix.
 pub(super) fn record_server_sequence_insertion(
     shifts: &mut Vec<SequenceShift>,
     intents: &mut Vec<ServerSequenceInsertionIntent>,
@@ -610,7 +625,6 @@ pub(super) fn record_server_sequence_insertion(
         base: source_base,
         delta: count,
     });
-    trim_sequence_shifts(shifts);
     intents.push(ServerSequenceInsertionIntent {
         producer,
         source_base,
@@ -820,6 +834,27 @@ mod tests {
                 .expect("map after legacy trim"),
             epoch(34, 0)
         );
+    }
+
+    #[test]
+    fn typed_server_insertion_recording_keeps_more_than_sixteen_compatibility_entries() {
+        let mut shifts = Vec::new();
+        let mut intents = Vec::new();
+        for operation in 0..17u64 {
+            record_server_sequence_insertion(
+                &mut shifts,
+                &mut intents,
+                ServerSequenceInsertionProducer::Test { operation },
+                operation as u16,
+                1,
+            )
+            .expect("record typed insertion");
+        }
+
+        assert_eq!(shifts.len(), 17);
+        assert_eq!(intents.len(), 17);
+        assert_eq!(shifts[0], SequenceShift { base: 0, delta: 1 });
+        assert_eq!(shifts[16], SequenceShift { base: 16, delta: 1 });
     }
 
     #[test]

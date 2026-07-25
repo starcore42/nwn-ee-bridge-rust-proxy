@@ -18,11 +18,10 @@
 //! CNW payload fields, bit order, BOOL order, cursor alignment, padding, or
 //! nested object/string boundaries.
 
+#[cfg(test)]
+use super::sequence::{SequenceShift, sequence_at_or_after, unshift_ack_for_origin};
 use super::{
-    sequence::{
-        OrderedServerSequenceEpochs, SequenceEpochKey, SequenceShift, sequence_at_or_after,
-        unshift_ack_for_origin,
-    },
+    sequence::{OrderedServerSequenceEpochs, SequenceEpochKey},
     server_replay::ServerReliableSlotKey,
 };
 
@@ -171,6 +170,7 @@ pub(super) fn bind_server_output_ack_span_destination(
 /// next EE-derived cumulative ACK can advance through later source frames.
 /// This makes the completion rule independent of trimmed or reordered generic
 /// shift history and cannot over-retire a source.
+#[cfg(test)]
 pub(super) fn map_client_ack_for_server(
     shifts: &[SequenceShift],
     spans: &[ServerOutputAckSpan],
@@ -205,9 +205,12 @@ pub(super) fn map_client_ack_for_server(
 /// Expanded sources add a completion boundary on top of ordinary insertion
 /// mapping: any ACK before the terminal rebuilt output stays at the source
 /// predecessor, while the terminal output completes exactly that source.
-/// Every active span must already have been bound by destination send-window
-/// staging; a pending bare sequence fails closed instead of borrowing a
-/// generation.
+/// A span normally receives exact destination keys from send-window staging.
+/// During the same speculative transaction, the ordered epoch ledger can also
+/// prove those keys before staging: the first output must be the mapped source
+/// key and the terminal key must be its exact forward advance. This avoids
+/// rejecting an older ACK while finalization is still assembling the batch,
+/// without borrowing a generation from a bare sequence.
 pub(super) fn map_exact_client_ack_for_server(
     epochs: &OrderedServerSequenceEpochs,
     spans: &[ServerOutputAckSpan],
@@ -215,12 +218,31 @@ pub(super) fn map_exact_client_ack_for_server(
 ) -> anyhow::Result<SequenceEpochKey> {
     let mut latest_completed = None::<(SequenceEpochKey, SequenceEpochKey)>;
     for span in spans {
-        let (destination_first, destination_last) = span.destination.exact().ok_or_else(|| {
-            anyhow::anyhow!("server output ACK span has no exact destination generation")
-        })?;
         let source_generation = i64::try_from(span.source.origin_generation)
             .map_err(|_| anyhow::anyhow!("server output ACK source generation overflow"))?;
         let source = SequenceEpochKey::new(span.source.sequence, source_generation);
+        let (destination_first, destination_last) = if let Some(exact) = span.destination.exact() {
+            exact
+        } else {
+            let (raw_first, raw_last) = span.destination.sequences();
+            let destination_first = epochs.map_source(source)?;
+            if destination_first.sequence != raw_first {
+                anyhow::bail!(
+                    "pending server output ACK span first destination disagrees with ordered epochs"
+                );
+            }
+            let distance = raw_last.wrapping_sub(raw_first);
+            if distance == 0 || distance >= 0x8000 {
+                anyhow::bail!("pending server output ACK span has an invalid forward width");
+            }
+            let destination_last = destination_first.checked_advance(u64::from(distance))?;
+            if destination_last.sequence != raw_last {
+                anyhow::bail!(
+                    "pending server output ACK span terminal destination disagrees with ordered epochs"
+                );
+            }
+            (destination_first, destination_last)
+        };
         if destination_ack >= destination_first && destination_ack < destination_last {
             return source.checked_retreat(1);
         }
@@ -251,6 +273,7 @@ pub(super) fn retire_server_output_ack_spans(
     before.saturating_sub(spans.len())
 }
 
+#[cfg(test)]
 fn sequence_in_forward_half_open(sequence: u16, first: u16, end: u16) -> bool {
     let width = end.wrapping_sub(first);
     width != 0 && width < 0x8000 && sequence.wrapping_sub(first) < width
@@ -434,6 +457,29 @@ mod tests {
             map_exact_client_ack_for_server(&epochs, &spans, epoch(1, 4)).expect("later exact ACK"),
             epoch(0, 9),
             "an active completed owner conservatively caps later ACK progress"
+        );
+    }
+
+    #[test]
+    fn pending_span_uses_the_ordered_epoch_proof_before_send_window_staging() {
+        let epochs = OrderedServerSequenceEpochs::seed(epoch(0, 0), epoch(1, 0))
+            .expect("seed one carried destination insertion");
+        let spans = [pending_span(key(24, 0), 25, 29)];
+
+        assert_eq!(
+            map_exact_client_ack_for_server(&epochs, &spans, epoch(24, 0))
+                .expect("older ACK stays before pending span"),
+            epoch(23, 0)
+        );
+        assert_eq!(
+            map_exact_client_ack_for_server(&epochs, &spans, epoch(25, 0))
+                .expect("first pending output is partial"),
+            epoch(23, 0)
+        );
+        assert_eq!(
+            map_exact_client_ack_for_server(&epochs, &spans, epoch(29, 0))
+                .expect("pending terminal output completes source"),
+            epoch(24, 0)
         );
     }
 

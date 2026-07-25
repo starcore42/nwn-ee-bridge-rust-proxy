@@ -459,6 +459,7 @@ fn pending_server_source_epoch(state: &SessionState) -> anyhow::Result<SequenceE
     let key = state
         .server_reliable_slots
         .pending_dispatch_key
+        .or(state.sequence.current_server_translation_source)
         .ok_or_else(|| {
             anyhow::anyhow!("server insertion transaction lacks an exact source owner")
         })?;
@@ -470,11 +471,11 @@ fn pending_server_source_epoch(state: &SessionState) -> anyhow::Result<SequenceE
 /// Resolve the complete current transaction's typed insertion claims without
 /// trusting semantic discovery order.
 ///
-/// This is the shadow migration boundary for the legacy server shift list.
-/// The returned ledger is not authoritative for emitted bytes yet; callers use
-/// it for parity checks and commit it only when the same outer strict
-/// transaction commits the semantic effects that created the insertions.
-fn prospective_ordered_server_sequence_epochs(
+/// The returned exact ledger includes every insertion created by the current
+/// speculative transaction. Callers use it for wire sequence assignment before
+/// final validation, then commit the same candidate only when the outer strict
+/// transaction accepts the semantic effects that created those insertions.
+fn prospective_server_sequence_epochs(
     state: &SessionState,
 ) -> anyhow::Result<Option<(sequence::OrderedServerSequenceEpochs, usize)>> {
     let Some(snapshot) = state.deflate.ordered_successor_effect_snapshot.as_ref() else {
@@ -505,7 +506,7 @@ fn prospective_ordered_server_sequence_epochs(
         && !baseline.is_empty()
     {
         anyhow::bail!(
-            "ordered server shadow cannot seed after an already-trimmed legacy insertion history"
+            "ordered server epochs cannot seed after an unowned compatibility insertion history"
         );
     }
     let insertion_count = plan.insertion_count();
@@ -513,8 +514,8 @@ fn prospective_ordered_server_sequence_epochs(
     Ok(Some((candidate, insertion_count)))
 }
 
-fn commit_ordered_server_sequence_shadow_if_ready(state: &mut SessionState) {
-    let result = prospective_ordered_server_sequence_epochs(state);
+fn commit_ordered_server_sequence_epochs_if_ready(state: &mut SessionState) {
+    let result = prospective_server_sequence_epochs(state);
     state.sequence.pending_server_sequence_insertions.clear();
     match result {
         Ok(None) => {}
@@ -526,14 +527,66 @@ fn commit_ordered_server_sequence_shadow_if_ready(state: &mut SessionState) {
                     .sequence
                     .ordered_server_sequence_epochs
                     .active_insertions(),
-                "committed strict-accepted transaction to shadow ordered server sequence epochs"
+                "committed strict-accepted transaction to authoritative ordered server sequence epochs"
             );
         }
         Err(err) => tracing::warn!(
             error = %err,
-            "shadow ordered server sequence transaction stayed fail-closed"
+            "authoritative ordered server sequence transaction stayed fail-closed"
         ),
     }
+}
+
+/// Map one raw EE destination ACK through exact destination and source epochs.
+///
+/// Once proxy-owned server outputs exist, a bare wrapping `u16` is not enough
+/// to select a generation. The retained EE send window (or its exact last
+/// retired key) is the sole authority. An unresolved/stale raw ACK therefore
+/// fails closed instead of borrowing a generation through half-range math.
+fn map_client_destination_ack_to_server_source(
+    state: &SessionState,
+    destination_ack_sequence: u16,
+) -> anyhow::Result<u16> {
+    let prospective = prospective_server_sequence_epochs(state)?;
+    let epochs = prospective
+        .as_ref()
+        .map(|(epochs, _)| epochs)
+        .unwrap_or(&state.sequence.ordered_server_sequence_epochs);
+    let spans = &state.sequence.server_output_ack_spans;
+    if epochs.checkpoint().is_none() && spans.is_empty() {
+        if !state.sequence.server_sequence_shifts.is_empty() {
+            anyhow::bail!(
+                "server compatibility insertions exist without an authoritative ordered epoch"
+            );
+        }
+        return Ok(destination_ack_sequence);
+    }
+
+    let destination = ee_send_window::resolve_raw_client_ack(
+        &state.ee_server_send_window,
+        destination_ack_sequence,
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "raw EE ACK {} has no exact retained destination generation",
+            destination_ack_sequence
+        )
+    })?;
+    let destination_generation = i64::try_from(destination.generation).map_err(|_| {
+        anyhow::anyhow!("EE destination ACK generation exceeds ordered epoch range")
+    })?;
+    let destination = SequenceEpochKey::new(destination_ack_sequence, destination_generation);
+    let source = output_reliability::map_exact_client_ack_for_server(epochs, spans, destination)?;
+    tracing::trace!(
+        destination_ack_sequence,
+        destination_generation,
+        source_ack_sequence = source.sequence,
+        source_generation = source.generation,
+        exact_output_spans = spans.len(),
+        active_ordered_insertions = epochs.active_insertions(),
+        "authoritative ordered server ACK transform mapped exact EE destination"
+    );
+    Ok(source.sequence)
 }
 
 fn pending_server_drain_has_work(state: &SessionState, now: Instant) -> bool {
@@ -774,12 +827,8 @@ pub(super) fn prepare_direct_client_source_ack_carrier(
     if view.frame_kind() != Some(MFrameType::ReliableData) {
         return Ok(None);
     }
-    let mapped_ack_sequence = output_reliability::map_client_ack_for_server(
-        &state.sequence.server_sequence_shifts,
-        &state.sequence.server_output_ack_spans,
-        view.ack_sequence,
-    );
-    audit_ordered_server_ack_mapping(state, view.ack_sequence, mapped_ack_sequence);
+    let mapped_ack_sequence =
+        map_client_destination_ack_to_server_source(state, view.ack_sequence)?;
     ack_carrier::prepare(view.ack_sequence, mapped_ack_sequence).map(Some)
 }
 
@@ -1785,6 +1834,7 @@ fn finish_client_to_server_effect_validation(
 fn rollback_server_emit_effect_transaction(state: &mut SessionState) -> bool {
     let transaction_kind = state.deflate.server_emit_effect_transaction_kind.take();
     let Some(snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
+        state.sequence.current_server_translation_source = None;
         if transaction_kind.is_some() {
             tracing::warn!(
                 ?transaction_kind,
@@ -1800,6 +1850,7 @@ fn rollback_server_emit_effect_transaction(state: &mut SessionState) -> bool {
     if let Some(ack_sequence) = state.server_reliable_slots.latest_peer_ack_sequence {
         observe_validated_server_source_ack(state, ack_sequence);
     }
+    state.sequence.current_server_translation_source = None;
     true
 }
 
@@ -1819,11 +1870,12 @@ fn commit_server_emit_effect_transaction(
     if state.deflate.server_emit_effect_transaction_kind != Some(expected_kind) {
         return false;
     }
-    // The snapshot still contains the complete pre-transaction legacy shift
+    // The snapshot still contains the complete pre-transaction compatibility
     // history here. Validate the transaction-local typed producer claims
-    // against that byte-authoritative delta, then atomically commit the exact
-    // generation-aware shadow plan before discarding the comparison authority.
-    commit_ordered_server_sequence_shadow_if_ready(state);
+    // against that audit delta, then atomically commit the exact
+    // generation-aware plan before discarding the comparison authority.
+    commit_ordered_server_sequence_epochs_if_ready(state);
+    state.sequence.current_server_translation_source = None;
     state.deflate.server_emit_effect_transaction_kind = None;
     let Some(_snapshot) = state.deflate.ordered_successor_effect_snapshot.take() else {
         tracing::warn!(
@@ -1869,6 +1921,7 @@ pub(super) fn finish_server_to_client_emit_validation_outcomes(
         ee_send_window::EeServerSendOwner::DirectServer,
         ack_output_accepted,
     );
+    state.sequence.current_server_translation_source = None;
 }
 
 fn finish_server_to_client_effect_validation(state: &mut SessionState, accepted: bool) -> bool {
@@ -2105,6 +2158,7 @@ fn translate_server_to_client_inner(
     // dispatcher directly. An exact second prepare is an idempotent match.
     let prepared_server_source =
         server_replay::prepare_source_slot(&mut state.server_reliable_slots, bytes, &view)?;
+    state.sequence.current_server_translation_source = prepared_server_source.key();
     let server_origin_generation = prepared_server_source
         .key()
         .map(|key| key.origin_generation)
@@ -3370,7 +3424,18 @@ fn observe_client_window_state(
         view.ack_sequence,
     );
     if let Some(acknowledged) = destination_ack.acknowledged {
-        state.sequence.latest_raw_ee_server_ack = Some(acknowledged);
+        let advances_exact_destination =
+            state
+                .sequence
+                .latest_raw_ee_server_ack
+                .is_none_or(|current| {
+                    acknowledged.generation > current.generation
+                        || (acknowledged.generation == current.generation
+                            && acknowledged.sequence >= current.sequence)
+                });
+        if advances_exact_destination {
+            state.sequence.latest_raw_ee_server_ack = Some(acknowledged);
+        }
     }
     if destination_ack.destination_floor.is_some() {
         state.sequence.server_sequence_epoch_destination_floor = destination_ack.destination_floor;
@@ -3463,18 +3528,22 @@ fn unshift_client_ack_for_server(
     packet: &mut [u8],
     view: &MFrameView,
 ) -> anyhow::Result<()> {
-    if state.sequence.server_sequence_shifts.is_empty()
+    if state
+        .sequence
+        .ordered_server_sequence_epochs
+        .checkpoint()
+        .is_none()
         && state.sequence.server_output_ack_spans.is_empty()
     {
+        if !state.sequence.server_sequence_shifts.is_empty() {
+            anyhow::bail!(
+                "server compatibility insertions exist without an authoritative ordered epoch"
+            );
+        }
         return Ok(());
     }
 
-    let unshifted = output_reliability::map_client_ack_for_server(
-        &state.sequence.server_sequence_shifts,
-        &state.sequence.server_output_ack_spans,
-        view.ack_sequence,
-    );
-    audit_ordered_server_ack_mapping(state, view.ack_sequence, unshifted);
+    let unshifted = map_client_destination_ack_to_server_source(state, view.ack_sequence)?;
     if unshifted == view.ack_sequence {
         return Ok(());
     }
@@ -3489,79 +3558,14 @@ fn unshift_client_ack_for_server(
         ack_sequence = view.ack_sequence,
         unshifted_ack_sequence = unshifted,
         client_sequence = view.sequence,
-        shifts = state.sequence.server_sequence_shifts.len(),
-        "client M ack unshifted after proxy-owned server M insertion"
+        active_ordered_insertions = state
+            .sequence
+            .ordered_server_sequence_epochs
+            .active_insertions(),
+        exact_output_spans = state.sequence.server_output_ack_spans.len(),
+        "client M ack mapped through authoritative ordered server epochs"
     );
     Ok(())
-}
-
-fn audit_ordered_server_ack_mapping(
-    state: &SessionState,
-    destination_ack_sequence: u16,
-    legacy_source_ack_sequence: u16,
-) {
-    if state
-        .sequence
-        .ordered_server_sequence_epochs
-        .checkpoint()
-        .is_none()
-    {
-        return;
-    }
-    let Some(destination) = ee_send_window::resolve_raw_client_ack(
-        &state.ee_server_send_window,
-        destination_ack_sequence,
-    ) else {
-        tracing::trace!(
-            destination_ack_sequence,
-            "shadow ordered server ACK transform skipped an unresolved raw destination generation"
-        );
-        return;
-    };
-    let Ok(destination_generation) = i64::try_from(destination.generation) else {
-        tracing::warn!(
-            destination_ack_sequence,
-            destination_generation = destination.generation,
-            "shadow ordered server ACK transform rejected an unsupported destination generation"
-        );
-        return;
-    };
-    let destination = SequenceEpochKey::new(destination_ack_sequence, destination_generation);
-    match output_reliability::map_exact_client_ack_for_server(
-        &state.sequence.ordered_server_sequence_epochs,
-        &state.sequence.server_output_ack_spans,
-        destination,
-    ) {
-        Ok(source) if source.sequence != legacy_source_ack_sequence => tracing::warn!(
-            destination_ack_sequence,
-            destination_generation,
-            legacy_source_ack_sequence,
-            ordered_source_ack_sequence = source.sequence,
-            ordered_source_generation = source.generation,
-            legacy_shifts = state.sequence.server_sequence_shifts.len(),
-            exact_output_spans = state.sequence.server_output_ack_spans.len(),
-            active_ordered_insertions = state
-                .sequence
-                .ordered_server_sequence_epochs
-                .active_insertions(),
-            "shadow ordered server ACK transform disagrees with legacy output"
-        ),
-        Ok(source) => tracing::trace!(
-            destination_ack_sequence,
-            destination_generation,
-            source_ack_sequence = source.sequence,
-            source_generation = source.generation,
-            exact_output_spans = state.sequence.server_output_ack_spans.len(),
-            "shadow ordered server ACK transform matched legacy output"
-        ),
-        Err(err) => tracing::warn!(
-            error = %err,
-            destination_ack_sequence,
-            destination_generation,
-            output_spans = state.sequence.server_output_ack_spans.len(),
-            "shadow ordered server ACK transform stayed fail-closed"
-        ),
-    }
 }
 
 fn queue_area_client_area_side_effects(
@@ -4143,10 +4147,6 @@ fn arm_withheld_reassembly_successors(
 }
 
 fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> anyhow::Result<()> {
-    if state.sequence.server_sequence_shifts.is_empty() {
-        return Ok(());
-    }
-
     let Some(view) = MFrameView::parse(packet) else {
         return Ok(());
     };
@@ -4154,48 +4154,31 @@ fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> 
         return Ok(());
     }
 
-    let shifted = shift_sequence_for_peer(&state.sequence.server_sequence_shifts, view.sequence);
-    let shadow_epochs = match prospective_ordered_server_sequence_epochs(state) {
-        Ok(Some((epochs, _))) => epochs,
-        Ok(None) => state.sequence.ordered_server_sequence_epochs.clone(),
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "shadow ordered server sequence parity check stayed fail-closed"
-            );
-            state.sequence.ordered_server_sequence_epochs.clone()
-        }
+    let prospective = prospective_server_sequence_epochs(state)?;
+    let epochs = match prospective.as_ref() {
+        Some((epochs, _)) => epochs,
+        None => &state.sequence.ordered_server_sequence_epochs,
     };
-    if shadow_epochs.checkpoint().is_some()
-        && let Ok(source) =
-            pending_server_source_epoch(state).and_then(|owner| owner.nearby(view.sequence))
-    {
-        match shadow_epochs.map_source(source) {
-            Ok(ordered) if ordered.sequence != shifted => tracing::warn!(
-                source_sequence = source.sequence,
-                source_generation = source.generation,
-                legacy_destination_sequence = shifted,
-                ordered_destination_sequence = ordered.sequence,
-                ordered_destination_generation = ordered.generation,
-                legacy_shifts = state.sequence.server_sequence_shifts.len(),
-                active_ordered_insertions = shadow_epochs.active_insertions(),
-                "shadow ordered server sequence transform disagrees with legacy output"
-            ),
-            Ok(ordered) => tracing::trace!(
-                source_sequence = source.sequence,
-                source_generation = source.generation,
-                destination_sequence = ordered.sequence,
-                destination_generation = ordered.generation,
-                "shadow ordered server sequence transform matched legacy output"
-            ),
-            Err(err) => tracing::warn!(
-                error = %err,
-                source_sequence = source.sequence,
-                source_generation = source.generation,
-                "shadow ordered server sequence parity mapping stayed fail-closed"
-            ),
+    if epochs.checkpoint().is_none() {
+        if !state.sequence.server_sequence_shifts.is_empty() {
+            anyhow::bail!(
+                "server compatibility insertions exist without an authoritative ordered epoch"
+            );
         }
+        return Ok(());
     }
+    let owner = pending_server_source_epoch(state)?;
+    let source = owner.nearby(view.sequence)?;
+    let destination = epochs.map_source(source)?;
+    let shifted = destination.sequence;
+    tracing::trace!(
+        source_sequence = source.sequence,
+        source_generation = source.generation,
+        destination_sequence = destination.sequence,
+        destination_generation = destination.generation,
+        active_ordered_insertions = epochs.active_insertions(),
+        "authoritative ordered server sequence transform mapped exact source"
+    );
     if shifted == view.sequence {
         return Ok(());
     }
@@ -4210,8 +4193,10 @@ fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> 
         sequence = view.sequence,
         shifted_sequence = shifted,
         ack_sequence = view.ack_sequence,
-        shifts = state.sequence.server_sequence_shifts.len(),
-        "server M sequence shifted after proxy-owned server M insertion"
+        source_generation = source.generation,
+        destination_generation = destination.generation,
+        active_ordered_insertions = epochs.active_insertions(),
+        "server M sequence shifted through authoritative ordered epochs"
     );
     Ok(())
 }
@@ -4607,6 +4592,11 @@ fn finalize_server_to_client_emit(
         }
     };
     let finalized = finalized.and_then(|finalized_emit| {
+        // Some transactions emit only a proxy-owned prefix/suffix whose
+        // destination sequence was assigned by its producer. They do not pass
+        // through `shift_server_sequence_for_client`, so preflight their typed
+        // insertion plan here before any candidate can reach final validation.
+        let _ = prospective_server_sequence_epochs(state)?;
         let finalized_emit = hold_server_emit_until_module_resource_ack(state, finalized_emit)?;
         if released_synthetic_loadbar_end {
             Ok(finalized_emit)
@@ -4742,6 +4732,39 @@ mod tests {
                 .collect(),
             other => panic!("expected verified packet batch, got {other:?}"),
         }
+    }
+
+    fn seed_authoritative_server_insertion(
+        state: &mut SessionState,
+        source: SequenceEpochKey,
+        source_base: SequenceEpochKey,
+        count: u16,
+        operation: u64,
+    ) {
+        let mut epochs =
+            sequence::OrderedServerSequenceEpochs::identity_at(source.checked_retreat(15).unwrap());
+        epochs
+            .insert_before(
+                sequence::ServerSequenceInsertionOwner::new(
+                    source,
+                    ServerSequenceInsertionProducer::Test { operation },
+                ),
+                source_base,
+                count,
+            )
+            .expect("seed authoritative test insertion");
+        state.sequence.ordered_server_sequence_epochs = epochs;
+    }
+
+    fn commit_test_ee_server_outputs(state: &mut SessionState, packets: Vec<Vec<u8>>) {
+        let emit = Emit::Packets(packets);
+        stage_direct_server_send_window(state, &emit).expect("stage exact test EE output interval");
+        let committed = ee_send_window::finish(
+            &mut state.ee_server_send_window,
+            ee_send_window::EeServerSendOwner::DirectServer,
+            true,
+        );
+        assert_ne!(committed, 0, "test EE output interval must commit slots");
     }
 
     #[test]
@@ -6878,9 +6901,11 @@ mod tests {
         assert!(state.synthetic_area.pending_area_loaded.is_none());
         assert!(state.direct_server_semantic_replays.completed.is_empty());
 
-        let packets = proof_packets(
-            translate_server_to_client(&second, &mut state).expect("complete predecessor"),
-        );
+        let predecessor_emit =
+            translate_server_to_client(&second, &mut state).expect("complete predecessor");
+        stage_direct_server_send_window(&mut state, &predecessor_emit)
+            .expect("stage predecessor EE output");
+        let packets = proof_packets(predecessor_emit);
         let sequences = packets
             .iter()
             .filter_map(|(_, packet)| MFrameView::parse(packet).map(|view| view.sequence))
@@ -6952,9 +6977,11 @@ mod tests {
         translate_server_to_client(&first, &mut state).expect("start predecessor");
         translate_server_to_client(&client_reliable_m_frame(57, 75, area_payload), &mut state)
             .expect("retain future Area");
-        let packets = proof_packets(
-            translate_server_to_client(&second, &mut state).expect("complete predecessor"),
-        );
+        let predecessor_emit =
+            translate_server_to_client(&second, &mut state).expect("complete predecessor");
+        stage_direct_server_send_window(&mut state, &predecessor_emit)
+            .expect("stage predecessor EE output");
+        let packets = proof_packets(predecessor_emit);
         assert!(
             packets
                 .iter()
@@ -7006,6 +7033,7 @@ mod tests {
             state.deflate.server_reassembly.as_ref().is_none(),
             "the exact predecessor should complete independently"
         );
+        stage_direct_server_send_window(&mut state, &emitted).expect("stage predecessor EE output");
         finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(
             state
@@ -7416,10 +7444,12 @@ mod tests {
             include_bytes!("../../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
         let mut state = SessionState::default();
 
-        let first = proof_packets(
+        let first_emit =
             translate_server_to_client(&client_reliable_m_frame(30, 74, payload), &mut state)
-                .expect("first direct Area_ClientArea should translate"),
-        );
+                .expect("first direct Area_ClientArea should translate");
+        stage_direct_server_send_window(&mut state, &first_emit)
+            .expect("stage first Area outputs in exact EE window");
+        let first = proof_packets(first_emit);
         assert_eq!(first.len(), 2);
         assert!(first[0].0.contains_family(VerifiedFamily::AreaClientArea));
         assert!(first[1].0.contains_family(VerifiedFamily::LoadBar));
@@ -7437,8 +7467,11 @@ mod tests {
             .collect::<Vec<_>>();
         let pending_packets = state.synthetic_area.pending_server_to_client_packets.len();
 
-        translate_server_to_client(&client_reliable_m_frame(30, 75, payload), &mut state)
-            .expect("direct Area_ClientArea retransmission should replay");
+        let replay_emit =
+            translate_server_to_client(&client_reliable_m_frame(30, 75, payload), &mut state)
+                .expect("direct Area_ClientArea retransmission should replay");
+        stage_direct_server_send_window(&mut state, &replay_emit)
+            .expect("stage exact Area replay refresh");
         finish_server_to_client_emit_validation(&mut state, true);
         assert_eq!(state.semantic.area.client_area_packets, 1);
         assert_eq!(
@@ -8068,6 +8101,13 @@ mod tests {
             .sequence
             .server_sequence_shifts
             .push(SequenceShift { base: 62, delta: 1 });
+        seed_authoritative_server_insertion(
+            &mut state,
+            SequenceEpochKey::new(61, 0),
+            SequenceEpochKey::new(62, 0),
+            1,
+            1,
+        );
         output_reliability::register_server_output_ack_span(
             &mut state.sequence.server_output_ack_spans,
             source,
@@ -8075,6 +8115,13 @@ mod tests {
             62,
         )
         .expect("register two-frame downstream output");
+        commit_test_ee_server_outputs(
+            &mut state,
+            vec![
+                reliable_server_m_frame(61, 0, 0x08, 1, b"expanded-first"),
+                reliable_server_m_frame(62, 0, 0x08, 1, b"expanded-terminal"),
+            ],
+        );
 
         let partial_client_ack = client_reliable_m_frame(1, 61, &[b'P', 0xFE, 0xFD]);
         begin_client_to_server_emit_validation(&mut state, &partial_client_ack)
@@ -8136,6 +8183,13 @@ mod tests {
             62,
         )
         .expect("register output-only completion span");
+        commit_test_ee_server_outputs(
+            &mut state,
+            vec![
+                reliable_server_m_frame(61, 0, 0x08, 1, b"expanded-first"),
+                reliable_server_m_frame(62, 0, 0x08, 1, b"expanded-terminal"),
+            ],
+        );
         let mut ack = empty_reliable_m_frame(0);
         assert!(write_be_u16(&mut ack, 5, 61));
         assert!(encode_legacy_m_crc(&mut ack));
@@ -8147,6 +8201,55 @@ mod tests {
         let mapped = MFrameView::parse(&ack).expect("parse mapped ACK control");
         assert_eq!(mapped.ack_sequence, 60);
         assert!(mapped.crc_valid);
+    }
+
+    #[test]
+    fn authoritative_server_transforms_ignore_mismatched_compatibility_delta() {
+        let mut state = SessionState::default();
+        state
+            .sequence
+            .server_sequence_shifts
+            .push(SequenceShift { base: 35, delta: 1 });
+        seed_authoritative_server_insertion(
+            &mut state,
+            SequenceEpochKey::new(35, 0),
+            SequenceEpochKey::new(35, 0),
+            2,
+            99,
+        );
+        state.sequence.current_server_translation_source =
+            Some(server_replay::ServerReliableSlotKey {
+                sequence: 35,
+                origin_generation: 0,
+            });
+
+        let mut source = reliable_server_m_frame(35, 0, 0x08, 1, b"source");
+        shift_server_sequence_for_client(&state, &mut source)
+            .expect("map source through authoritative epochs");
+        assert_eq!(
+            MFrameView::parse(&source).unwrap().sequence,
+            37,
+            "the exact ledger owns output; the compatibility list would have produced 36"
+        );
+
+        assert!(
+            map_client_destination_ack_to_server_source(&state, 37).is_err(),
+            "a bare destination ACK without a retained generation must fail closed"
+        );
+        commit_test_ee_server_outputs(
+            &mut state,
+            vec![
+                reliable_server_m_frame(35, 0, 0x08, 1, b"inserted-first"),
+                reliable_server_m_frame(36, 0, 0x08, 1, b"inserted-second"),
+                source,
+            ],
+        );
+        assert_eq!(
+            map_client_destination_ack_to_server_source(&state, 37)
+                .expect("map exact destination through authoritative epochs"),
+            35,
+            "the exact reverse transform must invert the same two-slot insertion"
+        );
     }
 
     #[test]
@@ -8409,6 +8512,13 @@ mod tests {
             .sequence
             .server_sequence_shifts
             .push(SequenceShift { base: 62, delta: 1 });
+        seed_authoritative_server_insertion(
+            &mut state,
+            SequenceEpochKey::new(61, 4),
+            SequenceEpochKey::new(62, 4),
+            1,
+            2,
+        );
         output_reliability::register_server_output_ack_span(
             &mut state.sequence.server_output_ack_spans,
             server_replay::ServerReliableSlotKey {
@@ -8419,6 +8529,13 @@ mod tests {
             62,
         )
         .expect("register expanded server output span");
+        commit_test_ee_server_outputs(
+            &mut state,
+            vec![
+                reliable_server_m_frame(61, 0, 0x08, 1, b"expanded-first"),
+                reliable_server_m_frame(62, 0, 0x08, 1, b"expanded-terminal"),
+            ],
+        );
         state.synthetic_area.pending_area_loaded = Some(synthetic_area::PendingAreaLoaded {
             server_ack_sequence: 61,
             release_client_ack_sequence: 62,
@@ -8489,6 +8606,21 @@ mod tests {
             .sequence
             .server_sequence_shifts
             .push(SequenceShift { base: 35, delta: 2 });
+        seed_authoritative_server_insertion(
+            &mut state,
+            SequenceEpochKey::new(35, 0),
+            SequenceEpochKey::new(35, 0),
+            2,
+            3,
+        );
+        commit_test_ee_server_outputs(
+            &mut state,
+            vec![
+                reliable_server_m_frame(35, 0, 0x08, 1, b"inserted-first"),
+                reliable_server_m_frame(36, 0, 0x08, 1, b"inserted-second"),
+                reliable_server_m_frame(37, 0, 0x08, 1, b"source"),
+            ],
+        );
         let client_source = client_reliable_m_frame(8, 37, &[b'P', 0xfe, 0xfd]);
 
         let prepared = prepare_direct_client_source_ack_carrier(&state, &client_source)
@@ -8776,8 +8908,10 @@ mod tests {
         let baseline_shifts = state.sequence.server_sequence_shifts.len();
         let emit = translate_server_to_client(&second, &mut state)
             .expect("complete deflated Area window speculatively");
+        stage_direct_server_send_window(&mut state, &emit)
+            .expect("stage rejected speculative Area output");
         assert!(
-            proof_packets(emit)
+            proof_packets(emit.clone())
                 .iter()
                 .any(|(proof, _)| proof.contains_family(VerifiedFamily::AreaClientArea))
         );
@@ -8839,6 +8973,8 @@ mod tests {
 
         let retry_emit = translate_server_to_client(&second, &mut state)
             .expect("exact completion retransmit should retry from the restored source window");
+        stage_direct_server_send_window(&mut state, &retry_emit)
+            .expect("stage accepted Area retry output");
         let retry_packets = proof_packets(retry_emit);
         assert!(
             retry_packets
@@ -8879,10 +9015,11 @@ mod tests {
         let mut second_retransmit = second.clone();
         assert!(write_be_u16(&mut second_retransmit, 5, 81));
         assert!(encode_legacy_m_crc(&mut second_retransmit));
-        let replay_packets = proof_packets(
-            translate_server_to_client(&second_retransmit, &mut state)
-                .expect("exact stateless completion retransmit should replay committed output"),
-        );
+        let replay_emit = translate_server_to_client(&second_retransmit, &mut state)
+            .expect("exact stateless completion retransmit should replay committed output");
+        stage_direct_server_send_window(&mut state, &replay_emit)
+            .expect("stage exact stateless Area replay");
+        let replay_packets = proof_packets(replay_emit);
         let replay_identities = replay_packets
             .iter()
             .map(|(_, packet)| server_transport_identity_for_test(packet))
@@ -9572,6 +9709,23 @@ mod tests {
             .sequence
             .server_sequence_shifts
             .push(SequenceShift { base: 0, delta: 1 });
+        seed_authoritative_server_insertion(
+            &mut client_state,
+            SequenceEpochKey::new(0, 0),
+            SequenceEpochKey::new(0, 0),
+            1,
+            4,
+        );
+        commit_test_ee_server_outputs(
+            &mut client_state,
+            vec![reliable_server_m_frame(
+                0,
+                0,
+                0x08,
+                1,
+                b"wrapped inserted destination",
+            )],
+        );
         let client_control = reliable_server_m_frame(99, 0, 0x10, 0, &[]);
 
         let translated = translate_client_to_server(&client_control, &mut client_state)
@@ -11676,13 +11830,8 @@ fn maybe_queue_area_loaded_fallback_from_timer(
     // the frame; downstream delivery ownership remains a separate concern.
     let destination_ack = observed_client_ack.or(state.sequence.latest_server_sequence_to_client);
     let origin_ack_sequence = destination_ack
-        .map(|ack| {
-            output_reliability::map_client_ack_for_server(
-                &state.sequence.server_sequence_shifts,
-                &state.sequence.server_output_ack_spans,
-                ack,
-            )
-        })
+        .map(|ack| map_client_destination_ack_to_server_source(state, ack))
+        .transpose()?
         .unwrap_or(u16::MAX);
 
     let Some(packet) = synthetic_area::maybe_build_area_loaded_client_packet(

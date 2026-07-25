@@ -193,7 +193,17 @@ pub(super) struct SequenceState {
     pub(super) latest_server_sequence_to_client: Option<u16>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
     pub(super) client_sequence_elisions: Vec<SequenceElision>,
+    /// Complete compatibility-coordinate history for the remaining
+    /// producer-local preassignment paths. This list is not authoritative for
+    /// emitted server sequences or client ACKs and is deliberately never
+    /// prefix-trimmed; the exact ordered epoch ledger below owns both wire
+    /// transforms.
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
+    /// Exact outer server source currently being translated. Ready dispatches
+    /// also expose this through `pending_dispatch_key`; committed exact
+    /// retransmits and salvage retries do not, so the translator retains their
+    /// prepared source key through the final validation callback.
+    pub(super) current_server_translation_source: Option<server_replay::ServerReliableSlotKey>,
     /// Exact two-window coordinates retained for the ordered server sequence
     /// epoch migration. The source floor advances only after a mapped ACK
     /// survives final validation; the destination floor and ACK identity come
@@ -207,12 +217,10 @@ pub(super) struct SequenceState {
     /// and drained into the ordered ledger only after final strict acceptance.
     pub(super) pending_server_sequence_insertions:
         Vec<super::sequence::ServerSequenceInsertionIntent>,
-    /// Generation-aware coordinate transform shadowing the legacy bare-`u16`
-    /// shift list. A complete strict-accepted server transaction resolves its
-    /// typed producer claims into exact source epochs, orders them by placement,
-    /// and commits them here atomically. The legacy transform remains
-    /// byte-authoritative until replay/live parity proves both sequence and ACK
-    /// directions, so this ledger can fail closed without changing gameplay.
+    /// Generation-aware authoritative coordinate transform for emitted server
+    /// sequences and EE-derived client ACKs. A complete strict-accepted server
+    /// transaction resolves its typed producer claims into exact source epochs,
+    /// orders them by placement, and commits them here atomically.
     pub(super) ordered_server_sequence_epochs: OrderedServerSequenceEpochs,
     pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
     /// Exact `1 -> N` server rewrites that keep EE-derived partial ACKs before
