@@ -24,8 +24,9 @@ use crate::{
 };
 
 use super::sequence::{
-    SequenceShift, ServerSequenceInsertionProducer, record_server_sequence_insertion,
-    sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
+    SequenceShift, ServerSequenceInsertionOwner, ServerSequenceInsertionProducer,
+    record_server_sequence_insertion, sequence_at_or_after, shift_sequence_for_peer,
+    trim_sequence_shifts,
 };
 use super::state::{PendingClientPacket, SequenceState};
 
@@ -143,9 +144,20 @@ pub(super) struct PendingAreaLoaded {
 pub(super) struct PendingServerPacket {
     pub(super) family: VerifiedFamily,
     pub(super) packet: Vec<u8>,
+    /// Typed destination slot assigned from the authoritative ordered epoch
+    /// ledger immediately before this queued packet reaches strict validation.
+    /// `None` is reserved for packets whose reliable identity was already
+    /// established independently (for example, an ACK-only carrier).
+    pub(super) insertion_sequence: Option<PendingServerInsertionSequence>,
     pub(super) due_at: Instant,
     pub(super) reason: &'static str,
     pub(super) placement: PendingServerPacketPlacement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PendingServerInsertionSequence {
+    pub(super) owner: ServerSequenceInsertionOwner,
+    pub(super) offset: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -541,10 +553,14 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
     area_loaded_fallback_reason: Option<AreaLoadedFallbackReason>,
     synthesize_loadbar: bool,
 ) -> anyhow::Result<()> {
-    let shifted_first_sequence =
-        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_first_sequence);
-    let shifted_last_sequence =
-        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_last_sequence);
+    let current_source = sequence.current_server_source_epoch()?;
+    let existing_epochs = sequence.prospective_ordered_server_sequence_epochs()?;
+    let shifted_first_sequence = existing_epochs
+        .map_source(current_source.nearby(original_first_sequence)?)?
+        .sequence;
+    let shifted_last_sequence = existing_epochs
+        .map_source(current_source.nearby(original_last_sequence)?)?
+        .sequence;
     let now = Instant::now();
     let (
         release_client_ack_sequence,
@@ -574,9 +590,31 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
         // This is deliberately window-aware. It keeps synthetic UI packets out
         // of the deflated Area_ClientArea stream while still giving EE's id-2
         // screen-fade branch a live panel to complete.
-        let start_sequence = shifted_last_sequence.wrapping_add(1);
-        let end_sequence = shifted_last_sequence.wrapping_add(2);
-        let status_sequence = shifted_last_sequence.wrapping_add(3);
+        let producer = ServerSequenceInsertionProducer::SyntheticAreaLoad {
+            original_first_sequence,
+            original_last_sequence,
+        };
+        record_server_sequence_insertion(
+            &mut sequence.server_sequence_shifts,
+            &mut sequence.pending_server_sequence_insertions,
+            producer,
+            original_last_sequence.wrapping_add(1),
+            LOADBAR_WITH_STATUS_FRAME_COUNT,
+        )?;
+        let insertion_owner = sequence.current_server_insertion_owner(producer)?;
+        let prospective_epochs = sequence.prospective_ordered_server_sequence_epochs()?;
+        let insertion_range = prospective_epochs
+            .insertion_range(insertion_owner)
+            .ok_or_else(|| anyhow::anyhow!("synthetic area insertion range is absent"))?;
+        let start_sequence = insertion_range.destination_first.sequence;
+        let end_sequence = insertion_range
+            .destination_first
+            .checked_advance(1)?
+            .sequence;
+        let status_sequence = insertion_range
+            .destination_first
+            .checked_advance(2)?
+            .sequence;
 
         let start_payload = loadbar::start_payload(LOADBAR_AREA_SCREEN_FADE_STALL_EVENT_ID);
         let end_payload = loadbar::end_success_payload(LOADBAR_AREA_SCREEN_FADE_STALL_EVENT_ID);
@@ -595,19 +633,13 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
 
         let end_due_at = now + LOADBAR_COMPLETION_FALLBACK_DELAY;
         let area_loaded_due_at = end_due_at + AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE;
-        record_server_sequence_insertion(
-            &mut sequence.server_sequence_shifts,
-            &mut sequence.pending_server_sequence_insertions,
-            ServerSequenceInsertionProducer::SyntheticAreaLoad {
-                original_first_sequence,
-                original_last_sequence,
-            },
-            original_last_sequence.wrapping_add(1),
-            LOADBAR_WITH_STATUS_FRAME_COUNT,
-        )?;
         pending_packets.push(PendingServerPacket {
             family: VerifiedFamily::LoadBar,
             packet: start_packet,
+            insertion_sequence: Some(PendingServerInsertionSequence {
+                owner: insertion_owner,
+                offset: 0,
+            }),
             due_at: now,
             reason: "Area_ClientArea synthetic LoadBar_Start",
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
@@ -615,6 +647,10 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
         pending_packets.push(PendingServerPacket {
             family: VerifiedFamily::LoadBar,
             packet: end_packet,
+            insertion_sequence: Some(PendingServerInsertionSequence {
+                owner: insertion_owner,
+                offset: 1,
+            }),
             due_at: end_due_at,
             reason: AREA_LOADBAR_END_REASON,
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
@@ -622,6 +658,10 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
         pending_packets.push(PendingServerPacket {
             family: VerifiedFamily::ServerStatusStatus,
             packet: status_packet,
+            insertion_sequence: Some(PendingServerInsertionSequence {
+                owner: insertion_owner,
+                offset: 2,
+            }),
             due_at: end_due_at,
             reason: AREA_LOADBAR_STATUS_REASON,
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
@@ -947,6 +987,17 @@ mod tests {
 
     use super::*;
 
+    fn sequence_state_with_source(sequence: u16) -> SequenceState {
+        let mut state = SequenceState::default();
+        state.current_server_translation_source = Some(
+            crate::translate::m_frame::server_replay::ServerReliableSlotKey {
+                sequence,
+                origin_generation: 0,
+            },
+        );
+        state
+    }
+
     fn due_area_loaded(reason: AreaLoadedFallbackReason) -> PendingAreaLoaded {
         PendingAreaLoaded {
             server_ack_sequence: 30,
@@ -1075,7 +1126,7 @@ mod tests {
     fn named_area_rewrite_arms_area_loaded_fallback_without_env_switch() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(22);
 
         queue_loadbar_and_area_loaded_fallback(
             &mut pending_packets,
@@ -1100,7 +1151,7 @@ mod tests {
     fn synthetic_loadbar_uses_area_screen_fade_stall_id_and_status_status() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(22);
         let queued_at = Instant::now();
 
         queue_loadbar_and_area_loaded_fallback(
@@ -1192,10 +1243,16 @@ mod tests {
     fn synthetic_loadbar_does_not_split_multiframe_area_window() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(22);
         sequence
             .server_sequence_shifts
             .push(SequenceShift { base: 16, delta: 1 });
+        sequence.ordered_server_sequence_epochs =
+            super::super::sequence::OrderedServerSequenceEpochs::seed(
+                super::super::sequence::SequenceEpochKey::new(16, 0),
+                super::super::sequence::SequenceEpochKey::new(17, 0),
+            )
+            .expect("seed exact prior server insertion");
 
         queue_loadbar_and_area_loaded_fallback(
             &mut pending_packets,
@@ -1232,7 +1289,7 @@ mod tests {
     fn synthetic_loadbar_area_loaded_fallback_does_not_require_loadbar_completion_ack() {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(22);
 
         queue_loadbar_and_area_loaded_fallback(
             &mut pending_packets,

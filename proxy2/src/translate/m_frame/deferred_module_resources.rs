@@ -29,10 +29,11 @@ use super::{
     parse_window,
     sequence::{
         ServerSequenceInsertionProducer, record_server_sequence_insertion, sequence_at_or_after,
-        shift_sequence_for_peer,
     },
     state::SequenceState,
-    synthetic_area::{self, PendingServerPacket, PendingServerPacketPlacement},
+    synthetic_area::{
+        self, PendingServerInsertionSequence, PendingServerPacket, PendingServerPacketPlacement,
+    },
 };
 
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
@@ -258,29 +259,43 @@ fn queue_verified_module_resources_packet(
     captured: Option<&DeferredStatusPayload>,
     reason: &'static str,
 ) -> anyhow::Result<()> {
-    let synthetic_sequence =
-        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_first_sequence);
-    let packet =
-        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
-
+    let producer = ServerSequenceInsertionProducer::DeferredModuleResources {
+        original_first_sequence,
+        original_after_sequence,
+    };
     record_server_sequence_insertion(
         &mut sequence.server_sequence_shifts,
         &mut sequence.pending_server_sequence_insertions,
-        ServerSequenceInsertionProducer::DeferredModuleResources {
-            original_first_sequence,
-            original_after_sequence,
-        },
+        producer,
         original_first_sequence,
         MODULE_RESOURCES_INSERTED_FRAME_COUNT,
     )?;
-    let shifted_after_sequence =
-        shift_sequence_for_peer(&sequence.server_sequence_shifts, original_after_sequence);
+    let insertion_owner = sequence.current_server_insertion_owner(producer)?;
+    let prospective_epochs = sequence.prospective_ordered_server_sequence_epochs()?;
+    let insertion_range = prospective_epochs
+        .insertion_range(insertion_owner)
+        .ok_or_else(|| anyhow::anyhow!("deferred resource insertion range is absent"))?;
+    // The queued packet retains its source-domain placeholder only until the
+    // outer transaction has discovered every prefix/current/suffix producer.
+    // Final release resolves offset zero from `insertion_owner` through the
+    // prospective or committed ordered epoch ledger.
+    let synthetic_sequence = insertion_range.destination_first.sequence;
+    let packet =
+        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
+    let source_after = sequence
+        .current_server_source_epoch()?
+        .nearby(original_after_sequence)?;
+    let shifted_after_sequence = prospective_epochs.map_source(source_after)?.sequence;
 
     let now = Instant::now();
 
     pending_packets.push(PendingServerPacket {
         family: VerifiedFamily::ServerStatusModuleResources,
         packet,
+        insertion_sequence: Some(PendingServerInsertionSequence {
+            owner: insertion_owner,
+            offset: 0,
+        }),
         due_at: now,
         reason,
         placement: PendingServerPacketPlacement::BeforeCurrentEmit,
@@ -510,6 +525,17 @@ mod tests {
 
     use super::*;
 
+    fn sequence_state_with_source(sequence: u16) -> SequenceState {
+        let mut state = SequenceState::default();
+        state.current_server_translation_source = Some(
+            crate::translate::m_frame::server_replay::ServerReliableSlotKey {
+                sequence,
+                origin_generation: 0,
+            },
+        );
+        state
+    }
+
     #[test]
     fn validates_captured_legacy_short_status_shape() {
         let payload = [
@@ -556,7 +582,7 @@ mod tests {
             held_server_to_client_packets: Vec::new(),
         };
         let mut pending_packets = Vec::new();
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(13);
 
         queue_after_module_info_if_ready(
             &mut state,
@@ -620,7 +646,7 @@ mod tests {
             held_server_to_client_packets: Vec::new(),
         };
         let mut pending_packets = Vec::new();
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(13);
 
         queue_after_module_info_if_ready(
             &mut state,
@@ -656,7 +682,7 @@ mod tests {
         ));
         let mut state = DeferredModuleResourcesState::default();
         let mut pending_packets = Vec::new();
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(5);
 
         queue_after_module_info_if_ready(
             &mut state,
@@ -709,7 +735,7 @@ mod tests {
         assert!(runtime.observe_legacy_module_info_resources(&[], None));
         let mut state = DeferredModuleResourcesState::default();
         let mut pending_packets = Vec::new();
-        let mut sequence = SequenceState::default();
+        let mut sequence = sequence_state_with_source(5);
 
         queue_after_module_info_if_ready(
             &mut state,

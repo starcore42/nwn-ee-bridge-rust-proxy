@@ -136,6 +136,7 @@ pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> anyhow
         return Ok(Emit::Consumed);
     }
     begin_pending_server_drain_effect_transaction(state)?;
+    refresh_pending_server_packet_sequences(state)?;
     let mut proof_packets = deferred_module_resources::take_releasable_held_server_packets(
         &mut state.deferred_module_resources.pending,
     );
@@ -512,6 +513,57 @@ fn prospective_server_sequence_epochs(
     let insertion_count = plan.insertion_count();
     let candidate = plan.apply_atomically(&state.sequence.ordered_server_sequence_epochs)?;
     Ok(Some((candidate, insertion_count)))
+}
+
+fn refresh_pending_server_packet_sequences(state: &mut SessionState) -> anyhow::Result<()> {
+    let prospective = prospective_server_sequence_epochs(state)?;
+    let epochs = prospective
+        .as_ref()
+        .map(|(epochs, _)| epochs)
+        .unwrap_or(&state.sequence.ordered_server_sequence_epochs)
+        .clone();
+
+    for pending in &mut state.synthetic_area.pending_server_to_client_packets {
+        let Some(assignment) = pending.insertion_sequence else {
+            continue;
+        };
+        let range = epochs.insertion_range(assignment.owner).ok_or_else(|| {
+            anyhow::anyhow!(
+                "queued typed server packet insertion owner is absent from ordered epochs"
+            )
+        })?;
+        let destination = range
+            .destination_first
+            .checked_advance(u64::from(assignment.offset))?;
+        if destination >= range.destination_after {
+            anyhow::bail!("queued typed server packet offset exceeds its ordered insertion range");
+        }
+        let view = MFrameView::parse(&pending.packet)
+            .ok_or_else(|| anyhow::anyhow!("queued typed server packet is not an M frame"))?;
+        if view.frame_kind() != Some(MFrameType::ReliableData) {
+            anyhow::bail!("queued typed server insertion is not reliable data");
+        }
+        if view.sequence == destination.sequence {
+            continue;
+        }
+        write_be_u16(&mut pending.packet, 3, destination.sequence)
+            .then_some(())
+            .ok_or_else(|| {
+                anyhow::anyhow!("failed to assign queued typed server destination sequence")
+            })?;
+        encode_legacy_m_crc(&mut pending.packet)
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("failed to repair queued typed server packet CRC"))?;
+        tracing::trace!(
+            family = pending.family.as_str(),
+            reason = pending.reason,
+            destination_sequence = destination.sequence,
+            destination_generation = destination.generation,
+            insertion_offset = assignment.offset,
+            "queued server packet sequence assigned from authoritative typed insertion range"
+        );
+    }
+    Ok(())
 }
 
 fn commit_ordered_server_sequence_epochs_if_ready(state: &mut SessionState) {
@@ -4299,6 +4351,7 @@ fn finalize_server_to_client_emit(
         rollback_ordinary_server_emit_after_drop(state);
         return Ok(Emit::Drop);
     }
+    refresh_pending_server_packet_sequences(state)?;
     let area_gate_after_current = area_gate_after_current_server_emit(state, &emit)?;
     let now = Instant::now();
     if state.deflate.ordered_successor_effect_snapshot.is_none()
@@ -4964,6 +5017,7 @@ mod tests {
             synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::LoadBar,
                 packet: due_packet.clone(),
+                insertion_sequence: None,
                 due_at: Instant::now(),
                 reason: "malformed coalesced source must not drain valid due output",
                 placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
@@ -5327,6 +5381,7 @@ mod tests {
             synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::LoadBar,
                 packet: client_reliable_m_frame(40, 74, &payload),
+                insertion_sequence: None,
                 due_at: now + std::time::Duration::from_secs(60),
                 reason: "older delayed packet",
                 placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
@@ -5334,6 +5389,7 @@ mod tests {
             synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::LoadBar,
                 packet: client_reliable_m_frame(41, 74, &payload),
+                insertion_sequence: None,
                 due_at: now,
                 reason: "newly due packet",
                 placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
@@ -5609,6 +5665,7 @@ mod tests {
             .push(synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::LoadBar,
                 packet: vec![b'M'],
+                insertion_sequence: None,
                 due_at: Instant::now(),
                 reason: "ordinary coalesced strict rejection callback test",
                 placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
@@ -6184,6 +6241,7 @@ mod tests {
             synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::LoadBar,
                 packet: due_packet.clone(),
+                insertion_sequence: None,
                 due_at: Instant::now(),
                 reason: "incomplete salvage transaction ordering regression",
                 placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
@@ -6597,6 +6655,7 @@ mod tests {
             .push(synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::LoadBar,
                 packet: vec![b'M'],
+                insertion_sequence: None,
                 due_at: Instant::now(),
                 reason: "strict rejection callback test",
                 placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
@@ -8249,6 +8308,114 @@ mod tests {
                 .expect("map exact destination through authoritative epochs"),
             35,
             "the exact reverse transform must invert the same two-slot insertion"
+        );
+    }
+
+    #[test]
+    fn queued_typed_server_insertions_resolve_mixed_prefix_suffix_from_ordered_ranges() {
+        let mut state = SessionState::default();
+        state.sequence.current_server_translation_source =
+            Some(server_replay::ServerReliableSlotKey {
+                sequence: 10,
+                origin_generation: 0,
+            });
+        begin_ordinary_server_emit_effect_transaction(&mut state)
+            .expect("begin mixed producer transaction");
+
+        // Semantic discovery can observe an after-current inventory suffix
+        // before a before-current deferred-resource prefix. Typed ordering,
+        // not discovery order, must own both queued destination identities.
+        let suffix_producer = ServerSequenceInsertionProducer::Test { operation: 2 };
+        record_server_sequence_insertion(
+            &mut state.sequence.server_sequence_shifts,
+            &mut state.sequence.pending_server_sequence_insertions,
+            suffix_producer,
+            11,
+            1,
+        )
+        .expect("record suffix insertion");
+        let suffix_owner = state
+            .sequence
+            .current_server_insertion_owner(suffix_producer)
+            .expect("resolve suffix owner");
+
+        let prefix_producer = ServerSequenceInsertionProducer::Test { operation: 1 };
+        record_server_sequence_insertion(
+            &mut state.sequence.server_sequence_shifts,
+            &mut state.sequence.pending_server_sequence_insertions,
+            prefix_producer,
+            10,
+            1,
+        )
+        .expect("record prefix insertion");
+        let prefix_owner = state
+            .sequence
+            .current_server_insertion_owner(prefix_producer)
+            .expect("resolve prefix owner");
+
+        state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .extend([
+                synthetic_area::PendingServerPacket {
+                    family: VerifiedFamily::Inventory,
+                    packet: reliable_server_m_frame(11, 0, 0x08, 1, b"suffix"),
+                    insertion_sequence: Some(synthetic_area::PendingServerInsertionSequence {
+                        owner: suffix_owner,
+                        offset: 0,
+                    }),
+                    due_at: Instant::now(),
+                    reason: "typed suffix sequence test",
+                    placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
+                },
+                synthetic_area::PendingServerPacket {
+                    family: VerifiedFamily::ServerStatusModuleResources,
+                    packet: reliable_server_m_frame(11, 0, 0x08, 1, b"prefix"),
+                    insertion_sequence: Some(synthetic_area::PendingServerInsertionSequence {
+                        owner: prefix_owner,
+                        offset: 0,
+                    }),
+                    due_at: Instant::now(),
+                    reason: "typed prefix sequence test",
+                    placement: synthetic_area::PendingServerPacketPlacement::BeforeCurrentEmit,
+                },
+            ]);
+
+        refresh_pending_server_packet_sequences(&mut state)
+            .expect("assign speculative typed ranges");
+        let assigned = state
+            .synthetic_area
+            .pending_server_to_client_packets
+            .iter()
+            .map(|pending| MFrameView::parse(&pending.packet).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(assigned[0].sequence, 12, "suffix follows source 10");
+        assert_eq!(assigned[1].sequence, 10, "prefix precedes source 10");
+        assert!(assigned.iter().all(|view| view.crc_valid));
+
+        assert!(commit_server_emit_effect_transaction(
+            &mut state,
+            state::ServerEmitEffectTransactionKind::OrdinaryServerEmit,
+        ));
+        assert!(state.sequence.pending_server_sequence_insertions.is_empty());
+
+        // A delayed release resolves the same owner through the committed
+        // ledger even after the transaction-local intent list is gone.
+        assert!(write_be_u16(
+            &mut state.synthetic_area.pending_server_to_client_packets[0].packet,
+            3,
+            99,
+        ));
+        assert!(encode_legacy_m_crc(
+            &mut state.synthetic_area.pending_server_to_client_packets[0].packet,
+        ));
+        refresh_pending_server_packet_sequences(&mut state)
+            .expect("reassign committed typed range");
+        assert_eq!(
+            MFrameView::parse(&state.synthetic_area.pending_server_to_client_packets[0].packet)
+                .unwrap()
+                .sequence,
+            12
         );
     }
 
@@ -10945,6 +11112,7 @@ mod tests {
                 synthetic_area::PendingServerPacket {
                     family: VerifiedFamily::LoadBar,
                     packet: valid_packet.clone(),
+                    insertion_sequence: None,
                     due_at: Instant::now(),
                     reason: "pending drain rollback valid sibling",
                     placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
@@ -10952,6 +11120,7 @@ mod tests {
                 synthetic_area::PendingServerPacket {
                     family: VerifiedFamily::Inventory,
                     packet: vec![b'M'],
+                    insertion_sequence: None,
                     due_at: Instant::now(),
                     reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
                     placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
@@ -11201,6 +11370,7 @@ mod tests {
             .push(synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::Inventory,
                 packet: vec![b'M'],
+                insertion_sequence: None,
                 due_at: Instant::now(),
                 reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
                 placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
@@ -11302,6 +11472,7 @@ mod tests {
                 .push(synthetic_area::PendingServerPacket {
                     family: VerifiedFamily::Inventory,
                     packet: vec![b'M'],
+                    insertion_sequence: None,
                     due_at: Instant::now(),
                     reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
                     placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,
@@ -11359,6 +11530,7 @@ mod tests {
             .push(synthetic_area::PendingServerPacket {
                 family: VerifiedFamily::Inventory,
                 packet: vec![b'M'],
+                insertion_sequence: None,
                 due_at: Instant::now(),
                 reason: inventory_equipment::CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
                 placement: synthetic_area::PendingServerPacketPlacement::AfterCurrentEmit,

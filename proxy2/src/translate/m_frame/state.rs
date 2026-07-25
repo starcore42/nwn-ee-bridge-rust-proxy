@@ -20,7 +20,9 @@ use super::{
         BufferedInterleavedServerPacket, CompletedDeflatedStreamWindow, ServerDeflatedReassembly,
     },
     sequence::{
-        CoalescedSplitSequenceShift, OrderedServerSequenceEpochs, SequenceElision, SequenceShift,
+        CoalescedSplitSequenceShift, OrderedServerSequenceEpochs, SequenceElision,
+        SequenceEpochKey, SequenceShift, ServerSequenceInsertionOwner, ServerSequenceInsertionPlan,
+        ServerSequenceInsertionProducer,
     },
     server_replay, synthetic_area,
 };
@@ -231,6 +233,47 @@ pub(super) struct SequenceState {
     /// these owners.
     pub(super) server_output_ack_spans: Vec<ServerOutputAckSpan>,
     pub(super) pending_client_to_server_packets: Vec<PendingClientPacket>,
+}
+
+impl SequenceState {
+    pub(super) fn current_server_source_epoch(&self) -> anyhow::Result<SequenceEpochKey> {
+        let source = self.current_server_translation_source.ok_or_else(|| {
+            anyhow::anyhow!("typed server insertion lacks an exact current source owner")
+        })?;
+        let generation = i64::try_from(source.origin_generation)
+            .map_err(|_| anyhow::anyhow!("server insertion source generation overflow"))?;
+        Ok(SequenceEpochKey::new(source.sequence, generation))
+    }
+
+    pub(super) fn current_server_insertion_owner(
+        &self,
+        producer: ServerSequenceInsertionProducer,
+    ) -> anyhow::Result<ServerSequenceInsertionOwner> {
+        Ok(ServerSequenceInsertionOwner::new(
+            self.current_server_source_epoch()?,
+            producer,
+        ))
+    }
+
+    /// Preview the complete typed insertion set discovered so far in the
+    /// active server transaction. This intentionally does not consult the
+    /// compatibility shift list: packet builders use it only to assign typed
+    /// destinations, while the outer transaction retains the independent
+    /// legacy delta check until every immediate-output producer has migrated.
+    pub(super) fn prospective_ordered_server_sequence_epochs(
+        &self,
+    ) -> anyhow::Result<OrderedServerSequenceEpochs> {
+        if self.pending_server_sequence_insertions.is_empty() {
+            return Ok(self.ordered_server_sequence_epochs.clone());
+        }
+        let owner = self.current_server_source_epoch()?;
+        let plan = ServerSequenceInsertionPlan::from_typed_intents(
+            owner,
+            &self.pending_server_sequence_insertions,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("typed server insertion plan unexpectedly empty"))?;
+        plan.apply_atomically(&self.ordered_server_sequence_epochs)
+    }
 }
 
 #[derive(Debug, Clone)]

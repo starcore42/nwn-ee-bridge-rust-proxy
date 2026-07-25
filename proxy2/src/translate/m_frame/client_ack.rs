@@ -116,6 +116,7 @@ pub(super) fn take_due_consumed_ee_only_ack_packets(
     vec![PendingServerPacket {
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet,
+        insertion_sequence: None,
         due_at: now,
         reason: PROXY_OWNED_CLIENT_ACK_REASON,
         placement: PendingServerPacketPlacement::BeforeCurrentEmit,

@@ -100,15 +100,22 @@ impl SequenceEpochKey {
 /// Stable semantic identity for one proxy-owned server-lane insertion.
 ///
 /// Variant order is also the deterministic order for equal source bases:
-/// before-current resources, current-window expansion, then after-current
-/// compatibility outputs. The fields identify the original producer event,
-/// not its output shape, so replaying one identity with a different base or
-/// count remains a hard conflict.
+/// before-current resources, lifecycle controls that must separate logical
+/// units in the current coalesced payload, current-window expansion, then
+/// after-current compatibility outputs. In particular, Area_ClientArea
+/// LoadBar controls precede a later logical unit split from the same deflated
+/// source record. The fields identify the original producer event, not its
+/// output shape, so replaying one identity with a different base or count
+/// remains a hard conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum ServerSequenceInsertionProducer {
     DeferredModuleResources {
         original_first_sequence: u16,
         original_after_sequence: u16,
+    },
+    SyntheticAreaLoad {
+        original_first_sequence: u16,
+        original_last_sequence: u16,
     },
     CoalescedSplit {
         source_sequence: u16,
@@ -121,10 +128,6 @@ pub(super) enum ServerSequenceInsertionProducer {
     DeflatedProgressShellRetarget {
         first_sequence: u16,
         expected_frames: u16,
-    },
-    SyntheticAreaLoad {
-        original_first_sequence: u16,
-        original_last_sequence: u16,
     },
     InventoryEquipment {
         update_index: u64,
@@ -375,6 +378,23 @@ impl OrderedServerSequenceEpochs {
 
     pub(super) fn active_insertions(&self) -> usize {
         self.insertions.len()
+    }
+
+    /// Resolve the exact EE destination range owned by one typed insertion.
+    ///
+    /// Queued synthetic packets can outlive the server transaction that
+    /// discovered them. Retaining the semantic owner lets their final release
+    /// use the committed ordered ledger instead of a wrapped compatibility
+    /// shift that may have been recorded before another prefix/suffix producer
+    /// in the same transaction.
+    pub(super) fn insertion_range(
+        &self,
+        owner: ServerSequenceInsertionOwner,
+    ) -> Option<ServerSequenceInsertionRange> {
+        self.insertions
+            .iter()
+            .find(|insertion| insertion.owner == owner)
+            .map(|insertion| insertion.range)
     }
 
     /// Insert `count` proxy-owned destination sequences immediately before
@@ -1089,6 +1109,78 @@ mod tests {
             "one exact owner cannot acquire a conflicting range"
         );
         assert_eq!(epochs, baseline);
+    }
+
+    #[test]
+    fn same_base_area_controls_precede_later_deflated_logical_units() {
+        let source = epoch(24, 0);
+        let area_owner = ServerSequenceInsertionOwner::new(
+            source,
+            ServerSequenceInsertionProducer::SyntheticAreaLoad {
+                original_first_sequence: 24,
+                original_last_sequence: 24,
+            },
+        );
+        let deflated_owner = ServerSequenceInsertionOwner::new(
+            source,
+            ServerSequenceInsertionProducer::DeflatedRewrite {
+                first_sequence: 24,
+                original_frames: 1,
+            },
+        );
+        let coalesced_owner = ServerSequenceInsertionOwner::new(
+            source,
+            ServerSequenceInsertionProducer::CoalescedSplit {
+                source_sequence: 24,
+                source_origin_generation: 0,
+            },
+        );
+        let intents = [
+            ServerSequenceInsertionIntent {
+                producer: deflated_owner.producer,
+                source_base: 25,
+                count: 1,
+            },
+            ServerSequenceInsertionIntent {
+                producer: coalesced_owner.producer,
+                source_base: 25,
+                count: 1,
+            },
+            ServerSequenceInsertionIntent {
+                producer: area_owner.producer,
+                source_base: 25,
+                count: 3,
+            },
+        ];
+
+        let plan = ServerSequenceInsertionPlan::from_typed_intents(source, &intents)
+            .expect("plan same-base area transaction")
+            .expect("non-empty plan");
+        let epochs = plan
+            .apply_atomically(&OrderedServerSequenceEpochs::identity_at(source))
+            .expect("apply same-base area transaction");
+
+        let area_range = epochs
+            .insertion_range(area_owner)
+            .expect("area lifecycle range");
+        let deflated_range = epochs
+            .insertion_range(deflated_owner)
+            .expect("later coalesced unit range");
+        let coalesced_range = epochs
+            .insertion_range(coalesced_owner)
+            .expect("coalesced logical split range");
+        assert_eq!(area_range.destination_first, epoch(25, 0));
+        assert_eq!(area_range.destination_after, epoch(28, 0));
+        assert_eq!(
+            coalesced_range.destination_first,
+            area_range.destination_after
+        );
+        assert_eq!(coalesced_range.destination_after, epoch(29, 0));
+        assert_eq!(
+            deflated_range.destination_first,
+            coalesced_range.destination_after
+        );
+        assert_eq!(deflated_range.destination_after, epoch(30, 0));
     }
 
     #[test]

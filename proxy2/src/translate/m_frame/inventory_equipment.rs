@@ -29,7 +29,9 @@ use super::{
         InventoryEquipmentBridgeQueuedClientGuiStatusOutput, InventoryEquipmentBridgeQueuedOutput,
         PendingClientPacket, SessionState,
     },
-    synthetic_area::{self, PendingServerPacket, PendingServerPacketPlacement},
+    synthetic_area::{
+        self, PendingServerInsertionSequence, PendingServerPacket, PendingServerPacketPlacement,
+    },
 };
 
 const INVENTORY_EQUIPMENT_BRIDGE_REASON: &str =
@@ -198,29 +200,39 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     .ok_or_else(|| {
         anyhow::anyhow!("drained inventory/equipment update did not build exact Inventory payload")
     })?;
-    let shifted_trigger_sequence =
-        shift_sequence_for_peer(&state.sequence.server_sequence_shifts, trigger_sequence);
-    let synthetic_sequence = shifted_trigger_sequence.wrapping_add(1);
-    let packet =
-        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
-
     let future_shift_base = trigger_sequence.wrapping_add(1);
+    let producer = ServerSequenceInsertionProducer::InventoryEquipment {
+        update_index: update.update_index,
+        trigger_sequence,
+    };
     record_server_sequence_insertion(
         &mut state.sequence.server_sequence_shifts,
         &mut state.sequence.pending_server_sequence_insertions,
-        ServerSequenceInsertionProducer::InventoryEquipment {
-            update_index: update.update_index,
-            trigger_sequence,
-        },
+        producer,
         future_shift_base,
         INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
     )?;
+    let insertion_owner = state.sequence.current_server_insertion_owner(producer)?;
+    let prospective_epochs = state
+        .sequence
+        .prospective_ordered_server_sequence_epochs()?;
+    let synthetic_sequence = prospective_epochs
+        .insertion_range(insertion_owner)
+        .ok_or_else(|| anyhow::anyhow!("inventory/equipment insertion range is absent"))?
+        .destination_first
+        .sequence;
+    let packet =
+        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
     state
         .synthetic_area
         .pending_server_to_client_packets
         .push(PendingServerPacket {
             family: VerifiedFamily::Inventory,
             packet,
+            insertion_sequence: Some(PendingServerInsertionSequence {
+                owner: insertion_owner,
+                offset: 0,
+            }),
             due_at: Instant::now(),
             reason: INVENTORY_EQUIPMENT_BRIDGE_REASON,
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
@@ -628,31 +640,39 @@ pub(super) fn maybe_queue_confirmed_inventory_replay(
     .ok_or_else(|| {
         anyhow::anyhow!("confirmed ClientGui status replay did not build exact Inventory payload")
     })?;
-    let shifted_response_last_sequence = shift_sequence_for_peer(
-        &state.sequence.server_sequence_shifts,
-        response_last_sequence,
-    );
-    let synthetic_sequence = shifted_response_last_sequence.wrapping_add(1);
-    let packet =
-        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
-
     let future_shift_base = response_last_sequence.wrapping_add(1);
+    let producer = ServerSequenceInsertionProducer::ConfirmedInventoryReplay {
+        update_index: pending.update_index,
+        response_last_sequence,
+    };
     record_server_sequence_insertion(
         &mut state.sequence.server_sequence_shifts,
         &mut state.sequence.pending_server_sequence_insertions,
-        ServerSequenceInsertionProducer::ConfirmedInventoryReplay {
-            update_index: pending.update_index,
-            response_last_sequence,
-        },
+        producer,
         future_shift_base,
         INVENTORY_EQUIPMENT_BRIDGE_INSERTED_FRAME_COUNT,
     )?;
+    let insertion_owner = state.sequence.current_server_insertion_owner(producer)?;
+    let prospective_epochs = state
+        .sequence
+        .prospective_ordered_server_sequence_epochs()?;
+    let synthetic_sequence = prospective_epochs
+        .insertion_range(insertion_owner)
+        .ok_or_else(|| anyhow::anyhow!("confirmed inventory replay insertion range is absent"))?
+        .destination_first
+        .sequence;
+    let packet =
+        synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
     state
         .synthetic_area
         .pending_server_to_client_packets
         .push(PendingServerPacket {
             family: VerifiedFamily::Inventory,
             packet,
+            insertion_sequence: Some(PendingServerInsertionSequence {
+                owner: insertion_owner,
+                offset: 0,
+            }),
             due_at: Instant::now(),
             reason: CONFIRMED_CLIENT_GUI_INVENTORY_REPLAY_REASON,
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
@@ -1004,6 +1024,16 @@ mod tests {
             .last_observed_client_gui_status_server_peer_ack_sequence = Some(server_ack_sequence);
     }
 
+    fn session_state_with_server_source(sequence: u16) -> SessionState {
+        let mut state = SessionState::default();
+        state.sequence.current_server_translation_source =
+            Some(super::super::server_replay::ServerReliableSlotKey {
+                sequence,
+                origin_generation: 0,
+            });
+        state
+    }
+
     fn ready_server_inventory_update() -> InventoryEquipmentBridgeStateUpdate {
         InventoryEquipmentBridgeStateUpdate {
             update_index: 1,
@@ -1029,7 +1059,7 @@ mod tests {
 
     #[test]
     fn queues_exact_inventory_output_after_server_inventory_state_update() {
-        let mut state = SessionState::default();
+        let mut state = session_state_with_server_source(10);
         state
             .semantic
             .ui
@@ -2487,7 +2517,7 @@ mod tests {
             false,
             0x0002_0000,
         ));
-        let mut state = SessionState::default();
+        let mut state = session_state_with_server_source(10);
         state
             .semantic
             .objects
