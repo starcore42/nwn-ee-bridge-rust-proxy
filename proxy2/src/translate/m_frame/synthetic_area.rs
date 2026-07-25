@@ -595,7 +595,6 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
             original_last_sequence,
         };
         record_server_sequence_insertion(
-            &mut sequence.server_sequence_shifts,
             &mut sequence.pending_server_sequence_insertions,
             producer,
             original_last_sequence.wrapping_add(1),
@@ -734,7 +733,7 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
             AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE.as_millis(),
         fallback_after_area_ack_grace_ms = AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE.as_millis(),
         pending_server_packets = pending_packets.len(),
-        shifts = sequence.server_sequence_shifts.len(),
+        pending_typed_insertions = sequence.pending_server_sequence_insertions.len(),
         synthetic_loadbar = synthesize_loadbar,
         synthetic_area_loaded_enabled = area_loaded_fallback_reason.is_some(),
         area_loaded_fallback_reason =
@@ -1173,12 +1172,6 @@ mod tests {
             pending_packets[2].family,
             VerifiedFamily::ServerStatusStatus
         );
-        assert_eq!(sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(sequence.server_sequence_shifts[0].base, 23);
-        assert_eq!(
-            sequence.server_sequence_shifts[0].delta,
-            LOADBAR_WITH_STATUS_FRAME_COUNT
-        );
         assert_eq!(sequence.pending_server_sequence_insertions.len(), 1);
         assert_eq!(
             pending_packets[0].placement,
@@ -1244,9 +1237,6 @@ mod tests {
         let mut pending_packets = Vec::new();
         let mut pending_area_loaded = None;
         let mut sequence = sequence_state_with_source(22);
-        sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 16, delta: 1 });
         sequence.ordered_server_sequence_epochs =
             super::super::sequence::OrderedServerSequenceEpochs::seed(
                 super::super::sequence::SequenceEpochKey::new(16, 0),
@@ -1269,8 +1259,16 @@ mod tests {
         let start = MFrameView::parse(&pending_packets[0].packet).expect("start frame");
         let end = MFrameView::parse(&pending_packets[1].packet).expect("end frame");
         let status = MFrameView::parse(&pending_packets[2].packet).expect("status frame");
+        let prospective = sequence
+            .prospective_ordered_server_sequence_epochs()
+            .expect("prospective typed area insertion");
         let shifted_area_window = (22..=26)
-            .map(|source| shift_sequence_for_peer(&sequence.server_sequence_shifts, source))
+            .map(|source| {
+                prospective
+                    .map_source(super::super::sequence::SequenceEpochKey::new(source, 0))
+                    .expect("map exact area source")
+                    .sequence
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(start.sequence, 28);

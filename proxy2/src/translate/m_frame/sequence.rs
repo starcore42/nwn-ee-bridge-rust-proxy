@@ -133,8 +133,8 @@ pub(super) enum ServerSequenceInsertionProducer {
     Test { operation: u64 },
 }
 
-/// Transaction-local producer claim recorded at the same boundary as the
-/// compatibility-coordinate parity entry.
+/// Transaction-local producer claim recorded at the semantic boundary that
+/// creates one proxy-owned reliable range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ServerSequenceInsertionIntent {
     producer: ServerSequenceInsertionProducer,
@@ -176,12 +176,11 @@ struct PlannedServerSequenceInsertion {
 
 /// Complete insertion delta discovered by one speculative server transaction.
 ///
-/// Producers record typed intents beside the temporary bare `SequenceShift`
-/// parity entry. Semantic discovery order is not transport order: a coalesced
-/// transaction can discover an inventory suffix before a deferred-resource
-/// prefix. This plan restores exact generations relative to the reliable
-/// source owner and sorts by source position plus typed placement before
-/// touching the ordered epoch ledger.
+/// Semantic discovery order is not transport order: a coalesced transaction
+/// can discover an inventory suffix before a deferred-resource prefix. This
+/// plan restores exact generations relative to the reliable source owner and
+/// sorts by source position plus typed placement before touching the ordered
+/// epoch ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServerSequenceInsertionPlan {
     owner_source: SequenceEpochKey,
@@ -216,36 +215,6 @@ impl ServerSequenceInsertionPlan {
         }))
     }
 
-    /// Prove every typed producer claim has one identical compatibility append.
-    ///
-    /// The compatibility list is intentionally no longer prefix-trimmed. It is
-    /// not a wire transform, but retaining its complete cumulative history
-    /// keeps the remaining preassigned synthetic/coalesced packet builders
-    /// auditable until they migrate to exact insertion ranges.
-    pub(super) fn validate_legacy_append_delta(
-        &self,
-        baseline: &[SequenceShift],
-        current: &[SequenceShift],
-    ) -> anyhow::Result<()> {
-        let mut appended = legacy_append_delta(baseline, current)?
-            .iter()
-            .map(|shift| Ok((self.owner_source.nearby(shift.base)?, shift.delta)))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let mut typed = self
-            .insertions
-            .iter()
-            .map(|insertion| (insertion.source_base, insertion.count))
-            .collect::<Vec<_>>();
-        appended.sort_by_key(|(source, count)| (*source, *count));
-        typed.sort_by_key(|(source, count)| (*source, *count));
-        if appended != typed {
-            anyhow::bail!(
-                "typed server insertion intents do not exactly cover the legacy append delta"
-            );
-        }
-        Ok(())
-    }
-
     pub(super) fn insertion_count(&self) -> usize {
         self.insertions.len()
     }
@@ -278,21 +247,6 @@ impl ServerSequenceInsertionPlan {
         }
         Ok(candidate)
     }
-}
-
-fn legacy_append_delta<'a>(
-    baseline: &[SequenceShift],
-    current: &'a [SequenceShift],
-) -> anyhow::Result<&'a [SequenceShift]> {
-    let maximum_overlap = baseline.len().min(current.len());
-    let overlap = (0..=maximum_overlap)
-        .rev()
-        .find(|overlap| baseline[baseline.len().saturating_sub(*overlap)..] == current[..*overlap])
-        .unwrap_or(0);
-    if !baseline.is_empty() && overlap == 0 {
-        anyhow::bail!("legacy server sequence shift history lost every transaction baseline entry");
-    }
-    Ok(&current[overlap..])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,14 +560,13 @@ pub(super) fn shift_sequence_for_peer(shifts: &[SequenceShift], original_sequenc
     original_sequence.wrapping_add(delta)
 }
 
-/// Record one producer-owned insertion in both coordinate systems.
+/// Record one producer-owned insertion for the current server transaction.
 ///
 /// The typed intent becomes the authoritative ordered-ledger owner only after
-/// the same outer strict validation succeeds. The bare compatibility list is
-/// retained temporarily for transaction parity validation; it must keep
-/// complete history rather than silently dropping a cumulative prefix.
+/// the same outer strict validation succeeds. Producer identity, source base,
+/// and width are sufficient to assign every prospective and committed output;
+/// no parallel wrapping compatibility coordinate is retained.
 pub(super) fn record_server_sequence_insertion(
-    shifts: &mut Vec<SequenceShift>,
     intents: &mut Vec<ServerSequenceInsertionIntent>,
     producer: ServerSequenceInsertionProducer,
     source_base: u16,
@@ -632,10 +585,6 @@ pub(super) fn record_server_sequence_insertion(
         anyhow::bail!("server transaction exceeded typed insertion intent capacity");
     }
 
-    shifts.push(SequenceShift {
-        base: source_base,
-        delta: count,
-    });
     intents.push(ServerSequenceInsertionIntent {
         producer,
         source_base,
@@ -750,15 +699,9 @@ mod tests {
     #[test]
     fn typed_transaction_plan_orders_mixed_suffix_before_prefix() {
         let owner = epoch(40, 3);
-        let baseline = [SequenceShift { base: 12, delta: 2 }];
         // Semantic discovery order is deliberately opposite reliable-source
         // placement: an inventory suffix at 42 is found before a deferred
         // resource prefix at 40.
-        let current = [
-            SequenceShift { base: 12, delta: 2 },
-            SequenceShift { base: 42, delta: 1 },
-            SequenceShift { base: 40, delta: 3 },
-        ];
         let intents = [
             insertion_intent(
                 ServerSequenceInsertionProducer::InventoryEquipment {
@@ -780,8 +723,6 @@ mod tests {
         let plan = ServerSequenceInsertionPlan::from_typed_intents(owner, &intents)
             .expect("complete transaction plan")
             .expect("two insertions");
-        plan.validate_legacy_append_delta(&baseline, &current)
-            .expect("typed producers cover legacy append");
         assert_eq!(plan.insertion_count(), 2);
 
         let epochs = plan
@@ -802,25 +743,16 @@ mod tests {
     }
 
     #[test]
-    fn transaction_plan_recovers_append_after_legacy_prefix_trim() {
+    fn transaction_plan_adds_seventeenth_insertion_without_parallel_history() {
         let owner = epoch(17, 0);
-        let baseline = (1..=16)
-            .map(|base| SequenceShift { base, delta: 1 })
-            .collect::<Vec<_>>();
-        let mut current = baseline.clone();
-        current.push(SequenceShift { base: 17, delta: 1 });
-        trim_sequence_shifts(&mut current);
-
         let intents = [insertion_intent(
             ServerSequenceInsertionProducer::Test { operation: 17 },
             17,
             1,
         )];
         let plan = ServerSequenceInsertionPlan::from_typed_intents(owner, &intents)
-            .expect("trim-aware transaction plan")
+            .expect("typed transaction plan")
             .expect("seventeenth insertion");
-        plan.validate_legacy_append_delta(&baseline, &current)
-            .expect("typed producer survives legacy prefix trim");
         assert_eq!(plan.insertion_count(), 1);
         let mut epochs = OrderedServerSequenceEpochs::identity();
         for base in 1..=16u16 {
@@ -834,18 +766,16 @@ mod tests {
         assert_eq!(
             migrated
                 .map_source(epoch(17, 0))
-                .expect("map after legacy trim"),
+                .expect("map after seventeenth insertion"),
             epoch(34, 0)
         );
     }
 
     #[test]
-    fn typed_server_insertion_recording_keeps_more_than_sixteen_compatibility_entries() {
-        let mut shifts = Vec::new();
+    fn typed_server_insertion_recording_keeps_more_than_sixteen_exact_intents() {
         let mut intents = Vec::new();
         for operation in 0..17u64 {
             record_server_sequence_insertion(
-                &mut shifts,
                 &mut intents,
                 ServerSequenceInsertionProducer::Test { operation },
                 operation as u16,
@@ -854,10 +784,11 @@ mod tests {
             .expect("record typed insertion");
         }
 
-        assert_eq!(shifts.len(), 17);
         assert_eq!(intents.len(), 17);
-        assert_eq!(shifts[0], SequenceShift { base: 0, delta: 1 });
-        assert_eq!(shifts[16], SequenceShift { base: 16, delta: 1 });
+        let plan = ServerSequenceInsertionPlan::from_typed_intents(epoch(0, 0), &intents)
+            .expect("typed insertion plan")
+            .expect("non-empty insertion plan");
+        assert_eq!(plan.insertion_count(), 17);
     }
 
     #[test]

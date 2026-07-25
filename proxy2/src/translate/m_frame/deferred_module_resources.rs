@@ -264,7 +264,6 @@ fn queue_verified_module_resources_packet(
         original_after_sequence,
     };
     record_server_sequence_insertion(
-        &mut sequence.server_sequence_shifts,
         &mut sequence.pending_server_sequence_insertions,
         producer,
         original_first_sequence,
@@ -596,9 +595,6 @@ mod tests {
         .expect("deferred resource packet should queue");
 
         assert!(state.pending_status.is_none());
-        assert_eq!(sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(sequence.server_sequence_shifts[0].base, 13);
-        assert_eq!(sequence.server_sequence_shifts[0].delta, 1);
         assert_eq!(sequence.pending_server_sequence_insertions.len(), 1);
         assert_eq!(pending_packets.len(), 1);
         assert_eq!(
@@ -758,9 +754,6 @@ mod tests {
             pending_packets[0].placement,
             PendingServerPacketPlacement::BeforeCurrentEmit
         );
-        assert_eq!(sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(sequence.server_sequence_shifts[0].base, 5);
-        assert_eq!(sequence.server_sequence_shifts[0].delta, 1);
         assert_eq!(sequence.pending_server_sequence_insertions.len(), 1);
         assert_eq!(
             state

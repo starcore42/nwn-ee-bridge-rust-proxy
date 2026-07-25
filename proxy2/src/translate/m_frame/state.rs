@@ -194,12 +194,6 @@ pub(super) struct SequenceState {
     pub(super) latest_server_sequence_to_client: Option<u16>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
     pub(super) client_sequence_elisions: Vec<SequenceElision>,
-    /// Complete compatibility-coordinate history retained only as an
-    /// independent transaction-parity check while typed producer claims are
-    /// rolled out. This list is not authoritative for packet assignment,
-    /// emitted server sequences, or client ACKs and is deliberately never
-    /// prefix-trimmed; the exact ordered epoch ledger below owns those paths.
-    pub(super) server_sequence_shifts: Vec<SequenceShift>,
     /// Exact outer server source currently being translated. Ready dispatches
     /// also expose this through `pending_dispatch_key`; committed exact
     /// retransmits and salvage retries do not, so the translator retains their
@@ -254,10 +248,7 @@ impl SequenceState {
     }
 
     /// Preview the complete typed insertion set discovered so far in the
-    /// active server transaction. This intentionally does not consult the
-    /// compatibility shift list: packet builders assign typed destinations,
-    /// while the outer transaction retains an independent parity check until
-    /// the compatibility ledger itself is removed.
+    /// active server transaction.
     pub(super) fn prospective_ordered_server_sequence_epochs(
         &self,
     ) -> anyhow::Result<OrderedServerSequenceEpochs> {

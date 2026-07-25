@@ -552,7 +552,10 @@ fn split_rewritten_coalesced_records(
             source_origin_generation = source.origin_generation,
             shift_base = future_shift_base,
             inserted_extra_packets,
-            shifts = state.sequence.server_sequence_shifts.len(),
+            active_typed_insertions = state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
             output_frames = assigned_output_frames,
             "server coalesced split replay reused authoritative typed insertion range"
         );
@@ -564,7 +567,7 @@ fn split_rewritten_coalesced_records(
         source_origin_generation = source.origin_generation,
         shift_base = future_shift_base,
         inserted_extra_packets,
-        shifts = state.sequence.server_sequence_shifts.len(),
+        pending_typed_insertions = state.sequence.pending_server_sequence_insertions.len(),
         output_frames = assigned_output_frames,
         "server coalesced rewrite promoted packetized records into reliable M frames; future server sequences shifted"
     );
@@ -2532,9 +2535,7 @@ mod tests {
 
         assert!(pre_shifted);
         assert_eq!(packets.len(), 2);
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.server_sequence_shifts[0].base, 62);
-        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
         assert_eq!(state.sequence.server_output_ack_spans.len(), 1);
         assert_eq!(
             state.sequence.server_output_ack_spans[0],
@@ -2581,7 +2582,6 @@ mod tests {
 
         let mut state = SessionState::default();
         super::super::sequence::record_server_sequence_insertion(
-            &mut state.sequence.server_sequence_shifts,
             &mut state.sequence.pending_server_sequence_insertions,
             ServerSequenceInsertionProducer::SyntheticAreaLoad {
                 original_first_sequence: 61,
@@ -2692,9 +2692,7 @@ mod tests {
         .expect("first split should promote records");
 
         assert!(first_pre_shifted);
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.server_sequence_shifts[0].base, 62);
-        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
 
         let first_sequences: Vec<u16> = first_packets
             .iter()
@@ -2723,9 +2721,9 @@ mod tests {
 
         assert!(second_pre_shifted);
         assert_eq!(
-            state.sequence.server_sequence_shifts.len(),
-            1,
-            "replaying the same coalesced source window must not append another future shift"
+            state.sequence.pending_server_sequence_insertions.len(),
+            0,
+            "replaying a committed coalesced source must not append another typed intent"
         );
         assert_eq!(
             state
@@ -2802,9 +2800,7 @@ mod tests {
 
         assert!(pre_shifted);
         assert_eq!(packets.len(), 2);
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.server_sequence_shifts[0].base, 62);
-        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
         for (expected_sequence, (_, packet)) in [61u16, 62u16].into_iter().zip(packets.iter()) {
             let view = MFrameView::parse(packet).expect("promoted packet should parse as M");
             assert!(view.crc_valid);
@@ -3082,9 +3078,7 @@ mod tests {
         assert!(view.crc_valid);
         assert_eq!(view.sequence, 7);
         assert_eq!(view.ack_sequence, 72);
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.server_sequence_shifts[0].base, 7);
-        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
     }
 
     #[test]
@@ -3135,9 +3129,7 @@ mod tests {
         assert!(view.crc_valid);
         assert_eq!(view.sequence, 7);
         assert_eq!(view.ack_sequence, 80);
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.server_sequence_shifts[0].base, 7);
-        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
     }
 
     #[test]
@@ -3207,10 +3199,7 @@ mod tests {
 
         assert!(pre_shifted);
         assert!(packets.len() >= 4);
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        let shift = &state.sequence.server_sequence_shifts[0];
-        assert_eq!(shift.base, 101);
-        assert_eq!(shift.delta as usize, packets.len() - 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
 
         for (index, (_, packet)) in packets.iter().enumerate() {
             assert!(

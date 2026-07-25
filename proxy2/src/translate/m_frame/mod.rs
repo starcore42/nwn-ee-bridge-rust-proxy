@@ -479,36 +479,19 @@ fn pending_server_source_epoch(state: &SessionState) -> anyhow::Result<SequenceE
 fn prospective_server_sequence_epochs(
     state: &SessionState,
 ) -> anyhow::Result<Option<(sequence::OrderedServerSequenceEpochs, usize)>> {
-    let Some(snapshot) = state.deflate.ordered_successor_effect_snapshot.as_ref() else {
+    if state.deflate.ordered_successor_effect_snapshot.is_none() {
         return Ok(None);
-    };
-    let baseline = &snapshot.sequence.server_sequence_shifts;
-    let current = &state.sequence.server_sequence_shifts;
+    }
     let intents = &state.sequence.pending_server_sequence_insertions;
-    if baseline == current && intents.is_empty() {
+    if intents.is_empty() {
         return Ok(None);
     }
     let owner = pending_server_source_epoch(state)?;
     let Some(plan) = ServerSequenceInsertionPlan::from_typed_intents(owner, intents)? else {
-        anyhow::bail!("legacy server insertion changed without a typed producer intent");
+        return Ok(None);
     };
-    plan.validate_legacy_append_delta(baseline, current)?;
-    if baseline == current {
-        anyhow::bail!("typed server insertion intent has no matching legacy append");
-    }
     if plan.insertion_count() == 0 {
         return Ok(None);
-    }
-    if state
-        .sequence
-        .ordered_server_sequence_epochs
-        .checkpoint()
-        .is_none()
-        && !baseline.is_empty()
-    {
-        anyhow::bail!(
-            "ordered server epochs cannot seed after an unowned compatibility insertion history"
-        );
     }
     let insertion_count = plan.insertion_count();
     let candidate = plan.apply_atomically(&state.sequence.ordered_server_sequence_epochs)?;
@@ -606,11 +589,6 @@ fn map_client_destination_ack_to_server_source(
         .unwrap_or(&state.sequence.ordered_server_sequence_epochs);
     let spans = &state.sequence.server_output_ack_spans;
     if epochs.checkpoint().is_none() && spans.is_empty() {
-        if !state.sequence.server_sequence_shifts.is_empty() {
-            anyhow::bail!(
-                "server compatibility insertions exist without an authoritative ordered epoch"
-            );
-        }
         return Ok(destination_ack_sequence);
     }
 
@@ -3587,11 +3565,6 @@ fn unshift_client_ack_for_server(
         .is_none()
         && state.sequence.server_output_ack_spans.is_empty()
     {
-        if !state.sequence.server_sequence_shifts.is_empty() {
-            anyhow::bail!(
-                "server compatibility insertions exist without an authoritative ordered epoch"
-            );
-        }
         return Ok(());
     }
 
@@ -4214,11 +4187,6 @@ fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> 
         None => &state.sequence.ordered_server_sequence_epochs,
     };
     if epochs.checkpoint().is_none() {
-        if !state.sequence.server_sequence_shifts.is_empty() {
-            anyhow::bail!(
-                "server compatibility insertions exist without an authoritative ordered epoch"
-            );
-        }
         return Ok(());
     }
     let owner = pending_server_source_epoch(state)?;
@@ -4828,10 +4796,13 @@ mod tests {
         );
         let mut state = SessionState::default();
         state.synthetic_area.synthesize_loadbar = false;
-        state
-            .sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 10, delta: 1 });
+        seed_authoritative_server_insertion(
+            &mut state,
+            SequenceEpochKey::new(10, 0),
+            SequenceEpochKey::new(10, 0),
+            1,
+            10,
+        );
         state.deflate.completed_server_stream_windows.push(
             reassembly::CompletedDeflatedStreamWindow {
                 first_sequence: 10,
@@ -4911,19 +4882,12 @@ mod tests {
             .expect("stage expanded source ACK");
         finish_server_to_client_emit_validation(&mut state, true);
 
-        let committed_shifts = state
-            .sequence
-            .server_sequence_shifts
-            .iter()
-            .map(|shift| (shift.base, shift.delta))
-            .collect::<Vec<_>>();
         let committed_epoch_insertions = state
             .sequence
             .ordered_server_sequence_epochs
             .active_insertions();
         let committed_cache_windows = state.deflate.completed_server_stream_windows.len();
         let committed_destination_slots = state.ee_server_send_window.slots.len();
-        assert_eq!(committed_shifts.len(), 1);
         assert!(
             state.sequence.pending_server_sequence_insertions.is_empty(),
             "committed deflated producer intent must not leak into the next transaction"
@@ -4962,14 +4926,9 @@ mod tests {
             .expect("stage refreshed source ACK");
         finish_server_to_client_emit_validation(&mut state, true);
 
-        assert_eq!(
-            state
-                .sequence
-                .server_sequence_shifts
-                .iter()
-                .map(|shift| (shift.base, shift.delta))
-                .collect::<Vec<_>>(),
-            committed_shifts
+        assert!(
+            state.sequence.pending_server_sequence_insertions.is_empty(),
+            "exact replay must not retain a duplicate typed insertion intent"
         );
         assert_eq!(
             state
@@ -7103,7 +7062,6 @@ mod tests {
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
         );
-        assert!(!state.sequence.server_sequence_shifts.is_empty());
         assert!(
             !state.sequence.pending_server_sequence_insertions.is_empty(),
             "area side effects must stage typed insertion ownership before validation"
@@ -7145,7 +7103,6 @@ mod tests {
                 .area_resref
                 .is_empty()
         );
-        assert!(state.sequence.server_sequence_shifts.is_empty());
         assert!(
             state.sequence.pending_server_sequence_insertions.is_empty(),
             "strict rejection must restore transaction-local typed insertion claims"
@@ -7187,7 +7144,6 @@ mod tests {
             state.area_context.latest_area_placeables.area_resref,
             "voyage"
         );
-        assert!(!state.sequence.server_sequence_shifts.is_empty());
         assert!(
             state.sequence.pending_server_sequence_insertions.is_empty(),
             "strict acceptance must drain typed claims into the ordered ledger"
@@ -7511,12 +7467,10 @@ mod tests {
             "voyage"
         );
         assert_eq!(state.semantic.area.client_area_packets, 1);
-        let shifts = state
+        let committed_epoch_insertions = state
             .sequence
-            .server_sequence_shifts
-            .iter()
-            .map(|shift| (shift.base, shift.delta))
-            .collect::<Vec<_>>();
+            .ordered_server_sequence_epochs
+            .active_insertions();
         let pending_packets = state.synthetic_area.pending_server_to_client_packets.len();
 
         let replay_emit =
@@ -7529,11 +7483,9 @@ mod tests {
         assert_eq!(
             state
                 .sequence
-                .server_sequence_shifts
-                .iter()
-                .map(|shift| (shift.base, shift.delta))
-                .collect::<Vec<_>>(),
-            shifts
+                .ordered_server_sequence_epochs
+                .active_insertions(),
+            committed_epoch_insertions
         );
         assert_eq!(
             state.synthetic_area.pending_server_to_client_packets.len(),
@@ -7596,7 +7548,7 @@ mod tests {
                 .is_empty()
         );
         assert!(state.synthetic_area.server_hold_gate.is_none());
-        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert!(state.sequence.pending_server_sequence_insertions.is_empty());
         assert!(state.direct_server_semantic_replays.completed.is_empty());
         assert!(
             state
@@ -8149,10 +8101,6 @@ mod tests {
         );
         finish_server_to_client_emit_validation(&mut state, true);
         let source = state.server_reliable_slots.slots[0].key;
-        state
-            .sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 62, delta: 1 });
         seed_authoritative_server_insertion(
             &mut state,
             SequenceEpochKey::new(61, 0),
@@ -8256,12 +8204,8 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_server_transforms_ignore_mismatched_compatibility_delta() {
+    fn authoritative_server_transforms_use_only_exact_epoch_state() {
         let mut state = SessionState::default();
-        state
-            .sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 35, delta: 1 });
         seed_authoritative_server_insertion(
             &mut state,
             SequenceEpochKey::new(35, 0),
@@ -8320,7 +8264,6 @@ mod tests {
         // not discovery order, must own both queued destination identities.
         let suffix_producer = ServerSequenceInsertionProducer::Test { operation: 2 };
         record_server_sequence_insertion(
-            &mut state.sequence.server_sequence_shifts,
             &mut state.sequence.pending_server_sequence_insertions,
             suffix_producer,
             11,
@@ -8334,7 +8277,6 @@ mod tests {
 
         let prefix_producer = ServerSequenceInsertionProducer::Test { operation: 1 };
         record_server_sequence_insertion(
-            &mut state.sequence.server_sequence_shifts,
             &mut state.sequence.pending_server_sequence_insertions,
             prefix_producer,
             10,
@@ -8668,10 +8610,6 @@ mod tests {
         state.sequence.latest_client_sequence_from_client = Some(10);
         state.sequence.latest_client_ack_from_client = None;
         state.sequence.latest_server_sequence_to_client = Some(62);
-        state
-            .sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 62, delta: 1 });
         seed_authoritative_server_insertion(
             &mut state,
             SequenceEpochKey::new(61, 4),
@@ -8762,10 +8700,6 @@ mod tests {
             .expect("pin ACK-carrier server slot"),
             server_replay::PreparedServerReliableSource::Pinned(_)
         ));
-        state
-            .sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 35, delta: 2 });
         seed_authoritative_server_insertion(
             &mut state,
             SequenceEpochKey::new(35, 0),
@@ -9065,7 +8999,10 @@ mod tests {
         let baseline_windows = state.deflate.completed_server_stream_windows.len();
         let baseline_slots = state.deflate.completed_server_reliable_stream_slots.len();
         let baseline_replays = state.direct_server_semantic_replays.completed.len();
-        let baseline_shifts = state.sequence.server_sequence_shifts.len();
+        let baseline_epoch_insertions = state
+            .sequence
+            .ordered_server_sequence_epochs
+            .active_insertions();
         let emit = translate_server_to_client(&second, &mut state)
             .expect("complete deflated Area window speculatively");
         stage_direct_server_send_window(&mut state, &emit)
@@ -9118,7 +9055,13 @@ mod tests {
             state.direct_server_semantic_replays.completed.len(),
             baseline_replays
         );
-        assert_eq!(state.sequence.server_sequence_shifts.len(), baseline_shifts);
+        assert_eq!(
+            state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
+            baseline_epoch_insertions
+        );
         assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
         assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
         let restored = state
@@ -9149,12 +9092,6 @@ mod tests {
             "voyage"
         );
 
-        let committed_shifts = state
-            .sequence
-            .server_sequence_shifts
-            .iter()
-            .map(|shift| (shift.base, shift.delta))
-            .collect::<Vec<_>>();
         let committed_epoch_insertions = state
             .sequence
             .ordered_server_sequence_epochs
@@ -9189,15 +9126,9 @@ mod tests {
             committed_identities[..replay_packets.len()],
             "stateless deflated retransmit must keep the committed sequence/payload identity"
         );
-        assert_eq!(
-            state
-                .sequence
-                .server_sequence_shifts
-                .iter()
-                .map(|shift| (shift.base, shift.delta))
-                .collect::<Vec<_>>(),
-            committed_shifts,
-            "exact replay must not register the same legacy insertion twice"
+        assert!(
+            state.sequence.pending_server_sequence_insertions.is_empty(),
+            "exact replay must not retain the same typed insertion twice"
         );
         assert_eq!(
             state
@@ -9865,10 +9796,6 @@ mod tests {
         // wrapped value after sequence zero, never an absent-field sentinel.
         let mut client_state = SessionState::default();
         client_state.sequence.latest_client_ack_from_client = Some(u16::MAX);
-        client_state
-            .sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 0, delta: 1 });
         seed_authoritative_server_insertion(
             &mut client_state,
             SequenceEpochKey::new(0, 0),
@@ -10063,7 +9990,7 @@ mod tests {
         for frame in invalid_frames {
             assert!(translate_server_to_client_inner(&frame, &mut state).is_err());
             assert_eq!(state.sequence.latest_server_sequence_to_client, Some(60));
-            assert!(state.sequence.server_sequence_shifts.is_empty());
+            assert!(state.sequence.pending_server_sequence_insertions.is_empty());
             assert!(state.sequence.pending_client_to_server_packets.is_empty());
             assert!(state.direct_server_semantic_replays.completed.is_empty());
             assert_eq!(state.server_reliable_slots.origin_generation, 0);
@@ -12430,7 +12357,6 @@ fn assign_expanded_server_output_sequences<'a>(
             .is_some();
     if inserted_extra_packets != 0 && !reused_committed_range {
         record_server_sequence_insertion(
-            &mut state.sequence.server_sequence_shifts,
             &mut state.sequence.pending_server_sequence_insertions,
             producer,
             source_first_sequence.wrapping_add(source_output_count),
@@ -12541,7 +12467,7 @@ fn retarget_completed_reassembly_packets_after_progress_shells(
         shifted_base,
         replacement_packets = packets.len(),
         inserted_extra_packets,
-        shifts = state.sequence.server_sequence_shifts.len(),
+        pending_typed_insertions = state.sequence.pending_server_sequence_insertions.len(),
         "delayed deflated replacement retargeted after consumed progress shells"
     );
     Ok(())

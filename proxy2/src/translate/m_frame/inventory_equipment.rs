@@ -206,7 +206,6 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         trigger_sequence,
     };
     record_server_sequence_insertion(
-        &mut state.sequence.server_sequence_shifts,
         &mut state.sequence.pending_server_sequence_insertions,
         producer,
         future_shift_base,
@@ -646,7 +645,6 @@ pub(super) fn maybe_queue_confirmed_inventory_replay(
         response_last_sequence,
     };
     record_server_sequence_insertion(
-        &mut state.sequence.server_sequence_shifts,
         &mut state.sequence.pending_server_sequence_insertions,
         producer,
         future_shift_base,
@@ -1104,9 +1102,7 @@ mod tests {
             state.synthetic_area.pending_server_to_client_packets.len(),
             1
         );
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.server_sequence_shifts[0].base, 11);
-        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
 
         let pending = &state.synthetic_area.pending_server_to_client_packets[0];
         assert_eq!(pending.family, VerifiedFamily::Inventory);
@@ -1252,10 +1248,20 @@ mod tests {
             state.sequence.latest_client_sequence_from_client = Some(10);
             state.sequence.latest_client_ack_from_client = observed_ee_ack;
             state.sequence.latest_server_sequence_to_client = latest_server_sequence;
-            state
-                .sequence
-                .server_sequence_shifts
-                .push(SequenceShift { base: 62, delta: 1 });
+            let source = super::super::sequence::SequenceEpochKey::new(61, 4);
+            let mut epochs =
+                super::super::sequence::OrderedServerSequenceEpochs::identity_at(source);
+            epochs
+                .insert_before(
+                    super::super::sequence::ServerSequenceInsertionOwner::new(
+                        source,
+                        ServerSequenceInsertionProducer::Test { operation: 1 },
+                    ),
+                    super::super::sequence::SequenceEpochKey::new(62, 4),
+                    1,
+                )
+                .expect("seed exact expanded output insertion");
+            state.sequence.ordered_server_sequence_epochs = epochs;
             output_reliability::register_server_output_ack_span(
                 &mut state.sequence.server_output_ack_spans,
                 super::super::server_replay::ServerReliableSlotKey {
@@ -2037,9 +2043,7 @@ mod tests {
                 synthetic_sequence: 62,
             })
         );
-        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.server_sequence_shifts[0].base, 62);
-        assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
+        assert_eq!(state.sequence.pending_server_sequence_insertions.len(), 1);
 
         let pending = state
             .synthetic_area
@@ -2239,7 +2243,7 @@ mod tests {
                 .pending_server_to_client_packets
                 .is_empty()
         );
-        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert!(state.sequence.pending_server_sequence_insertions.is_empty());
         assert_eq!(
             state.inventory_equipment.last_decision_state_update_index,
             Some(1)
