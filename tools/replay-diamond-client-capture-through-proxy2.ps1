@@ -132,7 +132,10 @@ function Read-BeU16 {
     if ($Bytes.Length -lt $Offset + 2) {
         return 0
     }
-    return (($Bytes[$Offset] -shl 8) -bor $Bytes[$Offset + 1])
+    # PowerShell preserves the left operand's byte width for `-shl`; widen
+    # before shifting so sequence, ACK, length, and CRC values above 0x00FF
+    # retain their high byte.
+    return (([int]$Bytes[$Offset] -shl 8) -bor [int]$Bytes[$Offset + 1])
 }
 
 function New-LegacyMcrcTable {
@@ -182,6 +185,100 @@ function New-MAckControlFrame {
     $crc = Get-LegacyMcrc -Bytes $packet -Table $CrcTable
     Write-BeU16 -Bytes $packet -Offset 1 -Value $crc
     return $packet
+}
+
+function Update-ObservedReliableDestinationFrontier {
+    param(
+        [int]$Sequence,
+        [System.Collections.Generic.HashSet[int]]$PendingSequences,
+        [ref]$FrontierKnown,
+        [ref]$Frontier
+    )
+
+    if (-not $FrontierKnown.Value) {
+        $FrontierKnown.Value = $true
+        $Frontier.Value = $Sequence
+        return 1
+    }
+
+    if ($Sequence -eq $Frontier.Value) {
+        return 0
+    }
+
+    $next = ($Frontier.Value + 1) -band 0xffff
+    if ($Sequence -ne $next) {
+        # Diamond `sub_5F3940` and EE `CNetLayerWindow::FrameReceive` retain
+        # exactly 16 reliable receive slots. Remember only a destination that
+        # is provably ahead inside that window; do not infer a generation from
+        # half-range arithmetic or let a stale replay regress the frontier.
+        $candidate = $next
+        for ($distance = 2; $distance -le 16; $distance++) {
+            $candidate = ($candidate + 1) -band 0xffff
+            if ($Sequence -eq $candidate) {
+                [void]$PendingSequences.Add($Sequence)
+                break
+            }
+        }
+        return 0
+    }
+
+    $advanced = 1
+    $Frontier.Value = $Sequence
+    while ($true) {
+        $next = ($Frontier.Value + 1) -band 0xffff
+        if (-not $PendingSequences.Remove($next)) {
+            break
+        }
+        $Frontier.Value = $next
+        $advanced++
+    }
+    return $advanced
+}
+
+function Set-CapturedClientEmbeddedAckFromObservedDestination {
+    param(
+        [byte[]]$Bytes,
+        [bool]$ObservedDestinationKnown,
+        [int]$ObservedDestinationSequence,
+        [uint32[]]$CrcTable
+    )
+
+    if ($Bytes.Length -lt 12 -or $Bytes[0] -ne [byte][char]'M') {
+        return 'not-m-frame'
+    }
+
+    $frameType = ($Bytes[7] -shr 4) -band 0x03
+    if ($frameType -ne 0) {
+        return 'not-reliable-data'
+    }
+
+    if (-not $ObservedDestinationKnown) {
+        return 'no-observed-destination'
+    }
+
+    $capturedAck = Read-BeU16 -Bytes $Bytes -Offset 5
+    if ($capturedAck -eq $ObservedDestinationSequence) {
+        return 'already-observed-destination'
+    }
+
+    $capturedCrc = Read-BeU16 -Bytes $Bytes -Offset 1
+    $computedCrc = Get-LegacyMcrc -Bytes $Bytes -Table $CrcTable
+    if ($capturedCrc -ne $computedCrc) {
+        throw ("Captured client M frame has invalid CRC before embedded ACK normalization: " +
+            "captured=0x{0:X4} computed=0x{1:X4}" -f $capturedCrc, $computedCrc)
+    }
+
+    # A replayed Diamond client data frame carries its cumulative server ACK in
+    # the legacy source coordinate domain. An EE client would instead ACK the
+    # latest contiguous destination it actually received from proxy2. Rewrite
+    # only that transport field and its decompile-backed M CRC; the reliable
+    # client sequence, flags, packetization metadata, and gameplay payload are
+    # unchanged.
+    Write-BeU16 -Bytes $Bytes -Offset 5 -Value $ObservedDestinationSequence
+    Write-BeU16 -Bytes $Bytes -Offset 1 -Value 0
+    $normalizedCrc = Get-LegacyMcrc -Bytes $Bytes -Table $CrcTable
+    Write-BeU16 -Bytes $Bytes -Offset 1 -Value $normalizedCrc
+    return 'normalized'
 }
 
 function Add-AsciiBytes {
@@ -349,6 +446,11 @@ function Drain-DummyClient {
         [ref]$ReceivedCount,
         [ref]$GeneratedAckCount,
         [System.Collections.Generic.HashSet[int]]$AckedSequences,
+        [System.Collections.Generic.HashSet[int]]$PendingObservedReliableSequences,
+        [ref]$ObservedReliableFrames,
+        [ref]$ObservedReliableFrontierAdvances,
+        [ref]$ObservedReliableFrontierKnown,
+        [ref]$ObservedReliableFrontier,
         [uint32[]]$CrcTable,
         [bool]$GenerateClientAcks,
         [object]$DeadlineUtc = $null,
@@ -364,6 +466,18 @@ function Drain-DummyClient {
             $remote = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
             [byte[]]$packet = $Client.Receive([ref]$remote)
             $ReceivedCount.Value++
+            if ($packet.Length -ge 12 -and
+                $packet[0] -eq [byte][char]'M' -and
+                (($packet[7] -shr 4) -band 0x03) -eq 0) {
+                $sequence = Read-BeU16 -Bytes $packet -Offset 3
+                $ObservedReliableFrames.Value++
+                $advanced = Update-ObservedReliableDestinationFrontier `
+                    -Sequence $sequence `
+                    -PendingSequences $PendingObservedReliableSequences `
+                    -FrontierKnown $ObservedReliableFrontierKnown `
+                    -Frontier $ObservedReliableFrontier
+                $ObservedReliableFrontierAdvances.Value += $advanced
+            }
             if ($GenerateClientAcks -and $packet.Length -ge 12 -and $packet[0] -eq [byte][char]'M') {
                 $sequence = Read-BeU16 -Bytes $packet -Offset 3
                 if ($sequence -ne 0 -and $AckedSequences.Add($sequence)) {
@@ -419,6 +533,11 @@ function Wait-DummyClientOutput {
         [ref]$ClientReceivedCount,
         [ref]$GeneratedAckCount,
         [System.Collections.Generic.HashSet[int]]$AckedSequences,
+        [System.Collections.Generic.HashSet[int]]$PendingObservedReliableSequences,
+        [ref]$ObservedReliableFrames,
+        [ref]$ObservedReliableFrontierAdvances,
+        [ref]$ObservedReliableFrontierKnown,
+        [ref]$ObservedReliableFrontier,
         [uint32[]]$CrcTable,
         [bool]$GenerateClientAcks,
         [int]$InitialClientReceivedCount,
@@ -447,6 +566,11 @@ function Wait-DummyClientOutput {
             -ReceivedCount $ClientReceivedCount `
             -GeneratedAckCount $GeneratedAckCount `
             -AckedSequences $AckedSequences `
+            -PendingObservedReliableSequences $PendingObservedReliableSequences `
+            -ObservedReliableFrames $ObservedReliableFrames `
+            -ObservedReliableFrontierAdvances $ObservedReliableFrontierAdvances `
+            -ObservedReliableFrontierKnown $ObservedReliableFrontierKnown `
+            -ObservedReliableFrontier $ObservedReliableFrontier `
             -CrcTable $CrcTable `
             -GenerateClientAcks $GenerateClientAcks `
             -DeadlineUtc $DeadlineUtc `
@@ -1282,6 +1406,17 @@ try {
     $capturedRecvLiveObjectDirectFrames = 0
     $capturedRecvAreaClientAreaDirectFrames = 0
     $ackedSequences = [System.Collections.Generic.HashSet[int]]::new()
+    $pendingObservedReliableSequences = [System.Collections.Generic.HashSet[int]]::new()
+    $observedReliableFrames = 0
+    $observedReliableFrontierAdvances = 0
+    $observedReliableFrontierKnown = $false
+    $observedReliableFrontier = 0
+    $capturedClientReliableDataFrames = 0
+    $capturedClientEmbeddedAcksNormalized = 0
+    $capturedClientEmbeddedAcksAlreadyObserved = 0
+    $capturedClientEmbeddedAcksWithoutObservedDestination = 0
+    $capturedClientEmbeddedAckNormalizationEvents =
+        [System.Collections.Generic.List[object]]::new()
     $serverDeflatedFramesUntilCompletion = 0
     $proxyOutputWaitEvents = 0
     $proxyOutputWaitTimeouts = 0
@@ -1321,12 +1456,50 @@ try {
                     -ReceivedCount ([ref]$proxyPacketsReceivedByDummyClient) `
                     -GeneratedAckCount ([ref]$generatedClientAcks) `
                     -AckedSequences $ackedSequences `
+                    -PendingObservedReliableSequences $pendingObservedReliableSequences `
+                    -ObservedReliableFrames ([ref]$observedReliableFrames) `
+                    -ObservedReliableFrontierAdvances ([ref]$observedReliableFrontierAdvances) `
+                    -ObservedReliableFrontierKnown ([ref]$observedReliableFrontierKnown) `
+                    -ObservedReliableFrontier ([ref]$observedReliableFrontier) `
                     -CrcTable $crcTable `
                     -GenerateClientAcks $generateClientAcks `
                     -DeadlineUtc $deadlineUtc `
                     -TimeoutSeconds $TimeoutSeconds `
                     -Stage "drain dummy client after seeded BNXI $($file.Name)"
                 Drain-DummyServer -Server $server -ProxyServerEndpoint ([ref]$proxyServerEndpoint) -ReceivedCount ([ref]$proxyPacketsReceivedByDummyServer) -DeadlineUtc $deadlineUtc -TimeoutSeconds $TimeoutSeconds -Stage "drain dummy server after seeded BNXI client drain $($file.Name)"
+            }
+            $capturedClientSequenceBeforeNormalization = $null
+            $capturedClientAckBeforeNormalization = $null
+            if ($bytes.Length -ge 12 -and
+                $bytes[0] -eq [byte][char]'M' -and
+                (($bytes[7] -shr 4) -band 0x03) -eq 0) {
+                $capturedClientSequenceBeforeNormalization = Read-BeU16 -Bytes $bytes -Offset 3
+                $capturedClientAckBeforeNormalization = Read-BeU16 -Bytes $bytes -Offset 5
+            }
+            $embeddedAckDisposition = Set-CapturedClientEmbeddedAckFromObservedDestination `
+                -Bytes $bytes `
+                -ObservedDestinationKnown $observedReliableFrontierKnown `
+                -ObservedDestinationSequence $observedReliableFrontier `
+                -CrcTable $crcTable
+            switch ($embeddedAckDisposition) {
+                'normalized' {
+                    $capturedClientReliableDataFrames++
+                    $capturedClientEmbeddedAcksNormalized++
+                    [void]$capturedClientEmbeddedAckNormalizationEvents.Add([pscustomobject]@{
+                        PacketFile = $file.Name
+                        ClientSequence = $capturedClientSequenceBeforeNormalization
+                        CapturedLegacyAck = $capturedClientAckBeforeNormalization
+                        ObservedEeDestinationAck = $observedReliableFrontier
+                    })
+                }
+                'already-observed-destination' {
+                    $capturedClientReliableDataFrames++
+                    $capturedClientEmbeddedAcksAlreadyObserved++
+                }
+                'no-observed-destination' {
+                    $capturedClientReliableDataFrames++
+                    $capturedClientEmbeddedAcksWithoutObservedDestination++
+                }
             }
             [void]$client.Send($bytes, $bytes.Length)
             $clientPacketsSent++
@@ -1368,6 +1541,11 @@ try {
             -ReceivedCount ([ref]$proxyPacketsReceivedByDummyClient) `
             -GeneratedAckCount ([ref]$generatedClientAcks) `
             -AckedSequences $ackedSequences `
+            -PendingObservedReliableSequences $pendingObservedReliableSequences `
+            -ObservedReliableFrames ([ref]$observedReliableFrames) `
+            -ObservedReliableFrontierAdvances ([ref]$observedReliableFrontierAdvances) `
+            -ObservedReliableFrontierKnown ([ref]$observedReliableFrontierKnown) `
+            -ObservedReliableFrontier ([ref]$observedReliableFrontier) `
             -CrcTable $crcTable `
             -GenerateClientAcks $generateClientAcks `
             -DeadlineUtc $deadlineUtc `
@@ -1384,6 +1562,11 @@ try {
                 -ClientReceivedCount ([ref]$proxyPacketsReceivedByDummyClient) `
                 -GeneratedAckCount ([ref]$generatedClientAcks) `
                 -AckedSequences $ackedSequences `
+                -PendingObservedReliableSequences $pendingObservedReliableSequences `
+                -ObservedReliableFrames ([ref]$observedReliableFrames) `
+                -ObservedReliableFrontierAdvances ([ref]$observedReliableFrontierAdvances) `
+                -ObservedReliableFrontierKnown ([ref]$observedReliableFrontierKnown) `
+                -ObservedReliableFrontier ([ref]$observedReliableFrontier) `
                 -CrcTable $crcTable `
                 -GenerateClientAcks $generateClientAcks `
                 -InitialClientReceivedCount $clientPacketsBeforeDrain `
@@ -1405,6 +1588,11 @@ try {
             -ReceivedCount ([ref]$proxyPacketsReceivedByDummyClient) `
             -GeneratedAckCount ([ref]$generatedClientAcks) `
             -AckedSequences $ackedSequences `
+            -PendingObservedReliableSequences $pendingObservedReliableSequences `
+            -ObservedReliableFrames ([ref]$observedReliableFrames) `
+            -ObservedReliableFrontierAdvances ([ref]$observedReliableFrontierAdvances) `
+            -ObservedReliableFrontierKnown ([ref]$observedReliableFrontierKnown) `
+            -ObservedReliableFrontier ([ref]$observedReliableFrontier) `
             -CrcTable $crcTable `
             -GenerateClientAcks $generateClientAcks `
             -DeadlineUtc $deadlineUtc `
@@ -2861,6 +3049,15 @@ try {
         ServerPacketsSkippedBeforeEndpoint = $serverPacketsSkipped
         ProxyPacketsReceivedByDummyServer = $proxyPacketsReceivedByDummyServer
         ProxyPacketsReceivedByDummyClient = $proxyPacketsReceivedByDummyClient
+        ProxyReliableDataFramesObservedByDummyClient = $observedReliableFrames
+        ProxyReliableDestinationFrontierAdvances = $observedReliableFrontierAdvances
+        ProxyReliableDestinationFrontierKnown = $observedReliableFrontierKnown
+        ProxyReliableDestinationFrontierSequence = if ($observedReliableFrontierKnown) { $observedReliableFrontier } else { $null }
+        CapturedClientReliableDataFrames = $capturedClientReliableDataFrames
+        CapturedClientEmbeddedAcksNormalized = $capturedClientEmbeddedAcksNormalized
+        CapturedClientEmbeddedAcksAlreadyObserved = $capturedClientEmbeddedAcksAlreadyObserved
+        CapturedClientEmbeddedAcksWithoutObservedDestination = $capturedClientEmbeddedAcksWithoutObservedDestination
+        CapturedClientEmbeddedAckNormalizationEvents = @($capturedClientEmbeddedAckNormalizationEvents)
         GeneratedClientAckControlFrames = $generatedClientAcks
         GeneratedClientAcksEnabled = $generateClientAcks
         SeedEeBnxiEnabled = $seedEeBnxiEnabled
