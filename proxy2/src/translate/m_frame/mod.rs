@@ -95,10 +95,58 @@ pub(crate) fn rewrite_live_object_payload_to_exact_ee_for_test(
     live_update::rewrite_payload_to_exact_ee_if_possible(payload, latest_area_placeables).is_some()
 }
 
-pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> anyhow::Result<Emit> {
-    if state.sequence.pending_client_to_server_packets.is_empty()
-        && state.synthetic_area.pending_area_loaded.is_none()
+/// Return whether the session-owned client drain can either emit a packet or
+/// advance one of the audited area-fallback timer states now.
+///
+/// The network loop polls every millisecond. An idle `Emit::Consumed` must not
+/// enter ACK delivery or strict-validation staging: Diamond/EE FrameSend only
+/// owns an allocated packet, and no packet means there is no downstream
+/// delivery or reliable-slot effect to transact.
+pub(super) fn pending_client_drain_has_work(state: &SessionState) -> bool {
+    pending_client_drain_has_work_at(state, Instant::now())
+}
+
+fn pending_client_drain_has_work_at(state: &SessionState, now: Instant) -> bool {
+    if !state.sequence.pending_client_to_server_packets.is_empty() {
+        return true;
+    }
+
+    let Some(active) = state.synthetic_area.pending_area_loaded.as_ref() else {
+        return false;
+    };
+    let observed_client_ack = state.sequence.latest_client_ack_from_client;
+    let client_ack_satisfied = observed_client_ack
+        .is_some_and(|ack| sequence_at_or_after(ack, active.release_client_ack_sequence));
+
+    if active.require_client_ack_before_release && !client_ack_satisfied {
+        return false;
+    }
+    if active.require_client_ack_before_release
+        && client_ack_satisfied
+        && active.client_ack_observed_at.is_none()
     {
+        // The first matching ACK starts the native-completion grace.
+        return true;
+    }
+    if now < active.release_at {
+        return false;
+    }
+    if active.require_client_ack_before_release
+        && client_ack_satisfied
+        && active.client_ack_observed_at.is_some()
+        && active.gate_opened_for_native_probe_at.is_none()
+        && state.synthetic_area.server_hold_gate.is_some()
+    {
+        // The first due transition opens the held stream for the bounded
+        // native-completion probe even if no synthetic client sequence exists.
+        return true;
+    }
+
+    state.sequence.latest_client_sequence_from_client.is_some()
+}
+
+pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> anyhow::Result<Emit> {
+    if !pending_client_drain_has_work(state) {
         return Ok(Emit::Consumed);
     }
     begin_pending_client_drain_effect_transaction(state)?;
@@ -132,7 +180,7 @@ pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> anyhow
 pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> anyhow::Result<Emit> {
     ensure_pending_server_drain_can_start(state)?;
     let now = Instant::now();
-    if !pending_server_drain_has_work(state, now) {
+    if !pending_server_drain_has_work_at(state, now) {
         return Ok(Emit::Consumed);
     }
     begin_pending_server_drain_effect_transaction(state)?;
@@ -628,7 +676,11 @@ fn map_client_destination_ack_to_server_source(
     Ok(source.sequence)
 }
 
-fn pending_server_drain_has_work(state: &SessionState, now: Instant) -> bool {
+pub(super) fn pending_server_drain_has_work(state: &SessionState) -> bool {
+    pending_server_drain_has_work_at(state, Instant::now())
+}
+
+fn pending_server_drain_has_work_at(state: &SessionState, now: Instant) -> bool {
     client_ack::has_due_consumed_ee_only_ack(&state.client_ack.pending, now)
         || state
             .synthetic_area
@@ -2345,7 +2397,7 @@ fn translate_server_to_client_inner(
     let ordinary_server_emit_transaction =
         state.deflate.ordered_successor_effect_snapshot.is_none()
             && (ordinary_coalesced_window
-                || (pending_server_drain_has_work(state, server_emit_started_at)
+                || (pending_server_drain_has_work_at(state, server_emit_started_at)
                     && !active_server_reassembly_duplicate)
                 || source_can_queue_immediate_server_packet
                 || exact_direct_semantic_source_payload(&inbound, &view).is_some()
@@ -11537,6 +11589,139 @@ mod tests {
         assert!(matches!(emit, Emit::Consumed));
         assert_eq!(state.deflate.server_emit_effect_transaction_kind, None);
         assert!(state.deflate.ordered_successor_effect_snapshot.is_none());
+    }
+
+    #[test]
+    fn area_fallback_pending_drain_preflight_wakes_only_for_state_transitions() {
+        let now = Instant::now();
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(75);
+        state.sequence.latest_client_ack_from_client = Some(30);
+        state.synthetic_area.pending_area_loaded = Some(synthetic_area::PendingAreaLoaded {
+            server_ack_sequence: 29,
+            release_client_ack_sequence: 31,
+            release_at: now + std::time::Duration::from_secs(10),
+            require_client_ack_before_release: true,
+            native_completion_grace_after_ack: std::time::Duration::from_secs(5),
+            client_ack_observed_at: None,
+            gate_opened_for_native_probe_at: None,
+            reason: synthetic_area::AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
+        });
+
+        assert!(
+            !pending_client_drain_has_work_at(&state, now),
+            "an unchanged ACK below the area destination must not busy-poll the validator"
+        );
+
+        state.sequence.latest_client_ack_from_client = Some(31);
+        assert!(
+            pending_client_drain_has_work_at(&state, now),
+            "the first matching EE ACK must wake the native-grace transition"
+        );
+
+        state
+            .synthetic_area
+            .pending_area_loaded
+            .as_mut()
+            .expect("pending area fallback")
+            .client_ack_observed_at = Some(now);
+        assert!(
+            !pending_client_drain_has_work_at(&state, now),
+            "the armed native grace must remain idle before its deadline"
+        );
+
+        state
+            .synthetic_area
+            .pending_area_loaded
+            .as_mut()
+            .expect("pending area fallback")
+            .release_at = now - std::time::Duration::from_millis(1);
+        state.synthetic_area.server_hold_gate = Some(synthetic_area::ServerHoldGate {
+            area_first_sequence: 29,
+            release_client_ack_sequence: 31,
+            reason: synthetic_area::AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
+            armed_at: now,
+            area_window_released_at: None,
+            area_ack_observed_at: Some(now),
+            release_at: Some(now),
+        });
+        state.sequence.latest_client_sequence_from_client = None;
+        assert!(
+            pending_client_drain_has_work_at(&state, now),
+            "the due native-probe gate transition does not require a synthetic sequence"
+        );
+
+        state.synthetic_area.server_hold_gate = None;
+        assert!(
+            !pending_client_drain_has_work_at(&state, now),
+            "a due fallback cannot emit until an exact client sequence exists"
+        );
+        state.sequence.latest_client_sequence_from_client = Some(75);
+        assert!(
+            pending_client_drain_has_work_at(&state, now),
+            "the due fallback must wake as soon as its client sequence exists"
+        );
+    }
+
+    #[test]
+    fn idle_session_poll_does_not_touch_staged_validation_owners() {
+        let mut translator = strict_session_translator_for_test();
+        translator.m_state.ack_delivery.pending = Some(ack_delivery::PendingAckDelivery {
+            owner: ack_delivery::AckDeliveryOwner::PendingClientDrain,
+            ack_sequences: vec![74],
+        });
+
+        assert!(
+            translator
+                .take_pending_client_to_server_packets()
+                .is_empty()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .ack_delivery
+                .pending
+                .as_ref()
+                .map(|pending| (pending.owner, pending.ack_sequences.as_slice())),
+            Some((
+                ack_delivery::AckDeliveryOwner::PendingClientDrain,
+                [74].as_slice()
+            )),
+            "an idle poll must not enter or finish ACK-delivery validation"
+        );
+
+        translator.m_state.ack_delivery.pending = None;
+        ee_send_window::stage(
+            &mut translator.m_state.ee_server_send_window,
+            ee_send_window::EeServerSendOwner::PendingServerDrain,
+            &Emit::Consumed,
+            Instant::now(),
+        )
+        .expect("seed an unrelated staged send-window owner");
+
+        assert!(
+            translator
+                .take_pending_server_to_client_packets()
+                .is_empty()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .ee_server_send_window
+                .pending
+                .as_ref()
+                .map(|pending| pending.owner),
+            Some(ee_send_window::EeServerSendOwner::PendingServerDrain),
+            "an idle poll must not stage or finish an empty EE send-window batch"
+        );
+        assert_eq!(
+            ee_send_window::finish(
+                &mut translator.m_state.ee_server_send_window,
+                ee_send_window::EeServerSendOwner::PendingServerDrain,
+                false,
+            ),
+            0
+        );
     }
 
     #[test]

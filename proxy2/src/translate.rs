@@ -403,6 +403,9 @@ impl Translator {
 
 impl SessionTranslator {
     pub fn take_pending_client_to_server_packets(&mut self) -> Vec<Vec<u8>> {
+        if !m_frame::pending_client_drain_has_work(&self.m_state) {
+            return Vec::new();
+        }
         match m_frame::take_pending_client_to_server_packets(&mut self.m_state) {
             Ok(emit) => {
                 if let Err(err) =
@@ -449,6 +452,9 @@ impl SessionTranslator {
                 Direction::ServerToClientSynthetic,
                 Emit::Packet(packet),
             )));
+        }
+        if !m_frame::pending_server_drain_has_work(&self.m_state) {
+            return packets;
         }
         match m_frame::take_pending_server_to_client_packets(&mut self.m_state) {
             Ok(emit) => {
