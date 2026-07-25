@@ -502,8 +502,21 @@ fn flush_pending_server_quickbar_stream(
     let mut outputs = build_server_deflated_output_frames(reassembly, &combined, 0x01, true)?;
     let inserted_extra_output_frames = outputs.len() > reassembly.frames.len();
     if inserted_extra_output_frames {
-        super::pre_shift_current_server_packets(state, &mut outputs)?;
-        super::record_extra_deflated_output_sequence_shift(state, reassembly, outputs.len())?;
+        let original_frames = u16::try_from(reassembly.frames.len()).map_err(|_| {
+            anyhow::anyhow!("quickbar source frame count exceeds typed identity width")
+        })?;
+        let owner_source = state.sequence.current_server_source_epoch()?;
+        super::assign_expanded_server_output_sequences(
+            state,
+            owner_source,
+            reassembly.first_sequence,
+            reassembly.frames.len(),
+            super::ServerSequenceInsertionProducer::DeflatedRewrite {
+                first_sequence: reassembly.first_sequence,
+                original_frames,
+            },
+            outputs.iter_mut(),
+        )?;
     }
     observe_committed_quickbar_stream_payload(state, &quickbar_payload);
     remember_completed_server_stream_window_with_disposition(
@@ -737,6 +750,11 @@ mod tests {
             incomplete_salvage_probe_rejected: false,
         };
         let mut state = SessionState::default();
+        state.sequence.current_server_translation_source =
+            Some(super::super::server_replay::ServerReliableSlotKey {
+                sequence: 200,
+                origin_generation: 3,
+            });
         state.quickbar.pending_stream = Some(PendingQuickbarStream {
             payload: payload.clone(),
             target_length: Some(payload.len()),

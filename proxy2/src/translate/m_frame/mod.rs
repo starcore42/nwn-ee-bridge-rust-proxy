@@ -67,8 +67,8 @@ use sequence::SequenceShift;
 use sequence::{
     SequenceElision, SequenceEpochKey, ServerSequenceInsertionPlan,
     ServerSequenceInsertionProducer, record_forward_progress, record_server_sequence_insertion,
-    sequence_at_or_after, shift_sequence_for_peer, shift_sequence_for_peer_with_elisions,
-    trim_sequence_elisions, unshift_ack_for_origin_with_elisions,
+    sequence_at_or_after, shift_sequence_for_peer_with_elisions, trim_sequence_elisions,
+    unshift_ack_for_origin_with_elisions,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -3658,14 +3658,16 @@ fn queue_area_client_area_side_effects_for_window(
         fallback_reason,
         state.synthetic_area.synthesize_loadbar,
     )?;
-    let area_first_client_sequence = shift_sequence_for_peer(
-        &state.sequence.server_sequence_shifts,
-        original_first_sequence,
-    );
-    let area_release_client_ack_sequence = shift_sequence_for_peer(
-        &state.sequence.server_sequence_shifts,
-        original_last_sequence,
-    );
+    let owner_source = state.sequence.current_server_source_epoch()?;
+    let prospective_epochs = state
+        .sequence
+        .prospective_ordered_server_sequence_epochs_for(owner_source)?;
+    let area_first_client_sequence = prospective_epochs
+        .map_source(owner_source.nearby(original_first_sequence)?)?
+        .sequence;
+    let area_release_client_ack_sequence = prospective_epochs
+        .map_source(owner_source.nearby(original_last_sequence)?)?
+        .sequence;
 
     // The post-Area_ClientArea stream is server-authored gameplay state, but the
     // EE client decompile routes native Area_AreaLoaded only after the area
@@ -4567,7 +4569,7 @@ fn finalize_server_to_client_emit(
         }
         Emit::VerifiedPackets {
             family,
-            packets: mut packets,
+            mut packets,
         } => {
             for packet in &mut packets {
                 shift_server_sequence_for_client(state, packet)?;
@@ -4582,10 +4584,7 @@ fn finalize_server_to_client_emit(
                 Ok(Emit::MixedVerifiedPackets(mixed))
             }
         }
-        Emit::VerifiedProofPackets {
-            proof,
-            packets: mut packets,
-        } => {
+        Emit::VerifiedProofPackets { proof, mut packets } => {
             for packet in &mut packets {
                 shift_server_sequence_for_client(state, packet)?;
             }
@@ -4607,10 +4606,7 @@ fn finalize_server_to_client_emit(
                 Ok(Emit::MixedVerifiedProofPackets(mixed))
             }
         }
-        Emit::VerifiedPacketsPreShifted {
-            family,
-            packets: mut packets,
-        } => {
+        Emit::VerifiedPacketsPreShifted { family, packets } => {
             if prefix.is_empty() && suffix.is_empty() {
                 Ok(Emit::VerifiedPacketsPreShifted { family, packets })
             } else {
@@ -4621,10 +4617,7 @@ fn finalize_server_to_client_emit(
                 Ok(Emit::MixedVerifiedPackets(mixed))
             }
         }
-        Emit::VerifiedProofPacketsPreShifted {
-            proof,
-            packets: mut packets,
-        } => {
+        Emit::VerifiedProofPacketsPreShifted { proof, packets } => {
             if prefix.is_empty() && suffix.is_empty() {
                 Ok(Emit::VerifiedProofPacketsPreShifted { proof, packets })
             } else {
@@ -12394,53 +12387,112 @@ fn retarget_completed_reassembly_emit_after_progress_shells(
     }
 }
 
-fn record_extra_deflated_output_sequence_shift(
+/// Assign one rebuilt reliable output window from the authoritative typed
+/// insertion ledger.
+///
+/// Diamond `CNetLayerWindow::FrameReceive` stores the original contiguous
+/// source interval, while EE `FrameSend` assigns the final contiguous
+/// destination interval. Rebuilt packets that replace original source slots
+/// map through `map_source`; only the suffix beyond that source width belongs
+/// to the producer's insertion range. Keeping those identities separate is
+/// required when another producer (for example the Area lifecycle controls)
+/// owns an equal-base range between the original window and its synthetic
+/// suffix.
+fn assign_expanded_server_output_sequences<'a>(
     state: &mut SessionState,
-    reassembly: &ServerDeflatedReassembly,
-    output_count: usize,
-) -> anyhow::Result<()> {
-    let original_count = reassembly.frames.len();
-    let inserted_extra_packets = output_count.saturating_sub(original_count);
-    if inserted_extra_packets == 0 {
-        return Ok(());
+    owner_source: SequenceEpochKey,
+    source_first_sequence: u16,
+    source_output_count: usize,
+    producer: ServerSequenceInsertionProducer,
+    packets: impl IntoIterator<Item = &'a mut Vec<u8>>,
+) -> anyhow::Result<bool> {
+    let mut packets = packets.into_iter().collect::<Vec<_>>();
+    if source_output_count == 0 || packets.len() < source_output_count {
+        anyhow::bail!(
+            "expanded server output has {} packets for {} source slots",
+            packets.len(),
+            source_output_count
+        );
     }
+    let inserted_extra_packets = packets.len() - source_output_count;
     if inserted_extra_packets > u16::MAX as usize {
-        anyhow::bail!("deflated output inserted too many reliable frames");
+        anyhow::bail!("expanded server output inserted too many reliable frames");
     }
-    let base = reassembly
-        .first_sequence
-        .wrapping_add(original_count as u16);
-    let original_frames = u16::try_from(original_count)
-        .map_err(|_| anyhow::anyhow!("deflated source frame count exceeds typed identity width"))?;
-    record_server_sequence_insertion(
-        &mut state.sequence.server_sequence_shifts,
-        &mut state.sequence.pending_server_sequence_insertions,
-        ServerSequenceInsertionProducer::DeflatedRewrite {
-            first_sequence: reassembly.first_sequence,
-            original_frames,
-        },
-        base,
-        inserted_extra_packets as u16,
-    )?;
-    tracing::info!(
-        first_sequence = reassembly.first_sequence,
-        original_frames = original_count,
-        output_frames = output_count,
-        shift_base = base,
-        inserted_extra_packets,
-        "server deflated rewrite inserted reliable M frames; future server sequences shifted"
-    );
-    Ok(())
-}
+    let source_output_count = u16::try_from(source_output_count).map_err(|_| {
+        anyhow::anyhow!("expanded server source width exceeds typed identity width")
+    })?;
+    let insertion_owner = sequence::ServerSequenceInsertionOwner::new(owner_source, producer);
+    let reused_committed_range = inserted_extra_packets != 0
+        && state
+            .sequence
+            .ordered_server_sequence_epochs
+            .insertion_range(insertion_owner)
+            .is_some();
+    if inserted_extra_packets != 0 && !reused_committed_range {
+        record_server_sequence_insertion(
+            &mut state.sequence.server_sequence_shifts,
+            &mut state.sequence.pending_server_sequence_insertions,
+            producer,
+            source_first_sequence.wrapping_add(source_output_count),
+            inserted_extra_packets as u16,
+        )?;
+    }
 
-fn pre_shift_current_server_packets(
-    state: &SessionState,
-    packets: &mut [Vec<u8>],
-) -> anyhow::Result<()> {
-    for packet in packets {
-        shift_server_sequence_for_client(state, packet)?;
+    let epochs = state
+        .sequence
+        .prospective_ordered_server_sequence_epochs_for(owner_source)?;
+    let insertion_range = if inserted_extra_packets == 0 {
+        None
+    } else {
+        let range = epochs.insertion_range(insertion_owner).ok_or_else(|| {
+            anyhow::anyhow!("expanded server output typed insertion range is absent")
+        })?;
+        let expected_after = range
+            .destination_first
+            .checked_advance(inserted_extra_packets as u64)?;
+        if expected_after != range.destination_after {
+            anyhow::bail!("expanded server output typed insertion width conflicts with packets");
+        }
+        Some(range)
+    };
+
+    for (index, packet) in packets.iter_mut().enumerate() {
+        let destination = if index < usize::from(source_output_count) {
+            let source = owner_source.nearby(source_first_sequence.wrapping_add(index as u16))?;
+            epochs.map_source(source)?
+        } else {
+            insertion_range
+                .expect("extra output has a typed insertion range")
+                .destination_first
+                .checked_advance((index - usize::from(source_output_count)) as u64)?
+        };
+        let view = MFrameView::parse(packet)
+            .ok_or_else(|| anyhow::anyhow!("expanded server output is not an M frame"))?;
+        if view.frame_kind() != Some(MFrameType::ReliableData) {
+            anyhow::bail!("expanded server output is not reliable data");
+        }
+        if view.sequence != destination.sequence {
+            write_be_u16(packet, 3, destination.sequence)
+                .then_some(())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("failed to assign typed expanded server output sequence")
+                })?;
+            encode_legacy_m_crc(packet).then_some(()).ok_or_else(|| {
+                anyhow::anyhow!("failed to repair typed expanded server output CRC")
+            })?;
+        }
     }
-    Ok(())
+
+    tracing::info!(
+        source_first_sequence,
+        source_output_count,
+        output_frames = packets.len(),
+        shift_base = source_first_sequence.wrapping_add(source_output_count),
+        inserted_extra_packets,
+        reused_committed_range,
+        "server rebuilt output assigned through authoritative typed insertion range"
+    );
+    Ok(reused_committed_range)
 }
 
 fn retarget_completed_reassembly_packets_after_progress_shells(
@@ -12461,36 +12513,26 @@ fn retarget_completed_reassembly_packets_after_progress_shells(
     let replacement_base = reassembly
         .first_sequence
         .wrapping_add(reassembly.expected_frames.saturating_sub(1) as u16);
-    let shifted_base =
-        shift_sequence_for_peer(&state.sequence.server_sequence_shifts, replacement_base);
-    for (index, packet) in packets.iter_mut().enumerate() {
-        write_be_u16(packet, 3, shifted_base.wrapping_add(index as u16))
-            .then_some(())
-            .ok_or_else(|| {
-                anyhow::anyhow!("failed to retarget delayed deflated replacement sequence")
-            })?;
-        encode_legacy_m_crc(packet)
-            .then_some(())
-            .ok_or_else(|| anyhow::anyhow!("failed to repair delayed deflated replacement CRC"))?;
-    }
-
     let future_shift_base = replacement_base.wrapping_add(1);
     let inserted_extra_packets = packets.len().saturating_sub(1);
-    if inserted_extra_packets != 0 {
-        let expected_frames = u16::try_from(reassembly.expected_frames).map_err(|_| {
-            anyhow::anyhow!("deflated expected frame count exceeds typed identity width")
-        })?;
-        record_server_sequence_insertion(
-            &mut state.sequence.server_sequence_shifts,
-            &mut state.sequence.pending_server_sequence_insertions,
-            ServerSequenceInsertionProducer::DeflatedProgressShellRetarget {
-                first_sequence: reassembly.first_sequence,
-                expected_frames,
-            },
-            future_shift_base,
-            inserted_extra_packets as u16,
-        )?;
-    }
+    let expected_frames = u16::try_from(reassembly.expected_frames).map_err(|_| {
+        anyhow::anyhow!("deflated expected frame count exceeds typed identity width")
+    })?;
+    let owner_source = state.sequence.current_server_source_epoch()?;
+    assign_expanded_server_output_sequences(
+        state,
+        owner_source,
+        replacement_base,
+        1,
+        ServerSequenceInsertionProducer::DeflatedProgressShellRetarget {
+            first_sequence: reassembly.first_sequence,
+            expected_frames,
+        },
+        packets.iter_mut(),
+    )?;
+    let shifted_base = MFrameView::parse(&packets[0])
+        .ok_or_else(|| anyhow::anyhow!("typed delayed deflated replacement did not parse"))?
+        .sequence;
     tracing::info!(
         first_sequence = reassembly.first_sequence,
         expected_frames = reassembly.expected_frames,
@@ -12919,8 +12961,21 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         reassembly::build_server_deflated_output_frames(&reassembly, &combined, 0x01, true)?;
     let inserted_extra_output_frames = outputs.len() > reassembly.frames.len();
     if inserted_extra_output_frames {
-        pre_shift_current_server_packets(state, &mut outputs)?;
-        record_extra_deflated_output_sequence_shift(state, &reassembly, outputs.len())?;
+        let original_frames = u16::try_from(reassembly.frames.len()).map_err(|_| {
+            anyhow::anyhow!("deflated source frame count exceeds typed identity width")
+        })?;
+        let owner_source = state.sequence.current_server_source_epoch()?;
+        assign_expanded_server_output_sequences(
+            state,
+            owner_source,
+            reassembly.first_sequence,
+            reassembly.frames.len(),
+            ServerSequenceInsertionProducer::DeflatedRewrite {
+                first_sequence: reassembly.first_sequence,
+                original_frames,
+            },
+            outputs.iter_mut(),
+        )?;
     }
     let response_last_sequence = reassembly
         .frames

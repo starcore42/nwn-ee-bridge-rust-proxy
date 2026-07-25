@@ -15,14 +15,6 @@ pub(super) struct SequenceShift {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct CoalescedSplitSequenceShift {
-    pub(super) source_sequence: u16,
-    pub(super) source_origin_generation: u64,
-    pub(super) base: u16,
-    pub(super) delta: u16,
-}
-
-#[derive(Debug, Clone)]
 pub(super) struct SequenceElision {
     pub(super) sequence: u16,
 }
@@ -142,7 +134,7 @@ pub(super) enum ServerSequenceInsertionProducer {
 }
 
 /// Transaction-local producer claim recorded at the same boundary as the
-/// compatibility-coordinate shift used by producer-local packet builders.
+/// compatibility-coordinate parity entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ServerSequenceInsertionIntent {
     producer: ServerSequenceInsertionProducer,
@@ -184,12 +176,12 @@ struct PlannedServerSequenceInsertion {
 
 /// Complete insertion delta discovered by one speculative server transaction.
 ///
-/// Producers record typed intents beside the bare `SequenceShift` still used
-/// by a few producer-local packet builders. Semantic discovery order is not
-/// transport order: a coalesced transaction can discover an inventory suffix
-/// before a deferred-resource prefix. This plan restores exact generations
-/// relative to the reliable source owner and sorts by source position plus
-/// typed placement before touching the ordered epoch ledger.
+/// Producers record typed intents beside the temporary bare `SequenceShift`
+/// parity entry. Semantic discovery order is not transport order: a coalesced
+/// transaction can discover an inventory suffix before a deferred-resource
+/// prefix. This plan restores exact generations relative to the reliable
+/// source owner and sorts by source position plus typed placement before
+/// touching the ordered epoch ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServerSequenceInsertionPlan {
     owner_source: SequenceEpochKey,
@@ -618,9 +610,8 @@ pub(super) fn shift_sequence_for_peer(shifts: &[SequenceShift], original_sequenc
 ///
 /// The typed intent becomes the authoritative ordered-ledger owner only after
 /// the same outer strict validation succeeds. The bare compatibility list is
-/// retained temporarily for producer-local packet preassignment and parity
-/// validation; it must keep complete history rather than silently dropping a
-/// cumulative prefix.
+/// retained temporarily for transaction parity validation; it must keep
+/// complete history rather than silently dropping a cumulative prefix.
 pub(super) fn record_server_sequence_insertion(
     shifts: &mut Vec<SequenceShift>,
     intents: &mut Vec<ServerSequenceInsertionIntent>,
@@ -713,14 +704,6 @@ pub(super) fn trim_sequence_shifts(shifts: &mut Vec<SequenceShift>) {
     const MAX_SEQUENCE_SHIFTS: usize = 16;
     if shifts.len() > MAX_SEQUENCE_SHIFTS {
         let overflow = shifts.len() - MAX_SEQUENCE_SHIFTS;
-        shifts.drain(0..overflow);
-    }
-}
-
-pub(super) fn trim_coalesced_split_sequence_shifts(shifts: &mut Vec<CoalescedSplitSequenceShift>) {
-    const MAX_COALESCED_SPLIT_SEQUENCE_SHIFTS: usize = 16;
-    if shifts.len() > MAX_COALESCED_SPLIT_SEQUENCE_SHIFTS {
-        let overflow = shifts.len() - MAX_COALESCED_SPLIT_SEQUENCE_SHIFTS;
         shifts.drain(0..overflow);
     }
 }

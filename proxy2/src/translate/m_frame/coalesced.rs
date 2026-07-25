@@ -27,11 +27,7 @@ use super::{
         self, BufferedFrame, EE_SAFE_M_FRAME_DATAGRAM_BYTES, InflatedGameplayPayload,
         ServerDeflatedReassembly,
     },
-    sequence::{
-        CoalescedSplitSequenceShift, SequenceShift, ServerSequenceInsertionProducer,
-        record_server_sequence_insertion, sequence_at_or_after, shift_sequence_for_peer,
-        trim_coalesced_split_sequence_shifts,
-    },
+    sequence::{SequenceEpochKey, ServerSequenceInsertionProducer},
     server_dispatch,
     server_replay::ServerReliableSlotKey,
     state::{
@@ -483,14 +479,6 @@ fn split_rewritten_coalesced_records(
                 .ok_or_else(|| anyhow::anyhow!("failed to repair split coalesced M CRC"))?;
             vec![packet]
         };
-        for packet in &mut output_records {
-            shift_packet_sequence_for_existing_server_shifts(
-                packet,
-                &state.sequence.server_sequence_shifts,
-                &state.sequence.coalesced_split_sequence_shifts,
-                source,
-            )?;
-        }
         assigned_output_frames = assigned_output_frames
             .checked_add(output_records.len())
             .ok_or_else(|| anyhow::anyhow!("coalesced split output frame count overflow"))?;
@@ -511,6 +499,20 @@ fn split_rewritten_coalesced_records(
     if source.sequence != base_sequence {
         anyhow::bail!("coalesced split source key does not match the primary reliable sequence");
     }
+    let owner_generation = i64::try_from(source.origin_generation)
+        .map_err(|_| anyhow::anyhow!("coalesced source generation exceeds typed epoch range"))?;
+    let producer = ServerSequenceInsertionProducer::CoalescedSplit {
+        source_sequence: source.sequence,
+        source_origin_generation: source.origin_generation,
+    };
+    let reused_committed_range = super::assign_expanded_server_output_sequences(
+        state,
+        SequenceEpochKey::new(source.sequence, owner_generation),
+        base_sequence,
+        1,
+        producer,
+        packets.iter_mut().map(|(_, packet)| packet),
+    )?;
     let mut destination_sequences = packets.iter().map(|(_, packet)| {
         let view = MFrameView::parse(packet)
             .ok_or_else(|| anyhow::anyhow!("coalesced split output failed ACK-span parse"))?;
@@ -544,55 +546,23 @@ fn split_rewritten_coalesced_records(
         destination_last,
     )?;
 
-    let base = future_shift_base;
-    // Apply pre-existing server sequence shifts before recording the new
-    // coalesced split shift. This mirrors deflated-window expansion: current
-    // replacement packets are emitted pre-shifted, then future server-origin
-    // packets at or after the original post-window sequence are shifted by
-    // the number of extra reliable frames we inserted.
-    let delta = inserted_extra_packets as u16;
-    if state
-        .sequence
-        .coalesced_split_sequence_shifts
-        .iter()
-        .any(|shift| coalesced_split_shift_matches_source(shift, source, base, delta))
-    {
+    if reused_committed_range {
         tracing::info!(
             source_sequence = base_sequence,
             source_origin_generation = source.origin_generation,
-            shift_base = base,
+            shift_base = future_shift_base,
             inserted_extra_packets,
             shifts = state.sequence.server_sequence_shifts.len(),
             output_frames = assigned_output_frames,
-            "server coalesced split replay reused existing future sequence shift"
+            "server coalesced split replay reused authoritative typed insertion range"
         );
         return Ok((packets, true));
     }
 
-    record_server_sequence_insertion(
-        &mut state.sequence.server_sequence_shifts,
-        &mut state.sequence.pending_server_sequence_insertions,
-        ServerSequenceInsertionProducer::CoalescedSplit {
-            source_sequence: source.sequence,
-            source_origin_generation: source.origin_generation,
-        },
-        base,
-        delta,
-    )?;
-    state
-        .sequence
-        .coalesced_split_sequence_shifts
-        .push(CoalescedSplitSequenceShift {
-            source_sequence: base_sequence,
-            source_origin_generation: source.origin_generation,
-            base,
-            delta,
-        });
-    trim_coalesced_split_sequence_shifts(&mut state.sequence.coalesced_split_sequence_shifts);
     tracing::info!(
         source_sequence = base_sequence,
         source_origin_generation = source.origin_generation,
-        shift_base = base,
+        shift_base = future_shift_base,
         inserted_extra_packets,
         shifts = state.sequence.server_sequence_shifts.len(),
         output_frames = assigned_output_frames,
@@ -678,54 +648,6 @@ fn split_oversized_deflated_coalesced_record(
         "oversized coalesced deflated record split into standalone reliable M frames"
     );
     Ok(outputs)
-}
-
-fn shift_packet_sequence_for_existing_server_shifts(
-    packet: &mut [u8],
-    shifts: &[SequenceShift],
-    coalesced_split_shifts: &[CoalescedSplitSequenceShift],
-    current_source: ServerReliableSlotKey,
-) -> anyhow::Result<()> {
-    if shifts.is_empty() {
-        return Ok(());
-    }
-    let view = MFrameView::parse(packet)
-        .ok_or_else(|| anyhow::anyhow!("pre-shifted split coalesced packet is not an M frame"))?;
-    if view.frame_type != 0 {
-        return Ok(());
-    }
-    let mut shifted = shift_sequence_for_peer(shifts, view.sequence);
-    for split_shift in coalesced_split_shifts {
-        if split_shift.source_sequence == current_source.sequence
-            && split_shift.source_origin_generation == current_source.origin_generation
-            && split_shift.delta != 0
-            && sequence_at_or_after(view.sequence, split_shift.base)
-        {
-            shifted = shifted.wrapping_sub(split_shift.delta);
-        }
-    }
-    if shifted == view.sequence {
-        return Ok(());
-    }
-    write_be_u16(packet, 3, shifted)
-        .then_some(())
-        .ok_or_else(|| anyhow::anyhow!("failed to pre-shift split coalesced sequence"))?;
-    encode_legacy_m_crc(packet)
-        .then_some(())
-        .ok_or_else(|| anyhow::anyhow!("failed to repair pre-shifted split coalesced CRC"))?;
-    Ok(())
-}
-
-fn coalesced_split_shift_matches_source(
-    shift: &CoalescedSplitSequenceShift,
-    source: ServerReliableSlotKey,
-    base: u16,
-    delta: u16,
-) -> bool {
-    shift.source_sequence == source.sequence
-        && shift.source_origin_generation == source.origin_generation
-        && shift.base == base
-        && shift.delta == delta
 }
 
 struct CoalescedRecordRewrite {
@@ -1883,43 +1805,6 @@ mod tests {
     }
 
     #[test]
-    fn existing_server_shifts_include_type_zero_sequence_zero_but_not_controls() {
-        let shifts = [SequenceShift {
-            base: u16::MAX,
-            delta: 1,
-        }];
-        let mut wrapped_data = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
-        wrapped_data[0] = b'M';
-        write_be_u16(&mut wrapped_data, 3, 0);
-        write_be_u16(&mut wrapped_data, 5, 75);
-        wrapped_data[7] = 0x0A;
-        write_be_u16(&mut wrapped_data, 8, 1);
-        assert!(encode_legacy_m_crc(&mut wrapped_data));
-
-        let source = ServerReliableSlotKey {
-            sequence: 0,
-            origin_generation: 0,
-        };
-        shift_packet_sequence_for_existing_server_shifts(&mut wrapped_data, &shifts, &[], source)
-            .expect("wrapped type-0 data should shift");
-        let shifted = MFrameView::parse(&wrapped_data).expect("shifted type-0 data frame");
-        assert_eq!(shifted.sequence, 1);
-        assert!(shifted.crc_valid);
-
-        let mut control = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
-        control[0] = b'M';
-        write_be_u16(&mut control, 3, 95);
-        write_be_u16(&mut control, 5, 75);
-        control[7] = 0x10;
-        assert!(encode_legacy_m_crc(&mut control));
-        let before = control.clone();
-
-        shift_packet_sequence_for_existing_server_shifts(&mut control, &shifts, &[], source)
-            .expect("type-1 control should bypass data shifts");
-        assert_eq!(control, before);
-    }
-
-    #[test]
     fn coalesced_stream_continuation_requires_known_proxy_owned_owner() {
         let record = [0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
         let inflated = [0xEC, 0x00, 0x3C, 0x56, 0xFE, 0x3E];
@@ -2695,10 +2580,17 @@ mod tests {
         span[12..15].copy_from_slice(&[b'P', 0x05, 0x02]);
 
         let mut state = SessionState::default();
-        state
-            .sequence
-            .server_sequence_shifts
-            .push(SequenceShift { base: 62, delta: 3 });
+        super::super::sequence::record_server_sequence_insertion(
+            &mut state.sequence.server_sequence_shifts,
+            &mut state.sequence.pending_server_sequence_insertions,
+            ServerSequenceInsertionProducer::SyntheticAreaLoad {
+                original_first_sequence: 61,
+                original_last_sequence: 61,
+            },
+            62,
+            3,
+        )
+        .expect("record equal-base area lifecycle range");
         let (packets, pre_shifted) = split_rewritten_coalesced_records(
             vec![
                 CoalescedRecordRewrite {
@@ -2801,19 +2693,8 @@ mod tests {
 
         assert!(first_pre_shifted);
         assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
-        assert_eq!(state.sequence.coalesced_split_sequence_shifts.len(), 1);
         assert_eq!(state.sequence.server_sequence_shifts[0].base, 62);
         assert_eq!(state.sequence.server_sequence_shifts[0].delta, 1);
-        assert_eq!(
-            state.sequence.coalesced_split_sequence_shifts[0].source_sequence,
-            61
-        );
-        assert_eq!(
-            state.sequence.coalesced_split_sequence_shifts[0].source_origin_generation,
-            0
-        );
-        assert_eq!(state.sequence.coalesced_split_sequence_shifts[0].base, 62);
-        assert_eq!(state.sequence.coalesced_split_sequence_shifts[0].delta, 1);
 
         let first_sequences: Vec<u16> = first_packets
             .iter()
@@ -2824,6 +2705,11 @@ mod tests {
             })
             .collect();
         assert_eq!(first_sequences, vec![61, 62]);
+        state.sequence.ordered_server_sequence_epochs = state
+            .sequence
+            .prospective_ordered_server_sequence_epochs_for(SequenceEpochKey::new(61, 0))
+            .expect("commit first coalesced typed insertion");
+        state.sequence.pending_server_sequence_insertions.clear();
 
         let (second_packets, second_pre_shifted) = split_rewritten_coalesced_records(
             make_records(primary, span),
@@ -2842,9 +2728,12 @@ mod tests {
             "replaying the same coalesced source window must not append another future shift"
         );
         assert_eq!(
-            state.sequence.coalesced_split_sequence_shifts.len(),
+            state
+                .sequence
+                .ordered_server_sequence_epochs
+                .active_insertions(),
             1,
-            "the companion replay guard should stay one-to-one with the recorded future shift"
+            "the committed typed owner must stay one-to-one with the source generation"
         );
         assert_eq!(
             state.sequence.server_output_ack_spans.len(),
@@ -2864,35 +2753,6 @@ mod tests {
             vec![61, 62],
             "replaying the same source window must emit the same reliable sequence numbers"
         );
-    }
-
-    #[test]
-    fn coalesced_split_shift_replay_guard_includes_source_generation() {
-        let shift = CoalescedSplitSequenceShift {
-            source_sequence: 61,
-            source_origin_generation: 4,
-            base: 62,
-            delta: 1,
-        };
-
-        assert!(coalesced_split_shift_matches_source(
-            &shift,
-            ServerReliableSlotKey {
-                sequence: 61,
-                origin_generation: 4,
-            },
-            62,
-            1,
-        ));
-        assert!(!coalesced_split_shift_matches_source(
-            &shift,
-            ServerReliableSlotKey {
-                sequence: 61,
-                origin_generation: 5,
-            },
-            62,
-            1,
-        ));
     }
 
     #[test]
@@ -3008,6 +2868,10 @@ mod tests {
             "../../../fixtures/module_info/local_chapter4_module_info_coalesced_20260523.bin"
         );
         let view = MFrameView::parse(packet).expect("Chapter4 coalesced packet should parse");
+        state.sequence.current_server_translation_source = Some(ServerReliableSlotKey {
+            sequence: view.sequence,
+            origin_generation: 0,
+        });
         let primary_len = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
         let spans = parse_packetized_spans(packet, primary_len)
             .expect("Chapter4 coalesced packet should have packetized spans");
@@ -3091,6 +2955,10 @@ mod tests {
             "../../../fixtures/module_info/local_xp2_chapter3_module_info_coalesced_20260523.bin"
         );
         let view = MFrameView::parse(packet).expect("XP2 Chapter3 coalesced packet should parse");
+        state.sequence.current_server_translation_source = Some(ServerReliableSlotKey {
+            sequence: view.sequence,
+            origin_generation: 0,
+        });
         let rewrite =
             rewrite_server_window_spans_if_needed(packet, &view, &mut state, view.ack_sequence, 0)
                 .expect("XP2 Chapter3 coalesced packet should rewrite")
@@ -3128,6 +2996,10 @@ mod tests {
         );
         let mut state = SessionState::default();
         let view = MFrameView::parse(packet).expect("ShadowGuard coalesced packet should parse");
+        state.sequence.current_server_translation_source = Some(ServerReliableSlotKey {
+            sequence: view.sequence,
+            origin_generation: 0,
+        });
         assert!(view.crc_valid);
         assert_eq!(view.sequence, 7);
         assert_eq!(view.ack_sequence, 72);
@@ -3168,6 +3040,10 @@ mod tests {
     #[test]
     fn coalesced_module_info_queues_exact_module_resources_with_sequence_shift() {
         let mut state = SessionState::default();
+        state.sequence.current_server_translation_source = Some(ServerReliableSlotKey {
+            sequence: 7,
+            origin_generation: 0,
+        });
         assert!(
             state
                 .module_resources
@@ -3214,6 +3090,10 @@ mod tests {
     #[test]
     fn coalesced_zero_transport_fields_inherit_primary_window_for_resource_insertion() {
         let mut state = SessionState::default();
+        state.sequence.current_server_translation_source = Some(ServerReliableSlotKey {
+            sequence: 7,
+            origin_generation: 0,
+        });
         assert!(
             state
                 .module_resources

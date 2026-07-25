@@ -20,9 +20,8 @@ use super::{
         BufferedInterleavedServerPacket, CompletedDeflatedStreamWindow, ServerDeflatedReassembly,
     },
     sequence::{
-        CoalescedSplitSequenceShift, OrderedServerSequenceEpochs, SequenceElision,
-        SequenceEpochKey, SequenceShift, ServerSequenceInsertionOwner, ServerSequenceInsertionPlan,
-        ServerSequenceInsertionProducer,
+        OrderedServerSequenceEpochs, SequenceElision, SequenceEpochKey, SequenceShift,
+        ServerSequenceInsertionOwner, ServerSequenceInsertionPlan, ServerSequenceInsertionProducer,
     },
     server_replay, synthetic_area,
 };
@@ -195,11 +194,11 @@ pub(super) struct SequenceState {
     pub(super) latest_server_sequence_to_client: Option<u16>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
     pub(super) client_sequence_elisions: Vec<SequenceElision>,
-    /// Complete compatibility-coordinate history for the remaining
-    /// producer-local preassignment paths. This list is not authoritative for
-    /// emitted server sequences or client ACKs and is deliberately never
-    /// prefix-trimmed; the exact ordered epoch ledger below owns both wire
-    /// transforms.
+    /// Complete compatibility-coordinate history retained only as an
+    /// independent transaction-parity check while typed producer claims are
+    /// rolled out. This list is not authoritative for packet assignment,
+    /// emitted server sequences, or client ACKs and is deliberately never
+    /// prefix-trimmed; the exact ordered epoch ledger below owns those paths.
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
     /// Exact outer server source currently being translated. Ready dispatches
     /// also expose this through `pending_dispatch_key`; committed exact
@@ -224,7 +223,6 @@ pub(super) struct SequenceState {
     /// transaction resolves its typed producer claims into exact source epochs,
     /// orders them by placement, and commits them here atomically.
     pub(super) ordered_server_sequence_epochs: OrderedServerSequenceEpochs,
-    pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
     /// Exact `1 -> N` server rewrites that keep EE-derived partial ACKs before
     /// the source until EE cumulatively ACKs the final rebuilt reliable frame.
     /// Semantic discovery records raw output endpoints. Staging either endpoint
@@ -257,16 +255,29 @@ impl SequenceState {
 
     /// Preview the complete typed insertion set discovered so far in the
     /// active server transaction. This intentionally does not consult the
-    /// compatibility shift list: packet builders use it only to assign typed
-    /// destinations, while the outer transaction retains the independent
-    /// legacy delta check until every immediate-output producer has migrated.
+    /// compatibility shift list: packet builders assign typed destinations,
+    /// while the outer transaction retains an independent parity check until
+    /// the compatibility ledger itself is removed.
     pub(super) fn prospective_ordered_server_sequence_epochs(
         &self,
     ) -> anyhow::Result<OrderedServerSequenceEpochs> {
         if self.pending_server_sequence_insertions.is_empty() {
             return Ok(self.ordered_server_sequence_epochs.clone());
         }
-        let owner = self.current_server_source_epoch()?;
+        self.prospective_ordered_server_sequence_epochs_for(self.current_server_source_epoch()?)
+    }
+
+    /// Preview the active typed insertion set relative to an explicit outer
+    /// reliable owner. Immediate coalesced writers already carry that exact
+    /// generation key, including in focused parser tests where the root
+    /// dispatcher is intentionally absent.
+    pub(super) fn prospective_ordered_server_sequence_epochs_for(
+        &self,
+        owner: SequenceEpochKey,
+    ) -> anyhow::Result<OrderedServerSequenceEpochs> {
+        if self.pending_server_sequence_insertions.is_empty() {
+            return Ok(self.ordered_server_sequence_epochs.clone());
+        }
         let plan = ServerSequenceInsertionPlan::from_typed_intents(
             owner,
             &self.pending_server_sequence_insertions,
