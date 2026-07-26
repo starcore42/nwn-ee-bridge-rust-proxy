@@ -34,23 +34,29 @@ use crate::{
 /// a retransmission may change this bit without changing the stored message.
 pub(super) const SEND_WINDOW_BIT6_MASK: u8 = 0x40;
 
-/// Canonical immutable identity for one server-origin type-0 data frame.
+/// Canonical immutable identity for one type-0 data frame in either reliable
+/// direction.
 ///
 /// CRC, sequence, and ACK are before offset 7 and are already excluded. Keep
 /// every low flag, packetized field, gameplay byte, and trailing storage byte
 /// exact, while clearing only the decompile-proven FrameSend-owned bit 6. The
 /// caller's reliable key owns sequence/generation and this function refuses
 /// control lanes rather than letting them alias a data slot.
-pub(super) fn server_reliable_data_transport_identity(
-    bytes: &[u8],
-    view: &MFrameView,
-) -> Option<Vec<u8>> {
+pub(super) fn reliable_data_transport_identity(bytes: &[u8], view: &MFrameView) -> Option<Vec<u8>> {
     if view.frame_kind() != Some(MFrameType::ReliableData) {
         return None;
     }
     let mut identity = bytes.get(7..)?.to_vec();
     *identity.first_mut()? &= !SEND_WINDOW_BIT6_MASK;
     Some(identity)
+}
+
+/// Server-lane compatibility name retained for existing callers.
+pub(super) fn server_reliable_data_transport_identity(
+    bytes: &[u8],
+    view: &MFrameView,
+) -> Option<Vec<u8>> {
+    reliable_data_transport_identity(bytes, view)
 }
 
 /// Refresh only the sender-owned bit on a cached reliable-data emission.

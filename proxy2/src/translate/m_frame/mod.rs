@@ -34,6 +34,7 @@ mod client_replay;
 mod coalesced;
 mod deferred_module_resources;
 mod deflate;
+mod diamond_send_window;
 mod ee_send_window;
 mod inventory_equipment;
 mod live_stream;
@@ -264,6 +265,30 @@ pub(super) fn stage_pending_client_ack_delivery(
     )
 }
 
+pub(super) fn stage_direct_client_send_window(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    diamond_send_window::stage(
+        &mut state.diamond_client_send_window,
+        diamond_send_window::DiamondClientSendOwner::DirectClient,
+        emit,
+        Instant::now(),
+    )
+}
+
+pub(super) fn stage_pending_client_send_window(
+    state: &mut SessionState,
+    emit: &Emit,
+) -> anyhow::Result<()> {
+    diamond_send_window::stage(
+        &mut state.diamond_client_send_window,
+        diamond_send_window::DiamondClientSendOwner::PendingClientDrain,
+        emit,
+        Instant::now(),
+    )
+}
+
 pub(super) fn stage_direct_server_ack_delivery(
     state: &mut SessionState,
     emit: &Emit,
@@ -414,6 +439,18 @@ pub(super) fn take_due_ee_server_retransmit(
         &mut state.ee_server_send_window,
         Instant::now(),
         current_client_source_ack,
+    )
+}
+
+pub(super) fn take_due_diamond_client_retransmit(
+    state: &mut SessionState,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let current_server_source_ack = server_replay::receive_floor(&state.server_reliable_slots)
+        .map(|floor| floor.sequence.wrapping_sub(1));
+    diamond_send_window::take_due_retransmit(
+        &mut state.diamond_client_send_window,
+        Instant::now(),
+        current_server_source_ack,
     )
 }
 
@@ -1006,6 +1043,10 @@ pub(super) fn ensure_direct_source_ack_carrier(
 /// rejected, but its independently valid ACK can release proxy-owned client
 /// work just as it would in the original receive window.
 fn observe_validated_server_source_ack(state: &mut SessionState, ack_sequence: u16) {
+    let _ = diamond_send_window::retire_through_raw_server_ack(
+        &mut state.diamond_client_send_window,
+        ack_sequence,
+    );
     let ack_sequence =
         server_replay::observe_peer_ack_sequence(&mut state.server_reliable_slots, ack_sequence);
     inventory_equipment::observe_server_ack_for_client_gui_status(state, ack_sequence);
@@ -1828,6 +1869,11 @@ pub(super) fn finish_pending_client_drain_emit_validation(
         ack_delivery::AckDeliveryOwner::PendingClientDrain,
         accepted,
     );
+    let _ = diamond_send_window::finish(
+        &mut state.diamond_client_send_window,
+        diamond_send_window::DiamondClientSendOwner::PendingClientDrain,
+        accepted,
+    );
 }
 
 fn finish_pending_client_drain_effect_validation(state: &mut SessionState, accepted: bool) {
@@ -2008,6 +2054,11 @@ pub(super) fn finish_client_to_server_emit_validation_outcomes(
     finish_ack_delivery(
         state,
         ack_delivery::AckDeliveryOwner::DirectClient,
+        ack_output_accepted,
+    );
+    let _ = diamond_send_window::finish(
+        &mut state.diamond_client_send_window,
+        diamond_send_window::DiamondClientSendOwner::DirectClient,
         ack_output_accepted,
     );
 }

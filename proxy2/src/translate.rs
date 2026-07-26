@@ -403,8 +403,19 @@ impl Translator {
 
 impl SessionTranslator {
     pub fn take_pending_client_to_server_packets(&mut self) -> Vec<Vec<u8>> {
+        let mut packets = Vec::new();
+        match m_frame::take_due_diamond_client_retransmit(&mut self.m_state) {
+            Ok(Some(packet)) => packets.push(packet),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "Diamond client send-window retransmit failed closed"
+                );
+            }
+        }
         if !m_frame::pending_client_drain_has_work(&self.m_state) {
-            return Vec::new();
+            return packets;
         }
         match m_frame::take_pending_client_to_server_packets(&mut self.m_state) {
             Ok(emit) => {
@@ -416,21 +427,32 @@ impl SessionTranslator {
                         error = %err,
                         "pending client packet drain failed to stage exact outgoing ACK delivery"
                     );
-                    return Vec::new();
+                    return packets;
                 }
-                let validated = self.validate_emit(Direction::ClientToServer, emit);
+                let mut validated = self.validate_emit(Direction::ClientToServer, emit);
+                if !matches!(&validated, Emit::Drop)
+                    && let Err(err) =
+                        m_frame::stage_pending_client_send_window(&mut self.m_state, &validated)
+                {
+                    tracing::warn!(
+                        error = %err,
+                        "pending client output could not enter the Diamond reliable send window"
+                    );
+                    validated = Emit::Drop;
+                }
                 m_frame::finish_pending_client_drain_emit_validation(
                     &mut self.m_state,
                     !matches!(&validated, Emit::Drop),
                 );
-                packets_from_emit(validated)
+                packets.extend(packets_from_emit(validated));
+                packets
             }
             Err(err) => {
                 tracing::warn!(
                     error = %err,
                     "pending client packet drain failed before strict validation"
                 );
-                Vec::new()
+                packets
             }
         }
     }
@@ -677,6 +699,37 @@ impl SessionTranslator {
                         direction = direction.as_str(),
                         error = %fallback_err,
                         "ACK-only fallback could not stage an empty EE reliable send-window batch"
+                    );
+                    validated = Emit::Drop;
+                }
+            } else {
+                validated = Emit::Drop;
+            }
+        }
+
+        if finish_client_m_validation
+            && !matches!(&validated, Emit::Drop)
+            && let Err(err) =
+                m_frame::stage_direct_client_send_window(&mut self.m_state, &validated)
+        {
+            translated_effects_candidate = false;
+            tracing::warn!(
+                direction = direction.as_str(),
+                error = %err,
+                "validated client payload could not enter the Diamond reliable send window"
+            );
+            if let Some((prepared, source_lane)) = strict_rejection_ack_fallback.clone() {
+                let fallback =
+                    m_frame::ensure_direct_source_ack_carrier(Emit::Drop, prepared, source_lane);
+                validated = self.validate_emit(direction, fallback);
+                if !matches!(&validated, Emit::Drop)
+                    && let Err(fallback_err) =
+                        m_frame::stage_direct_client_send_window(&mut self.m_state, &validated)
+                {
+                    tracing::warn!(
+                        direction = direction.as_str(),
+                        error = %fallback_err,
+                        "ACK-only fallback could not stage an empty Diamond reliable send-window batch"
                     );
                     validated = Emit::Drop;
                 }

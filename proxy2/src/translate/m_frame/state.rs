@@ -13,7 +13,7 @@ use crate::translate::{
 use super::{
     ack_delivery, client_ack, client_replay, deferred_module_resources,
     deflate::PersistentServerInflater,
-    ee_send_window, live_stream,
+    diamond_send_window, ee_send_window, live_stream,
     output_reliability::ServerOutputAckSpan,
     quickbar_stream,
     reassembly::{
@@ -859,6 +859,11 @@ pub struct SessionState {
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
     pub(super) client_reliable_replays: client_replay::ClientReliableReplayState,
+    /// Exact strictly validated client outputs stay in a separate
+    /// Diamond-facing send window until a raw HG ACK retires them. This
+    /// destination owner must exist before EE receive slots can be released
+    /// independently of downstream delivery.
+    pub(super) diamond_client_send_window: diamond_send_window::DiamondClientSendWindowState,
     /// Raw server receive-window ownership is transport truth and therefore is
     /// deliberately excluded from `EngineFacingEffectSnapshot`. A rejected
     /// CNW reader may retry the pinned bytes but cannot replace the slot.
@@ -904,6 +909,8 @@ impl SessionState {
             live_object: LiveObjectStreamState::default(),
             sequence: SequenceState::default(),
             client_reliable_replays: client_replay::ClientReliableReplayState::default(),
+            diamond_client_send_window: diamond_send_window::DiamondClientSendWindowState::default(
+            ),
             server_reliable_slots: server_replay::ServerReliableSlotState::default(),
             ee_server_send_window: ee_send_window::EeServerSendWindowState::default(),
             ack_delivery: ack_delivery::AckDeliveryState::default(),
