@@ -474,6 +474,36 @@ impl ExactLiveObjectRewriteSummary {
         )
     }
 
+    pub(crate) fn has_exact_placeable_fixed_output_carrier_diagnostics(&self) -> bool {
+        self.exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence != 0
+            || self
+                .exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_missing_template_resref_rows
+                != 0
+            || self.exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_divergent
+                != 0
+            || self
+                .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence
+                != 0
+            || self
+                .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows
+                != 0
+            || self
+                .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent
+                != 0
+            || self
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence
+                != 0
+            || self
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence
+                != 0
+            // Every source-blocker, writer-gap, and synthesis-gate field in
+            // the extended carrier diagnostic is recorded from the same row
+            // evidence only after this aggregate is incremented.
+            || self
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped
+                != 0
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_target_unavailable_resolution(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableResolution {
@@ -1990,6 +2020,37 @@ pub(super) fn alternating_legacy_door_placeable_test_payload() -> Vec<u8> {
 #[cfg(test)]
 mod fixture_free_tests {
     use super::*;
+
+    #[test]
+    fn fixed_output_carrier_diagnostics_require_observed_evidence() {
+        let mut summary = ExactLiveObjectRewriteSummary::default();
+        assert!(
+            !summary.has_exact_placeable_fixed_output_carrier_diagnostics(),
+            "ordinary exact live-object rewrites must not emit the extended all-zero carrier row"
+        );
+
+        summary.exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence = 1;
+        assert!(summary.has_exact_placeable_fixed_output_carrier_diagnostics());
+
+        let mut summary = ExactLiveObjectRewriteSummary::default();
+        summary
+            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence =
+            1;
+        assert!(summary.has_exact_placeable_fixed_output_carrier_diagnostics());
+
+        let mut summary = ExactLiveObjectRewriteSummary::default();
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence =
+            1;
+        assert!(summary.has_exact_placeable_fixed_output_carrier_diagnostics());
+
+        let mut summary = ExactLiveObjectRewriteSummary::default();
+        summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped = 1;
+        assert!(
+            summary.has_exact_placeable_fixed_output_carrier_diagnostics(),
+            "the aggregate row count must retain all nested blocker/gate diagnostics"
+        );
+    }
 
     pub(super) fn alternating_legacy_door_placeable_payload() -> Vec<u8> {
         let door_id = 0x8000_1001u32;

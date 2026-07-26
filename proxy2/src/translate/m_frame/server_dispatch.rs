@@ -2802,7 +2802,8 @@ fn trace_live_object_exact_rewrite_summary(
             "server exact placeable fixed-width custom carrier target-unavailable resolution"
         );
     }
-    tracing::info!(
+    if summary.has_exact_placeable_fixed_output_carrier_diagnostics() {
+        tracing::info!(
         source = exact_rewrite.source,
         family = family_name,
         exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence = summary
@@ -3057,7 +3058,8 @@ fn trace_live_object_exact_rewrite_summary(
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_add_only =
             unproven_carrier_writer_gap_slots.source_unblocked.add_only,
         "server exact placeable surrounding fixed-output carrier blockers"
-    );
+        );
+    }
 }
 
 fn claimed() -> ServerTranslatorOutcome {
