@@ -58,6 +58,15 @@ pub(super) struct ClientEmitValidationToken {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ServerOutsideWindowAckValidationToken {
+    /// Current cumulative Diamond-facing receive frontier to repeat toward HG
+    /// after a valid server type-0 datagram falls outside the mirrored
+    /// interval. Publication waits for the frame's independently valid ACK
+    /// carrier to pass final strict validation.
+    pub(super) ack_sequence: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ServerEmitEffectTransactionKind {
     OrderedSuccessor,
     OrdinaryServerEmit,
@@ -866,6 +875,8 @@ pub struct SessionState {
     /// transport sequence/ACK remain authoritative on rejection.
     pub(super) client_emit_effect_snapshot: Option<Box<EngineFacingEffectSnapshot>>,
     pub(super) client_emit_pending_validation: Option<ClientEmitValidationToken>,
+    pub(super) server_outside_window_ack_pending_validation:
+        Option<ServerOutsideWindowAckValidationToken>,
     pub(super) pending_client_drain_effect_snapshot: Option<PendingClientDrainEffectSnapshot>,
     pub(super) direct_server_semantic_replays: DirectServerSemanticReplayState,
     pub(super) client_ack: ClientAckSessionState,
@@ -898,6 +909,7 @@ impl SessionState {
             ack_delivery: ack_delivery::AckDeliveryState::default(),
             client_emit_effect_snapshot: None,
             client_emit_pending_validation: None,
+            server_outside_window_ack_pending_validation: None,
             pending_client_drain_effect_snapshot: None,
             direct_server_semantic_replays: DirectServerSemanticReplayState::default(),
             client_ack: ClientAckSessionState::default(),

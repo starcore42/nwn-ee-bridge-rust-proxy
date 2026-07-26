@@ -46,6 +46,12 @@ pub(super) struct ServerReliableSlot {
     pub(super) deferred_behind_gap: bool,
 }
 
+#[derive(Debug, Clone)]
+struct RetiredServerReliableSlot {
+    key: ServerReliableSlotKey,
+    transport_identity: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct ServerReliableSlotState {
     pub(super) slots: VecDeque<ServerReliableSlot>,
@@ -70,6 +76,11 @@ pub(super) struct ServerReliableSlotState {
     /// validator. Rejection leaves `dispatch_next_key` unchanged so only an
     /// immutable retransmit can retry the same semantic position.
     pub(super) pending_dispatch_key: Option<ServerReliableSlotKey>,
+    /// The originals free cumulatively acknowledged receive slots and never
+    /// dispatch them again. Retain only their immutable identities so proxy2
+    /// can classify an exact delayed HG retransmit without reopening gameplay
+    /// effects. The side ledger is bounded to the same 16-slot interval.
+    retired_history: VecDeque<RetiredServerReliableSlot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +89,8 @@ pub(super) enum PreparedServerReliableSource {
     Pinned(ServerReliableSlotKey),
     Matched(ServerReliableSlotKey),
     Conflict(ServerReliableSlotKey),
+    RetiredReplay(ServerReliableSlotKey),
+    RetiredConflict(ServerReliableSlotKey),
     OutsideWindow(ServerReliableSlotKey),
 }
 
@@ -100,6 +113,8 @@ impl PreparedServerReliableSource {
             Self::Pinned(key)
             | Self::Matched(key)
             | Self::Conflict(key)
+            | Self::RetiredReplay(key)
+            | Self::RetiredConflict(key)
             | Self::OutsideWindow(key) => Some(key),
         }
     }
@@ -141,6 +156,18 @@ pub(super) fn prepare_source_slot(
     };
 
     if distance >= MAX_SERVER_RELIABLE_SLOTS {
+        if let Some(retired) = state
+            .retired_history
+            .iter()
+            .rev()
+            .find(|retired| retired.key == key)
+        {
+            return Ok(if retired.transport_identity == transport_identity {
+                PreparedServerReliableSource::RetiredReplay(key)
+            } else {
+                PreparedServerReliableSource::RetiredConflict(key)
+            });
+        }
         return Ok(PreparedServerReliableSource::OutsideWindow(key));
     }
     if let Some(existing) = state.slots.iter_mut().find(|slot| slot.key == key) {
@@ -189,6 +216,8 @@ pub(super) fn prepare_source_dispatch(
             key
         }
         PreparedServerReliableSource::Conflict(key)
+        | PreparedServerReliableSource::RetiredReplay(key)
+        | PreparedServerReliableSource::RetiredConflict(key)
         | PreparedServerReliableSource::OutsideWindow(key) => {
             anyhow::bail!(
                 "server reliable source {} generation {} reached dispatch admission after transport rejection",
@@ -361,17 +390,30 @@ pub(super) fn retire_through_client_ack(
     };
     let distance = ack_sequence.wrapping_sub(receive_start) as usize;
 
-    let retired_sources = state
-        .slots
+    let mut retained_slots = VecDeque::with_capacity(state.slots.len());
+    let mut retired_slots = Vec::new();
+    while let Some(slot) = state.slots.pop_front() {
+        if slot.key.sequence.wrapping_sub(receive_start) as usize <= distance {
+            retired_slots.push(slot);
+        } else {
+            retained_slots.push_back(slot);
+        }
+    }
+    state.slots = retained_slots;
+    let retired_sources = retired_slots
         .iter()
-        .filter(|slot| slot.key.sequence.wrapping_sub(receive_start) as usize <= distance)
         .map(|slot| slot.key)
         .collect::<Vec<_>>();
-    let before = state.slots.len();
-    state
-        .slots
-        .retain(|slot| slot.key.sequence.wrapping_sub(receive_start) as usize > distance);
-    let retired = before.saturating_sub(state.slots.len());
+    let retired = retired_slots.len();
+    for slot in retired_slots {
+        state.retired_history.push_back(RetiredServerReliableSlot {
+            key: slot.key,
+            transport_identity: slot.transport_identity,
+        });
+        while state.retired_history.len() > MAX_SERVER_RELIABLE_SLOTS {
+            let _ = state.retired_history.pop_front();
+        }
+    }
     let next = ack_sequence.wrapping_add(1);
     if next < receive_start {
         state.origin_generation = state.origin_generation.saturating_add(1);

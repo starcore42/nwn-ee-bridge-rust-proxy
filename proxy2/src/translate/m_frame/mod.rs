@@ -1265,6 +1265,28 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     // datagram (ACK/CRC/FrameSend bit 6 aside).
     let prepared_server_source =
         server_replay::prepare_source_slot(&mut state.server_reliable_slots, bytes, &source_view)?;
+    let outside_window_ack_sequence = matches!(
+        &prepared_server_source,
+        server_replay::PreparedServerReliableSource::RetiredReplay(_)
+            | server_replay::PreparedServerReliableSource::RetiredConflict(_)
+            | server_replay::PreparedServerReliableSource::OutsideWindow(_)
+    )
+    .then(|| {
+        state
+            .server_reliable_slots
+            .receive_start
+            .expect("prepared server reliable source established a receive frontier")
+            .wrapping_sub(1)
+    });
+    if let Some(ack_sequence) = outside_window_ack_sequence {
+        if state.server_outside_window_ack_pending_validation.is_some() {
+            anyhow::bail!(
+                "server out-of-window ACK validation authority was already active before translation"
+            );
+        }
+        state.server_outside_window_ack_pending_validation =
+            Some(state::ServerOutsideWindowAckValidationToken { ack_sequence });
+    }
     let server_origin_generation = prepared_server_source
         .key()
         .map(|key| key.origin_generation)
@@ -1277,6 +1299,28 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
                 origin_generation = key.origin_generation,
                 ack_sequence = source_ack_sequence,
                 "server reliable retransmit rejected because its pinned source slot carried different immutable bytes"
+            );
+            return Ok(Emit::Drop);
+        }
+        server_replay::PreparedServerReliableSource::RetiredReplay(key) => {
+            observe_validated_server_source_ack(state, source_ack_sequence);
+            tracing::info!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = source_ack_sequence,
+                receive_start = state.server_reliable_slots.receive_start,
+                "exact retired server reliable datagram collapsed without replaying engine-facing effects"
+            );
+            return Ok(Emit::Drop);
+        }
+        server_replay::PreparedServerReliableSource::RetiredConflict(key) => {
+            observe_validated_server_source_ack(state, source_ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = source_ack_sequence,
+                receive_start = state.server_reliable_slots.receive_start,
+                "server reliable datagram outside the receive window conflicts with retained immutable bytes"
             );
             return Ok(Emit::Drop);
         }
@@ -2052,6 +2096,7 @@ pub(super) fn finish_server_to_client_emit_validation_outcomes(
     effects_accepted: bool,
     ack_output_accepted: bool,
 ) {
+    let outside_window_ack = state.server_outside_window_ack_pending_validation.take();
     let effects_committed = finish_server_to_client_effect_validation(state, effects_accepted);
     server_replay::finish_source_dispatch(&mut state.server_reliable_slots, effects_committed);
     finish_ack_delivery(
@@ -2059,6 +2104,20 @@ pub(super) fn finish_server_to_client_emit_validation_outcomes(
         ack_delivery::AckDeliveryOwner::DirectServer,
         ack_output_accepted,
     );
+    if ack_output_accepted
+        && let Some(token) = outside_window_ack
+        && let Err(err) = local_ack::queue_consumed_server_frame_ack(
+            state,
+            token.ack_sequence,
+            local_ack::OUTSIDE_WINDOW_SERVER_ACK_REASON,
+        )
+    {
+        tracing::warn!(
+            ack_sequence = token.ack_sequence,
+            error = %err,
+            "failed to queue cumulative ACK-control for out-of-window server reliable data"
+        );
+    }
     let _ = ee_send_window::finish(
         &mut state.ee_server_send_window,
         ee_send_window::EeServerSendOwner::DirectServer,
@@ -2314,6 +2373,28 @@ fn translate_server_to_client_inner(
                 origin_generation = key.origin_generation,
                 ack_sequence = view.ack_sequence,
                 "server reliable retransmit rejected before route selection because its pinned source slot carried different immutable bytes"
+            );
+            return Ok(Emit::Drop);
+        }
+        server_replay::PreparedServerReliableSource::RetiredReplay(key) => {
+            observe_validated_server_source_ack(state, view.ack_sequence);
+            tracing::info!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = view.ack_sequence,
+                receive_start = state.server_reliable_slots.receive_start,
+                "exact retired server reliable datagram collapsed before route selection"
+            );
+            return Ok(Emit::Drop);
+        }
+        server_replay::PreparedServerReliableSource::RetiredConflict(key) => {
+            observe_validated_server_source_ack(state, view.ack_sequence);
+            tracing::warn!(
+                sequence = key.sequence,
+                origin_generation = key.origin_generation,
+                ack_sequence = view.ack_sequence,
+                receive_start = state.server_reliable_slots.receive_start,
+                "server reliable datagram outside the receive window conflicts with retired bytes before route selection"
             );
             return Ok(Emit::Drop);
         }
@@ -8138,6 +8219,195 @@ mod tests {
             .expect("classify occupied source"),
             server_replay::PreparedServerReliableSource::Conflict(_)
         ));
+    }
+
+    #[test]
+    fn retired_server_identity_classifies_exact_conflicting_and_unknown_stale_data() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let mut state = server_replay::ServerReliableSlotState::default();
+        let source = client_reliable_m_frame(36, 77, &payload);
+        let source_view = MFrameView::parse(&source).expect("retired server source");
+        assert!(matches!(
+            server_replay::prepare_source_slot(&mut state, &source, &source_view)
+                .expect("pin server source before cumulative ACK"),
+            server_replay::PreparedServerReliableSource::Pinned(_)
+        ));
+        assert_eq!(
+            server_replay::retire_through_client_ack(&mut state, 36).len(),
+            1
+        );
+        assert_eq!(state.receive_start, Some(37));
+
+        let mut exact_replay = source.clone();
+        assert!(write_be_u16(&mut exact_replay, 5, 78));
+        exact_replay[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut exact_replay));
+        let exact_view = MFrameView::parse(&exact_replay).expect("exact retired server replay");
+        assert!(matches!(
+            server_replay::prepare_source_slot(&mut state, &exact_replay, &exact_view)
+                .expect("classify exact retired server replay"),
+            server_replay::PreparedServerReliableSource::RetiredReplay(_)
+        ));
+
+        let conflict =
+            client_reliable_m_frame(36, 79, &crate::translate::loadbar::start_payload(3));
+        let conflict_view =
+            MFrameView::parse(&conflict).expect("conflicting retired server source");
+        assert!(matches!(
+            server_replay::prepare_source_slot(&mut state, &conflict, &conflict_view)
+                .expect("classify conflicting retired server replay"),
+            server_replay::PreparedServerReliableSource::RetiredConflict(_)
+        ));
+
+        let unknown_stale = client_reliable_m_frame(35, 80, &payload);
+        let unknown_view = MFrameView::parse(&unknown_stale).expect("unknown stale server source");
+        assert!(matches!(
+            server_replay::prepare_source_slot(&mut state, &unknown_stale, &unknown_view)
+                .expect("classify unknown stale server data"),
+            server_replay::PreparedServerReliableSource::OutsideWindow(_)
+        ));
+    }
+
+    #[test]
+    fn retired_server_identity_history_is_bounded_to_receive_window() {
+        let mut state = server_replay::ServerReliableSlotState::default();
+        let mut packets = Vec::new();
+        for sequence in 0..=server_replay::MAX_SERVER_RELIABLE_SLOTS as u16 {
+            let packet = client_reliable_m_frame(sequence, 77, &[sequence as u8]);
+            let view = MFrameView::parse(&packet).expect("bounded retired server source");
+            assert!(matches!(
+                server_replay::prepare_source_slot(&mut state, &packet, &view)
+                    .expect("pin next server source"),
+                server_replay::PreparedServerReliableSource::Pinned(_)
+            ));
+            assert_eq!(
+                server_replay::retire_through_client_ack(&mut state, sequence).len(),
+                1
+            );
+            packets.push(packet);
+        }
+        assert_eq!(
+            state.receive_start,
+            Some(server_replay::MAX_SERVER_RELIABLE_SLOTS as u16 + 1)
+        );
+        assert!(state.slots.is_empty());
+
+        let oldest = &packets[0];
+        let oldest_view = MFrameView::parse(oldest).expect("oldest retired server source");
+        assert!(matches!(
+            server_replay::prepare_source_slot(&mut state, oldest, &oldest_view)
+                .expect("classify server identity older than one window"),
+            server_replay::PreparedServerReliableSource::OutsideWindow(_)
+        ));
+
+        let newest = packets.last().expect("newest retired server source");
+        let newest_view = MFrameView::parse(newest).expect("newest retired server source view");
+        assert!(matches!(
+            server_replay::prepare_source_slot(&mut state, newest, &newest_view)
+                .expect("classify newest retained server identity"),
+            server_replay::PreparedServerReliableSource::RetiredReplay(_)
+        ));
+    }
+
+    #[test]
+    fn out_of_window_server_reliable_data_requeues_current_cumulative_ack() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let source = client_reliable_m_frame(36, 77, &payload);
+        let source_view = MFrameView::parse(&source).expect("retired server source");
+        let mut translator = strict_session_translator_for_test();
+        assert!(matches!(
+            server_replay::prepare_source_slot(
+                &mut translator.m_state.server_reliable_slots,
+                &source,
+                &source_view,
+            )
+            .expect("pin server source before cumulative ACK"),
+            server_replay::PreparedServerReliableSource::Pinned(_)
+        ));
+        assert_eq!(
+            server_replay::retire_through_client_ack(
+                &mut translator.m_state.server_reliable_slots,
+                36,
+            )
+            .len(),
+            1
+        );
+
+        let destination_ack =
+            translator.translate(crate::translate::Direction::ServerToClient, &source);
+        let destination_packets = match destination_ack {
+            Emit::Packet(packet) => vec![packet],
+            Emit::Packets(packets) => packets,
+            other => panic!("expected independently valid server ACK carrier, got {other:?}"),
+        };
+        assert_eq!(destination_packets.len(), 1);
+        let destination_view = MFrameView::parse(&destination_packets[0])
+            .expect("destination-facing independent ACK carrier");
+        assert_eq!(destination_view.frame_kind(), Some(MFrameType::AckControl));
+        assert_eq!(destination_view.ack_sequence, 77);
+
+        let repeated_acks = translator.take_pending_client_to_server_packets();
+        assert_eq!(repeated_acks.len(), 1);
+        let repeated_view =
+            MFrameView::parse(&repeated_acks[0]).expect("server cumulative ACK control");
+        assert_eq!(repeated_view.sequence, 0);
+        assert_eq!(repeated_view.ack_sequence, 36);
+        assert_eq!(repeated_view.flags, 0x10);
+        assert_eq!(repeated_view.payload_length, 0);
+        assert!(
+            translator
+                .m_state
+                .server_outside_window_ack_pending_validation
+                .is_none(),
+            "the final strict callback must consume the one-shot validation token"
+        );
+        assert!(
+            translator
+                .m_state
+                .sequence
+                .pending_client_to_server_packets
+                .is_empty(),
+            "the original emits one control per out-of-window receive event"
+        );
+    }
+
+    #[test]
+    fn out_of_window_server_ack_waits_for_strict_carrier_acceptance() {
+        let payload = crate::translate::loadbar::start_payload(2);
+        let source = client_reliable_m_frame(36, 77, &payload);
+        let source_view = MFrameView::parse(&source).expect("retired server source");
+        let mut state = SessionState::default();
+        assert!(matches!(
+            server_replay::prepare_source_slot(
+                &mut state.server_reliable_slots,
+                &source,
+                &source_view,
+            )
+            .expect("pin server source before cumulative ACK"),
+            server_replay::PreparedServerReliableSource::Pinned(_)
+        ));
+        assert_eq!(
+            server_replay::retire_through_client_ack(&mut state.server_reliable_slots, 36).len(),
+            1
+        );
+        assert!(matches!(
+            translate_server_to_client(&source, &mut state)
+                .expect("classify exact retired server source"),
+            Emit::Drop
+        ));
+        assert_eq!(
+            state
+                .server_outside_window_ack_pending_validation
+                .map(|token| token.ack_sequence),
+            Some(36)
+        );
+
+        finish_server_to_client_emit_validation_outcomes(&mut state, false, false);
+        assert!(state.server_outside_window_ack_pending_validation.is_none());
+        assert!(
+            state.sequence.pending_client_to_server_packets.is_empty(),
+            "a rejected independent carrier cannot publish the upstream cumulative ACK"
+        );
     }
 
     #[test]
