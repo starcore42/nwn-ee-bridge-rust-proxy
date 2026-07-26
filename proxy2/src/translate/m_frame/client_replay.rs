@@ -88,6 +88,25 @@ pub(super) struct ClientReliableReplayState {
     pub(super) exact_replays: u64,
 }
 
+/// Exact client receive-retention state at a strict semantic commit boundary.
+///
+/// Diamond `sub_5F3940` lines 751482-751549/751605-751724 and EE
+/// `CNetLayerWindow::FrameReceive` lines 878891-878952/879029-879135 prove
+/// separate 16-slot receive release and destination send-window retirement.
+/// Proxy2 currently keeps accepted client sources in this one mirrored slot
+/// set until the Diamond ACK returns. This diagnostic identifies the precise
+/// coupling condition without advancing a frontier or emitting an ACK before
+/// a proxy-owned Diamond-facing send window exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ClientReliableRetentionDiagnostic {
+    pub(super) receive_start: Option<u16>,
+    pub(super) retained_slots: usize,
+    pub(super) translated_disposition_slots: usize,
+    pub(super) retryable_slots: usize,
+    pub(super) contiguous_translated_prefix: usize,
+    pub(super) at_full_translated_retention: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum PreparedClientReliableSource {
     Excluded,
@@ -113,6 +132,43 @@ impl PreparedClientReliableSource {
             | Self::OutsideWindow(key)
             | Self::Replay { key, .. } => Some(*key),
         }
+    }
+}
+
+pub(super) fn retention_diagnostic(
+    state: &ClientReliableReplayState,
+) -> ClientReliableRetentionDiagnostic {
+    let translated_disposition_slots = state
+        .slots
+        .iter()
+        .filter(|slot| slot.replay.is_some())
+        .count();
+    let retryable_slots = state
+        .slots
+        .len()
+        .saturating_sub(translated_disposition_slots);
+    let contiguous_translated_prefix = state.receive_start.map_or(0, |receive_start| {
+        (0..MAX_CLIENT_RELIABLE_SLOTS)
+            .take_while(|offset| {
+                let sequence = receive_start.wrapping_add(*offset as u16);
+                let generation = generation_for_sequence(state, receive_start, sequence, *offset);
+                state.slots.iter().any(|slot| {
+                    slot.key.sequence == sequence
+                        && slot.key.origin_generation == generation
+                        && slot.replay.is_some()
+                })
+            })
+            .count()
+    });
+    let retained_slots = state.slots.len();
+    ClientReliableRetentionDiagnostic {
+        receive_start: state.receive_start,
+        retained_slots,
+        translated_disposition_slots,
+        retryable_slots,
+        contiguous_translated_prefix,
+        at_full_translated_retention: retained_slots == MAX_CLIENT_RELIABLE_SLOTS
+            && contiguous_translated_prefix == MAX_CLIENT_RELIABLE_SLOTS,
     }
 }
 

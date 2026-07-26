@@ -2036,6 +2036,7 @@ fn finish_client_to_server_effect_validation(
 
     if effects_accepted {
         commit_engine_facing_effect_transaction(state);
+        log_client_reliable_retention_after_strict_commit(state);
         if ack_output_accepted && let Some(ack_sequence) = token.outside_window_ack_sequence {
             client_ack::queue_outside_window_ack(&mut state.client_ack.pending, ack_sequence);
         }
@@ -2068,6 +2069,29 @@ fn finish_client_to_server_effect_validation(
             source_origin_generation = token.source_origin_generation,
             source_ack_sequence = token.source_ack_sequence,
             "client M engine-facing effects rolled back after final strict emit validation rejected the complete batch"
+        );
+    }
+}
+
+fn log_client_reliable_retention_after_strict_commit(state: &SessionState) {
+    let diagnostic = client_replay::retention_diagnostic(&state.client_reliable_replays);
+    if diagnostic.at_full_translated_retention {
+        tracing::info!(
+            receive_start = diagnostic.receive_start,
+            retained_slots = diagnostic.retained_slots,
+            translated_disposition_slots = diagnostic.translated_disposition_slots,
+            retryable_slots = diagnostic.retryable_slots,
+            contiguous_translated_prefix = diagnostic.contiguous_translated_prefix,
+            "client receive window is fully retained behind downstream Diamond ACK ownership; a proxy-owned Diamond send window is required before receive/ACK lifetime can be decoupled"
+        );
+    } else if diagnostic.retained_slots >= client_replay::MAX_CLIENT_RELIABLE_SLOTS / 2 {
+        tracing::trace!(
+            receive_start = diagnostic.receive_start,
+            retained_slots = diagnostic.retained_slots,
+            translated_disposition_slots = diagnostic.translated_disposition_slots,
+            retryable_slots = diagnostic.retryable_slots,
+            contiguous_translated_prefix = diagnostic.contiguous_translated_prefix,
+            "client reliable receive-retention pressure after strict semantic commit"
         );
     }
 }
@@ -10621,6 +10645,17 @@ mod tests {
             state.client_reliable_replays.slots.len(),
             client_replay::MAX_CLIENT_RELIABLE_SLOTS
         );
+        assert_eq!(
+            client_replay::retention_diagnostic(&state.client_reliable_replays),
+            client_replay::ClientReliableRetentionDiagnostic {
+                receive_start: Some(7),
+                retained_slots: client_replay::MAX_CLIENT_RELIABLE_SLOTS,
+                translated_disposition_slots: client_replay::MAX_CLIENT_RELIABLE_SLOTS,
+                retryable_slots: 0,
+                contiguous_translated_prefix: client_replay::MAX_CLIENT_RELIABLE_SLOTS,
+                at_full_translated_retention: true,
+            }
+        );
         assert!(
             state
                 .client_reliable_replays
@@ -10660,6 +10695,17 @@ mod tests {
         );
         assert_eq!(state.client_reliable_replays.receive_start, Some(15));
         assert_eq!(state.client_reliable_replays.slots.len(), 8);
+        assert_eq!(
+            client_replay::retention_diagnostic(&state.client_reliable_replays),
+            client_replay::ClientReliableRetentionDiagnostic {
+                receive_start: Some(15),
+                retained_slots: 8,
+                translated_disposition_slots: 8,
+                retryable_slots: 0,
+                contiguous_translated_prefix: 8,
+                at_full_translated_retention: false,
+            }
+        );
         assert!(matches!(
             client_replay::prepare_source_slot(
                 &mut state.client_reliable_replays,
