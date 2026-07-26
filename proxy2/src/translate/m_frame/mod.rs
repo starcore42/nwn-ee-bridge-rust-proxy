@@ -1326,11 +1326,23 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         }
         server_replay::PreparedServerReliableSource::OutsideWindow(key) => {
             observe_validated_server_source_ack(state, source_ack_sequence);
+            let diagnostic =
+                server_replay::outside_window_diagnostic(&state.server_reliable_slots, key);
             tracing::warn!(
                 sequence = key.sequence,
                 origin_generation = key.origin_generation,
                 ack_sequence = source_ack_sequence,
                 receive_start = state.server_reliable_slots.receive_start,
+                outside_window_relation = diagnostic.relation.as_str(),
+                outside_window_distance = diagnostic.distance,
+                dispatch_relation = diagnostic.dispatch_relation.as_str(),
+                dispatch_next_sequence = ?diagnostic.dispatch_next_key.map(|next| next.sequence),
+                dispatch_next_origin_generation =
+                    ?diagnostic.dispatch_next_key.map(|next| next.origin_generation),
+                receive_to_dispatch_distance = ?diagnostic.receive_to_dispatch_distance,
+                retained_slots = diagnostic.retained_slots,
+                at_dispatch_frontier_after_full_retention =
+                    diagnostic.at_dispatch_frontier_after_full_retention,
                 "server reliable datagram rejected outside the decompile-proven 16-frame receive window"
             );
             return Ok(Emit::Drop);
@@ -2400,11 +2412,23 @@ fn translate_server_to_client_inner(
         }
         server_replay::PreparedServerReliableSource::OutsideWindow(key) => {
             observe_validated_server_source_ack(state, view.ack_sequence);
+            let diagnostic =
+                server_replay::outside_window_diagnostic(&state.server_reliable_slots, key);
             tracing::warn!(
                 sequence = key.sequence,
                 origin_generation = key.origin_generation,
                 ack_sequence = view.ack_sequence,
                 receive_start = state.server_reliable_slots.receive_start,
+                outside_window_relation = diagnostic.relation.as_str(),
+                outside_window_distance = diagnostic.distance,
+                dispatch_relation = diagnostic.dispatch_relation.as_str(),
+                dispatch_next_sequence = ?diagnostic.dispatch_next_key.map(|next| next.sequence),
+                dispatch_next_origin_generation =
+                    ?diagnostic.dispatch_next_key.map(|next| next.origin_generation),
+                receive_to_dispatch_distance = ?diagnostic.receive_to_dispatch_distance,
+                retained_slots = diagnostic.retained_slots,
+                at_dispatch_frontier_after_full_retention =
+                    diagnostic.at_dispatch_frontier_after_full_retention,
                 "server reliable datagram rejected before route selection outside the 16-frame receive window"
             );
             return Ok(Emit::Drop);
@@ -4896,6 +4920,62 @@ mod tests {
         packet.extend_from_slice(payload);
         assert!(encode_legacy_m_crc(&mut packet));
         packet
+    }
+
+    #[test]
+    fn outside_window_diagnostic_identifies_full_retention_at_dispatch_frontier() {
+        let mut state = server_replay::ServerReliableSlotState::default();
+        for sequence in 12..28 {
+            let packet = reliable_server_m_frame(sequence, 74, 0x0A, 1, &[0x60]);
+            let view = MFrameView::parse(&packet).expect("server reliable frame");
+            let prepared =
+                server_replay::prepare_source_slot(&mut state, &packet, &view).expect("pin source");
+            assert!(matches!(
+                prepared,
+                server_replay::PreparedServerReliableSource::Pinned(_)
+            ));
+            let admission =
+                server_replay::prepare_source_dispatch(&mut state, prepared).expect("admit source");
+            let server_replay::ServerReliableDispatchAdmission::Ready(key) = admission else {
+                panic!("contiguous source should be ready: {admission:?}");
+            };
+            server_replay::stage_source_dispatch(&mut state, key).expect("stage source");
+            assert_eq!(
+                server_replay::finish_source_dispatch(&mut state, true),
+                Some(key)
+            );
+        }
+
+        assert_eq!(state.receive_start, Some(12));
+        assert_eq!(state.slots.len(), server_replay::MAX_SERVER_RELIABLE_SLOTS);
+        assert_eq!(
+            state.dispatch_next_key,
+            Some(server_replay::ServerReliableSlotKey {
+                sequence: 28,
+                origin_generation: 0,
+            })
+        );
+
+        let packet = reliable_server_m_frame(28, 74, 0x0A, 1, &[0x60]);
+        let view = MFrameView::parse(&packet).expect("future server reliable frame");
+        let prepared = server_replay::prepare_source_slot(&mut state, &packet, &view)
+            .expect("classify future source");
+        let server_replay::PreparedServerReliableSource::OutsideWindow(key) = prepared else {
+            panic!("seventeenth source should be outside the retained interval: {prepared:?}");
+        };
+        let diagnostic = server_replay::outside_window_diagnostic(&state, key);
+        assert_eq!(
+            diagnostic.relation,
+            server_replay::ServerOutsideWindowRelation::Ahead
+        );
+        assert_eq!(diagnostic.distance, 16);
+        assert_eq!(
+            diagnostic.dispatch_relation,
+            server_replay::ServerOutsideWindowDispatchRelation::AtFrontier
+        );
+        assert_eq!(diagnostic.receive_to_dispatch_distance, Some(16));
+        assert_eq!(diagnostic.retained_slots, 16);
+        assert!(diagnostic.at_dispatch_frontier_after_full_retention);
     }
 
     fn two_frame_deflated_window(

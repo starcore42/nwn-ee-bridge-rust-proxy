@@ -106,6 +106,59 @@ pub(super) enum ServerReliableDispatchAdmission {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ServerOutsideWindowRelation {
+    Ahead,
+    Behind,
+    AmbiguousHalfRange,
+}
+
+impl ServerOutsideWindowRelation {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ahead => "ahead",
+            Self::Behind => "behind",
+            Self::AmbiguousHalfRange => "ambiguous-half-range",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ServerOutsideWindowDispatchRelation {
+    AtFrontier,
+    AheadOfFrontier,
+    BehindFrontier,
+    Uninitialized,
+}
+
+impl ServerOutsideWindowDispatchRelation {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::AtFrontier => "at-frontier",
+            Self::AheadOfFrontier => "ahead-of-frontier",
+            Self::BehindFrontier => "behind-frontier",
+            Self::Uninitialized => "uninitialized",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ServerOutsideWindowDiagnostic {
+    pub(super) relation: ServerOutsideWindowRelation,
+    pub(super) distance: u16,
+    pub(super) dispatch_relation: ServerOutsideWindowDispatchRelation,
+    pub(super) dispatch_next_key: Option<ServerReliableSlotKey>,
+    /// Count of source identities already committed through semantic dispatch
+    /// but still retained behind the downstream-ACK-owned receive floor.
+    pub(super) receive_to_dispatch_distance: Option<u64>,
+    pub(super) retained_slots: usize,
+    /// Exact signature observed in live HG traffic when proxy-generated ACKs
+    /// let the upstream sender advance but the source admission floor remains
+    /// coupled to a later EE-facing ACK. This is diagnostic evidence only; it
+    /// does not widen the decompile-proven 16-slot receive interval.
+    pub(super) at_dispatch_frontier_after_full_retention: bool,
+}
+
 impl PreparedServerReliableSource {
     pub(super) fn key(self) -> Option<ServerReliableSlotKey> {
         match self {
@@ -118,6 +171,78 @@ impl PreparedServerReliableSource {
             | Self::OutsideWindow(key) => Some(key),
         }
     }
+}
+
+/// Classify a rejected source against both original receive-loop frontiers.
+///
+/// Diamond `sub_5F3940` lines 751485-751549 and EE `FrameReceive` lines
+/// 878891-878952 perform the circular 16-slot admission test. Their contiguous
+/// dispatch loops then advance the receive start/end together (Diamond
+/// 751605-751673; EE 879029-879088). Proxy2 deliberately tracks semantic
+/// dispatch separately from downstream ACK retention, so report both
+/// coordinates whenever they diverge. The result is production diagnostics
+/// only and changes no frame, ACK, cursor, or gameplay payload.
+pub(super) fn outside_window_diagnostic(
+    state: &ServerReliableSlotState,
+    key: ServerReliableSlotKey,
+) -> ServerOutsideWindowDiagnostic {
+    let receive_start = state.receive_start.unwrap_or(key.sequence);
+    let forward_distance = key.sequence.wrapping_sub(receive_start);
+    let (relation, distance) = if forward_distance == 0x8000 {
+        (
+            ServerOutsideWindowRelation::AmbiguousHalfRange,
+            forward_distance,
+        )
+    } else if forward_distance < 0x8000 {
+        (ServerOutsideWindowRelation::Ahead, forward_distance)
+    } else {
+        (
+            ServerOutsideWindowRelation::Behind,
+            receive_start.wrapping_sub(key.sequence),
+        )
+    };
+    let dispatch_relation = match state.dispatch_next_key {
+        None => ServerOutsideWindowDispatchRelation::Uninitialized,
+        Some(expected) if key == expected => ServerOutsideWindowDispatchRelation::AtFrontier,
+        Some(expected) if key > expected => ServerOutsideWindowDispatchRelation::AheadOfFrontier,
+        Some(_) => ServerOutsideWindowDispatchRelation::BehindFrontier,
+    };
+    let receive_floor = receive_floor(state);
+    let receive_to_dispatch_distance = receive_floor
+        .zip(state.dispatch_next_key)
+        .and_then(|(receive, dispatch)| exact_forward_distance(receive, dispatch));
+    let retained_slots = state.slots.len();
+    let at_dispatch_frontier_after_full_retention = dispatch_relation
+        == ServerOutsideWindowDispatchRelation::AtFrontier
+        && receive_to_dispatch_distance
+            .is_some_and(|distance| distance >= MAX_SERVER_RELIABLE_SLOTS as u64)
+        && retained_slots >= MAX_SERVER_RELIABLE_SLOTS;
+
+    ServerOutsideWindowDiagnostic {
+        relation,
+        distance,
+        dispatch_relation,
+        dispatch_next_key: state.dispatch_next_key,
+        receive_to_dispatch_distance,
+        retained_slots,
+        at_dispatch_frontier_after_full_retention,
+    }
+}
+
+fn exact_forward_distance(
+    first: ServerReliableSlotKey,
+    last: ServerReliableSlotKey,
+) -> Option<u64> {
+    if last < first {
+        return None;
+    }
+    let generation_delta = last
+        .origin_generation
+        .checked_sub(first.origin_generation)?;
+    generation_delta
+        .checked_mul(u64::from(u16::MAX) + 1)?
+        .checked_add(u64::from(last.sequence))?
+        .checked_sub(u64::from(first.sequence))
 }
 
 pub(super) fn observe_peer_ack_sequence(
