@@ -18,6 +18,8 @@ use super::{SessionState, ack_carrier::build_exact_ack_control_frame, state::Pen
 
 pub(super) const OUTSIDE_WINDOW_SERVER_ACK_REASON: &str =
     "proxy-owned cumulative ACK for out-of-window server reliable frame";
+pub(super) const COMMITTED_SERVER_RECEIVE_ACK_REASON: &str =
+    "proxy-owned cumulative ACK for strict-committed server reliable frame";
 
 pub(super) fn queue_consumed_server_frame_ack(
     state: &mut SessionState,

@@ -1,11 +1,13 @@
 //! Immutable server reliable-data source-window ownership.
 //!
-//! Diamond and EE use a 16-slot circular type-0 receive window. Proxy2 is a
-//! translator in that end-to-end reliable lane, so it retains each immutable
-//! source identity until an EE client ACK has itself passed strict validation.
-//! That lets an exact server retransmit reproduce the same translation if the
-//! earlier proxy-to-client UDP datagram was lost, while stale or conflicting
-//! traffic can never replace a live slot.
+//! Diamond and EE use separate 16-slot receive and send windows. Proxy2
+//! terminates both reliable lanes, so its HG-facing receive slots advance as
+//! soon as a source passes final strict dispatch while its EE-facing send
+//! window independently retains translated bytes until the EE client ACKs
+//! them. This module keeps a generation-aware source-output ownership queue
+//! for exact source retransmission classification and later EE ACK mapping;
+//! the queue is not a receive window and cannot restrict new HG source
+//! admission.
 
 use std::collections::VecDeque;
 
@@ -54,6 +56,8 @@ struct RetiredServerReliableSlot {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ServerReliableSlotState {
+    /// Active HG-facing receive slots. A slot leaves this decompile-proven
+    /// 16-entry window immediately after strict semantic dispatch commits.
     pub(super) slots: VecDeque<ServerReliableSlot>,
     /// First sequence in the circular half-open receive interval
     /// `[receive_start, receive_start + 16)`. The proxy anchors this on the
@@ -67,15 +71,24 @@ pub(super) struct ServerReliableSlotState {
     /// server-to-client reader transaction.
     pub(super) latest_peer_ack_sequence: Option<u16>,
     /// First reliable source identity not yet admitted to CNW/gameplay
-    /// dispatch. This is deliberately separate from `receive_start`: source
-    /// slots remain retained there until a strict-accepted EE ACK, while the
-    /// original receive window can dispatch later contiguous slots before that
-    /// downstream ACK arrives.
+    /// dispatch. Strict acceptance advances this together with
+    /// `receive_start`; downstream output ownership is tracked separately.
     pub(super) dispatch_next_key: Option<ServerReliableSlotKey>,
     /// Exact dispatch identity currently awaiting the proxy's outer strict
     /// validator. Rejection leaves `dispatch_next_key` unchanged so only an
     /// immutable retransmit can retry the same semantic position.
     pub(super) pending_dispatch_key: Option<ServerReliableSlotKey>,
+    /// Strict-committed source identities whose translated EE-facing output
+    /// has not yet been cumulatively acknowledged. The independent
+    /// `EeServerSendWindowState` owns exact output bytes and enforces its own
+    /// 16-slot limit; these full sources permit exact HG retransmissions to
+    /// revisit cached output while the source-coordinate order supports mapped
+    /// ACK retirement and ordered-epoch compaction.
+    pub(super) output_sources: VecDeque<ServerReliableSlot>,
+    /// Exact first source identity not yet retired by a mapped, strict-accepted
+    /// EE ACK. Keep the next identity after the queue empties so sequence-wrap
+    /// generation cannot be reconstructed from a bare `u16`.
+    output_retirement_floor: Option<ServerReliableSlotKey>,
     /// The originals free cumulatively acknowledged receive slots and never
     /// dispatch them again. Retain only their immutable identities so proxy2
     /// can classify an exact delayed HG retransmit without reopening gameplay
@@ -89,6 +102,8 @@ pub(super) enum PreparedServerReliableSource {
     Pinned(ServerReliableSlotKey),
     Matched(ServerReliableSlotKey),
     Conflict(ServerReliableSlotKey),
+    OutputReplay(ServerReliableSlotKey),
+    OutputConflict(ServerReliableSlotKey),
     RetiredReplay(ServerReliableSlotKey),
     RetiredConflict(ServerReliableSlotKey),
     OutsideWindow(ServerReliableSlotKey),
@@ -148,10 +163,12 @@ pub(super) struct ServerOutsideWindowDiagnostic {
     pub(super) distance: u16,
     pub(super) dispatch_relation: ServerOutsideWindowDispatchRelation,
     pub(super) dispatch_next_key: Option<ServerReliableSlotKey>,
-    /// Count of source identities already committed through semantic dispatch
-    /// but still retained behind the downstream-ACK-owned receive floor.
+    /// Exact sequence distance from the HG admission floor to the next
+    /// semantic dispatch identity. This stays zero after a committed
+    /// contiguous drain; a positive value exposes receive/dispatch coupling.
     pub(super) receive_to_dispatch_distance: Option<u64>,
     pub(super) retained_slots: usize,
+    pub(super) retained_output_sources: usize,
     /// Exact signature observed in live HG traffic when proxy-generated ACKs
     /// let the upstream sender advance but the source admission floor remains
     /// coupled to a later EE-facing ACK. This is diagnostic evidence only; it
@@ -166,6 +183,8 @@ impl PreparedServerReliableSource {
             Self::Pinned(key)
             | Self::Matched(key)
             | Self::Conflict(key)
+            | Self::OutputReplay(key)
+            | Self::OutputConflict(key)
             | Self::RetiredReplay(key)
             | Self::RetiredConflict(key)
             | Self::OutsideWindow(key) => Some(key),
@@ -212,6 +231,7 @@ pub(super) fn outside_window_diagnostic(
         .zip(state.dispatch_next_key)
         .and_then(|(receive, dispatch)| exact_forward_distance(receive, dispatch));
     let retained_slots = state.slots.len();
+    let retained_output_sources = state.output_sources.len();
     let at_dispatch_frontier_after_full_retention = dispatch_relation
         == ServerOutsideWindowDispatchRelation::AtFrontier
         && receive_to_dispatch_distance
@@ -225,6 +245,7 @@ pub(super) fn outside_window_diagnostic(
         dispatch_next_key: state.dispatch_next_key,
         receive_to_dispatch_distance,
         retained_slots,
+        retained_output_sources,
         at_dispatch_frontier_after_full_retention,
     }
 }
@@ -258,9 +279,9 @@ pub(super) fn observe_peer_ack_sequence(
 /// Diamond lines 751482-751549 and EE lines 878891-878952 admit type 0 only
 /// inside a circular 16-slot half-open interval and never replace an occupied
 /// slot. The originals ignore every occupied duplicate. Proxy2 additionally
-/// distinguishes an exact match from a conflict because, as a transparent
-/// translator rather than the reliable endpoint, it must replay the first
-/// translation until EE's strict-accepted ACK retires that source slot.
+/// distinguishes an exact match from a conflict while the source is active;
+/// after dispatch, the bounded retired history classifies delayed HG replays
+/// without reopening gameplay effects or coupling admission to the EE ACK.
 pub(super) fn prepare_source_slot(
     state: &mut ServerReliableSlotState,
     packet: &[u8],
@@ -281,6 +302,13 @@ pub(super) fn prepare_source_slot(
     };
 
     if distance >= MAX_SERVER_RELIABLE_SLOTS {
+        if let Some(existing) = state.output_sources.iter_mut().find(|slot| slot.key == key) {
+            if existing.transport_identity != transport_identity {
+                return Ok(PreparedServerReliableSource::OutputConflict(key));
+            }
+            existing.packet = packet.to_vec();
+            return Ok(PreparedServerReliableSource::OutputReplay(key));
+        }
         if let Some(retired) = state
             .retired_history
             .iter()
@@ -340,7 +368,11 @@ pub(super) fn prepare_source_dispatch(
         PreparedServerReliableSource::Pinned(key) | PreparedServerReliableSource::Matched(key) => {
             key
         }
+        PreparedServerReliableSource::OutputReplay(key) => {
+            return Ok(ServerReliableDispatchAdmission::Replay(key));
+        }
         PreparedServerReliableSource::Conflict(key)
+        | PreparedServerReliableSource::OutputConflict(key)
         | PreparedServerReliableSource::RetiredReplay(key)
         | PreparedServerReliableSource::RetiredConflict(key)
         | PreparedServerReliableSource::OutsideWindow(key) => {
@@ -468,40 +500,72 @@ pub(super) fn finish_source_dispatch(
         return None;
     }
 
-    let next_origin_generation = if pending.sequence == u16::MAX {
-        let Some(next_generation) = pending.origin_generation.checked_add(1) else {
-            tracing::error!(
-                sequence = pending.sequence,
-                origin_generation = pending.origin_generation,
-                "server reliable semantic dispatch stopped at generation overflow"
-            );
-            return None;
-        };
-        next_generation
-    } else {
-        pending.origin_generation
+    let Some(slot_index) = state.slots.iter().position(|slot| slot.key == pending) else {
+        tracing::error!(
+            sequence = pending.sequence,
+            origin_generation = pending.origin_generation,
+            "server reliable semantic dispatch lost its active receive slot before commit"
+        );
+        return None;
     };
-    let next = ServerReliableSlotKey {
-        sequence: pending.sequence.wrapping_add(1),
-        origin_generation: next_origin_generation,
+    let Some(next) = successor_key(pending) else {
+        tracing::error!(
+            sequence = pending.sequence,
+            origin_generation = pending.origin_generation,
+            "server reliable semantic dispatch stopped at generation overflow"
+        );
+        return None;
     };
+    if let Some(expected_output) = state
+        .output_sources
+        .back()
+        .map(|slot| slot.key)
+        .and_then(successor_key)
+        .or(state.output_retirement_floor)
+        && expected_output != pending
+    {
+        tracing::error!(
+            sequence = pending.sequence,
+            origin_generation = pending.origin_generation,
+            expected_output_sequence = expected_output.sequence,
+            expected_output_origin_generation = expected_output.origin_generation,
+            "server reliable semantic dispatch would break source-output ownership order"
+        );
+        return None;
+    }
+
+    let slot = state
+        .slots
+        .remove(slot_index)
+        .expect("located active server receive slot");
+    if state.output_retirement_floor.is_none() {
+        state.output_retirement_floor = Some(pending);
+    }
+    state.output_sources.push_back(slot);
+    state.receive_start = Some(next.sequence);
+    state.origin_generation = next.origin_generation;
     state.dispatch_next_key = Some(next);
     tracing::trace!(
         sequence = pending.sequence,
         origin_generation = pending.origin_generation,
         next_sequence = next.sequence,
         next_origin_generation = next.origin_generation,
-        "strict-accepted server reliable semantic dispatch advanced the contiguous receive frontier"
+        active_receive_slots = state.slots.len(),
+        retained_output_sources = state.output_sources.len(),
+        "strict-accepted server reliable semantic dispatch released the HG receive slot and advanced its contiguous frontier"
     );
     Some(pending)
 }
 
-/// Retire server source slots only after the EE client ACK carrying this
-/// source-facing sequence has passed the outer strict validator.
+/// Retire server source-output ownership only after the EE client ACK carrying
+/// this source-facing sequence has passed the outer strict validator.
 ///
-/// The original common ACK retirement is Diamond lines 751677-751724 and EE
-/// lines 879090-879135. Proxy-owned server sequence insertions are removed by
-/// the caller before this boundary, so `ack_sequence` is in the source lane.
+/// The exact translated bytes are owned by the separate EE send window. This
+/// queue preserves the original source identity needed by exact HG
+/// retransmission classification, expanded-output ACK mapping, and
+/// ordered-epoch compaction. Proxy-owned server sequence insertions are
+/// removed by the caller before this boundary, so `ack_sequence` is in the
+/// source lane.
 pub(super) fn retire_through_client_ack(
     state: &mut ServerReliableSlotState,
     ack_sequence: u16,
@@ -510,26 +574,14 @@ pub(super) fn retire_through_client_ack(
     if retired == 0 {
         return Vec::new();
     }
-    let Some(receive_start) = state.receive_start else {
+    let Some(output_floor) = state.output_retirement_floor else {
         return Vec::new();
     };
-    let distance = ack_sequence.wrapping_sub(receive_start) as usize;
-
-    let mut retained_slots = VecDeque::with_capacity(state.slots.len());
-    let mut retired_slots = Vec::new();
-    while let Some(slot) = state.slots.pop_front() {
-        if slot.key.sequence.wrapping_sub(receive_start) as usize <= distance {
-            retired_slots.push(slot);
-        } else {
-            retained_slots.push_back(slot);
-        }
-    }
-    state.slots = retained_slots;
+    let retired_slots = state.output_sources.drain(..retired).collect::<Vec<_>>();
     let retired_sources = retired_slots
         .iter()
         .map(|slot| slot.key)
         .collect::<Vec<_>>();
-    let retired = retired_slots.len();
     for slot in retired_slots {
         state.retired_history.push_back(RetiredServerReliableSlot {
             key: slot.key,
@@ -539,26 +591,24 @@ pub(super) fn retire_through_client_ack(
             let _ = state.retired_history.pop_front();
         }
     }
-    let next = ack_sequence.wrapping_add(1);
-    if next < receive_start {
-        state.origin_generation = state.origin_generation.saturating_add(1);
-    }
-    state.receive_start = Some(next);
+    let next = advance_key(output_floor, retired as u64)
+        .expect("retirable output prefix cannot overflow its exact generation");
+    state.output_retirement_floor = Some(next);
     tracing::trace!(
         ack_sequence,
-        receive_start,
-        next_receive_start = next,
-        origin_generation = state.origin_generation,
+        output_floor_sequence = output_floor.sequence,
+        output_floor_origin_generation = output_floor.origin_generation,
+        next_output_floor_sequence = next.sequence,
+        next_output_floor_origin_generation = next.origin_generation,
         retired_slots = retired,
-        retained_slots = state.slots.len(),
-        "strict-accepted EE ACK advanced the mirrored server receive window"
+        retained_output_sources = state.output_sources.len(),
+        "strict-accepted EE ACK retired source-output ownership independently of the HG receive window"
     );
     retired_sources
 }
 
-/// Exact first source identity not yet cumulatively retired. The receive
-/// window owns this generation; callers must not reconstruct it from the bare
-/// wrapped sequence when coordinating a second destination-facing window.
+/// Exact HG-facing receive/admission frontier. This advances on strict local
+/// dispatch and does not wait for the EE-facing output ACK.
 pub(super) fn receive_floor(state: &ServerReliableSlotState) -> Option<ServerReliableSlotKey> {
     state.receive_start.map(|sequence| ServerReliableSlotKey {
         sequence,
@@ -566,30 +616,50 @@ pub(super) fn receive_floor(state: &ServerReliableSlotState) -> Option<ServerRel
     })
 }
 
-/// Return the exact contiguous active prefix an ACK would retire without
-/// mutating the mirrored server-source window.
+/// Exact first source identity whose EE-facing output remains unacknowledged.
+pub(super) fn output_retirement_floor(
+    state: &ServerReliableSlotState,
+) -> Option<ServerReliableSlotKey> {
+    state.output_retirement_floor
+}
+
+/// Return the exact contiguous source-output prefix an ACK would retire
+/// without mutating either protocol window.
 pub(super) fn retirable_prefix_len(state: &ServerReliableSlotState, ack_sequence: u16) -> usize {
-    let Some(receive_start) = state.receive_start else {
+    let Some(output_floor) = state.output_retirement_floor else {
         return 0;
     };
-    let distance = ack_sequence.wrapping_sub(receive_start) as usize;
-    if distance >= MAX_SERVER_RELIABLE_SLOTS {
+    let distance = ack_sequence.wrapping_sub(output_floor.sequence) as usize;
+    if distance >= 0x8000 {
         return 0;
     }
-    // Diamond/EE bound cumulative ACK cleanup by the active send interval,
-    // not by unused capacity in the 16-slot allocation. Never advance over a
-    // source sequence the proxy has not actually pinned.
-    if !(0..=distance).all(|offset| {
-        let sequence = receive_start.wrapping_add(offset as u16);
-        let generation = generation_for_sequence(state, receive_start, sequence, offset);
-        state
-            .slots
+    let retired = distance.saturating_add(1);
+    if retired > state.output_sources.len()
+        || !state
+            .output_sources
             .iter()
-            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
-    }) {
+            .take(retired)
+            .enumerate()
+            .all(|(offset, slot)| {
+                advance_key(output_floor, offset as u64).as_ref() == Some(&slot.key)
+            })
+    {
         return 0;
     }
-    distance.saturating_add(1)
+    retired
+}
+
+fn successor_key(key: ServerReliableSlotKey) -> Option<ServerReliableSlotKey> {
+    advance_key(key, 1)
+}
+
+fn advance_key(key: ServerReliableSlotKey, distance: u64) -> Option<ServerReliableSlotKey> {
+    let total = u64::from(key.sequence).checked_add(distance)?;
+    let generation_delta = total / (u64::from(u16::MAX) + 1);
+    Some(ServerReliableSlotKey {
+        sequence: total as u16,
+        origin_generation: key.origin_generation.checked_add(generation_delta)?,
+    })
 }
 
 fn generation_for_sequence(
