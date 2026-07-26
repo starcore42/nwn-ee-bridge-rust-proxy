@@ -715,6 +715,8 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     let source_sequence_accepted = !matches!(
         &prepared_source,
         client_replay::PreparedClientReliableSource::Conflict(_)
+            | client_replay::PreparedClientReliableSource::RetiredReplay(_)
+            | client_replay::PreparedClientReliableSource::RetiredConflict(_)
             | client_replay::PreparedClientReliableSource::OutsideWindow(_)
     );
     observe_client_window_state(state, &view, source_sequence_accepted);
@@ -733,6 +735,26 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
             origin_generation = key.origin_generation,
             ack_sequence = view.ack_sequence,
             "client M frame dropped because its reliable slot already committed different immutable transport bytes"
+        );
+        return Ok(Emit::Drop);
+    }
+    if let client_replay::PreparedClientReliableSource::RetiredReplay(key) = &prepared_source {
+        tracing::info!(
+            sequence = key.sequence,
+            origin_generation = key.origin_generation,
+            ack_sequence = view.ack_sequence,
+            receive_start = state.client_reliable_replays.receive_start,
+            "exact retired client reliable datagram collapsed without replaying engine-facing effects"
+        );
+        return Ok(Emit::Drop);
+    }
+    if let client_replay::PreparedClientReliableSource::RetiredConflict(key) = &prepared_source {
+        tracing::warn!(
+            sequence = key.sequence,
+            origin_generation = key.origin_generation,
+            ack_sequence = view.ack_sequence,
+            receive_start = state.client_reliable_replays.receive_start,
+            "client reliable datagram outside the receive window conflicts with retained immutable bytes"
         );
         return Ok(Emit::Drop);
     }
@@ -1617,6 +1639,8 @@ pub(super) fn begin_client_to_server_emit_validation(
         && !matches!(
             &prepared_source,
             client_replay::PreparedClientReliableSource::Conflict(_)
+                | client_replay::PreparedClientReliableSource::RetiredReplay(_)
+                | client_replay::PreparedClientReliableSource::RetiredConflict(_)
                 | client_replay::PreparedClientReliableSource::OutsideWindow(_)
         ))
     .then_some(view.sequence);
@@ -9420,6 +9444,55 @@ mod tests {
     }
 
     #[test]
+    fn acknowledged_client_replay_collapses_without_semantic_effects() {
+        let payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            true,
+        );
+        let mut state = SessionState::default();
+        let first = client_reliable_m_frame(78, 31, &payload);
+        assert!(!matches!(
+            translate_client_to_server(&first, &mut state)
+                .expect("first client reliable source should translate"),
+            Emit::Drop
+        ));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(
+            client_replay::retire_through_server_ack(&mut state.client_reliable_replays, 78),
+            1
+        );
+        assert_eq!(state.client_reliable_replays.receive_start, Some(79));
+        assert!(state.client_reliable_replays.slots.is_empty());
+
+        let exact_retired = client_reliable_m_frame(78, 32, &payload);
+        assert!(matches!(
+            translate_client_to_server(&exact_retired, &mut state)
+                .expect("exact acknowledged replay should collapse"),
+            Emit::Drop
+        ));
+        assert_eq!(
+            state.semantic.ui.inventory_packets, 1,
+            "an acknowledged replay must not reacquire a slot or rerun engine-facing effects"
+        );
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(32));
+        assert!(state.client_reliable_replays.slots.is_empty());
+
+        let conflicting_payload = client_gui_inventory::build_status_payload(
+            client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+            false,
+        );
+        let conflicting_retired = client_reliable_m_frame(78, 33, &conflicting_payload);
+        assert!(matches!(
+            translate_client_to_server(&conflicting_retired, &mut state)
+                .expect("conflicting acknowledged sequence should fail closed"),
+            Emit::Drop
+        ));
+        assert_eq!(state.semantic.ui.inventory_packets, 1);
+        assert_eq!(state.sequence.latest_client_ack_from_client, Some(33));
+        assert!(state.client_reliable_replays.slots.is_empty());
+    }
+
+    #[test]
     fn reliable_client_slot_identity_covers_flags_metadata_tail_and_length() {
         let payload = client_gui_inventory::build_status_payload(
             client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
@@ -10160,6 +10233,30 @@ mod tests {
                 &first_view,
             )
             .expect("classify stale retired client slot"),
+            client_replay::PreparedClientReliableSource::RetiredReplay(_)
+        ));
+        let conflicting_retired = client_reliable_m_frame(7, 99, &[0x70, 0x0D, 0x01, 1]);
+        let conflicting_retired_view =
+            MFrameView::parse(&conflicting_retired).expect("conflicting retired client slot");
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &conflicting_retired,
+                &conflicting_retired_view,
+            )
+            .expect("classify conflicting retired client slot"),
+            client_replay::PreparedClientReliableSource::RetiredConflict(_)
+        ));
+        let unknown_stale = client_reliable_m_frame(6, 99, &[0xAA]);
+        let unknown_stale_view =
+            MFrameView::parse(&unknown_stale).expect("unknown stale client slot");
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut state.client_reliable_replays,
+                &unknown_stale,
+                &unknown_stale_view,
+            )
+            .expect("classify unknown stale client slot"),
             client_replay::PreparedClientReliableSource::OutsideWindow(_)
         ));
         assert!(matches!(
@@ -10170,6 +10267,47 @@ mod tests {
             )
             .expect("admit client slot after cumulative ACK"),
             client_replay::PreparedClientReliableSource::Pending(_)
+        ));
+    }
+
+    #[test]
+    fn retired_client_identity_history_is_bounded_to_receive_window() {
+        let mut state = client_replay::ClientReliableReplayState::default();
+        let mut packets = Vec::new();
+        for sequence in 0..=client_replay::MAX_CLIENT_RELIABLE_SLOTS as u16 {
+            let packet = client_reliable_m_frame(sequence, 40, &[sequence as u8]);
+            let view = MFrameView::parse(&packet).expect("bounded retired client source");
+            assert!(matches!(
+                client_replay::prepare_source_slot(&mut state, &packet, &view)
+                    .expect("pin next client source"),
+                client_replay::PreparedClientReliableSource::Pending(_)
+            ));
+            assert_eq!(
+                client_replay::retire_through_server_ack(&mut state, sequence),
+                1
+            );
+            packets.push(packet);
+        }
+        assert_eq!(
+            state.receive_start,
+            Some(client_replay::MAX_CLIENT_RELIABLE_SLOTS as u16 + 1)
+        );
+        assert!(state.slots.is_empty());
+
+        let evicted = &packets[0];
+        let evicted_view = MFrameView::parse(evicted).expect("oldest retired client source");
+        assert!(matches!(
+            client_replay::prepare_source_slot(&mut state, evicted, &evicted_view)
+                .expect("classify retired identity older than one window"),
+            client_replay::PreparedClientReliableSource::OutsideWindow(_)
+        ));
+
+        let newest = packets.last().expect("newest retired client source");
+        let newest_view = MFrameView::parse(newest).expect("newest retired client source view");
+        assert!(matches!(
+            client_replay::prepare_source_slot(&mut state, newest, &newest_view)
+                .expect("classify newest retained identity"),
+            client_replay::PreparedClientReliableSource::RetiredReplay(_)
         ));
     }
 

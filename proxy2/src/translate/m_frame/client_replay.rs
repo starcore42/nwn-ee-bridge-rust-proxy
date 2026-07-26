@@ -63,6 +63,12 @@ pub(super) struct ClientReliableSlot {
     pub(super) replay: Option<ClientReliableTranslationReplay>,
 }
 
+#[derive(Debug, Clone)]
+struct RetiredClientReliableSlot {
+    key: ClientReliableSlotKey,
+    transport_identity: ClientReliableTransportIdentity,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct ClientReliableReplayState {
     pub(super) slots: VecDeque<ClientReliableSlot>,
@@ -73,6 +79,12 @@ pub(super) struct ClientReliableReplayState {
     /// Generation owning `receive_start`; an admitted slot after an in-window
     /// `0xFFFF -> 0x0000` wrap belongs to the following generation.
     pub(super) origin_generation: u64,
+    /// The originals free cumulatively acknowledged receive slots and never
+    /// dispatch an older sequence again. Retain only their immutable identity
+    /// in a diagnostic side ledger so proxy2 can distinguish an exact delayed
+    /// EE retransmit from conflicting bytes without reopening engine effects.
+    /// This is bounded to the same 16-slot interval as the live window.
+    retired_history: VecDeque<RetiredClientReliableSlot>,
     pub(super) exact_replays: u64,
 }
 
@@ -81,6 +93,8 @@ pub(super) enum PreparedClientReliableSource {
     Excluded,
     Pending(ClientReliableSlotKey),
     Conflict(ClientReliableSlotKey),
+    RetiredReplay(ClientReliableSlotKey),
+    RetiredConflict(ClientReliableSlotKey),
     OutsideWindow(ClientReliableSlotKey),
     Replay {
         key: ClientReliableSlotKey,
@@ -94,6 +108,8 @@ impl PreparedClientReliableSource {
             Self::Excluded => None,
             Self::Pending(key)
             | Self::Conflict(key)
+            | Self::RetiredReplay(key)
+            | Self::RetiredConflict(key)
             | Self::OutsideWindow(key)
             | Self::Replay { key, .. } => Some(*key),
         }
@@ -124,6 +140,18 @@ pub(super) fn prepare_source_slot(
         origin_generation: generation_for_sequence(state, receive_start, view.sequence, distance),
     };
     if distance >= MAX_CLIENT_RELIABLE_SLOTS {
+        if let Some(retired) = state
+            .retired_history
+            .iter()
+            .rev()
+            .find(|retired| retired.key == key)
+        {
+            return Ok(if retired.transport_identity == transport_identity {
+                PreparedClientReliableSource::RetiredReplay(key)
+            } else {
+                PreparedClientReliableSource::RetiredConflict(key)
+            });
+        }
         return Ok(PreparedClientReliableSource::OutsideWindow(key));
     }
 
@@ -174,11 +202,26 @@ pub(super) fn retire_through_server_ack(
     };
     let distance = ack_sequence.wrapping_sub(receive_start) as usize;
 
-    let before = state.slots.len();
-    state
-        .slots
-        .retain(|slot| slot.key.sequence.wrapping_sub(receive_start) as usize > distance);
-    let retired = before.saturating_sub(state.slots.len());
+    let mut retained_slots = VecDeque::with_capacity(state.slots.len());
+    let mut retired_slots = Vec::new();
+    while let Some(slot) = state.slots.pop_front() {
+        if slot.key.sequence.wrapping_sub(receive_start) as usize <= distance {
+            retired_slots.push(slot);
+        } else {
+            retained_slots.push_back(slot);
+        }
+    }
+    state.slots = retained_slots;
+    let retired = retired_slots.len();
+    for slot in retired_slots {
+        state.retired_history.push_back(RetiredClientReliableSlot {
+            key: slot.key,
+            transport_identity: slot.transport_identity,
+        });
+        while state.retired_history.len() > MAX_CLIENT_RELIABLE_SLOTS {
+            let _ = state.retired_history.pop_front();
+        }
+    }
     let next = ack_sequence.wrapping_add(1);
     if next < receive_start {
         state.origin_generation = state.origin_generation.saturating_add(1);
