@@ -681,7 +681,7 @@ pub(super) fn pending_server_drain_has_work(state: &SessionState) -> bool {
 }
 
 fn pending_server_drain_has_work_at(state: &SessionState, now: Instant) -> bool {
-    client_ack::has_due_consumed_ee_only_ack(&state.client_ack.pending, now)
+    client_ack::has_due_proxy_owned_ack(&state.client_ack.pending, now)
         || state
             .synthetic_area
             .pending_server_to_client_packets
@@ -1090,7 +1090,7 @@ fn take_due_pending_server_packets(
     let mut kept = Vec::new();
     if include_client_ack {
         due.extend(
-            client_ack::take_due_consumed_ee_only_ack_packets(&mut state.client_ack.pending, now)
+            client_ack::take_due_proxy_owned_ack_packets(&mut state.client_ack.pending, now)
                 .into_iter()
                 .map(|pending| (None, pending)),
         );
@@ -1644,10 +1644,29 @@ pub(super) fn begin_client_to_server_emit_validation(
                 | client_replay::PreparedClientReliableSource::OutsideWindow(_)
         ))
     .then_some(view.sequence);
+    // Both original FrameReceive implementations answer valid type-0 traffic
+    // outside the active receive interval with a type-1 control carrying the
+    // current cumulative frontier. Prepare that transport fact here, then
+    // publish it only if the incoming frame's independent ACK output survives
+    // final strict validation.
+    let outside_window_ack_sequence = matches!(
+        &prepared_source,
+        client_replay::PreparedClientReliableSource::RetiredReplay(_)
+            | client_replay::PreparedClientReliableSource::RetiredConflict(_)
+            | client_replay::PreparedClientReliableSource::OutsideWindow(_)
+    )
+    .then(|| {
+        state
+            .client_reliable_replays
+            .receive_start
+            .expect("prepared reliable source established a receive frontier")
+            .wrapping_sub(1)
+    });
     let token = state::ClientEmitValidationToken {
         source_reliable_sequence,
         source_origin_generation: prepared_source.key().map(|key| key.origin_generation),
         source_ack_sequence: view.ack_sequence,
+        outside_window_ack_sequence,
     };
     let snapshot = capture_engine_facing_effect_snapshot(state);
     state.client_emit_effect_snapshot = Some(Box::new(snapshot));
@@ -1656,6 +1675,7 @@ pub(super) fn begin_client_to_server_emit_validation(
         source_sequence = token.source_reliable_sequence,
         source_origin_generation = token.source_origin_generation,
         source_ack_sequence = token.source_ack_sequence,
+        outside_window_ack_sequence = token.outside_window_ack_sequence,
         "client M began speculative engine-facing effect transaction"
     );
     Ok(())
@@ -1918,10 +1938,14 @@ fn finish_client_to_server_effect_validation(
 
     if effects_accepted {
         commit_engine_facing_effect_transaction(state);
+        if ack_output_accepted && let Some(ack_sequence) = token.outside_window_ack_sequence {
+            client_ack::queue_outside_window_ack(&mut state.client_ack.pending, ack_sequence);
+        }
         tracing::trace!(
             source_sequence = token.source_reliable_sequence,
             source_origin_generation = token.source_origin_generation,
             source_ack_sequence = token.source_ack_sequence,
+            outside_window_ack_sequence = token.outside_window_ack_sequence,
             "strict-validated client M committed speculative engine-facing effects"
         );
         return;
@@ -1930,10 +1954,14 @@ fn finish_client_to_server_effect_validation(
     restore_engine_facing_effect_snapshot(state, *snapshot);
     reapply_validated_client_source_transport(state, token);
     if ack_output_accepted {
+        if let Some(ack_sequence) = token.outside_window_ack_sequence {
+            client_ack::queue_outside_window_ack(&mut state.client_ack.pending, ack_sequence);
+        }
         tracing::info!(
             source_sequence = token.source_reliable_sequence,
             source_origin_generation = token.source_origin_generation,
             source_ack_sequence = token.source_ack_sequence,
+            outside_window_ack_sequence = token.outside_window_ack_sequence,
             "client M payload effects rolled back while its independent ACK-only output passed strict validation"
         );
     } else {
@@ -10268,6 +10296,108 @@ mod tests {
             .expect("admit client slot after cumulative ACK"),
             client_replay::PreparedClientReliableSource::Pending(_)
         ));
+    }
+
+    #[test]
+    fn out_of_window_client_reliable_data_requeues_current_cumulative_ack() {
+        let mut translator = strict_session_translator_for_test();
+        let payload = [0x70, 0x0D, 0x01, 0];
+        let retired = client_reliable_m_frame(7, 20, &payload);
+        let retired_view = MFrameView::parse(&retired).expect("retired client source");
+        assert!(matches!(
+            client_replay::prepare_source_slot(
+                &mut translator.m_state.client_reliable_replays,
+                &retired,
+                &retired_view,
+            )
+            .expect("pin source before cumulative ACK"),
+            client_replay::PreparedClientReliableSource::Pending(_)
+        ));
+        assert_eq!(
+            client_replay::retire_through_server_ack(
+                &mut translator.m_state.client_reliable_replays,
+                7,
+            ),
+            1
+        );
+
+        let exact_replay =
+            translator.translate(crate::translate::Direction::ClientToServer, &retired);
+        assert!(
+            !matches!(exact_replay, Emit::Drop),
+            "the independently valid source ACK carrier must survive"
+        );
+        let queued = translator
+            .m_state
+            .client_ack
+            .pending
+            .pending_outside_window_acks
+            .front()
+            .expect("validated retired replay should queue the receive frontier");
+        assert_eq!(queued.ack_sequence, 7);
+
+        let repeated_ack = translator.take_pending_server_to_client_packets();
+        assert_eq!(repeated_ack.len(), 1);
+        let repeated_view =
+            MFrameView::parse(&repeated_ack[0]).expect("out-of-window cumulative ACK");
+        assert_eq!(repeated_view.sequence, 0);
+        assert_eq!(repeated_view.ack_sequence, 7);
+        assert_eq!(repeated_view.flags, 0x10);
+        assert_eq!(repeated_view.payload_length, 0);
+        assert!(
+            translator
+                .m_state
+                .client_ack
+                .pending
+                .pending_outside_window_acks
+                .is_empty(),
+            "the original sends one control per out-of-window receive event"
+        );
+
+        let conflicting = client_reliable_m_frame(7, 21, &[0x70, 0x0D, 0x01, 1]);
+        assert!(!matches!(
+            translator.translate(crate::translate::Direction::ClientToServer, &conflicting,),
+            Emit::Drop
+        ));
+        assert_eq!(
+            translator
+                .m_state
+                .client_ack
+                .pending
+                .pending_outside_window_acks
+                .back()
+                .map(|pending| pending.ack_sequence),
+            Some(7),
+            "conflicting out-of-window bytes stay fail-closed but repeat the proven frontier"
+        );
+
+        let unknown_stale = client_reliable_m_frame(6, 22, &[0xAA]);
+        assert!(!matches!(
+            translator.translate(crate::translate::Direction::ClientToServer, &unknown_stale,),
+            Emit::Drop
+        ));
+        assert_eq!(
+            translator
+                .m_state
+                .client_ack
+                .pending
+                .pending_outside_window_acks
+                .back()
+                .map(|pending| pending.ack_sequence),
+            Some(7),
+            "unknown stale data receives only the current cumulative frontier"
+        );
+        let repeated_acks = translator.take_pending_server_to_client_packets();
+        assert_eq!(
+            repeated_acks.len(),
+            2,
+            "each out-of-window receive event must preserve its immediate control"
+        );
+        assert!(repeated_acks.iter().all(|packet| {
+            MFrameView::parse(packet).is_some_and(|view| {
+                view.sequence == 0 && view.ack_sequence == 7 && view.flags == 0x10
+            })
+        }));
     }
 
     #[test]

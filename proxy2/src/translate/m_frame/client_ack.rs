@@ -1,12 +1,14 @@
-//! Proxy-owned ACKs for consumed EE-only client reliable frames.
+//! Proxy-owned ACKs for client reliable receive-window events.
 //!
 //! This module is intentionally transport-only. It does not decide game truth
-//! and it does not claim arbitrary client packets. Its only job is to keep the
-//! EE reliable window coherent after a semantic client filter has already
-//! verified that a client reliable frame is EE-only and must not be forwarded to
-//! the 1.69 server.
+//! and it does not claim arbitrary client packets. It keeps the EE reliable
+//! window coherent when a semantic client filter consumes an EE-only frame and
+//! when a valid type-0 datagram falls outside the mirrored receive interval.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use crate::translate::VerifiedFamily;
 
@@ -17,6 +19,8 @@ use super::{
 
 pub(super) const PROXY_OWNED_CLIENT_ACK_REASON: &str =
     "proxy-owned ACK for consumed EE-only client reliable frame";
+pub(super) const PROXY_OWNED_OUTSIDE_WINDOW_ACK_REASON: &str =
+    "proxy-owned cumulative ACK for out-of-window client reliable frame";
 
 // EE 8193.37 `CNetLayerWindow::FrameReceive` handles type-1 ACK-control
 // frames (`flags & 0xF0 == 0x10`) cumulatively: after accepting ACK N it
@@ -33,11 +37,16 @@ const PROXY_OWNED_CLIENT_ACK_RETRANSMIT_DELAY: Duration = Duration::from_secs(5)
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ClientAckState {
-    pub(super) pending_consumed_ee_only_ack: Option<PendingConsumedEeOnlyAck>,
+    pub(super) pending_consumed_ee_only_ack: Option<PendingProxyOwnedAck>,
+    /// Diamond `sub_5F3940` lines 751485-751517 and EE `FrameReceive` lines
+    /// 878891-878922 send an immediate type-1 control when valid type-0 data is
+    /// outside the active receive interval. This queue is one-shot: another
+    /// source retransmit is the original trigger for another control.
+    pub(super) pending_outside_window_acks: VecDeque<PendingProxyOwnedAck>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct PendingConsumedEeOnlyAck {
+pub(super) struct PendingProxyOwnedAck {
     pub(super) ack_sequence: u16,
     pub(super) due_at: Instant,
     pub(super) transmits: u32,
@@ -47,7 +56,7 @@ pub(super) fn queue_consumed_ee_only_ack(state: &mut ClientAckState, ack_sequenc
     let due_at = Instant::now() + PROXY_OWNED_CLIENT_ACK_COALESCE_DELAY;
     let replaced_ack_sequence = state
         .pending_consumed_ee_only_ack
-        .replace(PendingConsumedEeOnlyAck {
+        .replace(PendingProxyOwnedAck {
             ack_sequence,
             due_at,
             transmits: 0,
@@ -69,22 +78,93 @@ pub(super) fn queue_consumed_ee_only_ack(state: &mut ClientAckState, ack_sequenc
     );
 }
 
-pub(super) fn has_due_consumed_ee_only_ack(state: &ClientAckState, now: Instant) -> bool {
+pub(super) fn queue_outside_window_ack(state: &mut ClientAckState, ack_sequence: u16) {
+    let due_at = Instant::now();
+    state
+        .pending_outside_window_acks
+        .push_back(PendingProxyOwnedAck {
+            ack_sequence,
+            due_at,
+            transmits: 0,
+        });
+
+    tracing::info!(
+        ack_sequence,
+        pending_outside_window_acks = state.pending_outside_window_acks.len(),
+        "queued one-shot cumulative ACK for out-of-window client reliable data"
+    );
+}
+
+pub(super) fn has_due_proxy_owned_ack(state: &ClientAckState, now: Instant) -> bool {
     state
         .pending_consumed_ee_only_ack
         .as_ref()
         .is_some_and(|pending| pending.due_at <= now)
+        || state
+            .pending_outside_window_acks
+            .front()
+            .is_some_and(|pending| pending.due_at <= now)
 }
 
-pub(super) fn take_due_consumed_ee_only_ack_packets(
+pub(super) fn take_due_proxy_owned_ack_packets(
     ack_state: &mut ClientAckState,
     now: Instant,
 ) -> Vec<PendingServerPacket> {
+    let mut packets = Vec::new();
+    while let Some(packet) = take_due_outside_window_ack_packet(ack_state, now) {
+        packets.push(packet);
+    }
+    if let Some(packet) = take_due_consumed_ee_only_ack_packet(ack_state, now) {
+        packets.push(packet);
+    }
+    packets
+}
+
+fn take_due_outside_window_ack_packet(
+    ack_state: &mut ClientAckState,
+    now: Instant,
+) -> Option<PendingServerPacket> {
+    let pending = ack_state.pending_outside_window_acks.front()?;
+    if pending.due_at > now {
+        return None;
+    }
+
+    let pending = ack_state
+        .pending_outside_window_acks
+        .pop_front()
+        .expect("pending outside-window ACK was checked above");
+    let Ok(packet) = build_exact_ack_control_frame(pending.ack_sequence) else {
+        tracing::warn!(
+            ack_sequence = pending.ack_sequence,
+            "failed to build cumulative ACK-control frame for out-of-window client reliable data"
+        );
+        return None;
+    };
+
+    tracing::info!(
+        ack_sequence = pending.ack_sequence,
+        "one-shot cumulative ACK-control emitted for out-of-window client reliable data"
+    );
+
+    Some(PendingServerPacket {
+        family: VerifiedFamily::ConsumedEmptyMFrame,
+        packet,
+        insertion_sequence: None,
+        due_at: now,
+        reason: PROXY_OWNED_OUTSIDE_WINDOW_ACK_REASON,
+        placement: PendingServerPacketPlacement::BeforeCurrentEmit,
+    })
+}
+
+fn take_due_consumed_ee_only_ack_packet(
+    ack_state: &mut ClientAckState,
+    now: Instant,
+) -> Option<PendingServerPacket> {
     let Some(pending) = ack_state.pending_consumed_ee_only_ack.as_ref() else {
-        return Vec::new();
+        return None;
     };
     if pending.due_at > now {
-        return Vec::new();
+        return None;
     }
 
     let Ok(packet) = build_exact_ack_control_frame(pending.ack_sequence) else {
@@ -96,7 +176,7 @@ pub(super) fn take_due_consumed_ee_only_ack_packets(
             ack_sequence = dropped.ack_sequence,
             "failed to build proxy-owned ACK-control frame for consumed EE-only client reliable frame"
         );
-        return Vec::new();
+        return None;
     };
 
     let pending = ack_state
@@ -113,12 +193,12 @@ pub(super) fn take_due_consumed_ee_only_ack_packets(
         "proxy-owned ACK-control emitted for consumed EE-only client reliable frame"
     );
 
-    vec![PendingServerPacket {
+    Some(PendingServerPacket {
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet,
         insertion_sequence: None,
         due_at: now,
         reason: PROXY_OWNED_CLIENT_ACK_REASON,
         placement: PendingServerPacketPlacement::BeforeCurrentEmit,
-    }]
+    })
 }

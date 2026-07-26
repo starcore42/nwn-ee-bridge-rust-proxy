@@ -49,6 +49,12 @@ pub(super) struct ClientEmitValidationToken {
     /// wrapped successor of `0xFFFF`; absence exists only in optional state,
     /// while a validated wire ACK is always present.
     pub(super) source_ack_sequence: u16,
+    /// Current cumulative source receive frontier to repeat toward EE when
+    /// valid type-0 data was outside the mirrored interval. Diamond
+    /// `sub_5F3940` lines 751485-751517 and EE `FrameReceive` lines
+    /// 878891-878922 emit this type-1 control without allocating or
+    /// redispatching the out-of-window source.
+    pub(super) outside_window_ack_sequence: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
