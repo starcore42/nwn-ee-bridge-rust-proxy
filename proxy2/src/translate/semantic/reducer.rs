@@ -21,7 +21,8 @@ use super::state::{
     QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
     QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
     QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
-    QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshUseCountRow,
+    QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshTarget,
+    QuickbarItemRefreshUseCountRow,
 };
 use super::{
     ActiveItemPropertiesEvent, AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent,
@@ -78,19 +79,44 @@ pub(crate) fn observe_verified_payload_with_area_context_report(
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
 ) -> VerifiedPayloadSemanticObservations {
+    observe_verified_payload_with_area_context_report_and_committed_quickbar_probe(
+        state,
+        direction,
+        proof,
+        payload,
+        area_context,
+        None,
+    )
+}
+
+pub(crate) fn observe_verified_payload_with_area_context_report_and_committed_quickbar_probe(
+    state: &mut SemanticSessionState,
+    direction: Direction,
+    proof: &VerifiedProof,
+    payload: &[u8],
+    area_context: Option<&area::AreaPlaceableContext>,
+    committed_quickbar_probe: Option<(
+        &quickbar::QuickbarRewriteSummary,
+        InventoryItemContextSummary,
+    )>,
+) -> VerifiedPayloadSemanticObservations {
     match proof {
-        VerifiedProof::Family(family) => VerifiedPayloadSemanticObservations {
-            live_object_inventory_materialization: observe_family_payload(
-                state,
-                direction,
-                *family,
-                payload,
-                area_context,
-            ),
-        },
-        VerifiedProof::GameplayStream(families) => {
-            observe_gameplay_stream_payload(state, direction, families, payload, area_context)
+        VerifiedProof::Family(family) => {
+            let live_object_inventory_materialization =
+                observe_family_payload(state, direction, *family, payload, area_context);
+            restore_committed_quickbar_probe_after_family(state, *family, committed_quickbar_probe);
+            VerifiedPayloadSemanticObservations {
+                live_object_inventory_materialization,
+            }
         }
+        VerifiedProof::GameplayStream(families) => observe_gameplay_stream_payload(
+            state,
+            direction,
+            families,
+            payload,
+            area_context,
+            committed_quickbar_probe,
+        ),
         VerifiedProof::CoalescedWindow(_) => {
             let observed = observed_high_level(direction, VerifiedFamily::CoalescedWindow, payload);
             let _ = apply_event(state, ProtocolEvent::Other(observed), area_context);
@@ -105,9 +131,32 @@ fn observe_gameplay_stream_payload(
     families: &[VerifiedFamily],
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
+    mut committed_quickbar_probe: Option<(
+        &quickbar::QuickbarRewriteSummary,
+        InventoryItemContextSummary,
+    )>,
 ) -> VerifiedPayloadSemanticObservations {
     let mut observations = VerifiedPayloadSemanticObservations::default();
     let split = gameplay_stream::split_inflated_gameplay(payload);
+    let exact_quickbar_units = split
+        .units
+        .iter()
+        .filter(|unit| {
+            matches!(
+                unit,
+                gameplay_stream::GameplayUnit::HighLevel(message)
+                    if (message.major, message.minor) == (0x1E, 0x01)
+            )
+        })
+        .count();
+    if exact_quickbar_units != 1 {
+        // The dispatcher currently carries one aggregate rewrite summary for
+        // the complete inflated window. It is the last parsed quickbar, so it
+        // cannot be assigned safely when the window contains multiple
+        // SetAllButtons units (adjacent duplicate proof families may also be
+        // collapsed). Stay conservative until summaries are carried per unit.
+        committed_quickbar_probe = None;
+    }
     let mut family_iter = families.iter().copied();
     for unit in split.units {
         if let gameplay_stream::GameplayUnit::HighLevel(message) = unit {
@@ -116,6 +165,12 @@ fn observe_gameplay_stream_payload(
                 .unwrap_or(VerifiedFamily::SemanticDeflated);
             let materialization =
                 observe_family_payload(state, direction, family, message.payload, area_context);
+            let family_quickbar_probe = if family == VerifiedFamily::GuiQuickbar {
+                committed_quickbar_probe.take()
+            } else {
+                None
+            };
+            restore_committed_quickbar_probe_after_family(state, family, family_quickbar_probe);
             if observations.live_object_inventory_materialization.is_none() {
                 observations.live_object_inventory_materialization = materialization;
             }
@@ -127,6 +182,29 @@ fn observe_gameplay_stream_payload(
         let _ = apply_event(state, ProtocolEvent::Other(observed), area_context);
     }
     observations
+}
+
+fn restore_committed_quickbar_probe_after_family(
+    state: &mut SemanticSessionState,
+    family: VerifiedFamily,
+    committed_quickbar_probe: Option<(
+        &quickbar::QuickbarRewriteSummary,
+        InventoryItemContextSummary,
+    )>,
+) {
+    if family != VerifiedFamily::GuiQuickbar {
+        return;
+    }
+    let Some((summary, materialization_context)) = committed_quickbar_probe else {
+        return;
+    };
+    let remembered = state
+        .ui
+        .remember_committed_quickbar_stream_probe(summary, materialization_context);
+    debug_assert!(
+        remembered,
+        "a verified GuiQuickbar unit must restore exact slot/signature authority before the next coalesced unit"
+    );
 }
 
 fn observe_family_payload(
@@ -246,6 +324,18 @@ fn apply_event(
     area_context: Option<&area::AreaPlaceableContext>,
 ) -> Option<LiveObjectInventoryMaterializationSummary> {
     let pending_item_refresh_before_event = state.ui.post_committed_quickbar_item_refresh_pending;
+    let pending_refresh_event_recorded_before_apply =
+        pending_item_refresh_before_event && matches!(&event, ProtocolEvent::LiveObject(_));
+    if pending_refresh_event_recorded_before_apply {
+        // A LiveObject GQ row answers the target that was pending when the
+        // packet arrived. Resolve and snapshot that window before durable GQ
+        // coverage retargets duplicate preserved objects to another slot.
+        record_pending_quickbar_item_refresh_event(
+            state,
+            &event,
+            pending_item_refresh_before_event,
+        );
+    }
     let mut live_object_inventory_materialization = None;
     match &event {
         ProtocolEvent::ModuleInfo(event) => {
@@ -376,6 +466,10 @@ fn apply_event(
                 let pending_item_refresh_first_event_after_client_action = state
                     .ui
                     .post_committed_quickbar_item_refresh_first_event_after_client_action;
+                let previous_committed_quickbar_stream_probe =
+                    state.ui.last_committed_quickbar_stream_probe;
+                let (pending_item_refresh_recommended_set_button_slot, _) =
+                    state.ui.quickbar_item_refresh_set_button_slot();
                 let pending_item_refresh_action_outcome_breakdown = if pending_item_refresh
                     && pending_item_refresh_first_client_action_detail.is_some()
                 {
@@ -411,6 +505,10 @@ fn apply_event(
                 state.ui.last_committed_quickbar_profile = Some(*profile);
                 state.ui.last_committed_quickbar_materialization_context =
                     Some(*materialization_context);
+                state.ui.last_committed_quickbar_stream_probe = None;
+                state
+                    .ui
+                    .last_committed_quickbar_stream_probe_materialization_context = None;
                 state.ui.last_committed_quickbar_prior_item_context = prior_item_context;
                 state.ui.last_committed_quickbar_previous_post_item_context =
                     previous_post_item_context;
@@ -608,18 +706,15 @@ fn apply_event(
                 ) = quickbar_item_context_candidate_trace_fields(
                     pending_item_refresh_candidate_before_commit,
                 );
-                let (recommended_set_button_slot, _) =
-                    state.ui.quickbar_item_refresh_set_button_slot();
-                let first_preserved_active_item_signature = state
-                    .ui
-                    .last_quickbar_stream_probe
-                    .and_then(|probe| probe.first_preserved_active_item_signature);
+                let first_preserved_active_item_signature =
+                    previous_committed_quickbar_stream_probe
+                        .and_then(|probe| probe.first_preserved_active_item_signature);
                 let pending_item_refresh_recommended_action_outcome =
                     QuickbarItemRefreshRecommendedActionOutcome::from_pending_state(
                         pending_item_refresh_first_client_action_detail,
                         pending_item_refresh_candidate_before_commit
                             .map(|candidate| candidate.object_id),
-                        recommended_set_button_slot,
+                        pending_item_refresh_recommended_set_button_slot,
                         first_preserved_active_item_signature,
                         pending_item_refresh_event_breakdown_before_first_client_action,
                         pending_item_refresh_action_outcome_breakdown,
@@ -988,7 +1083,13 @@ fn apply_event(
         }
         ProtocolEvent::Chat(_) | ProtocolEvent::Other(_) => {}
     }
-    record_pending_quickbar_item_refresh_event(state, &event, pending_item_refresh_before_event);
+    if !pending_refresh_event_recorded_before_apply {
+        record_pending_quickbar_item_refresh_event(
+            state,
+            &event,
+            pending_item_refresh_before_event,
+        );
+    }
     if let Some(row) = state
         .ui
         .resolve_pending_quickbar_item_refresh_with_prior_use_count_state()
@@ -1086,8 +1187,9 @@ fn committed_quickbar_item_refresh_outcome(
 
 fn quickbar_item_refresh_proof_class(
     item_context: InventoryItemContextSummary,
+    target: Option<QuickbarItemRefreshTarget>,
 ) -> Option<QuickbarItemRefreshProofClass> {
-    if !item_context.has_compact_quickbar_item_proof() {
+    if target.is_none() || !item_context.has_compact_quickbar_item_proof() {
         return None;
     }
 
@@ -1114,7 +1216,7 @@ fn remember_quickbar_item_context_if_relevant(
     // engine-facing state gap. If every preserved slot is already satisfied,
     // retain the old first-slot selection so the existing prior-GQ resolver
     // can close the pending window explicitly.
-    let stream_probe = state.ui.last_quickbar_stream_probe;
+    let stream_probe = state.ui.last_committed_quickbar_stream_probe;
     let mut item_context = None;
     let mut actionable_missing_use_count_slot_mask = 0_u64;
     for (slot, signature) in state.ui.preserved_active_items_without_use_count_state() {
@@ -1211,16 +1313,30 @@ fn remember_quickbar_item_context_if_relevant(
             .ui
             .inventory_item_context_after_committed_quickbar_updates
             .saturating_add(1);
-        let pending_item_refresh_proof_class = quickbar_item_refresh_proof_class(item_context);
+        let pending_item_refresh_target = state
+            .ui
+            .quickbar_item_refresh_target_for_context(item_context);
+        let resolved_by_current_server_use_count = state
+            .ui
+            .post_committed_quickbar_item_refresh_resolved_by_server_use_count;
+        let pending_item_refresh_proof_class =
+            quickbar_item_refresh_proof_class(item_context, pending_item_refresh_target).filter(
+                |_| {
+                    item_context.preserved_active_item_actionable_missing_use_count_slot_mask != 0
+                        || !resolved_by_current_server_use_count
+                },
+            );
         let pending_item_refresh = pending_item_refresh_proof_class.is_some();
         let was_pending_item_refresh = state.ui.post_committed_quickbar_item_refresh_pending;
         state.ui.post_committed_quickbar_item_refresh_pending = pending_item_refresh;
-        state
-            .ui
-            .post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
-        state
-            .ui
-            .post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state = false;
+        if pending_item_refresh || !resolved_by_current_server_use_count {
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_resolved_by_server_use_count = false;
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state = false;
+        }
         state
             .ui
             .post_committed_quickbar_item_refresh_pending_updates = if pending_item_refresh {
@@ -1370,7 +1486,7 @@ fn remember_quickbar_item_context_if_relevant(
             .post_committed_quickbar_item_refresh_first_client_action_detail;
         let first_preserved_active_item_signature = state
             .ui
-            .last_quickbar_stream_probe
+            .last_committed_quickbar_stream_probe
             .and_then(|probe| probe.first_preserved_active_item_signature);
         let pending_item_refresh_first_client_action_matches_preserved_active_item =
             pending_item_refresh_first_client_action_detail
@@ -1700,11 +1816,10 @@ fn record_pending_quickbar_item_refresh_event(
         .post_committed_quickbar_item_refresh_pending_events
         .saturating_add(1);
     let event_kind = quickbar_item_refresh_event_kind(event);
-    let compact_candidate_object_id = state
+    let compact_candidate_target = state
         .ui
         .last_inventory_item_context_after_committed_quickbar
-        .and_then(|context| context.compact_item_emission_candidate)
-        .map(|candidate| candidate.object_id);
+        .and_then(|context| state.ui.quickbar_item_refresh_target_for_context(context));
     let first_client_action_seen_before_event = state
         .ui
         .post_committed_quickbar_item_refresh_first_client_action
@@ -1768,7 +1883,7 @@ fn record_pending_quickbar_item_refresh_event(
                 .ui
                 .post_committed_quickbar_item_refresh_event_breakdown_after_first_client_action,
             event,
-            compact_candidate_object_id,
+            compact_candidate_target,
         );
     }
     record_quickbar_item_refresh_event_breakdown(
@@ -1776,10 +1891,10 @@ fn record_pending_quickbar_item_refresh_event(
             .ui
             .post_committed_quickbar_item_refresh_pending_event_breakdown,
         event,
-        compact_candidate_object_id,
+        compact_candidate_target,
     );
     let candidate_use_count_row =
-        first_quickbar_item_refresh_candidate_use_count_row(event, compact_candidate_object_id);
+        first_quickbar_item_refresh_candidate_use_count_row(event, compact_candidate_target);
     if let Some(row) = candidate_use_count_row {
         if state
             .ui
@@ -1837,9 +1952,9 @@ fn record_pending_quickbar_item_refresh_event(
 
 fn first_quickbar_item_refresh_candidate_use_count_row(
     event: &ProtocolEvent,
-    candidate_object_id: Option<u32>,
+    target: Option<QuickbarItemRefreshTarget>,
 ) -> Option<QuickbarItemRefreshUseCountRow> {
-    let candidate_object_id = candidate_object_id?;
+    let target = target?;
     let ProtocolEvent::LiveObject(event) = event else {
         return None;
     };
@@ -1847,15 +1962,16 @@ fn first_quickbar_item_refresh_candidate_use_count_row(
         .quickbar_item_use_count_updates
         .iter()
         .copied()
-        .find(|update| update.object_id == candidate_object_id)
+        .find(|update| target.matches_use_count_update(update))
         .map(QuickbarItemRefreshUseCountRow::from)
 }
 
 fn record_quickbar_item_refresh_event_breakdown(
     breakdown: &mut QuickbarItemRefreshEventBreakdown,
     event: &ProtocolEvent,
-    candidate_object_id: Option<u32>,
+    target: Option<QuickbarItemRefreshTarget>,
 ) {
+    let candidate_object_id = target.map(QuickbarItemRefreshTarget::object_id);
     match event.observed().direction {
         Direction::ServerToClient | Direction::ServerToClientSynthetic => {
             breakdown.server_to_client_events = breakdown.server_to_client_events.saturating_add(1);
@@ -1877,11 +1993,11 @@ fn record_quickbar_item_refresh_event_breakdown(
                 breakdown.server_quickbar_item_use_count_rows = breakdown
                     .server_quickbar_item_use_count_rows
                     .saturating_add(u64::from(event.quickbar_item_use_count_rows));
-                if let Some(candidate_object_id) = candidate_object_id {
+                if let Some(target) = target {
                     let candidate_rows = event
                         .quickbar_item_use_count_updates
                         .iter()
-                        .filter(|update| update.object_id == candidate_object_id)
+                        .filter(|update| target.matches_use_count_update(update))
                         .count();
                     breakdown.server_quickbar_item_use_count_candidate_rows = breakdown
                         .server_quickbar_item_use_count_candidate_rows
@@ -2924,6 +3040,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
+        seed_committed_quickbar_item_target(&mut state, 0, first_item_id);
 
         assert_eq!(
             state
@@ -3167,10 +3284,13 @@ mod fixture_free_tests {
                 .last_committed_quickbar_item_refresh_first_client_action,
             None
         );
+        let mut current_context_at_second_commit = post_context;
+        current_context_at_second_commit
+            .preserved_active_item_actionable_missing_use_count_slot_mask = 0;
         assert_eq!(
             state.ui.last_committed_quickbar_best_item_context,
-            Some(post_context),
-            "the second committed quickbar should expose the Feature-25 proof window"
+            Some(current_context_at_second_commit),
+            "the second committed quickbar should expose current registry proof without carrying the prior window's slot mask"
         );
         assert_eq!(
             state.ui.last_committed_quickbar_best_item_context_source,
@@ -3253,46 +3373,75 @@ mod fixture_free_tests {
 
     #[test]
     fn quickbar_item_refresh_proof_class_uses_compact_proof_partition() {
+        let target = Some(QuickbarItemRefreshTarget {
+            slot: 0,
+            active_item: quickbar::QuickbarActiveItemSignature::default(),
+        });
         assert_eq!(
-            quickbar_item_refresh_proof_class(Default::default()),
+            quickbar_item_refresh_proof_class(Default::default(), None),
             None,
             "empty context should not create a pending proof class"
         );
         assert_eq!(
-            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
-                compact_item_emission_ready_objects: 1,
-                compact_item_emission_proof_objects: 1,
-                compact_item_emission_direct_only_proof_objects: 1,
-                ..Default::default()
-            }),
+            quickbar_item_refresh_proof_class(
+                InventoryItemContextSummary {
+                    compact_item_emission_ready_objects: 1,
+                    compact_item_emission_proof_objects: 1,
+                    compact_item_emission_direct_only_proof_objects: 1,
+                    ..Default::default()
+                },
+                None
+            ),
+            None,
+            "an independently ready but unbound inventory item is not a quickbar target"
+        );
+        assert_eq!(
+            quickbar_item_refresh_proof_class(
+                InventoryItemContextSummary {
+                    compact_item_emission_ready_objects: 1,
+                    compact_item_emission_proof_objects: 1,
+                    compact_item_emission_direct_only_proof_objects: 1,
+                    ..Default::default()
+                },
+                target
+            ),
             Some(QuickbarItemRefreshProofClass::DirectOnly)
         );
         assert_eq!(
-            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
-                compact_item_emission_ready_objects: 0,
-                compact_item_emission_proof_objects: 1,
-                compact_item_emission_feature25_only_proof_objects: 1,
-                ..Default::default()
-            }),
+            quickbar_item_refresh_proof_class(
+                InventoryItemContextSummary {
+                    compact_item_emission_ready_objects: 0,
+                    compact_item_emission_proof_objects: 1,
+                    compact_item_emission_feature25_only_proof_objects: 1,
+                    ..Default::default()
+                },
+                target
+            ),
             None
         );
         assert_eq!(
-            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
-                compact_item_emission_ready_objects: 1,
-                compact_item_emission_proof_objects: 1,
-                compact_item_emission_shared_proof_objects: 1,
-                ..Default::default()
-            }),
+            quickbar_item_refresh_proof_class(
+                InventoryItemContextSummary {
+                    compact_item_emission_ready_objects: 1,
+                    compact_item_emission_proof_objects: 1,
+                    compact_item_emission_shared_proof_objects: 1,
+                    ..Default::default()
+                },
+                target
+            ),
             Some(QuickbarItemRefreshProofClass::Shared)
         );
         assert_eq!(
-            quickbar_item_refresh_proof_class(InventoryItemContextSummary {
-                compact_item_emission_ready_objects: 1,
-                compact_item_emission_proof_objects: 2,
-                compact_item_emission_direct_only_proof_objects: 1,
-                compact_item_emission_feature25_only_proof_objects: 1,
-                ..Default::default()
-            }),
+            quickbar_item_refresh_proof_class(
+                InventoryItemContextSummary {
+                    compact_item_emission_ready_objects: 1,
+                    compact_item_emission_proof_objects: 2,
+                    compact_item_emission_direct_only_proof_objects: 1,
+                    compact_item_emission_feature25_only_proof_objects: 1,
+                    ..Default::default()
+                },
+                target
+            ),
             Some(QuickbarItemRefreshProofClass::Mixed),
             "multiple compact proof classes should stay distinguishable"
         );
@@ -3368,6 +3517,7 @@ mod fixture_free_tests {
         response_breakdown.quickbar_events = 1;
         let mut use_count_response_breakdown = QuickbarItemRefreshEventBreakdown::default();
         use_count_response_breakdown.server_quickbar_item_use_count_events = 1;
+        use_count_response_breakdown.server_quickbar_item_use_count_candidate_rows = 1;
         let active_signature = Some(quickbar::QuickbarActiveItemSignature {
             object_id: 0x8000_0100,
             base_item: 0x34,
@@ -3771,6 +3921,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
+        seed_committed_quickbar_item_target(&mut state, 2, first_item_id);
         apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
@@ -4036,7 +4187,52 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
+        seed_committed_quickbar_item_target(&mut state, 7, candidate_id);
         apply_event(&mut state, direct_item_live_event(candidate_id), None);
+
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 6,
+                    button_type: client_quickbar::ITEM_SET_BUTTON_TYPE,
+                    object_id: candidate_id,
+                    active_property_index: 1,
+                    use_count: 1,
+                },
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 7,
+                    button_type: 2,
+                    object_id: candidate_id,
+                    active_property_index: 2,
+                    use_count: 1,
+                },
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 7,
+                    button_type: client_quickbar::ITEM_SET_BUTTON_TYPE,
+                    object_id: 0x8000_0101,
+                    active_property_index: 3,
+                    use_count: 1,
+                },
+            ]),
+            None,
+        );
+        assert!(state.ui.post_committed_quickbar_item_refresh_pending);
+        let hint = state
+            .ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("nonmatching GQ rows must leave the exact target dispatchable");
+        assert!(
+            hint.to_json()
+                .contains("\"recommended_client_action_should_dispatch\": true")
+        );
+        assert_eq!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_quickbar_item_use_count_candidate_rows,
+            0
+        );
 
         apply_event(
             &mut state,
@@ -4083,29 +4279,29 @@ mod fixture_free_tests {
             "the resolved snapshot should still report that it consumed a pending refresh"
         );
         assert_eq!(
-            state.ui.last_committed_quickbar_item_refresh_pending_events, 2,
-            "the proof-opening live-object and the resolving GQ event should both be counted"
+            state.ui.last_committed_quickbar_item_refresh_pending_events, 3,
+            "the proof-opening live-object plus nonmatching and resolving GQ events should all be counted"
         );
         assert_eq!(
             state
                 .ui
                 .last_committed_quickbar_item_refresh_pending_event_breakdown
                 .live_object_events,
-            2
+            3
         );
         assert_eq!(
             state
                 .ui
                 .last_committed_quickbar_item_refresh_pending_event_breakdown
                 .server_quickbar_item_use_count_events,
-            1
+            2
         );
         assert_eq!(
             state
                 .ui
                 .last_committed_quickbar_item_refresh_pending_event_breakdown
                 .server_quickbar_item_use_count_rows,
-            2
+            5
         );
         assert_eq!(
             state
@@ -4191,29 +4387,35 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        state.ui.last_quickbar_stream_probe = Some(QuickbarStreamProbeSummary {
+        let active_item = quickbar::QuickbarActiveItemSignature {
+            object_id: candidate_id,
+            base_item: 0x34,
+            appearance_type: 0,
+            active_property_count: 1,
+            first_property: Some(quickbar::QuickbarActivePropertySignature {
+                property: 15,
+                subtype: 0x020D,
+                cost_table_value: 13,
+                param: 0,
+            }),
+            has_armor_word: false,
+            name_is_locstring: true,
+            state_mask: 1,
+            value_mask: 0xFF,
+        };
+        let mut preserved = quickbar::QuickbarPreservedActiveItemSignatures::default();
+        preserved.0[7] = Some(active_item);
+        let committed_probe = QuickbarStreamProbeSummary {
             slot_records_owned: 36,
             item_buttons_seen: 1,
             item_buttons_preserved: 1,
-            first_preserved_active_item_signature: Some(quickbar::QuickbarActiveItemSignature {
-                object_id: candidate_id,
-                base_item: 0x34,
-                appearance_type: 0,
-                active_property_count: 1,
-                first_property: Some(quickbar::QuickbarActivePropertySignature {
-                    property: 15,
-                    subtype: 0x020D,
-                    cost_table_value: 13,
-                    param: 0,
-                }),
-                has_armor_word: false,
-                name_is_locstring: true,
-                state_mask: 1,
-                value_mask: 0xFF,
-            }),
+            preserved_active_item_signatures: preserved,
+            first_preserved_active_item_signature: Some(active_item),
             first_preserved_active_item_slot: Some(7),
             ..QuickbarStreamProbeSummary::default()
-        });
+        };
+        state.ui.last_quickbar_stream_probe = Some(committed_probe);
+        state.ui.last_committed_quickbar_stream_probe = Some(committed_probe);
 
         apply_event(
             &mut state,
@@ -4333,7 +4535,7 @@ mod fixture_free_tests {
         );
         assert!(
             idle_json
-                .contains("\"stream_probe_preserved_active_item_matching_use_count_slots\": [0]")
+                .contains("\"stream_probe_preserved_active_item_matching_use_count_slots\": [7]")
         );
         assert!(
             idle_json.contains("\"stream_probe_preserved_active_item_missing_use_count_count\": 0")
@@ -4390,7 +4592,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
-        state.ui.last_quickbar_stream_probe = Some(QuickbarStreamProbeSummary {
+        let committed_probe = QuickbarStreamProbeSummary {
             slot_records_owned: 36,
             item_buttons_seen: 2,
             item_buttons_preserved: 2,
@@ -4398,7 +4600,9 @@ mod fixture_free_tests {
             first_preserved_active_item_signature: Some(first_signature),
             first_preserved_active_item_slot: Some(0),
             ..QuickbarStreamProbeSummary::default()
-        });
+        };
+        state.ui.last_quickbar_stream_probe = Some(committed_probe);
+        state.ui.last_committed_quickbar_stream_probe = Some(committed_probe);
         apply_event(
             &mut state,
             quickbar_use_count_event(vec![
@@ -4481,6 +4685,136 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn pending_quickbar_refresh_resolves_duplicate_preserved_slots_in_order() {
+        let item_id = 0x8000_0100;
+        let active_item = quickbar::QuickbarActiveItemSignature {
+            object_id: item_id,
+            ..Default::default()
+        };
+        let mut preserved = quickbar::QuickbarPreservedActiveItemSignatures::default();
+        preserved.0[0] = Some(active_item);
+        preserved.0[1] = Some(active_item);
+        let profile = quickbar::QuickbarValidatedSlotProfile {
+            slot_records: 36,
+            blank_slots: 34,
+            item_slots: 2,
+            first_blank_slot: Some(2),
+            first_item_slot: Some(0),
+            first_page_visible_slots: 2,
+            first_page_item_slots: 2,
+            ..Default::default()
+        };
+        let committed_probe = QuickbarStreamProbeSummary {
+            slot_records_owned: 36,
+            item_buttons_seen: 2,
+            item_buttons_preserved: 2,
+            preserved_active_item_signatures: preserved,
+            first_preserved_active_item_signature: Some(active_item),
+            first_preserved_active_item_slot: Some(0),
+            ..QuickbarStreamProbeSummary::default()
+        };
+        let mut state = SemanticSessionState::default();
+        state
+            .ui
+            .commit_quickbar_profile(profile, InventoryItemContextSummary::default());
+        state.ui.quickbar_stream_probe_summaries = 1;
+        state.ui.last_quickbar_stream_probe = Some(committed_probe);
+        state.ui.last_committed_quickbar_stream_probe = Some(committed_probe);
+
+        apply_event(&mut state, direct_item_live_event(item_id), None);
+        assert_eq!(
+            state
+                .ui
+                .quickbar_item_refresh_harness_hint()
+                .and_then(|hint| hint.candidate_preserved_active_item_slot),
+            Some(0)
+        );
+
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 0,
+                    button_type: client_quickbar::ITEM_SET_BUTTON_TYPE,
+                    object_id: item_id,
+                    active_property_index: 0,
+                    use_count: 1,
+                },
+            ]),
+            None,
+        );
+        assert!(
+            state.ui.post_committed_quickbar_item_refresh_pending,
+            "the uncovered duplicate slot must open the next exact target"
+        );
+        assert_eq!(
+            state
+                .ui
+                .quickbar_item_refresh_harness_hint()
+                .and_then(|hint| hint.candidate_preserved_active_item_slot),
+            Some(1)
+        );
+
+        apply_event(
+            &mut state,
+            quickbar_use_count_event(vec![
+                crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                    slot: 1,
+                    button_type: client_quickbar::ITEM_SET_BUTTON_TYPE,
+                    object_id: item_id,
+                    active_property_index: 0,
+                    use_count: 1,
+                },
+            ]),
+            None,
+        );
+        assert!(!state.ui.post_committed_quickbar_item_refresh_pending);
+        assert!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_resolved_by_server_use_count
+        );
+        assert!(
+            !state
+                .ui
+                .post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_item_refresh_pending_event_breakdown
+                .server_quickbar_item_use_count_candidate_rows,
+            1,
+            "the slot-1 row must be attributed to the slot-1 pending target"
+        );
+    }
+
+    #[test]
+    fn multiple_quickbars_in_one_stream_do_not_share_aggregate_probe_authority() {
+        let mut quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let summary = quickbar::rewrite_simple_quickbar_payload_if_possible(&mut quickbar_payload)
+            .expect("complete blank quickbar should expose an exact rewrite summary");
+        let mut stream = quickbar_payload.clone();
+        stream.extend_from_slice(&quickbar_payload);
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload_with_area_context_report_and_committed_quickbar_probe(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::GameplayStream(vec![VerifiedFamily::GuiQuickbar]),
+            &stream,
+            None,
+            Some((&summary, InventoryItemContextSummary::default())),
+        );
+
+        assert!(
+            state.ui.last_committed_quickbar_stream_probe.is_none(),
+            "one last-produced aggregate summary cannot authenticate either of two quickbar units"
+        );
+    }
+
+    #[test]
     fn pending_quickbar_refresh_records_delayed_client_action_timing() {
         let owner_id = 0x8000_0010u32;
         let first_item_id = 0x8000_0100u32;
@@ -4504,6 +4838,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
+        seed_committed_quickbar_item_target(&mut state, 3, first_item_id);
         apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
@@ -4594,6 +4929,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
+        seed_committed_quickbar_item_target(&mut state, 7, first_item_id);
         apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
@@ -4675,6 +5011,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
+        seed_committed_quickbar_item_target(&mut state, 0, first_item_id);
         apply_event(&mut state, direct_item_live_event(first_item_id), None);
         observe_verified_payload(
             &mut state,
@@ -4766,6 +5103,7 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
             &quickbar_payload,
         );
+        seed_committed_quickbar_item_target(&mut state, 0, first_item_id);
         apply_event(&mut state, direct_item_live_event(first_item_id), None);
 
         assert!(state.ui.post_committed_quickbar_item_refresh_pending);
@@ -4907,6 +5245,50 @@ mod fixture_free_tests {
             quickbar_item_use_count_rows: u32::try_from(updates.len()).unwrap_or(u32::MAX),
             quickbar_item_use_count_updates: updates,
         })
+    }
+
+    fn seed_committed_quickbar_item_target(
+        state: &mut SemanticSessionState,
+        slot: u8,
+        object_id: u32,
+    ) {
+        // Reducer tests bypass the m_frame rewrite path that owns the exact
+        // 36-slot parse. Seed the same committed slot/signature authority that
+        // production records only after a complete validated rewrite.
+        let active_item = quickbar::QuickbarActiveItemSignature {
+            object_id,
+            ..Default::default()
+        };
+        let mut preserved = quickbar::QuickbarPreservedActiveItemSignatures::default();
+        preserved.0[usize::from(slot)] = Some(active_item);
+        let profile = quickbar::QuickbarValidatedSlotProfile {
+            slot_records: 36,
+            blank_slots: 35,
+            item_slots: 1,
+            first_blank_slot: Some(if slot == 0 { 1 } else { 0 }),
+            first_item_slot: Some(slot),
+            first_page_visible_slots: u32::from(slot < 12),
+            first_page_item_slots: u32::from(slot < 12),
+            ..Default::default()
+        };
+        let probe = QuickbarStreamProbeSummary {
+            slot_records_owned: 36,
+            item_buttons_seen: 1,
+            item_buttons_preserved: 1,
+            preserved_active_item_signatures: preserved,
+            first_preserved_active_item_signature: Some(active_item),
+            first_preserved_active_item_slot: Some(slot),
+            ..QuickbarStreamProbeSummary::default()
+        };
+        let materialization_context = state.objects.inventory_item_context_summary();
+        state.ui.last_committed_quickbar_profile = Some(profile);
+        state.ui.last_quickbar_stream_probe = Some(probe);
+        state.ui.last_quickbar_stream_probe_materialization_context = Some(materialization_context);
+        state.ui.last_committed_quickbar_stream_probe = Some(probe);
+        state
+            .ui
+            .last_committed_quickbar_stream_probe_materialization_context =
+            Some(materialization_context);
     }
 
     fn direct_item_live_event(object_id: u32) -> ProtocolEvent {

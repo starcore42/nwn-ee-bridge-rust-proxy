@@ -3071,12 +3071,27 @@ pub(super) fn observe_verified_server_payload_semantics(
     proof: &VerifiedProof,
     payload: &[u8],
 ) -> Option<semantic::LiveObjectInventoryMaterializationSummary> {
-    crate::translate::semantic::observe_verified_payload_with_area_context_report(
+    observe_verified_server_payload_semantics_with_committed_quickbar_probe(
+        state, proof, payload, None,
+    )
+}
+
+fn observe_verified_server_payload_semantics_with_committed_quickbar_probe(
+    state: &mut SessionState,
+    proof: &VerifiedProof,
+    payload: &[u8],
+    committed_quickbar_probe: Option<(
+        &crate::translate::quickbar::QuickbarRewriteSummary,
+        semantic::InventoryItemContextSummary,
+    )>,
+) -> Option<semantic::LiveObjectInventoryMaterializationSummary> {
+    crate::translate::semantic::observe_verified_payload_with_area_context_report_and_committed_quickbar_probe(
         &mut state.semantic,
         crate::packet::Direction::ServerToClient,
         proof,
         payload,
         Some(&state.area_context.latest_area_placeables),
+        committed_quickbar_probe,
     )
     .live_object_inventory_materialization
 }
@@ -14264,8 +14279,17 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         &reassembly,
         &verified_proof,
     );
+    let committed_quickbar_probe = semantic_rewrite_summary
+        .quickbar_stream_probe_summary
+        .as_ref()
+        .zip(semantic_rewrite_summary.quickbar_stream_probe_materialization_context);
     let live_object_inventory_materialization =
-        observe_verified_server_payload_semantics(state, &verified_proof, &bytes);
+        observe_verified_server_payload_semantics_with_committed_quickbar_probe(
+            state,
+            &verified_proof,
+            &bytes,
+            committed_quickbar_probe,
+        );
     let response_ack_sequence = reassembly
         .frames
         .last()

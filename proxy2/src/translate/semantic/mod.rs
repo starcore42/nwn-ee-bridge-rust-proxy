@@ -20,7 +20,7 @@ pub(crate) use event::{
 };
 pub(crate) use reducer::{
     observe_verified_payload, observe_verified_payload_with_area_context,
-    observe_verified_payload_with_area_context_report,
+    observe_verified_payload_with_area_context_report_and_committed_quickbar_probe,
 };
 pub(crate) use state::{
     AreaState, AreaStaticPlaceableConflictRecordObservation,

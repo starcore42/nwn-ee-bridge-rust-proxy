@@ -101,7 +101,11 @@ fn observe_quickbar_stream_probe_summary(
     super::update_quickbar_item_refresh_hint(state);
 }
 
-fn observe_committed_quickbar_stream_payload(state: &mut SessionState, payload: &[u8]) {
+fn observe_committed_quickbar_stream_payload(
+    state: &mut SessionState,
+    payload: &[u8],
+    summary: Option<&quickbar::QuickbarRewriteSummary>,
+) {
     let proof = VerifiedProof::family(VerifiedFamily::GuiQuickbar);
     crate::translate::semantic::observe_verified_payload_with_area_context(
         &mut state.semantic,
@@ -110,6 +114,17 @@ fn observe_committed_quickbar_stream_payload(state: &mut SessionState, payload: 
         payload,
         Some(&state.area_context.latest_area_placeables),
     );
+    if let Some(summary) = summary {
+        let materialization_context = state.semantic.objects.inventory_item_context_summary();
+        let remembered = state
+            .semantic
+            .ui
+            .remember_committed_quickbar_stream_probe(summary, materialization_context);
+        debug_assert!(
+            remembered,
+            "a committed quickbar stream payload must retain exact slot/signature ownership"
+        );
+    }
     super::update_quickbar_item_refresh_hint(state);
 }
 
@@ -542,7 +557,7 @@ fn flush_pending_server_quickbar_stream(
             outputs.iter_mut(),
         )?;
     }
-    observe_committed_quickbar_stream_payload(state, &quickbar_payload);
+    observe_committed_quickbar_stream_payload(state, &quickbar_payload, quickbar_rewrite.as_ref());
     remember_completed_server_stream_window_with_disposition(
         state,
         reassembly,
@@ -702,7 +717,7 @@ mod tests {
             "no_committed_quickbar_profile"
         );
 
-        observe_committed_quickbar_stream_payload(&mut state, &payload);
+        observe_committed_quickbar_stream_payload(&mut state, &payload, None);
 
         assert_eq!(state.semantic.ui.quickbar_packets, 1);
         let profile = state
