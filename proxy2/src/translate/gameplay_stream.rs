@@ -1057,13 +1057,23 @@ fn quickbar_candidate_end_claims_complete_unit(
     let Some(payload) = bytes.get(offset..end) else {
         return false;
     };
+    // The fixed 36-slot quickbar reader is deliberately exact and may need to
+    // materialize every guarded item body before it can reject a fragment
+    // prefix. A candidate followed by no plausible high-level unit cannot be a
+    // complete stream unit, so reject that framing boundary before running the
+    // typed probe. Besides avoiding repeated full parses, this keeps rejected
+    // endpoints from replacing the diagnostic summary owned by the accepted
+    // candidate. Buffer-end candidates still run the exact-tail proof below.
+    if end != bytes.len() && !boundary_has_plausible_unit(bytes, end) {
+        return false;
+    }
     let require_exact_direct_fragment_tail = end == bytes.len();
     quickbar_payload_claims_complete_unit(
         payload,
         quickbar_materialization,
         quickbar_stream_probe_summary,
         require_exact_direct_fragment_tail,
-    ) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+    )
 }
 
 fn quickbar_payload_claims_complete_unit(
@@ -2705,6 +2715,62 @@ mod tests {
             }
             _ => panic!("expected following ServerStatus_Status unit"),
         }
+    }
+
+    #[test]
+    fn quickbar_candidate_rejects_implausible_successor_before_typed_probe() {
+        let full =
+            include_bytes!("../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin");
+        let declared_read_end = u32::from_le_bytes(
+            full.get(3..7)
+                .expect("fixture should carry its CNW declared offset")
+                .try_into()
+                .expect("declared offset is one DWORD"),
+        ) as usize;
+        assert_eq!(full.len() - declared_read_end, 19);
+
+        let mut followed = full.to_vec();
+        followed.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let implausible_end = declared_read_end + 1;
+        assert!(
+            !boundary_has_plausible_unit(&followed, implausible_end),
+            "the first fragment byte is not a following high-level unit"
+        );
+
+        let mut rejected_summary = None;
+        assert!(
+            !quickbar_candidate_end_claims_complete_unit(
+                &followed,
+                0,
+                implausible_end,
+                None,
+                &mut rejected_summary,
+            ),
+            "an implausible successor boundary cannot complete the quickbar"
+        );
+        assert!(
+            rejected_summary.is_none(),
+            "a framing-rejected endpoint must not publish typed probe diagnostics"
+        );
+
+        let mut exact_summary = None;
+        assert!(
+            quickbar_candidate_end_claims_complete_unit(
+                full,
+                0,
+                full.len(),
+                None,
+                &mut exact_summary,
+            ),
+            "the same quickbar should complete at its exact buffer-end tail"
+        );
+        let exact_summary =
+            exact_summary.expect("the exact full tail should publish typed diagnostics");
+        assert!(exact_summary.fragment_ownership.exact_tail);
+        assert_eq!(
+            exact_summary.fragment_ownership.compact_fallback_items, 0,
+            "the full live tail must not depend on compact fallback ownership"
+        );
     }
 
     #[test]
