@@ -47,6 +47,18 @@ pub(crate) struct VerifiedPayloadSemanticObservations {
         Option<LiveObjectInventoryMaterializationSummary>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CommittedQuickbarUnitProbe {
+    // This is durable authority only after the committed quickbar reader and
+    // exact EE validator own the whole unit. Diamond `sub_469FD0`
+    // (nwn diamond decompile.txt 149355-149526) and EE `sub_14079DB00`
+    // (nwn ee decompile.txt 2893879-2893993) both prove the fixed 36-slot
+    // loop: BYTE type, guarded ReadBOOL fields, and one shared MSB-first bit
+    // cursor. This cross-unit state binding changes no field, bit, or padding.
+    pub(crate) summary: quickbar::QuickbarRewriteSummary,
+    pub(crate) materialization_context: InventoryItemContextSummary,
+}
+
 pub(crate) fn observe_verified_payload(
     state: &mut SemanticSessionState,
     direction: Direction,
@@ -79,31 +91,40 @@ pub(crate) fn observe_verified_payload_with_area_context_report(
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
 ) -> VerifiedPayloadSemanticObservations {
-    observe_verified_payload_with_area_context_report_and_committed_quickbar_probe(
+    observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
         state,
         direction,
         proof,
         payload,
         area_context,
-        None,
+        &[],
     )
 }
 
-pub(crate) fn observe_verified_payload_with_area_context_report_and_committed_quickbar_probe(
+pub(crate) fn observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
     state: &mut SemanticSessionState,
     direction: Direction,
     proof: &VerifiedProof,
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
-    committed_quickbar_probe: Option<(
-        &quickbar::QuickbarRewriteSummary,
-        InventoryItemContextSummary,
-    )>,
+    committed_quickbar_probes: &[CommittedQuickbarUnitProbe],
 ) -> VerifiedPayloadSemanticObservations {
     match proof {
         VerifiedProof::Family(family) => {
             let live_object_inventory_materialization =
                 observe_family_payload(state, direction, *family, payload, area_context);
+            let committed_quickbar_probe = match (*family, committed_quickbar_probes) {
+                (VerifiedFamily::GuiQuickbar, [probe]) => Some(probe),
+                (_, []) => None,
+                _ => {
+                    tracing::warn!(
+                        family = family.as_str(),
+                        committed_quickbar_probes = committed_quickbar_probes.len(),
+                        "committed quickbar probe count does not match the verified family; leaving slot/signature authority unbound"
+                    );
+                    None
+                }
+            };
             restore_committed_quickbar_probe_after_family(state, *family, committed_quickbar_probe);
             VerifiedPayloadSemanticObservations {
                 live_object_inventory_materialization,
@@ -115,7 +136,7 @@ pub(crate) fn observe_verified_payload_with_area_context_report_and_committed_qu
             families,
             payload,
             area_context,
-            committed_quickbar_probe,
+            committed_quickbar_probes,
         ),
         VerifiedProof::CoalescedWindow(_) => {
             let observed = observed_high_level(direction, VerifiedFamily::CoalescedWindow, payload);
@@ -131,32 +152,49 @@ fn observe_gameplay_stream_payload(
     families: &[VerifiedFamily],
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
-    mut committed_quickbar_probe: Option<(
-        &quickbar::QuickbarRewriteSummary,
-        InventoryItemContextSummary,
-    )>,
+    committed_quickbar_probes: &[CommittedQuickbarUnitProbe],
 ) -> VerifiedPayloadSemanticObservations {
     let mut observations = VerifiedPayloadSemanticObservations::default();
     let split = gameplay_stream::split_inflated_gameplay(payload);
-    let exact_quickbar_units = split
+    let high_level_units = split
         .units
         .iter()
-        .filter(|unit| {
-            matches!(
-                unit,
-                gameplay_stream::GameplayUnit::HighLevel(message)
-                    if (message.major, message.minor) == (0x1E, 0x01)
-            )
+        .filter_map(|unit| match unit {
+            gameplay_stream::GameplayUnit::HighLevel(message) => Some(message),
+            _ => None,
         })
+        .collect::<Vec<_>>();
+    let quickbar_unit_count = high_level_units
+        .iter()
+        .filter(|message| (message.major, message.minor) == (0x1E, 0x01))
         .count();
-    if exact_quickbar_units != 1 {
-        // The dispatcher currently carries one aggregate rewrite summary for
-        // the complete inflated window. It is the last parsed quickbar, so it
-        // cannot be assigned safely when the window contains multiple
-        // SetAllButtons units (adjacent duplicate proof families may also be
-        // collapsed). Stay conservative until summaries are carried per unit.
-        committed_quickbar_probe = None;
-    }
+    let proof_shape_matches = split.complete
+        && high_level_units.len() == families.len()
+        && high_level_units
+            .iter()
+            .zip(families)
+            .all(|(message, family)| {
+                ((message.major, message.minor) == (0x1E, 0x01))
+                    == (*family == VerifiedFamily::GuiQuickbar)
+            });
+    let probe_shape_matches =
+        proof_shape_matches && quickbar_unit_count == committed_quickbar_probes.len();
+    let committed_quickbar_probes = if probe_shape_matches {
+        committed_quickbar_probes
+    } else {
+        if !committed_quickbar_probes.is_empty() {
+            tracing::warn!(
+                complete = split.complete,
+                high_level_units = high_level_units.len(),
+                proof_families = families.len(),
+                quickbar_units = quickbar_unit_count,
+                committed_quickbar_probes = committed_quickbar_probes.len(),
+                "committed quickbar probes do not match the wire-ordered gameplay stream; leaving slot/signature authority unbound"
+            );
+        }
+        &[]
+    };
+    let mut committed_quickbar_probe_iter = committed_quickbar_probes.iter();
     let mut family_iter = families.iter().copied();
     for unit in split.units {
         if let gameplay_stream::GameplayUnit::HighLevel(message) = unit {
@@ -165,8 +203,13 @@ fn observe_gameplay_stream_payload(
                 .unwrap_or(VerifiedFamily::SemanticDeflated);
             let materialization =
                 observe_family_payload(state, direction, family, message.payload, area_context);
+            let unit_quickbar_probe = if (message.major, message.minor) == (0x1E, 0x01) {
+                committed_quickbar_probe_iter.next()
+            } else {
+                None
+            };
             let family_quickbar_probe = if family == VerifiedFamily::GuiQuickbar {
-                committed_quickbar_probe.take()
+                unit_quickbar_probe
             } else {
                 None
             };
@@ -181,26 +224,27 @@ fn observe_gameplay_stream_payload(
         let observed = observed_high_level(direction, family, payload);
         let _ = apply_event(state, ProtocolEvent::Other(observed), area_context);
     }
+    debug_assert!(
+        committed_quickbar_probe_iter.next().is_none(),
+        "every committed quickbar probe slot must bind to one wire-ordered quickbar unit"
+    );
     observations
 }
 
 fn restore_committed_quickbar_probe_after_family(
     state: &mut SemanticSessionState,
     family: VerifiedFamily,
-    committed_quickbar_probe: Option<(
-        &quickbar::QuickbarRewriteSummary,
-        InventoryItemContextSummary,
-    )>,
+    committed_quickbar_probe: Option<&CommittedQuickbarUnitProbe>,
 ) {
     if family != VerifiedFamily::GuiQuickbar {
         return;
     }
-    let Some((summary, materialization_context)) = committed_quickbar_probe else {
+    let Some(probe) = committed_quickbar_probe else {
         return;
     };
     let remembered = state
         .ui
-        .remember_committed_quickbar_stream_probe(summary, materialization_context);
+        .remember_committed_quickbar_stream_probe(&probe.summary, probe.materialization_context);
     debug_assert!(
         remembered,
         "a verified GuiQuickbar unit must restore exact slot/signature authority before the next coalesced unit"
@@ -4790,27 +4834,91 @@ mod fixture_free_tests {
     }
 
     #[test]
-    fn multiple_quickbars_in_one_stream_do_not_share_aggregate_probe_authority() {
+    fn multiple_quickbars_bind_wire_ordered_committed_probe_authority() {
+        let mut quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut first_summary =
+            quickbar::rewrite_simple_quickbar_payload_if_possible(&mut quickbar_payload)
+                .expect("complete blank quickbar should expose an exact rewrite summary");
+        first_summary.item_buttons_seen = 1;
+        let mut second_summary = first_summary.clone();
+        second_summary.item_buttons_seen = 2;
+        let mut stream = quickbar_payload.clone();
+        stream.extend_from_slice(&quickbar_payload);
+        let mut state = SemanticSessionState::default();
+        let probes = [
+            CommittedQuickbarUnitProbe {
+                summary: first_summary,
+                materialization_context: InventoryItemContextSummary {
+                    active_item_objects: 1,
+                    ..InventoryItemContextSummary::default()
+                },
+            },
+            CommittedQuickbarUnitProbe {
+                summary: second_summary,
+                materialization_context: InventoryItemContextSummary {
+                    active_item_objects: 2,
+                    ..InventoryItemContextSummary::default()
+                },
+            },
+        ];
+
+        observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::GameplayStream(vec![
+                VerifiedFamily::GuiQuickbar,
+                VerifiedFamily::GuiQuickbar,
+            ]),
+            &stream,
+            None,
+            &probes,
+        );
+
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_stream_probe
+                .expect("the second quickbar must replace the first unit's authority")
+                .item_buttons_seen,
+            2
+        );
+        assert_eq!(
+            state
+                .ui
+                .last_committed_quickbar_stream_probe_materialization_context
+                .expect("the second quickbar must retain its own registry context")
+                .active_item_objects,
+            2
+        );
+    }
+
+    #[test]
+    fn multiple_quickbars_reject_collapsed_proof_or_probe_count() {
         let mut quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
             .expect("blank quickbar payload should build");
         let summary = quickbar::rewrite_simple_quickbar_payload_if_possible(&mut quickbar_payload)
             .expect("complete blank quickbar should expose an exact rewrite summary");
         let mut stream = quickbar_payload.clone();
         stream.extend_from_slice(&quickbar_payload);
+        let probes = [CommittedQuickbarUnitProbe {
+            summary,
+            materialization_context: InventoryItemContextSummary::default(),
+        }];
         let mut state = SemanticSessionState::default();
 
-        observe_verified_payload_with_area_context_report_and_committed_quickbar_probe(
+        observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
             &mut state,
             Direction::ServerToClient,
             &VerifiedProof::GameplayStream(vec![VerifiedFamily::GuiQuickbar]),
             &stream,
             None,
-            Some((&summary, InventoryItemContextSummary::default())),
+            &probes,
         );
 
         assert!(
             state.ui.last_committed_quickbar_stream_probe.is_none(),
-            "one last-produced aggregate summary cannot authenticate either of two quickbar units"
+            "mismatched unit, proof-family, or probe counts must fail closed"
         );
     }
 

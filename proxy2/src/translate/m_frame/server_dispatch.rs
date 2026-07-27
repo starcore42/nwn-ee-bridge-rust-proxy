@@ -46,12 +46,14 @@ pub(super) struct InflatedPayloadRewrite {
     pub(super) quickbar_stream_probe_summary: Option<quickbar::QuickbarRewriteSummary>,
     pub(super) quickbar_stream_probe_materialization_context:
         Option<semantic::InventoryItemContextSummary>,
+    pub(super) committed_quickbar_probes: Vec<semantic::CommittedQuickbarUnitProbe>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct DirectFrameRewrite {
     pub(super) verified: VerifiedPacket,
     pub(super) area_rewrite: Option<area::AreaRewriteSummary>,
+    pub(super) committed_quickbar_probes: Vec<semantic::CommittedQuickbarUnitProbe>,
     /// Exact pre-rewrite gameplay bytes for bounded reliable replay ownership.
     /// Transport-only/status normalization and quarantined frames are not
     /// semantic rewrite cache entries.
@@ -114,6 +116,7 @@ pub(super) fn wrap_legacy_live_object_continuation_if_needed(payload: &mut Vec<u
 struct ServerTranslatorClaim {
     area_rewrite: Option<area::AreaRewriteSummary>,
     live_object_exact_rewrite: Option<LiveObjectExactRewriteClaim>,
+    committed_quickbar_probe: Option<semantic::CommittedQuickbarUnitProbe>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1040,6 +1043,7 @@ fn rewrite_split_inflated_payload_for_ee(
                 }
                 let unit_family = unit_rewrite.verified_family();
                 let unit_families = unit_rewrite.unit_families.clone();
+                let unit_committed_quickbar_probes = unit_rewrite.committed_quickbar_probes;
                 for family_name in unit_rewrite.family_names {
                     if !rewrite.family_names.contains(&family_name) {
                         rewrite.family_names.push(family_name);
@@ -1051,6 +1055,9 @@ fn rewrite_split_inflated_payload_for_ee(
                     }
                 }
                 rewrite.unit_families.extend(unit_families);
+                rewrite
+                    .committed_quickbar_probes
+                    .extend(unit_committed_quickbar_probes);
                 if unit_rewrite.area_rewrite.is_some() {
                     rewrite.area_rewrite = unit_rewrite.area_rewrite;
                     split_area_context = rewrite
@@ -1580,7 +1587,20 @@ fn finalize_server_translator_claim(
         );
     }
 
+    if claim.committed_quickbar_probe.is_some() && family != VerifiedFamily::GuiQuickbar {
+        rewrite.quarantine_reason = Some("committed-quickbar-probe-family-mismatch");
+        tracing::warn!(
+            family = family.as_str(),
+            family_name,
+            "server translator produced committed quickbar authority for a non-quickbar family"
+        );
+        return false;
+    }
+
     rewrite.note_rewrite(family_name, family);
+    if let Some(probe) = claim.committed_quickbar_probe {
+        rewrite.committed_quickbar_probes.push(probe);
+    }
     if let Some(area_rewrite) = claim.area_rewrite {
         rewrite.area_rewrite = Some(area_rewrite);
     }
@@ -3959,17 +3979,22 @@ fn translate_quickbar_with_registry(
     payload: &mut Vec<u8>,
     object_registry: Option<&semantic::ObjectRegistry>,
 ) -> ServerTranslatorOutcome {
-    if quickbar_materialization::rewrite_payload_with_registry_if_possible(
+    let Some(summary) = quickbar_materialization::rewrite_payload_with_registry_if_possible(
         payload,
         object_registry,
         QuickbarRewriteMode::Committed,
-    )
-    .is_some()
-    {
-        claimed()
-    } else {
-        ServerTranslatorOutcome::None
-    }
+    ) else {
+        return ServerTranslatorOutcome::None;
+    };
+    let committed_quickbar_probe =
+        object_registry.map(|registry| semantic::CommittedQuickbarUnitProbe {
+            summary,
+            materialization_context: registry.inventory_item_context_summary(),
+        });
+    ServerTranslatorOutcome::Claim(ServerTranslatorClaim {
+        committed_quickbar_probe,
+        ..ServerTranslatorClaim::default()
+    })
 }
 
 fn normalize_cnw_transport_only(
@@ -5135,6 +5160,7 @@ pub(super) fn rewrite_direct_frame_if_needed(
                 packet: rewritten,
             },
             area_rewrite: None,
+            committed_quickbar_probes: Vec::new(),
             source_payload: None,
         }));
     }
@@ -5149,6 +5175,7 @@ pub(super) fn rewrite_direct_frame_if_needed(
                 packet: consumed,
             },
             area_rewrite: None,
+            committed_quickbar_probes: Vec::new(),
             source_payload: None,
         }));
     }
@@ -5177,6 +5204,7 @@ pub(super) fn rewrite_direct_frame_if_needed(
                     packet,
                 },
                 area_rewrite: None,
+                committed_quickbar_probes: Vec::new(),
                 source_payload: None,
             })
         });
@@ -5225,14 +5253,95 @@ fn rewrite_direct_semantic_frame_if_claimed(
         new_payload_length = rewritten_payload.len(),
         "server direct M high-level payload semantically claimed for EE"
     );
+    let verified_proof = semantic_rewrite_summary.verified_proof();
+    let committed_quickbar_probes = semantic_rewrite_summary.committed_quickbar_probes;
     Ok(Some(DirectFrameRewrite {
         verified: VerifiedPacket {
-            proof: semantic_rewrite_summary.verified_proof(),
+            proof: verified_proof,
             packet: rewritten,
         },
         area_rewrite: semantic_rewrite_summary.area_rewrite,
+        committed_quickbar_probes,
         source_payload: Some(payload.to_vec()),
     }))
+}
+
+#[cfg(test)]
+mod committed_quickbar_probe_tests {
+    use super::*;
+
+    #[test]
+    fn split_dispatch_retains_one_committed_probe_per_quickbar_unit() {
+        let quickbar = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut payload = quickbar.clone();
+        payload.extend_from_slice(&quickbar);
+        let registry = semantic::ObjectRegistry::default();
+
+        let rewrite = rewrite_inflated_payload_for_ee(
+            &mut payload,
+            None,
+            SemanticScope::DeflatedReassembly,
+            None,
+            Some(&registry),
+            None,
+        );
+
+        assert!(
+            !rewrite.should_quarantine(),
+            "split quickbar stream quarantined: {:?}",
+            rewrite.quarantine_reason
+        );
+        assert_eq!(
+            rewrite.verified_proof(),
+            VerifiedProof::GameplayStream(vec![
+                VerifiedFamily::GuiQuickbar,
+                VerifiedFamily::GuiQuickbar,
+            ])
+        );
+        assert_eq!(rewrite.committed_quickbar_probes.len(), 2);
+        assert!(
+            rewrite
+                .committed_quickbar_probes
+                .iter()
+                .all(|probe| probe.summary.validated_slot_profile.is_some())
+        );
+    }
+
+    #[test]
+    fn direct_dispatch_retains_committed_quickbar_probe() {
+        let quickbar = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let mut packet = vec![0; crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, 1));
+        assert!(write_be_u16(&mut packet, 5, 0));
+        packet[7] = 0x0A;
+        assert!(write_be_u16(&mut packet, 8, 1));
+        assert!(write_be_u16(&mut packet, 10, quickbar.len() as u16));
+        packet.extend_from_slice(&quickbar);
+        assert!(encode_legacy_m_crc(&mut packet));
+        let view = MFrameView::parse(&packet).expect("direct quickbar M frame should parse");
+        let runtime = module_resources::ModuleResourceRuntime::default();
+        let registry = semantic::ObjectRegistry::default();
+
+        let rewrite =
+            rewrite_direct_frame_if_needed(&packet, &view, &runtime, None, Some(&registry))
+                .expect("direct dispatcher should not fail")
+                .expect("direct quickbar should be claimed");
+
+        assert_eq!(
+            rewrite.verified.proof,
+            VerifiedProof::family(VerifiedFamily::GuiQuickbar)
+        );
+        assert_eq!(rewrite.committed_quickbar_probes.len(), 1);
+        assert!(
+            rewrite.committed_quickbar_probes[0]
+                .summary
+                .validated_slot_profile
+                .is_some()
+        );
+    }
 }
 
 #[cfg(test)]

@@ -19,8 +19,9 @@ pub(crate) use event::{
     PlayerListEvent, ProtocolEvent, QuickbarEvent, ServerStatusEvent,
 };
 pub(crate) use reducer::{
-    observe_verified_payload, observe_verified_payload_with_area_context,
-    observe_verified_payload_with_area_context_report_and_committed_quickbar_probe,
+    CommittedQuickbarUnitProbe, observe_verified_payload,
+    observe_verified_payload_with_area_context,
+    observe_verified_payload_with_area_context_report_and_committed_quickbar_probes,
 };
 pub(crate) use state::{
     AreaState, AreaStaticPlaceableConflictRecordObservation,

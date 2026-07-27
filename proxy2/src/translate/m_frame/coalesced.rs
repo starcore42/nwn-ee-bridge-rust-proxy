@@ -1111,6 +1111,36 @@ fn rewrite_coalesced_record_for_ee(
     server_peer_ack_sequence: u16,
     offset: usize,
 ) -> anyhow::Result<CoalescedRecordRewrite> {
+    rewrite_coalesced_record_for_ee_with_payload_limit(
+        record,
+        flags,
+        high,
+        deflated,
+        payload_length,
+        state,
+        sequence,
+        server_origin_generation,
+        ack_sequence,
+        server_peer_ack_sequence,
+        offset,
+        u16::MAX as usize,
+    )
+}
+
+fn rewrite_coalesced_record_for_ee_with_payload_limit(
+    record: &[u8],
+    flags: u8,
+    high: Option<HighLevel>,
+    deflated: Option<&DeflatedEnvelope>,
+    payload_length: usize,
+    state: &mut SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+    ack_sequence: u16,
+    server_peer_ack_sequence: u16,
+    offset: usize,
+    max_rewritten_payload_length: usize,
+) -> anyhow::Result<CoalescedRecordRewrite> {
     if payload_length == 0 {
         return Ok(CoalescedRecordRewrite {
             record: record.to_vec(),
@@ -1187,7 +1217,6 @@ fn rewrite_coalesced_record_for_ee(
             Some(&state.semantic.objects),
             None,
         );
-        super::observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
         if semantic_rewrite_summary.should_quarantine()
             || !semantic_rewrite_summary.any_rewrite()
             || payload.len() > u16::MAX as usize
@@ -1213,6 +1242,7 @@ fn rewrite_coalesced_record_for_ee(
             );
             return Ok(outcome);
         }
+        super::observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
         if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
             state.area_context.latest_area_placeables = summary.placeable_context.clone();
             queue_area_client_area_side_effects_for_window(
@@ -1244,7 +1274,12 @@ fn rewrite_coalesced_record_for_ee(
             transport.client_unshifted_ack_sequence,
         )?;
         let live_object_inventory_materialization =
-            super::observe_verified_server_payload_semantics(state, &verified_proof, &payload);
+            super::observe_verified_server_payload_semantics_with_committed_quickbar_probes(
+                state,
+                &verified_proof,
+                &payload,
+                &semantic_rewrite_summary.committed_quickbar_probes,
+            );
         super::apply_verified_server_semantic_side_effects(
             state,
             &verified_proof,
@@ -1439,7 +1474,6 @@ fn rewrite_coalesced_record_for_ee(
             None,
         )
     });
-    super::observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
     if semantic_rewrite_summary.should_quarantine() || !semantic_rewrite_summary.any_rewrite() {
         let reason = semantic_rewrite_summary
             .quarantine_reason
@@ -1490,56 +1524,19 @@ fn rewrite_coalesced_record_for_ee(
         );
         return Ok(outcome);
     }
-    if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
-        state.area_context.latest_area_placeables = summary.placeable_context.clone();
-        queue_area_client_area_side_effects_for_window(
-            state,
-            sequence,
-            sequence,
-            ack_sequence,
-            summary,
-        )?;
-    }
-
     let verified_family = semantic_rewrite_summary.verified_family();
     let verified_proof = semantic_rewrite_summary.verified_proof();
-    let live_object_inventory_materialization =
-        super::observe_verified_server_payload_semantics(state, &verified_proof, &inflated);
     let transport = coalesced_record_transport_context(
         record,
         sequence,
         server_peer_ack_sequence,
         ack_sequence,
     );
-    super::apply_verified_server_semantic_side_effects(
-        state,
-        &verified_proof,
-        super::ServerSemanticFrameContext {
-            sequence: transport.sequence,
-            server_peer_ack_sequence: transport.server_peer_ack_sequence,
-            client_unshifted_ack_sequence: transport.client_unshifted_ack_sequence,
-            live_object_inventory_materialization,
-        },
-    );
-    queue_module_resources_after_coalesced_module_info_if_ready(
-        state,
-        &verified_proof,
-        transport.sequence,
-        transport.client_unshifted_ack_sequence,
-    )?;
     let must_convert_stream = used_server_stream || state.deflate.server_zlib_stream_proxy_owned;
-    if used_server_stream {
-        state.deflate.server_zlib_stream_proxy_owned = true;
-        let owner = verified_proof
-            .primary_family()
-            .map(ContinuationOwner::from_verified_family)
-            .unwrap_or_else(|| ContinuationOwner::from_verified_family(verified_family));
-        claim_server_zlib_stream_owner(state, owner);
-    }
 
     let rewritten_compressed = deflate_zlib(&inflated)?;
     let new_payload_length = CNW_LENGTH_BYTES + rewritten_compressed.len();
-    if new_payload_length > u16::MAX as usize {
+    if new_payload_length > max_rewritten_payload_length {
         tracing::warn!(
             offset,
             new_payload_length,
@@ -1569,6 +1566,53 @@ fn rewrite_coalesced_record_for_ee(
     out_record.extend_from_slice(&(inflated.len() as u32).to_le_bytes());
     out_record.extend_from_slice(&rewritten_compressed);
     let changed = must_convert_stream || out_record.as_slice() != record;
+
+    // The consumed oversized-record branch above is a successful coalesced
+    // outcome, so ordinary error rollback cannot undo early semantic effects.
+    // Keep every diagnostic, area, quickbar, module-resource, and zlib-owner
+    // mutation behind the final wire-size/header acceptance boundary.
+    super::observe_quickbar_stream_probe_from_rewrite(state, &semantic_rewrite_summary);
+    if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
+        state.area_context.latest_area_placeables = summary.placeable_context.clone();
+        queue_area_client_area_side_effects_for_window(
+            state,
+            sequence,
+            sequence,
+            ack_sequence,
+            summary,
+        )?;
+    }
+    let live_object_inventory_materialization =
+        super::observe_verified_server_payload_semantics_with_committed_quickbar_probes(
+            state,
+            &verified_proof,
+            &inflated,
+            &semantic_rewrite_summary.committed_quickbar_probes,
+        );
+    super::apply_verified_server_semantic_side_effects(
+        state,
+        &verified_proof,
+        super::ServerSemanticFrameContext {
+            sequence: transport.sequence,
+            server_peer_ack_sequence: transport.server_peer_ack_sequence,
+            client_unshifted_ack_sequence: transport.client_unshifted_ack_sequence,
+            live_object_inventory_materialization,
+        },
+    );
+    queue_module_resources_after_coalesced_module_info_if_ready(
+        state,
+        &verified_proof,
+        transport.sequence,
+        transport.client_unshifted_ack_sequence,
+    )?;
+    if used_server_stream {
+        state.deflate.server_zlib_stream_proxy_owned = true;
+        let owner = verified_proof
+            .primary_family()
+            .map(ContinuationOwner::from_verified_family)
+            .unwrap_or_else(|| ContinuationOwner::from_verified_family(verified_family));
+        claim_server_zlib_stream_owner(state, owner);
+    }
     tracing::info!(
         offset,
         families = ?semantic_rewrite_summary,
@@ -1805,6 +1849,67 @@ mod tests {
         packet.extend_from_slice(payload);
         assert!(encode_legacy_m_crc(&mut packet));
         packet
+    }
+
+    #[test]
+    fn oversized_deflated_rewrite_does_not_commit_quickbar_authority() {
+        let inflated = crate::translate::quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar payload should build");
+        let compressed = deflate_zlib(&inflated).expect("blank quickbar should deflate");
+        let payload_length = CNW_LENGTH_BYTES + compressed.len();
+        let mut record = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        record[0] = b'M';
+        write_be_u16(&mut record, 3, 53);
+        write_be_u16(&mut record, 5, 80);
+        record[7] = 0x04;
+        write_be_u16(&mut record, 8, 1);
+        write_be_u16(&mut record, 10, payload_length as u16);
+        record.extend_from_slice(&(inflated.len() as u32).to_le_bytes());
+        record.extend_from_slice(&compressed);
+        assert!(encode_legacy_m_crc(&mut record));
+        let deflated = DeflatedEnvelope {
+            inflated_length: inflated.len(),
+            compressed_length: compressed.len(),
+            plausible: true,
+        };
+        let mut state = SessionState::default();
+        state
+            .semantic
+            .objects
+            .observe_materialized_item_object_ids(&[0x8000_1234]);
+
+        let outcome = rewrite_coalesced_record_for_ee_with_payload_limit(
+            &record,
+            0x04,
+            None,
+            Some(&deflated),
+            payload_length,
+            &mut state,
+            53,
+            0,
+            80,
+            80,
+            0,
+            0,
+        )
+        .expect("forced oversized quickbar rewrite should be consumed");
+
+        assert!(outcome.dropped);
+        assert_eq!(state.semantic.ui.quickbar_stream_probe_summaries, 0);
+        assert_eq!(state.semantic.ui.quickbar_packets, 0);
+        assert!(
+            state
+                .semantic
+                .ui
+                .last_committed_quickbar_stream_probe
+                .is_none()
+        );
+        assert!(state.semantic.ui.last_committed_quickbar_profile.is_none());
+        assert!(!state.deflate.server_zlib_stream_proxy_owned);
+        assert!(
+            state.deflate.server_zlib_stream_owner.is_none(),
+            "a consumed oversized record must not acquire stream ownership"
+        );
     }
 
     #[test]
