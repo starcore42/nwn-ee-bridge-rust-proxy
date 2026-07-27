@@ -101,7 +101,6 @@ fn drain_client_socket(
                     continue;
                 }
                 let bytes = &recv_buf[..len];
-                let mut retire_session_after_emit: Option<&'static str> = None;
                 let session = ensure_session(config, translator_template, sessions, client)?;
                 session.last_seen = Instant::now();
                 observe_client_ee_crypto_progress(session, bytes);
@@ -135,77 +134,11 @@ fn drain_client_socket(
                         continue;
                     }
                 };
-                match session
+                let emit = session
                     .translator
-                    .translate(Direction::ClientToServer, &plain)
-                {
-                    Emit::Packet(outbound) => {
-                        session
-                            .upstream
-                            .send_to(&outbound, config.server)
-                            .with_context(|| {
-                                format!("sending client datagram to server {}", config.server)
-                            })?;
-                    }
-                    Emit::PacketRetireSession { packet, reason } => {
-                        session
-                            .upstream
-                            .send_to(&packet, config.server)
-                            .with_context(|| {
-                                format!("sending client datagram to server {}", config.server)
-                            })?;
-                        retire_session_after_emit = Some(reason);
-                    }
-                    Emit::Packets(outbounds)
-                    | Emit::PacketsPreShifted(outbounds)
-                    | Emit::VerifiedPackets {
-                        packets: outbounds, ..
-                    }
-                    | Emit::VerifiedPacketsPreShifted {
-                        packets: outbounds, ..
-                    }
-                    | Emit::VerifiedProofPackets {
-                        packets: outbounds, ..
-                    }
-                    | Emit::VerifiedProofPacketsPreShifted {
-                        packets: outbounds, ..
-                    } => {
-                        for outbound in outbounds {
-                            session
-                                .upstream
-                                .send_to(&outbound, config.server)
-                                .with_context(|| {
-                                    format!("sending client datagram to server {}", config.server)
-                                })?;
-                        }
-                    }
-                    Emit::MixedVerifiedPackets(outbounds) => {
-                        for (_, outbound) in outbounds {
-                            session
-                                .upstream
-                                .send_to(&outbound, config.server)
-                                .with_context(|| {
-                                    format!("sending client datagram to server {}", config.server)
-                                })?;
-                        }
-                    }
-                    Emit::MixedVerifiedProofPackets(outbounds)
-                    | Emit::MixedVerifiedProofPacketsPreShifted(outbounds) => {
-                        for (_, outbound) in outbounds {
-                            session
-                                .upstream
-                                .send_to(&outbound, config.server)
-                                .with_context(|| {
-                                    format!("sending client datagram to server {}", config.server)
-                                })?;
-                        }
-                    }
-                    Emit::Consumed => {}
-                    Emit::ConsumedRetireSession { reason } => {
-                        retire_session_after_emit = Some(reason);
-                    }
-                    Emit::Drop => {}
-                }
+                    .translate(Direction::ClientToServer, &plain);
+                let retire_session_after_emit =
+                    send_client_emit_to_server(session, config.server, emit)?;
                 if let Some(reason) = retire_session_after_emit {
                     tracing::info!(
                         %client,
@@ -408,6 +341,42 @@ fn send_pending_client_to_server_packets(session: &mut Session, server: SocketAd
     Ok(())
 }
 
+fn send_client_emit_to_server(
+    session: &mut Session,
+    server: SocketAddr,
+    emit: Emit,
+) -> Result<Option<&'static str>> {
+    let (packets, retire_reason) = match emit {
+        Emit::Packet(packet) => (vec![packet], None),
+        Emit::PacketRetireSession { packet, reason } => (vec![packet], Some(reason)),
+        Emit::Packets(packets)
+        | Emit::PacketsPreShifted(packets)
+        | Emit::VerifiedPackets { packets, .. }
+        | Emit::VerifiedPacketsPreShifted { packets, .. }
+        | Emit::VerifiedProofPackets { packets, .. }
+        | Emit::VerifiedProofPacketsPreShifted { packets, .. } => (packets, None),
+        Emit::MixedVerifiedPackets(packets) => (
+            packets.into_iter().map(|(_, packet)| packet).collect(),
+            None,
+        ),
+        Emit::MixedVerifiedProofPackets(packets)
+        | Emit::MixedVerifiedProofPacketsPreShifted(packets) => (
+            packets.into_iter().map(|(_, packet)| packet).collect(),
+            None,
+        ),
+        Emit::Consumed => (Vec::new(), None),
+        Emit::ConsumedRetireSession { reason } => (Vec::new(), Some(reason)),
+        Emit::Drop => (Vec::new(), None),
+    };
+    for outbound in packets {
+        session
+            .upstream
+            .send_to(&outbound, server)
+            .with_context(|| format!("sending client datagram to server {server}"))?;
+    }
+    Ok(retire_reason)
+}
+
 fn drain_pending_proxy_packets_for_all_sessions(
     config: &Config,
     listen: &UdpSocket,
@@ -421,6 +390,17 @@ fn drain_pending_proxy_packets_for_all_sessions(
         };
         send_pending_client_to_server_packets(session, config.server)?;
         send_pending_server_to_client_packets(listen, session)?;
+        if let Some(emit) = session.translator.take_deferred_client_to_server_emit() {
+            if let Some(reason) = send_client_emit_to_server(session, config.server, emit)? {
+                retire.push((client, reason));
+                continue;
+            }
+            // Match the real client-datagram path: the committed receive ACK
+            // and any proxy-owned follow-up leave after the translated output
+            // has reached the upstream socket.
+            send_pending_client_to_server_packets(session, config.server)?;
+            send_pending_server_to_client_packets(listen, session)?;
+        }
         let Some(emit) = session.translator.take_deferred_server_to_client_emit() else {
             continue;
         };

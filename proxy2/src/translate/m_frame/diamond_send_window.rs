@@ -3,8 +3,8 @@
 //! The EE receive window and Diamond send window are independent endpoints.
 //! A translated client frame therefore needs a retained Diamond-facing output
 //! slot before proxy2 can safely release the corresponding EE receive slot.
-//! This module establishes that destination ownership without changing source
-//! release yet.
+//! A matching strict commit is the exact boundary that permits the contiguous
+//! EE source receive slot to be released independently of the later HG ACK.
 //!
 //! Diamond initializes 16 outgoing slots at lines 750687-750695, cumulatively
 //! retires them through the peer ACK at `sub_5F3940` lines 751677-751724, and
@@ -291,9 +291,9 @@ pub(super) fn finish(
     state: &mut DiamondClientSendWindowState,
     owner: DiamondClientSendOwner,
     accepted: bool,
-) -> usize {
+) -> Option<usize> {
     let Some(staged_owner) = state.pending.as_ref().map(|pending| pending.owner) else {
-        return 0;
+        return None;
     };
     if staged_owner != owner {
         tracing::warn!(
@@ -302,11 +302,11 @@ pub(super) fn finish(
             accepted,
             "foreign Diamond send-window callback retained its staged batch"
         );
-        return 0;
+        return None;
     }
     let pending = state.pending.take().expect("matching pending send batch");
     if !accepted {
-        return 0;
+        return None;
     }
 
     let committed = pending.new_slots.len();
@@ -326,7 +326,7 @@ pub(super) fn finish(
         retained_slots = state.slots.len(),
         "committed validated output to the Diamond reliable send window"
     );
-    committed
+    Some(committed)
 }
 
 pub(super) fn retire_through_raw_server_ack(
@@ -473,7 +473,7 @@ mod tests {
             .expect("stage split output");
         assert_eq!(
             finish(&mut state, DiamondClientSendOwner::DirectClient, true,),
-            2
+            Some(2)
         );
         assert_eq!(state.slots.len(), 2);
     }
@@ -495,7 +495,7 @@ mod tests {
         .expect("stage wrapping output");
         assert_eq!(
             finish(&mut state, DiamondClientSendOwner::DirectClient, true,),
-            2
+            Some(2)
         );
         assert_eq!(state.slots[1].key.generation, 1);
 
@@ -531,7 +531,7 @@ mod tests {
                 DiamondClientSendOwner::PendingClientDrain,
                 false,
             ),
-            0
+            None
         );
         assert!(state.slots.is_empty());
     }

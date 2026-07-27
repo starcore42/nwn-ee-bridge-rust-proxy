@@ -25,10 +25,6 @@ pub(super) struct ClientFrameTranslation {
     pub packet: Option<Vec<u8>>,
     pub semantic_observations: Vec<ClientSemanticObservation>,
     /// When the proxy owns an EE-only reliable client frame, it may need to ACK
-    /// that frame toward EE immediately instead of waiting for the 1.69 server
-    /// to ACK anything. This remains a fallback for frames that cannot be
-    /// represented as a server-paced empty data carrier.
-    pub proxy_ack_client_sequence: Option<u16>,
     pub elide_client_sequence: bool,
 }
 
@@ -66,7 +62,6 @@ pub(super) fn translate_client_frame(
             family: VerifiedFamily::ConsumedEmptyMFrame,
             packet: Some(bytes),
             semantic_observations: Vec::new(),
-            proxy_ack_client_sequence: None,
             elide_client_sequence: false,
         });
     }
@@ -95,7 +90,6 @@ pub(super) fn translate_client_frame(
                 family: VerifiedFamily::ClientServerAdmin,
                 packet: Some(bytes),
                 semantic_observations: Vec::new(),
-                proxy_ack_client_sequence: None,
                 elide_client_sequence: false,
             });
         }
@@ -115,7 +109,6 @@ pub(super) fn translate_client_frame(
                 family: VerifiedFamily::ConsumedEmptyMFrame,
                 packet: Some(bytes),
                 semantic_observations: Vec::new(),
-                proxy_ack_client_sequence: None,
                 elide_client_sequence: false,
             });
         }
@@ -196,7 +189,6 @@ pub(super) fn translate_client_frame(
             family: summary.verified_family,
             packet: Some(out),
             semantic_observations: Vec::new(),
-            proxy_ack_client_sequence: None,
             elide_client_sequence: false,
         });
     }
@@ -454,7 +446,6 @@ fn finalize_mixed_client_primary_payload(
         family,
         packet: Some(rewritten),
         semantic_observations: outcome.semantic_observations,
-        proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
 }
@@ -483,7 +474,6 @@ pub(super) fn consume_claimed_high_level_as_empty(
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet: Some(rewritten),
         semantic_observations: Vec::new(),
-        proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
 }
@@ -526,7 +516,6 @@ fn consume_unclaimed_client_high_level(
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet: Some(rewritten),
         semantic_observations: Vec::new(),
-        proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
 }
@@ -569,7 +558,6 @@ fn consume_device_advertise_property(
         family: VerifiedFamily::ConsumedEmptyMFrame,
         packet: Some(rewritten),
         semantic_observations: Vec::new(),
-        proxy_ack_client_sequence: None,
         elide_client_sequence: false,
     })
 }
@@ -683,7 +671,6 @@ mod tests {
             .expect("mixed payload should translate");
 
         assert_eq!(translated.family, VerifiedFamily::ClientCharList);
-        assert_eq!(translated.proxy_ack_client_sequence, None);
         assert!(!translated.elide_client_sequence);
         let out = translated.packet.expect("forwarded unit should remain");
         let out_view = MFrameView::parse(&out).expect("rewritten frame should parse");
@@ -706,7 +693,6 @@ mod tests {
             .expect("device should consume");
 
         assert_eq!(translated.family, VerifiedFamily::ConsumedEmptyMFrame);
-        assert_eq!(translated.proxy_ack_client_sequence, None);
         assert!(!translated.elide_client_sequence);
         let out = translated
             .packet
@@ -782,7 +768,6 @@ mod tests {
             translate_client_frame(packet.clone(), &view, &mut state).expect("admin should claim");
 
         assert_eq!(translated.family, VerifiedFamily::ClientServerAdmin);
-        assert_eq!(translated.proxy_ack_client_sequence, None);
         assert!(!translated.elide_client_sequence);
         assert_eq!(translated.packet.as_deref(), Some(packet.as_slice()));
     }

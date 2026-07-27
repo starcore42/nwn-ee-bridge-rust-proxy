@@ -517,6 +517,15 @@ impl SessionTranslator {
         packets
     }
 
+    /// Dispatch at most one raw client source that was retained behind a
+    /// reliable receive gap and became contiguous after its predecessor
+    /// committed. The returned emit has already passed the same semantic and
+    /// strict path as a newly received plaintext client datagram.
+    pub fn take_deferred_client_to_server_emit(&mut self) -> Option<Emit> {
+        let packet = m_frame::take_deferred_client_dispatch_packet(&mut self.m_state)?;
+        Some(self.translate(Direction::ClientToServer, &packet))
+    }
+
     /// Dispatch at most one raw server source that was retained behind a
     /// reliable receive gap and became contiguous after its predecessor
     /// committed. The returned emit has already passed the same semantic and

@@ -37,9 +37,11 @@ pub(super) struct OrderedSuccessorValidationToken {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ClientEmitValidationToken {
-    /// A validated type-0 client source advances the proxy-facing receive
+    /// A validated type-0 client source is pinned in the proxy-facing receive
     /// window even if the translated legacy emit later fails strict
-    /// validation. Controls have no reliable-data sequence ownership.
+    /// validation. Only a strict semantic commit with Diamond output
+    /// ownership releases the contiguous source. Controls have no
+    /// reliable-data sequence ownership.
     pub(super) source_reliable_sequence: Option<u16>,
     /// Wrap-safe origin epoch for the type-0 source slot. The immutable slot
     /// is pinned before the speculative snapshot so a strict reader rejection
@@ -877,7 +879,8 @@ pub struct SessionState {
     pub(super) ack_delivery: ack_delivery::AckDeliveryState,
     /// Client-originated translation runs before the outer strict emit owner.
     /// Keep its engine-facing effects reversible while the validated source
-    /// transport sequence/ACK remain authoritative on rejection.
+    /// transport sequence/ACK and pinned receive identity remain authoritative
+    /// on rejection.
     pub(super) client_emit_effect_snapshot: Option<Box<EngineFacingEffectSnapshot>>,
     pub(super) client_emit_pending_validation: Option<ClientEmitValidationToken>,
     pub(super) server_outside_window_ack_pending_validation:

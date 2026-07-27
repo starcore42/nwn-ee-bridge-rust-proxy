@@ -2,7 +2,7 @@
 //!
 //! This module is intentionally transport-only. It does not decide game truth
 //! and it does not claim arbitrary client packets. It keeps the EE reliable
-//! window coherent when a semantic client filter consumes an EE-only frame and
+//! window coherent when a strict-committed contiguous source is released and
 //! when a valid type-0 datagram falls outside the mirrored receive interval.
 
 use std::{
@@ -18,7 +18,7 @@ use super::{
 };
 
 pub(super) const PROXY_OWNED_CLIENT_ACK_REASON: &str =
-    "proxy-owned ACK for consumed EE-only client reliable frame";
+    "proxy-owned cumulative ACK for strict-committed client receive frontier";
 pub(super) const PROXY_OWNED_OUTSIDE_WINDOW_ACK_REASON: &str =
     "proxy-owned cumulative ACK for out-of-window client reliable frame";
 
@@ -27,17 +27,17 @@ pub(super) const PROXY_OWNED_OUTSIDE_WINDOW_ACK_REASON: &str =
 // advances `oldest_out` until N is no longer outstanding, then calls
 // `LoadWindowWithFrames` if capacity opened.
 //
-// Driver-only Starcore5 captures showed that `Device_AdvertiseProperty` can
-// flood EE's pregame outgoing reliable window before `CharList_RequestUpdateChar`
-// can leave the client. The first drain after a consumed frame is immediate so
-// the EE window does not fill; if several ACK intents are queued before a drain,
-// they still coalesce to the latest cumulative sequence.
+// Driver-only Starcore5 captures showed that delayed receive ACKs can fill EE's
+// pregame outgoing reliable window before later gameplay actions can leave the
+// client. The first drain after a committed contiguous source is immediate; if
+// several commit intents are queued before a drain, they coalesce to the latest
+// cumulative sequence.
 const PROXY_OWNED_CLIENT_ACK_COALESCE_DELAY: Duration = Duration::from_millis(0);
 const PROXY_OWNED_CLIENT_ACK_RETRANSMIT_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ClientAckState {
-    pub(super) pending_consumed_ee_only_ack: Option<PendingProxyOwnedAck>,
+    pub(super) pending_committed_receive_ack: Option<PendingProxyOwnedAck>,
     /// Diamond `sub_5F3940` lines 751485-751517 and EE `FrameReceive` lines
     /// 878891-878922 send an immediate type-1 control when valid type-0 data is
     /// outside the active receive interval. This queue is one-shot: another
@@ -52,10 +52,10 @@ pub(super) struct PendingProxyOwnedAck {
     pub(super) transmits: u32,
 }
 
-pub(super) fn queue_consumed_ee_only_ack(state: &mut ClientAckState, ack_sequence: u16) {
+pub(super) fn queue_committed_receive_ack(state: &mut ClientAckState, ack_sequence: u16) {
     let due_at = Instant::now() + PROXY_OWNED_CLIENT_ACK_COALESCE_DELAY;
     let replaced_ack_sequence = state
-        .pending_consumed_ee_only_ack
+        .pending_committed_receive_ack
         .replace(PendingProxyOwnedAck {
             ack_sequence,
             due_at,
@@ -67,14 +67,14 @@ pub(super) fn queue_consumed_ee_only_ack(state: &mut ClientAckState, ack_sequenc
         tracing::debug!(
             replaced_ack_sequence = replaced,
             ack_sequence,
-            "coalesced older proxy-owned EE-only ACK into latest cumulative reliable-window ACK"
+            "coalesced older proxy-owned receive ACK into latest cumulative committed frontier"
         );
     }
 
     tracing::info!(
         ack_sequence,
         coalesce_delay_ms = PROXY_OWNED_CLIENT_ACK_COALESCE_DELAY.as_millis(),
-        "queued coalesced proxy-owned ACK for consumed EE-only client reliable frame"
+        "queued coalesced proxy-owned ACK for strict-committed client receive frontier"
     );
 }
 
@@ -97,7 +97,7 @@ pub(super) fn queue_outside_window_ack(state: &mut ClientAckState, ack_sequence:
 
 pub(super) fn has_due_proxy_owned_ack(state: &ClientAckState, now: Instant) -> bool {
     state
-        .pending_consumed_ee_only_ack
+        .pending_committed_receive_ack
         .as_ref()
         .is_some_and(|pending| pending.due_at <= now)
         || state
@@ -114,7 +114,7 @@ pub(super) fn take_due_proxy_owned_ack_packets(
     while let Some(packet) = take_due_outside_window_ack_packet(ack_state, now) {
         packets.push(packet);
     }
-    if let Some(packet) = take_due_consumed_ee_only_ack_packet(ack_state, now) {
+    if let Some(packet) = take_due_committed_receive_ack_packet(ack_state, now) {
         packets.push(packet);
     }
     packets
@@ -156,11 +156,11 @@ fn take_due_outside_window_ack_packet(
     })
 }
 
-fn take_due_consumed_ee_only_ack_packet(
+fn take_due_committed_receive_ack_packet(
     ack_state: &mut ClientAckState,
     now: Instant,
 ) -> Option<PendingServerPacket> {
-    let Some(pending) = ack_state.pending_consumed_ee_only_ack.as_ref() else {
+    let Some(pending) = ack_state.pending_committed_receive_ack.as_ref() else {
         return None;
     };
     if pending.due_at > now {
@@ -169,7 +169,7 @@ fn take_due_consumed_ee_only_ack_packet(
 
     let Ok(packet) = build_exact_ack_control_frame(pending.ack_sequence) else {
         let dropped = ack_state
-            .pending_consumed_ee_only_ack
+            .pending_committed_receive_ack
             .take()
             .expect("pending ACK was checked above");
         tracing::warn!(
@@ -180,7 +180,7 @@ fn take_due_consumed_ee_only_ack_packet(
     };
 
     let pending = ack_state
-        .pending_consumed_ee_only_ack
+        .pending_committed_receive_ack
         .as_mut()
         .expect("pending ACK was checked above");
     pending.transmits = pending.transmits.saturating_add(1);
@@ -190,7 +190,7 @@ fn take_due_consumed_ee_only_ack_packet(
         ack_sequence = pending.ack_sequence,
         transmits = pending.transmits,
         retransmit_delay_ms = PROXY_OWNED_CLIENT_ACK_RETRANSMIT_DELAY.as_millis(),
-        "proxy-owned ACK-control emitted for consumed EE-only client reliable frame"
+        "proxy-owned ACK-control emitted for strict-committed client receive frontier"
     );
 
     Some(PendingServerPacket {

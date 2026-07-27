@@ -6,8 +6,9 @@
 //! gameplay bytes. Keep that transport identity separate from semantic state:
 //! a strict reader rejection leaves the source slot pinned, while an exact
 //! retry may translate again from the rolled-back semantic boundary. Once a
-//! translation passes the outer strict owner, later retransmits replay that
-//! first disposition without running engine-facing effects again.
+//! translation and its Diamond-facing output pass the outer strict owner, the
+//! contiguous source slot is released and its immutable identity moves to the
+//! bounded retired ledger.
 
 use std::collections::VecDeque;
 
@@ -56,11 +57,19 @@ pub(super) struct ClientReliableTranslationReplay {
 #[derive(Debug, Clone)]
 pub(super) struct ClientReliableSlot {
     pub(super) key: ClientReliableSlotKey,
+    /// Latest exact datagram for this immutable reliable identity. ACK, CRC,
+    /// and FrameSend-owned bit 6 may refresh on retransmission, so the
+    /// canonical identity below remains the conflict authority.
+    pub(super) packet: Vec<u8>,
     pub(super) transport_identity: ClientReliableTransportIdentity,
     /// `None` means the transport slot is pinned but its semantic disposition
     /// is retryable (for example after an outer strict rejection or the
     /// Module_Loaded resource gate deliberately consumes an early attempt).
     pub(super) replay: Option<ClientReliableTranslationReplay>,
+    /// An in-window source behind a missing predecessor is retained without
+    /// entering CNW semantics. Once the predecessor commits, the network loop
+    /// dispatches this exact packet once through the ordinary strict path.
+    pub(super) deferred_behind_gap: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -93,10 +102,9 @@ pub(super) struct ClientReliableReplayState {
 /// Diamond `sub_5F3940` lines 751482-751549/751605-751724 and EE
 /// `CNetLayerWindow::FrameReceive` lines 878891-878952/879029-879135 prove
 /// separate 16-slot receive release and destination send-window retirement.
-/// Proxy2 currently keeps accepted client sources in this one mirrored slot
-/// set until the Diamond ACK returns. This diagnostic identifies the precise
-/// coupling condition without advancing a frontier or emitting an ACK before
-/// a proxy-owned Diamond-facing send window exists.
+/// This diagnostic remains useful for proving that source release tracks the
+/// strict contiguous dispatch frontier rather than downstream Diamond ACK
+/// latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ClientReliableRetentionDiagnostic {
     pub(super) receive_start: Option<u16>,
@@ -118,6 +126,16 @@ pub(super) enum PreparedClientReliableSource {
     Replay {
         key: ClientReliableSlotKey,
         replay: ClientReliableTranslationReplay,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientReliableDispatchAdmission {
+    Excluded,
+    Ready(ClientReliableSlotKey),
+    Future {
+        key: ClientReliableSlotKey,
+        expected: ClientReliableSlotKey,
     },
 }
 
@@ -211,12 +229,13 @@ pub(super) fn prepare_source_slot(
         return Ok(PreparedClientReliableSource::OutsideWindow(key));
     }
 
-    let existing = state.slots.iter().find(|slot| slot.key == key).cloned();
+    let existing = state.slots.iter_mut().find(|slot| slot.key == key);
     if let Some(existing) = existing {
         if existing.transport_identity != transport_identity {
             return Ok(PreparedClientReliableSource::Conflict(key));
         }
-        return Ok(match existing.replay {
+        existing.packet = packet.to_vec();
+        return Ok(match existing.replay.clone() {
             Some(replay) => PreparedClientReliableSource::Replay { key, replay },
             None => PreparedClientReliableSource::Pending(key),
         });
@@ -224,8 +243,10 @@ pub(super) fn prepare_source_slot(
 
     state.slots.push_back(ClientReliableSlot {
         key,
+        packet: packet.to_vec(),
         transport_identity,
         replay: None,
+        deferred_behind_gap: false,
     });
     debug_assert!(state.slots.len() <= MAX_CLIENT_RELIABLE_SLOTS);
     tracing::trace!(
@@ -238,90 +259,142 @@ pub(super) fn prepare_source_slot(
     Ok(PreparedClientReliableSource::Pending(key))
 }
 
-/// Retire client source slots only after a Diamond-server ACK carrying this
-/// source-facing sequence has survived the outer strict emit validator.
+/// Admit one pinned type-0 client source to semantic dispatch in reliable
+/// receive order.
 ///
-/// Diamond lines 751677-751724 and EE lines 879090-879135 advance the send
-/// window cumulatively through the acknowledged sequence. Proxy-owned client
-/// sequence insertions/elisions must be removed by the caller before this
-/// boundary, so `ack_sequence` is expressed in the original EE source lane.
-pub(super) fn retire_through_server_ack(
+/// Diamond `sub_5F3940` lines 751571-751673 and EE `FrameReceive` lines
+/// 879029-879088 dispatch only the occupied receive-frontier slot and then walk
+/// its contiguous successors. A future in-window source is transport truth,
+/// but it cannot touch packetized/CNW state before its predecessor commits.
+pub(super) fn prepare_source_dispatch(
     state: &mut ClientReliableReplayState,
-    ack_sequence: u16,
-) -> usize {
-    let retired = retirable_prefix_len(state, ack_sequence);
-    if retired == 0 {
-        return 0;
-    }
-    let Some(receive_start) = state.receive_start else {
-        return 0;
+    prepared: &PreparedClientReliableSource,
+) -> anyhow::Result<ClientReliableDispatchAdmission> {
+    let key = match prepared {
+        PreparedClientReliableSource::Excluded => {
+            return Ok(ClientReliableDispatchAdmission::Excluded);
+        }
+        PreparedClientReliableSource::Pending(key)
+        | PreparedClientReliableSource::Replay { key, .. } => *key,
+        PreparedClientReliableSource::Conflict(key)
+        | PreparedClientReliableSource::RetiredReplay(key)
+        | PreparedClientReliableSource::RetiredConflict(key)
+        | PreparedClientReliableSource::OutsideWindow(key) => {
+            anyhow::bail!(
+                "client reliable source {} generation {} reached dispatch admission after transport rejection",
+                key.sequence,
+                key.origin_generation
+            );
+        }
     };
-    let distance = ack_sequence.wrapping_sub(receive_start) as usize;
+    let receive_start = state
+        .receive_start
+        .ok_or_else(|| anyhow::anyhow!("client dispatch has no receive frontier"))?;
+    let expected = ClientReliableSlotKey {
+        lane: MFrameType::ReliableData,
+        sequence: receive_start,
+        origin_generation: state.origin_generation,
+    };
+    if key == expected {
+        if let Some(slot) = state.slots.iter_mut().find(|slot| slot.key == key) {
+            slot.deferred_behind_gap = false;
+        }
+        return Ok(ClientReliableDispatchAdmission::Ready(key));
+    }
 
-    let mut retained_slots = VecDeque::with_capacity(state.slots.len());
-    let mut retired_slots = Vec::new();
-    while let Some(slot) = state.slots.pop_front() {
-        if slot.key.sequence.wrapping_sub(receive_start) as usize <= distance {
-            retired_slots.push(slot);
-        } else {
-            retained_slots.push_back(slot);
-        }
-    }
-    state.slots = retained_slots;
-    let retired = retired_slots.len();
-    for slot in retired_slots {
-        state.retired_history.push_back(RetiredClientReliableSlot {
-            key: slot.key,
-            transport_identity: slot.transport_identity,
-        });
-        while state.retired_history.len() > MAX_CLIENT_RELIABLE_SLOTS {
-            let _ = state.retired_history.pop_front();
-        }
-    }
-    let next = ack_sequence.wrapping_add(1);
-    if next < receive_start {
-        state.origin_generation = state.origin_generation.saturating_add(1);
-    }
-    state.receive_start = Some(next);
+    let Some(slot) = state.slots.iter_mut().find(|slot| slot.key == key) else {
+        anyhow::bail!(
+            "future client reliable dispatch {} generation {} lost its retained raw slot",
+            key.sequence,
+            key.origin_generation
+        );
+    };
+    slot.deferred_behind_gap = true;
     tracing::trace!(
-        ack_sequence,
-        receive_start,
-        next_receive_start = next,
-        origin_generation = state.origin_generation,
-        retired_slots = retired,
+        sequence = key.sequence,
+        origin_generation = key.origin_generation,
+        expected_sequence = expected.sequence,
+        expected_origin_generation = expected.origin_generation,
         retained_slots = state.slots.len(),
-        "strict-accepted Diamond ACK advanced the mirrored client receive window"
+        "client reliable source retained behind its missing receive-frontier predecessor"
     );
-    retired
+    Ok(ClientReliableDispatchAdmission::Future { key, expected })
 }
 
-/// Return the exact contiguous active prefix an ACK would retire, without
-/// mutating transport state. Delivery may still repeat a valid ACK carrier
-/// because prior UDP output can be lost; only retirement is bounded by this
-/// contiguous-prefix proof.
-pub(super) fn retirable_prefix_len(state: &ClientReliableReplayState, ack_sequence: u16) -> usize {
-    let Some(receive_start) = state.receive_start else {
-        return 0;
+/// Take one raw client source that became contiguous after its predecessor
+/// committed. Clearing the marker makes this an at-most-once internal handoff;
+/// strict rejection waits for a real exact retransmit.
+pub(super) fn take_deferred_frontier_packet(
+    state: &mut ClientReliableReplayState,
+) -> Option<(ClientReliableSlotKey, Vec<u8>)> {
+    let receive_start = state.receive_start?;
+    let expected = ClientReliableSlotKey {
+        lane: MFrameType::ReliableData,
+        sequence: receive_start,
+        origin_generation: state.origin_generation,
     };
-    let distance = ack_sequence.wrapping_sub(receive_start) as usize;
-    if distance >= MAX_CLIENT_RELIABLE_SLOTS {
-        return 0;
+    let slot = state
+        .slots
+        .iter_mut()
+        .find(|slot| slot.key == expected && slot.deferred_behind_gap)?;
+    slot.deferred_behind_gap = false;
+    Some((slot.key, slot.packet.clone()))
+}
+
+/// Release the strict-committed contiguous source prefix only after the
+/// associated Diamond-facing output batch has committed to its independent
+/// reliable send window.
+///
+/// The current dispatch key must own the receive frontier. A later in-window
+/// source stays pinned, even if its immutable datagram already arrived. Each
+/// released identity moves into the bounded retired ledger before the local
+/// cumulative ACK is published toward EE.
+pub(super) fn release_committed_prefix(
+    state: &mut ClientReliableReplayState,
+    committed: ClientReliableSlotKey,
+) -> Option<ClientReliableSlotKey> {
+    let receive_start = state.receive_start?;
+    let expected = ClientReliableSlotKey {
+        lane: MFrameType::ReliableData,
+        sequence: receive_start,
+        origin_generation: state.origin_generation,
+    };
+    if committed != expected {
+        return None;
     }
-    // The originals compare the cumulative ACK with the active send interval,
-    // not with the window's spare capacity. A future ACK inside the 16-slot
-    // allocation cannot advance across a source sequence that was never
-    // pinned (including a gap created by out-of-order UDP delivery).
-    if !(0..=distance).all(|offset| {
-        let sequence = receive_start.wrapping_add(offset as u16);
-        let generation = generation_for_sequence(state, receive_start, sequence, offset);
-        state
-            .slots
-            .iter()
-            .any(|slot| slot.key.sequence == sequence && slot.key.origin_generation == generation)
-    }) {
-        return 0;
+
+    let slot_index = state
+        .slots
+        .iter()
+        .position(|slot| slot.key == committed && slot.replay.is_some())?;
+    let slot = state
+        .slots
+        .remove(slot_index)
+        .expect("located strict-committed client receive slot");
+    state.retired_history.push_back(RetiredClientReliableSlot {
+        key: slot.key,
+        transport_identity: slot.transport_identity,
+    });
+    while state.retired_history.len() > MAX_CLIENT_RELIABLE_SLOTS {
+        let _ = state.retired_history.pop_front();
     }
-    distance.saturating_add(1)
+
+    let next_sequence = committed.sequence.wrapping_add(1);
+    let next_generation = committed
+        .origin_generation
+        .saturating_add(u64::from(committed.sequence == u16::MAX));
+    state.receive_start = Some(next_sequence);
+    state.origin_generation = next_generation;
+    tracing::trace!(
+        sequence = committed.sequence,
+        origin_generation = committed.origin_generation,
+        next_sequence,
+        next_origin_generation = next_generation,
+        retained_slots = state.slots.len(),
+        retired_history = state.retired_history.len(),
+        "strict-committed client source released after Diamond output ownership committed"
+    );
+    Some(committed)
 }
 
 pub(super) fn stage_translation(
