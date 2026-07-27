@@ -109,7 +109,9 @@ pub(super) fn pending_client_drain_has_work(state: &SessionState) -> bool {
 
 fn pending_client_drain_has_work_at(state: &SessionState, now: Instant) -> bool {
     if !state.sequence.pending_client_to_server_packets.is_empty() {
-        return true;
+        return diamond_send_window::pending_drain_capacity_available(
+            &state.diamond_client_send_window,
+        );
     }
 
     let Some(active) = state.synthetic_area.pending_area_loaded.as_ref() else {
@@ -277,16 +279,42 @@ pub(super) fn stage_direct_client_send_window(
     )
 }
 
+pub(super) fn remember_direct_client_output_capacity_requirement(
+    state: &mut SessionState,
+    error: &anyhow::Error,
+) -> Option<(usize, usize)> {
+    let (required_slots, available_slots) = diamond_send_window::capacity_requirement(error)?;
+    state
+        .client_emit_pending_validation
+        .as_mut()?
+        .output_capacity_required_slots = Some(required_slots);
+    Some((required_slots, available_slots))
+}
+
 pub(super) fn stage_pending_client_send_window(
     state: &mut SessionState,
     emit: &Emit,
 ) -> anyhow::Result<()> {
+    state
+        .diamond_client_send_window
+        .pending_drain_required_slots = None;
     diamond_send_window::stage(
         &mut state.diamond_client_send_window,
         diamond_send_window::DiamondClientSendOwner::PendingClientDrain,
         emit,
         Instant::now(),
     )
+}
+
+pub(super) fn remember_pending_client_output_capacity_requirement(
+    state: &mut SessionState,
+    error: &anyhow::Error,
+) -> Option<(usize, usize)> {
+    let (required_slots, available_slots) = diamond_send_window::capacity_requirement(error)?;
+    state
+        .diamond_client_send_window
+        .pending_drain_required_slots = Some(required_slots);
+    Some((required_slots, available_slots))
 }
 
 pub(super) fn stage_direct_server_ack_delivery(
@@ -1678,12 +1706,17 @@ pub(super) fn take_deferred_server_dispatch_packet(state: &mut SessionState) -> 
 /// the receive slot; strict output ownership and the local cumulative ACK
 /// remain the commit boundary.
 pub(super) fn take_deferred_client_dispatch_packet(state: &mut SessionState) -> Option<Vec<u8>> {
-    let (key, packet) =
-        client_replay::take_deferred_frontier_packet(&mut state.client_reliable_replays)?;
+    let available_output_slots =
+        diamond_send_window::available_slots(&state.diamond_client_send_window);
+    let (key, packet) = client_replay::take_deferred_frontier_packet(
+        &mut state.client_reliable_replays,
+        available_output_slots,
+    )?;
     tracing::info!(
         sequence = key.sequence,
         origin_generation = key.origin_generation,
         len = packet.len(),
+        available_output_slots,
         "taking one retained contiguous client source for ordinary strict dispatch"
     );
     Some(packet)
@@ -1836,6 +1869,7 @@ pub(super) fn begin_client_to_server_emit_validation(
         source_origin_generation: prepared_source.key().map(|key| key.origin_generation),
         source_ack_sequence: view.ack_sequence,
         outside_window_ack_sequence,
+        output_capacity_required_slots: None,
     };
     let snapshot = capture_engine_facing_effect_snapshot(state);
     state.client_emit_effect_snapshot = Some(Box::new(snapshot));
@@ -1917,10 +1951,22 @@ fn finish_pending_client_drain_effect_validation(state: &mut SessionState, accep
     }
 
     let rolled_back = rollback_pending_client_drain_effect_transaction(state);
-    tracing::warn!(
-        rolled_back,
-        "pending client packet batch restored after final strict validation rejection"
-    );
+    if let Some(required_slots) = state
+        .diamond_client_send_window
+        .pending_drain_required_slots
+    {
+        tracing::info!(
+            rolled_back,
+            required_slots,
+            retained_output_slots = state.diamond_client_send_window.slots.len(),
+            "pending client packet batch retained until raw HG ACK frees Diamond output capacity"
+        );
+    } else {
+        tracing::warn!(
+            rolled_back,
+            "pending client packet batch restored after final strict validation rejection"
+        );
+    }
 }
 
 fn begin_pending_server_drain_effect_transaction(state: &mut SessionState) -> anyhow::Result<()> {
@@ -2169,6 +2215,41 @@ fn finish_client_to_server_effect_validation(
 
     restore_engine_facing_effect_snapshot(state, *snapshot);
     reapply_validated_client_source_transport(state, token);
+    if let Some(required_slots) = token.output_capacity_required_slots {
+        let deferred = token
+            .source_reliable_sequence
+            .zip(token.source_origin_generation)
+            .map(
+                |(sequence, origin_generation)| client_replay::ClientReliableSlotKey {
+                    lane: MFrameType::ReliableData,
+                    sequence,
+                    origin_generation,
+                },
+            )
+            .is_some_and(|key| {
+                client_replay::defer_frontier_for_output_capacity(
+                    &mut state.client_reliable_replays,
+                    key,
+                    required_slots,
+                )
+            });
+        if deferred {
+            tracing::info!(
+                source_sequence = token.source_reliable_sequence,
+                source_origin_generation = token.source_origin_generation,
+                required_slots,
+                retained_output_slots = state.diamond_client_send_window.slots.len(),
+                "client receive frontier retained until raw HG ACK frees Diamond output capacity"
+            );
+        } else {
+            tracing::warn!(
+                source_sequence = token.source_reliable_sequence,
+                source_origin_generation = token.source_origin_generation,
+                required_slots,
+                "Diamond output-capacity rejection could not mark its exact client receive frontier"
+            );
+        }
+    }
     if ack_output_accepted {
         if let Some(ack_sequence) = token.outside_window_ack_sequence {
             client_ack::queue_outside_window_ack(&mut state.client_ack.pending, ack_sequence);
@@ -11072,7 +11153,13 @@ mod tests {
             client_replay::ClientReliableDispatchAdmission::Future { .. }
         ));
         assert_eq!(commit_client_receive_slot(&mut client_state, 7).sequence, 7);
-        assert!(client_replay::take_deferred_frontier_packet(&mut client_state).is_none());
+        assert!(
+            client_replay::take_deferred_frontier_packet(
+                &mut client_state,
+                diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS,
+            )
+            .is_none()
+        );
         assert_eq!(client_state.receive_start, Some(8));
         assert_eq!(client_state.slots.len(), 1);
 
@@ -11087,9 +11174,11 @@ mod tests {
             client_replay::ClientReliableDispatchAdmission::Ready(_)
         ));
         assert_eq!(commit_client_receive_slot(&mut client_state, 8).sequence, 8);
-        let (released_key, released_packet) =
-            client_replay::take_deferred_frontier_packet(&mut client_state)
-                .expect("future client source should become dispatchable");
+        let (released_key, released_packet) = client_replay::take_deferred_frontier_packet(
+            &mut client_state,
+            diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS,
+        )
+        .expect("future client source should become dispatchable");
         assert_eq!(released_key.sequence, 9);
         assert_eq!(released_packet, client_9);
         assert_eq!(commit_client_receive_slot(&mut client_state, 9).sequence, 9);
@@ -11205,6 +11294,92 @@ mod tests {
                 .as_ref()
                 .map(|pending| pending.ack_sequence),
             Some(8)
+        );
+    }
+
+    #[test]
+    fn full_diamond_window_defers_client_frontier_until_raw_hg_ack_frees_capacity() {
+        let mut translator = strict_session_translator_for_test();
+        let retained = Emit::VerifiedPackets {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packets: (0..diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS)
+                .map(|sequence| client_reliable_m_frame(sequence as u16, 0, &[0x70, 0x0D, 0x01, 0]))
+                .collect(),
+        };
+        diamond_send_window::stage(
+            &mut translator.m_state.diamond_client_send_window,
+            diamond_send_window::DiamondClientSendOwner::DirectClient,
+            &retained,
+            Instant::now(),
+        )
+        .expect("seed the exact 16-slot Diamond send interval");
+        assert_eq!(
+            diamond_send_window::finish(
+                &mut translator.m_state.diamond_client_send_window,
+                diamond_send_window::DiamondClientSendOwner::DirectClient,
+                true,
+            ),
+            Some(diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS)
+        );
+
+        translator.m_state.client_reliable_replays.receive_start =
+            Some(diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS as u16);
+        let mut device_payload = vec![0x70, 0x36, 0x01];
+        device_payload.extend_from_slice(&0u32.to_le_bytes());
+        device_payload.extend_from_slice(&1u32.to_le_bytes());
+        device_payload.push(b'x');
+        device_payload.extend_from_slice(&1u32.to_le_bytes());
+        device_payload.extend_from_slice(&0u32.to_le_bytes());
+        let declared = device_payload.len() as u32;
+        device_payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        let source = client_reliable_m_frame(
+            diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS as u16,
+            0,
+            &device_payload,
+        );
+
+        let ack_only = translator.translate(crate::translate::Direction::ClientToServer, &source);
+        assert!(
+            !matches!(ack_only, Emit::Drop | Emit::Consumed),
+            "an exact ACK-only carrier remains independently deliverable"
+        );
+        assert_eq!(
+            translator.m_state.diamond_client_send_window.slots.len(),
+            diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS
+        );
+        let pinned = translator
+            .m_state
+            .client_reliable_replays
+            .slots
+            .front()
+            .expect("capacity-blocked source remains pinned");
+        assert_eq!(pinned.key.sequence, 16);
+        assert_eq!(pinned.deferred_output_capacity_slots, Some(1));
+        assert!(pinned.replay.is_none());
+        assert!(
+            translator.take_deferred_client_to_server_emit().is_none(),
+            "a millisecond poll cannot spin while the exact output capacity is unavailable"
+        );
+
+        assert_eq!(
+            diamond_send_window::retire_through_raw_server_ack(
+                &mut translator.m_state.diamond_client_send_window,
+                0,
+            ),
+            1
+        );
+        let retried = translator
+            .take_deferred_client_to_server_emit()
+            .expect("raw HG ACK retirement should expose the retained frontier immediately");
+        assert!(!matches!(retried, Emit::Drop | Emit::Consumed));
+        assert_eq!(
+            translator.m_state.client_reliable_replays.receive_start,
+            Some(17)
+        );
+        assert!(translator.m_state.client_reliable_replays.slots.is_empty());
+        assert_eq!(
+            translator.m_state.diamond_client_send_window.slots.len(),
+            diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS
         );
     }
 
@@ -12292,6 +12467,118 @@ mod tests {
                 .pending_client_drain_effect_snapshot
                 .is_none(),
             "idle polling must not retain validation authority"
+        );
+    }
+
+    #[test]
+    fn pending_client_drain_waits_without_polling_until_diamond_capacity_reopens() {
+        let mut translator = strict_session_translator_for_test();
+        let server_source =
+            client_reliable_m_frame(74, 12, &crate::translate::loadbar::start_payload(2));
+        let server_view = MFrameView::parse(&server_source).expect("pending client ACK source");
+        server_replay::prepare_source_slot(
+            &mut translator.m_state.server_reliable_slots,
+            &server_source,
+            &server_view,
+        )
+        .expect("pin server source acknowledged by pending output");
+
+        let retained = Emit::VerifiedPackets {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packets: (0..diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS)
+                .map(|sequence| client_reliable_m_frame(sequence as u16, 0, &[0x70, 0x0D, 0x01, 0]))
+                .collect(),
+        };
+        diamond_send_window::stage(
+            &mut translator.m_state.diamond_client_send_window,
+            diamond_send_window::DiamondClientSendOwner::DirectClient,
+            &retained,
+            Instant::now(),
+        )
+        .expect("seed full Diamond output interval");
+        assert_eq!(
+            diamond_send_window::finish(
+                &mut translator.m_state.diamond_client_send_window,
+                diamond_send_window::DiamondClientSendOwner::DirectClient,
+                true,
+            ),
+            Some(diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS)
+        );
+
+        let pending = client_reliable_m_frame(
+            diamond_send_window::MAX_DIAMOND_CLIENT_SEND_SLOTS as u16,
+            74,
+            &[0x70, 0x04, 0x03],
+        );
+        translator
+            .m_state
+            .sequence
+            .pending_client_to_server_packets
+            .push(state::PendingClientPacket {
+                family: VerifiedFamily::ClientArea,
+                packet: pending.clone(),
+                reason: "pending Diamond capacity regression",
+            });
+
+        assert!(
+            translator
+                .take_pending_client_to_server_packets()
+                .is_empty()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .diamond_client_send_window
+                .pending_drain_required_slots,
+            Some(1)
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .sequence
+                .pending_client_to_server_packets
+                .len(),
+            1
+        );
+        assert!(!pending_client_drain_has_work(&translator.m_state));
+        assert!(
+            translator
+                .take_pending_client_to_server_packets()
+                .is_empty()
+        );
+        assert!(
+            translator
+                .m_state
+                .pending_client_drain_effect_snapshot
+                .is_none(),
+            "an unavailable output slot must not reopen a transaction every millisecond"
+        );
+
+        assert_eq!(
+            diamond_send_window::retire_through_raw_server_ack(
+                &mut translator.m_state.diamond_client_send_window,
+                0,
+            ),
+            1
+        );
+        assert!(pending_client_drain_has_work(&translator.m_state));
+        assert_eq!(
+            translator.take_pending_client_to_server_packets(),
+            vec![pending]
+        );
+        assert!(
+            translator
+                .m_state
+                .sequence
+                .pending_client_to_server_packets
+                .is_empty()
+        );
+        assert_eq!(
+            translator
+                .m_state
+                .diamond_client_send_window
+                .pending_drain_required_slots,
+            None
         );
     }
 

@@ -434,10 +434,23 @@ impl SessionTranslator {
                     && let Err(err) =
                         m_frame::stage_pending_client_send_window(&mut self.m_state, &validated)
                 {
-                    tracing::warn!(
-                        error = %err,
-                        "pending client output could not enter the Diamond reliable send window"
-                    );
+                    if let Some((required_slots, available_slots)) =
+                        m_frame::remember_pending_client_output_capacity_requirement(
+                            &mut self.m_state,
+                            &err,
+                        )
+                    {
+                        tracing::info!(
+                            required_slots,
+                            available_slots,
+                            "pending client output deferred behind bounded Diamond send-window capacity"
+                        );
+                    } else {
+                        tracing::warn!(
+                            error = %err,
+                            "pending client output could not enter the Diamond reliable send window"
+                        );
+                    }
                     validated = Emit::Drop;
                 }
                 m_frame::finish_pending_client_drain_emit_validation(
@@ -722,11 +735,22 @@ impl SessionTranslator {
                 m_frame::stage_direct_client_send_window(&mut self.m_state, &validated)
         {
             translated_effects_candidate = false;
-            tracing::warn!(
-                direction = direction.as_str(),
-                error = %err,
-                "validated client payload could not enter the Diamond reliable send window"
-            );
+            if let Some((required_slots, available_slots)) =
+                m_frame::remember_direct_client_output_capacity_requirement(&mut self.m_state, &err)
+            {
+                tracing::info!(
+                    direction = direction.as_str(),
+                    required_slots,
+                    available_slots,
+                    "validated client payload deferred behind bounded Diamond send-window capacity"
+                );
+            } else {
+                tracing::warn!(
+                    direction = direction.as_str(),
+                    error = %err,
+                    "validated client payload could not enter the Diamond reliable send window"
+                );
+            }
             if let Some((prepared, source_lane)) = strict_rejection_ack_fallback.clone() {
                 let fallback =
                     m_frame::ensure_direct_source_ack_carrier(Emit::Drop, prepared, source_lane);

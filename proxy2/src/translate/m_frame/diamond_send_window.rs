@@ -6,11 +6,13 @@
 //! A matching strict commit is the exact boundary that permits the contiguous
 //! EE source receive slot to be released independently of the later HG ACK.
 //!
-//! Diamond initializes 16 outgoing slots at lines 750687-750695, cumulatively
-//! retires them through the peer ACK at `sub_5F3940` lines 751677-751724, and
-//! retries one retained immutable frame after 0xDAC/3500 ms at lines
-//! 751817-751907. EE has the same split at lines 891083-891087,
-//! 879090-879135, and 880417-880509.
+//! Diamond initializes 16 outgoing slots at lines 750687-750695.
+//! `sub_5F3580` lines 751041-751171 moves queued frames into that retained
+//! interval only while its count is below capacity, leaving the queue intact
+//! when full. `sub_5F3940` cumulatively retires through the peer ACK at lines
+//! 751677-751724 and retries one retained immutable frame after 0xDAC/3500 ms
+//! at lines 751817-751907. EE has the same split at lines 891083-891087,
+//! 879029-879146, and 880417-880509.
 //!
 //! Retain only plaintext frames that passed the outer strict validator. A
 //! retry refreshes the current cumulative HG-source ACK, FrameSend-owned bit
@@ -31,6 +33,16 @@ use super::transport_identity;
 
 pub(super) const MAX_DIAMOND_CLIENT_SEND_SLOTS: usize = 16;
 pub(super) const DIAMOND_CLIENT_RETRANSMIT_DELAY: Duration = Duration::from_millis(0xDAC);
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Diamond client send window needs {required_new_slots} new reliable slot(s), \
+     but only {available_slots} of {MAX_DIAMOND_CLIENT_SEND_SLOTS} are available"
+)]
+pub(super) struct DiamondClientSendWindowFull {
+    pub(super) required_new_slots: usize,
+    pub(super) available_slots: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DiamondClientSendOwner {
@@ -98,8 +110,28 @@ pub(super) struct DiamondClientSendWindowState {
     /// later wrap cannot borrow the wrong generation.
     next_key: Option<DiamondClientSendKey>,
     pub(super) pending: Option<PendingDiamondClientSend>,
+    /// A proxy-owned pending batch stays in its semantic transaction snapshot
+    /// while the exact new-slot count cannot enter the retained interval.
+    /// Raw HG ACK retirement naturally makes this condition ready again.
+    pub(super) pending_drain_required_slots: Option<usize>,
     pub(super) retired_slots: u64,
     pub(super) retransmitted_slots: u64,
+}
+
+pub(super) fn available_slots(state: &DiamondClientSendWindowState) -> usize {
+    MAX_DIAMOND_CLIENT_SEND_SLOTS.saturating_sub(state.slots.len())
+}
+
+pub(super) fn capacity_requirement(error: &anyhow::Error) -> Option<(usize, usize)> {
+    error
+        .downcast_ref::<DiamondClientSendWindowFull>()
+        .map(|full| (full.required_new_slots, full.available_slots))
+}
+
+pub(super) fn pending_drain_capacity_available(state: &DiamondClientSendWindowState) -> bool {
+    state
+        .pending_drain_required_slots
+        .is_none_or(|required| required <= available_slots(state))
 }
 
 /// Preflight all reliable members of one final validated client-output batch.
@@ -208,11 +240,13 @@ pub(super) fn stage(
         }
     }
 
-    if state.slots.len().saturating_add(unique_new.len()) > MAX_DIAMOND_CLIENT_SEND_SLOTS {
-        anyhow::bail!(
-            "Diamond client send window exceeded {} unacknowledged frames",
-            MAX_DIAMOND_CLIENT_SEND_SLOTS
-        );
+    let available_slots = available_slots(state);
+    if unique_new.len() > available_slots {
+        return Err(DiamondClientSendWindowFull {
+            required_new_slots: unique_new.len(),
+            available_slots,
+        }
+        .into());
     }
     if state.next_key.is_none() && !state.slots.is_empty() {
         anyhow::bail!("Diamond client send-window active slots have no next-sequence anchor");
@@ -534,5 +568,44 @@ mod tests {
             None
         );
         assert!(state.slots.is_empty());
+    }
+
+    #[test]
+    fn full_window_reports_exact_capacity_and_ack_reopens_pending_drain() {
+        let mut state = DiamondClientSendWindowState::default();
+        let retained = Emit::VerifiedPackets {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packets: (0..MAX_DIAMOND_CLIENT_SEND_SLOTS)
+                .map(|sequence| reliable(sequence as u16, 3, sequence as u8))
+                .collect(),
+        };
+        stage(
+            &mut state,
+            DiamondClientSendOwner::DirectClient,
+            &retained,
+            Instant::now(),
+        )
+        .expect("stage full interval");
+        assert_eq!(
+            finish(&mut state, DiamondClientSendOwner::DirectClient, true),
+            Some(MAX_DIAMOND_CLIENT_SEND_SLOTS)
+        );
+
+        let next = Emit::VerifiedPackets {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packets: vec![reliable(MAX_DIAMOND_CLIENT_SEND_SLOTS as u16, 3, 0xDD)],
+        };
+        let error = stage(
+            &mut state,
+            DiamondClientSendOwner::PendingClientDrain,
+            &next,
+            Instant::now(),
+        )
+        .expect_err("the seventeenth output must remain queued");
+        assert_eq!(capacity_requirement(&error), Some((1, 0)));
+        state.pending_drain_required_slots = Some(1);
+        assert!(!pending_drain_capacity_available(&state));
+        assert_eq!(retire_through_raw_server_ack(&mut state, 0), 1);
+        assert!(pending_drain_capacity_available(&state));
     }
 }

@@ -57,6 +57,10 @@ pub(super) struct ClientEmitValidationToken {
     /// 878891-878922 emit this type-1 control without allocating or
     /// redispatching the out-of-window source.
     pub(super) outside_window_ack_sequence: Option<u16>,
+    /// Exact new-slot count rejected only because the independent Diamond
+    /// send window was full. The source remains pinned and is retried through
+    /// normal translation when raw HG ACK retirement frees this capacity.
+    pub(super) output_capacity_required_slots: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

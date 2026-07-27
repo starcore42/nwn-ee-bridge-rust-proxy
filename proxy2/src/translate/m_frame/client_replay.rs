@@ -70,6 +70,13 @@ pub(super) struct ClientReliableSlot {
     /// entering CNW semantics. Once the predecessor commits, the network loop
     /// dispatches this exact packet once through the ordinary strict path.
     pub(super) deferred_behind_gap: bool,
+    /// The source reached the receive frontier, but its translated batch
+    /// needed more Diamond output slots than were available. The original
+    /// windows leave queued frames pending until ACK retirement lets
+    /// `LoadWindowWithFrames` move them into the retained send interval.
+    /// Proxy2 keeps the raw source pinned and re-enters the ordinary strict
+    /// translator only after the same bounded capacity condition becomes true.
+    pub(super) deferred_output_capacity_slots: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +254,7 @@ pub(super) fn prepare_source_slot(
         transport_identity,
         replay: None,
         deferred_behind_gap: false,
+        deferred_output_capacity_slots: None,
     });
     debug_assert!(state.slots.len() <= MAX_CLIENT_RELIABLE_SLOTS);
     tracing::trace!(
@@ -298,6 +306,7 @@ pub(super) fn prepare_source_dispatch(
     if key == expected {
         if let Some(slot) = state.slots.iter_mut().find(|slot| slot.key == key) {
             slot.deferred_behind_gap = false;
+            slot.deferred_output_capacity_slots = None;
         }
         return Ok(ClientReliableDispatchAdmission::Ready(key));
     }
@@ -321,11 +330,39 @@ pub(super) fn prepare_source_dispatch(
     Ok(ClientReliableDispatchAdmission::Future { key, expected })
 }
 
+/// Retain the exact receive-frontier source until enough Diamond send-window
+/// slots exist for the already-proven translated batch shape.
+pub(super) fn defer_frontier_for_output_capacity(
+    state: &mut ClientReliableReplayState,
+    key: ClientReliableSlotKey,
+    required_slots: usize,
+) -> bool {
+    if required_slots == 0 {
+        return false;
+    }
+    let expected = state.receive_start.map(|sequence| ClientReliableSlotKey {
+        lane: MFrameType::ReliableData,
+        sequence,
+        origin_generation: state.origin_generation,
+    });
+    if expected != Some(key) {
+        return false;
+    }
+    let Some(slot) = state.slots.iter_mut().find(|slot| slot.key == key) else {
+        return false;
+    };
+    slot.deferred_output_capacity_slots = Some(required_slots);
+    true
+}
+
 /// Take one raw client source that became contiguous after its predecessor
-/// committed. Clearing the marker makes this an at-most-once internal handoff;
-/// strict rejection waits for a real exact retransmit.
+/// committed or whose exact Diamond output capacity is now available.
+/// Clearing the marker makes this an at-most-once internal handoff; strict
+/// rejection waits for a real exact retransmit unless it proves another
+/// capacity deferral.
 pub(super) fn take_deferred_frontier_packet(
     state: &mut ClientReliableReplayState,
+    available_output_slots: usize,
 ) -> Option<(ClientReliableSlotKey, Vec<u8>)> {
     let receive_start = state.receive_start?;
     let expected = ClientReliableSlotKey {
@@ -333,11 +370,15 @@ pub(super) fn take_deferred_frontier_packet(
         sequence: receive_start,
         origin_generation: state.origin_generation,
     };
-    let slot = state
-        .slots
-        .iter_mut()
-        .find(|slot| slot.key == expected && slot.deferred_behind_gap)?;
+    let slot = state.slots.iter_mut().find(|slot| slot.key == expected)?;
+    let output_capacity_ready = slot
+        .deferred_output_capacity_slots
+        .is_some_and(|required| required <= available_output_slots);
+    if !slot.deferred_behind_gap && !output_capacity_ready {
+        return None;
+    }
     slot.deferred_behind_gap = false;
+    slot.deferred_output_capacity_slots = None;
     Some((slot.key, slot.packet.clone()))
 }
 
