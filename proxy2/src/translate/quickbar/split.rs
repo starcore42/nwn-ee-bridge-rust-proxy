@@ -99,11 +99,13 @@ pub(super) fn choose_quickbar_split(
         fragments.extend_from_slice(prefixed_fragment_bytes);
         fragments.extend_from_slice(body_and_tail.get(read_body_len..)?);
 
-        let Some((buttons, final_cursor)) = parse_quickbar_read_buffer_with_fragments(
-            &read_buffer,
-            &fragments,
-            LEGACY_QUICKBAR_READ_CURSOR_START,
-        ) else {
+        let Some((buttons, final_cursor, _fragment_ownership)) =
+            parse_quickbar_read_buffer_with_fragments(
+                &read_buffer,
+                &fragments,
+                LEGACY_QUICKBAR_READ_CURSOR_START,
+            )
+        else {
             continue;
         };
         let translated_item_slots = buttons
@@ -280,11 +282,13 @@ fn choose_cursor_derived_quickbar_split(
     read_buffer.extend_from_slice(body_and_tail);
 
     let fragments = prefixed_fragment_bytes.to_vec();
-    let Some((buttons, final_cursor)) = parse_quickbar_read_buffer_with_fragments(
-        &read_buffer,
-        &fragments,
-        LEGACY_QUICKBAR_READ_CURSOR_START,
-    ) else {
+    let Some((buttons, final_cursor, _fragment_ownership)) =
+        parse_quickbar_read_buffer_with_fragments(
+            &read_buffer,
+            &fragments,
+            LEGACY_QUICKBAR_READ_CURSOR_START,
+        )
+    else {
         return None;
     };
     if final_cursor > read_buffer.len() {

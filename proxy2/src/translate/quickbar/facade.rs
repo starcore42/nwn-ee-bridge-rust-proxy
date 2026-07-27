@@ -315,9 +315,15 @@ fn parse_quickbar_split(
     let parsed = if fragment_size != 0 {
         parse_quickbar_read_buffer_with_fragments(read_buffer, fragments, cursor)
     } else {
-        parse_quickbar_read_buffer(read_buffer, cursor)
+        parse_quickbar_read_buffer(read_buffer, cursor).map(|(buttons, final_cursor)| {
+            (
+                buttons,
+                final_cursor,
+                QuickbarFragmentOwnershipSummary::default(),
+            )
+        })
     };
-    let (buttons, final_cursor) = parsed.or_else(|| {
+    let (buttons, final_cursor, fragment_ownership) = parsed.or_else(|| {
         parse_quickbar_split_with_one_unused_fragment_storage_byte(read_buffer, fragments, cursor)
     })?;
     Some(QuickbarParse {
@@ -325,6 +331,7 @@ fn parse_quickbar_split(
         declared,
         read_size: read_buffer.len(),
         fragment_size,
+        fragment_ownership,
         final_cursor,
         buttons,
         direct_opcode_stream: false,
@@ -335,12 +342,12 @@ fn parse_quickbar_split_with_one_unused_fragment_storage_byte(
     read_buffer: &[u8],
     fragments: &[u8],
     cursor: usize,
-) -> Option<(Vec<QuickbarButton>, usize)> {
+) -> Option<(Vec<QuickbarButton>, usize, QuickbarFragmentOwnershipSummary)> {
     if fragments.len() != 2 {
         return None;
     }
     let trimmed = fragments.get(..1)?;
-    let (buttons, final_cursor) =
+    let (buttons, final_cursor, fragment_ownership) =
         parse_quickbar_read_buffer_with_fragments(read_buffer, trimmed, cursor)?;
     if final_cursor != read_buffer.len() {
         return None;
@@ -370,7 +377,7 @@ fn parse_quickbar_split_with_one_unused_fragment_storage_byte(
         read_buffer_len = read_buffer.len(),
         "server GuiQuickbar_SetAllButtons accepted one unused source fragment storage byte after exact slot proof"
     );
-    Some((buttons, final_cursor))
+    Some((buttons, final_cursor, fragment_ownership))
 }
 
 fn quickbar_read_window_parses(read_buffer: &[u8], fragments: &[u8]) -> bool {
@@ -534,6 +541,7 @@ fn summarize_quickbar_rewrite(
         new_declared,
         read_size: parsed.read_size,
         fragment_size: parsed.fragment_size,
+        fragment_ownership: parsed.fragment_ownership,
         final_cursor: parsed.final_cursor,
         trailing_read_bytes: parsed.read_size.saturating_sub(parsed.final_cursor),
         direct_opcode_stream: parsed.direct_opcode_stream,
@@ -826,6 +834,20 @@ fn trace_quickbar_rewrite_summary(
         new_declared = summary.new_declared,
         read_size = summary.read_size,
         fragment_size = summary.fragment_size,
+        fragment_declared_final_bits = summary.fragment_ownership.declared_final_bits,
+        fragment_consumed_bits = summary.fragment_ownership.consumed_bits,
+        fragment_consumed_bytes = summary.fragment_ownership.consumed_bytes,
+        fragment_compact_fallback_items = summary.fragment_ownership.compact_fallback_items,
+        fragment_first_compact_fallback_slot_known = summary
+            .fragment_ownership
+            .first_compact_fallback_slot
+            .is_some(),
+        fragment_first_compact_fallback_slot = summary
+            .fragment_ownership
+            .first_compact_fallback_slot
+            .unwrap_or(0),
+        fragment_tail_slack_allowed = summary.fragment_ownership.tail_slack_allowed,
+        fragment_tail_exact = summary.fragment_ownership.exact_tail,
         final_cursor = summary.final_cursor,
         trailing_read_bytes = summary.trailing_read_bytes,
         direct_opcode_stream = summary.direct_opcode_stream,
@@ -973,6 +995,13 @@ fn trace_quickbar_item_button_decisions(
     materialization: Option<&QuickbarMaterializationContext<'_>>,
     trace_role: QuickbarRewriteTraceRole,
 ) {
+    // Stream dispatch deliberately reparses every received prefix. Its
+    // aggregate rewrite summary already identifies fragment ownership and item
+    // sources, while per-slot decisions are only actionable for the packet
+    // that semantic dispatch commits.
+    if !trace_role.is_committed() {
+        return;
+    }
     for (slot_index, button) in parsed.buttons.iter().enumerate() {
         let QuickbarButtonKind::Item {
             primary,
@@ -1246,6 +1275,7 @@ mod tests {
             declared: 0,
             read_size: 0,
             fragment_size: 1,
+            fragment_ownership: QuickbarFragmentOwnershipSummary::default(),
             final_cursor: 0,
             buttons: vec![QuickbarButton {
                 kind: QuickbarButtonKind::Item {
@@ -1299,6 +1329,7 @@ mod tests {
             declared: 0,
             read_size: 0,
             fragment_size: 1,
+            fragment_ownership: QuickbarFragmentOwnershipSummary::default(),
             final_cursor: 0,
             buttons: vec![QuickbarButton {
                 kind: QuickbarButtonKind::Item {

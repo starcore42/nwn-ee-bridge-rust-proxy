@@ -137,6 +137,36 @@ pub struct QuickbarMaterializationContextSummary {
     pub inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuickbarFragmentOwnershipSummary {
+    /// Three-bit final-fragment count read before the 36 button records.
+    pub declared_final_bits: u8,
+    /// Total fragment bits consumed, including the three-bit count prefix.
+    pub consumed_bits: usize,
+    /// Storage bytes touched by the fragment cursor.
+    pub consumed_bytes: usize,
+    /// Items recovered from a byte-owned compact body after the fragment-owned
+    /// item reader could not prove the source shape.
+    pub compact_fallback_items: u32,
+    pub first_compact_fallback_slot: Option<u8>,
+    /// The typed writer may discard unused source fragments after a compact
+    /// compatibility recovery, but the reader must still never overrun them.
+    pub tail_slack_allowed: bool,
+    /// The cursor consumed the complete supplied fragment tail and its final
+    /// bit position matched the declared three-bit count.
+    pub exact_tail: bool,
+}
+
+impl QuickbarFragmentOwnershipSummary {
+    pub(in crate::translate::quickbar) fn observe_compact_fallback(&mut self, slot: usize) {
+        self.compact_fallback_items = self.compact_fallback_items.saturating_add(1);
+        if self.first_compact_fallback_slot.is_none() {
+            self.first_compact_fallback_slot = u8::try_from(slot).ok();
+        }
+        self.tail_slack_allowed = true;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QuickbarRewriteSummary {
     pub old_payload_length: usize,
@@ -145,6 +175,7 @@ pub struct QuickbarRewriteSummary {
     pub new_declared: u32,
     pub read_size: usize,
     pub fragment_size: usize,
+    pub fragment_ownership: QuickbarFragmentOwnershipSummary,
     pub final_cursor: usize,
     pub trailing_read_bytes: usize,
     pub direct_opcode_stream: bool,
@@ -285,6 +316,7 @@ pub(in crate::translate::quickbar) struct QuickbarParse {
     pub(in crate::translate::quickbar) declared: u32,
     pub(in crate::translate::quickbar) read_size: usize,
     pub(in crate::translate::quickbar) fragment_size: usize,
+    pub(in crate::translate::quickbar) fragment_ownership: QuickbarFragmentOwnershipSummary,
     pub(in crate::translate::quickbar) final_cursor: usize,
     pub(in crate::translate::quickbar) buttons: Vec<QuickbarButton>,
     pub(in crate::translate::quickbar) direct_opcode_stream: bool,

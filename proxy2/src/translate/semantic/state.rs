@@ -10254,6 +10254,8 @@ mod tests {
             new_declared: 1702,
             read_size: 1494,
             fragment_size,
+            fragment_ownership:
+                crate::translate::quickbar::QuickbarFragmentOwnershipSummary::default(),
             final_cursor: 1494usize.saturating_sub(trailing_read_bytes),
             trailing_read_bytes,
             direct_opcode_stream: false,

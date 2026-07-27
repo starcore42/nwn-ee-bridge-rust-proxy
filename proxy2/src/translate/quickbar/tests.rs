@@ -35,6 +35,7 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
         new_declared: 43,
         read_size: 881,
         fragment_size: 459,
+        fragment_ownership: QuickbarFragmentOwnershipSummary::default(),
         final_cursor: 870,
         trailing_read_bytes: 11,
         direct_opcode_stream: false,
@@ -96,6 +97,7 @@ fn owned_quickbar_boundary_with_only_blank_slots_does_not_wait_for_placeholder()
         new_declared: 43,
         read_size: 40,
         fragment_size: 2,
+        fragment_ownership: QuickbarFragmentOwnershipSummary::default(),
         final_cursor: 36,
         trailing_read_bytes: 4,
         direct_opcode_stream: false,
@@ -157,6 +159,7 @@ fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
         new_declared: 43,
         read_size: 881,
         fragment_size: 0,
+        fragment_ownership: QuickbarFragmentOwnershipSummary::default(),
         final_cursor: 870,
         trailing_read_bytes: 11,
         direct_opcode_stream: false,
@@ -339,6 +342,19 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
     assert_eq!(summary.old_declared, 1321);
     assert_eq!(summary.read_size, 1314);
     assert_eq!(summary.fragment_size, 19);
+    assert_eq!(
+        summary.fragment_ownership.declared_final_bits, 2,
+        "Diamond and EE both read the three-bit final-fragment count before the fixed 36-slot loop"
+    );
+    assert_eq!(summary.fragment_ownership.consumed_bits, 146);
+    assert_eq!(summary.fragment_ownership.consumed_bytes, 19);
+    assert_eq!(summary.fragment_ownership.compact_fallback_items, 0);
+    assert_eq!(summary.fragment_ownership.first_compact_fallback_slot, None);
+    assert!(!summary.fragment_ownership.tail_slack_allowed);
+    assert!(
+        summary.fragment_ownership.exact_tail,
+        "the full fixture must consume every MSB-first BOOL guard and finish at the declared partial-byte cursor"
+    );
     assert_eq!(summary.trailing_read_bytes, 0);
     assert!(
         summary.item_buttons_preserved + summary.item_buttons_blanked >= 18,
@@ -373,6 +389,41 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
         visible_first_page >= 6,
         "rewritten Starcore initial quickbar should keep visible F1-F12 records populated: {:?}",
         &slot_types[..12]
+    );
+}
+
+#[test]
+fn truncated_fragment_probe_reports_compact_fallback_ownership() {
+    let full_payload =
+        include_bytes!("../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin")
+            .to_vec();
+    let full_parse = parse_cnw_quickbar_payload(&full_payload)
+        .expect("full Starcore quickbar fixture should identify the fragment boundary");
+    let fragment_start = full_payload
+        .len()
+        .checked_sub(full_parse.fragment_size)
+        .expect("fragment tail should fit in the fixture");
+    let mut fragment_prefix = full_payload[..fragment_start + 1].to_vec();
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut fragment_prefix)
+        .expect("a speculative one-byte fragment prefix should remain structurally classifiable");
+
+    assert_eq!(summary.fragment_size, 1);
+    assert!(
+        summary.fragment_ownership.compact_fallback_items > 0,
+        "items after fragment exhaustion must be identified as compact byte-owned fallbacks"
+    );
+    assert!(
+        summary
+            .fragment_ownership
+            .first_compact_fallback_slot
+            .is_some()
+    );
+    assert!(summary.fragment_ownership.tail_slack_allowed);
+    assert!(summary.fragment_ownership.consumed_bytes <= 1);
+    assert!(
+        !summary.fragment_ownership.exact_tail,
+        "a transport prefix must not be misreported as exact decompile-owned fragment exhaustion"
     );
 }
 
