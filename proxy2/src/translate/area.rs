@@ -463,11 +463,30 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         }
 
         let unproven_static_rows = static_rows.saturating_sub(module_backed_static_rows);
-        let conflict = light_rows != 0
-            || static_rows != 1
-            || module_backed_static_rows != 1
-            || area_alias_rows != 0
-            || duplicate_object_id_rows != 0;
+        // Diamond `sub_486510` and EE `sub_1407DBA70` read two independent,
+        // byte-only post-tile lists: light rows own `OBJECTID + WORD + three
+        // FLOAT`s, while static rows own `OBJECTID + WORD + six FLOAT`s. EE
+        // `CNWSArea::PackAreaIntoMessage` likewise selects the light list via
+        // `GetLightIsOn` and the following static list via the separate
+        // placeable flag at `+0x5A0`. A unique, source-proven light-only row
+        // therefore proves light provenance; it is not a failed static-row
+        // identity. Mixed lists, aliases, duplicates, and malformed light
+        // provenance remain ambiguous and keep blocking static reconciliation.
+        let unique_source_proven_light_only = light_rows == 1
+            && static_rows == 0
+            && area_alias_rows == 0
+            && duplicate_object_id_rows == 0
+            && self.rows.iter().all(|matched| {
+                matched.kind == AreaPlaceableContextRowKind::Light
+                    && matched.source_provenance_compatible()
+                    && matched.row.object_id_confidence.is_unique()
+            });
+        let conflict = !unique_source_proven_light_only
+            && (light_rows != 0
+                || static_rows != 1
+                || module_backed_static_rows != 1
+                || area_alias_rows != 0
+                || duplicate_object_id_rows != 0);
         conflict.then_some(AreaPlaceableContextIdentityConflict {
             light_rows: saturating_u16(light_rows),
             static_rows: saturating_u16(static_rows),
@@ -10337,6 +10356,137 @@ mod public_static_direction_tests {
             }
             other => panic!("unique static overlap should authorize reconciliation: {other:?}"),
         }
+    }
+
+    #[test]
+    fn unique_source_proven_light_only_overlap_is_not_static_identity_conflict() {
+        let object_id = 0x8000_0077;
+        let light_row = AreaPlaceableContextRow {
+            object_id,
+            appearance: 77,
+            source_read_start: 200,
+            source_read_end: 200 + AREA_LIGHT_PLACEABLE_ROW_BYTES,
+            source_fragment_bit_start: 14,
+            source_fragment_bit_end: 14,
+            x: 5.0,
+            y: 6.0,
+            z: 0.0,
+            object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+            ..AreaPlaceableContextRow::default()
+        };
+        let context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            light_rows: vec![light_row.clone()],
+            ..AreaPlaceableContext::default()
+        };
+        let overlap = context.placeable_overlap_for_object_id(object_id);
+
+        assert!(overlap.has_light_row());
+        assert!(!overlap.has_static_row());
+        assert_eq!(overlap.identity_conflict(), None);
+        assert!(matches!(
+            overlap.static_reconciliation_target(),
+            AreaPlaceableContextStaticReconciliationTarget::NoOverlap
+        ));
+        assert!(
+            overlap.formatted_rows().contains("light:id=unique")
+                && overlap.formatted_rows().contains("source=ok"),
+            "light provenance must remain available after separating it from static identity"
+        );
+
+        let malformed_read_context = AreaPlaceableContext {
+            light_rows: vec![AreaPlaceableContextRow {
+                source_read_end: light_row.source_read_end - 1,
+                ..light_row.clone()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        assert!(
+            malformed_read_context
+                .placeable_overlap_for_object_id(object_id)
+                .identity_conflict()
+                .is_some(),
+            "a light-only row with an unproven read width must stay identity-blocked"
+        );
+
+        let fragment_owned_context = AreaPlaceableContext {
+            light_rows: vec![AreaPlaceableContextRow {
+                source_fragment_bit_end: light_row.source_fragment_bit_start + 1,
+                ..light_row.clone()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        assert!(
+            fragment_owned_context
+                .placeable_overlap_for_object_id(object_id)
+                .identity_conflict()
+                .is_some(),
+            "a light-only row that owns fragment bits must stay identity-blocked"
+        );
+
+        let alias_context = AreaPlaceableContext {
+            light_rows: vec![AreaPlaceableContextRow {
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::AreaObjectAlias,
+                ..light_row.clone()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        assert!(
+            alias_context
+                .placeable_overlap_for_object_id(object_id)
+                .identity_conflict()
+                .is_some(),
+            "an area-alias light row must stay identity-blocked"
+        );
+
+        let compact_object_id = 0x0000_0077;
+        let mixed_context = AreaPlaceableContext {
+            light_rows: vec![light_row.clone()],
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_object_id,
+                appearance: 77,
+                source_read_start: 220,
+                source_read_end: 220 + AREA_STATIC_PLACEABLE_ROW_BYTES,
+                source_fragment_bit_start: 14,
+                source_fragment_bit_end: 14,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState::default()),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let mixed_overlap = mixed_context.placeable_overlap_by(|row_object_id| {
+            row_object_id == object_id || row_object_id == compact_object_id
+        });
+        match mixed_overlap.static_reconciliation_target() {
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                assert_eq!(conflict.light_rows, 1);
+                assert_eq!(conflict.static_rows, 1);
+            }
+            other => panic!(
+                "equivalent compact/external light+static rows must stay identity-blocked: {other:?}"
+            ),
+        }
+
+        let duplicate_light_context = AreaPlaceableContext {
+            light_rows: vec![
+                AreaPlaceableContextRow {
+                    object_id_confidence: AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    ..light_row.clone()
+                },
+                AreaPlaceableContextRow {
+                    object_id_confidence: AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    ..light_row
+                },
+            ],
+            ..AreaPlaceableContext::default()
+        };
+        let duplicate_conflict = duplicate_light_context
+            .placeable_overlap_for_object_id(object_id)
+            .identity_conflict()
+            .expect("duplicate light rows must stay identity-blocked");
+        assert_eq!(duplicate_conflict.light_rows, 2);
+        assert_eq!(duplicate_conflict.duplicate_object_id_rows, 2);
     }
 
     #[test]

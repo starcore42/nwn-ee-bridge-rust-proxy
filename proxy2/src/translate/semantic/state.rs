@@ -3738,7 +3738,13 @@ impl ObjectRegistry {
         const PLACEABLE_APPEARANCE_OBSERVATION: u8 = 0x04;
         const PLACEABLE_POSITION_OBSERVATION: u8 = 0x08;
 
-        let mut seen_observation_masks = BTreeMap::new();
+        // One exact live-object payload can carry several parser-owned rows for
+        // the same placeable (for example, an add with appearance/state followed
+        // by an update with orientation/position). Aggregate their verified
+        // field masks by the canonical registry id before evaluating the
+        // field-independent area identity. Per-mention deduplication still
+        // evaluated that identity once for each newly observed field group.
+        let mut observation_masks = BTreeMap::new();
         for mention in mentions {
             let registry_object_id =
                 self.registry_object_id_for_live_object(mention.object_type, mention.object_id);
@@ -3762,20 +3768,17 @@ impl ObjectRegistry {
             if mention.object_type != 0x09 || observation_mask == 0 {
                 continue;
             }
-            let seen_mask = seen_observation_masks
+            let (combined_mask, _) = observation_masks
                 .entry(registry_object_id)
-                .or_insert(0_u8);
-            let new_observation_mask = observation_mask & !*seen_mask;
-            if new_observation_mask == 0 {
-                continue;
-            }
-            *seen_mask |= observation_mask;
-            let observes_state = (new_observation_mask & PLACEABLE_STATE_OBSERVATION) != 0;
-            let observes_orientation =
-                (new_observation_mask & PLACEABLE_ORIENTATION_OBSERVATION) != 0;
-            let observes_appearance =
-                (new_observation_mask & PLACEABLE_APPEARANCE_OBSERVATION) != 0;
-            let observes_position = (new_observation_mask & PLACEABLE_POSITION_OBSERVATION) != 0;
+                .or_insert((0_u8, mention.object_id));
+            *combined_mask |= observation_mask;
+        }
+
+        for (registry_object_id, (observation_mask, mention_object_id)) in observation_masks {
+            let observes_state = (observation_mask & PLACEABLE_STATE_OBSERVATION) != 0;
+            let observes_orientation = (observation_mask & PLACEABLE_ORIENTATION_OBSERVATION) != 0;
+            let observes_appearance = (observation_mask & PLACEABLE_APPEARANCE_OBSERVATION) != 0;
+            let observes_position = (observation_mask & PLACEABLE_POSITION_OBSERVATION) != 0;
 
             let Some(known) = self.known.get(&registry_object_id) else {
                 continue;
@@ -3785,7 +3788,7 @@ impl ObjectRegistry {
             let live_orientation = known.orientation;
             let live_position = known.position;
             let overlap = area_context.placeable_overlap_by(|row_object_id| {
-                object_ids::equivalent_legacy_external_object_ids(row_object_id, mention.object_id)
+                object_ids::equivalent_legacy_external_object_ids(row_object_id, registry_object_id)
             });
             if overlap.is_empty() {
                 continue;
@@ -3941,7 +3944,7 @@ impl ObjectRegistry {
             {
                 tracing::info!(
                     object_id = format_args!("0x{registry_object_id:08X}"),
-                    mention_object_id = format_args!("0x{:08X}", mention.object_id),
+                    mention_object_id = format_args!("0x{mention_object_id:08X}"),
                     area_resref = area_context.area_resref.as_str(),
                     active = known_active,
                     last_opcode = %char::from(last_opcode),
@@ -3970,7 +3973,7 @@ impl ObjectRegistry {
             {
                 tracing::info!(
                     object_id = format_args!("0x{registry_object_id:08X}"),
-                    mention_object_id = format_args!("0x{:08X}", mention.object_id),
+                    mention_object_id = format_args!("0x{mention_object_id:08X}"),
                     area_resref = area_context.area_resref.as_str(),
                     active = known_active,
                     last_opcode = %char::from(last_opcode),
@@ -3994,7 +3997,7 @@ impl ObjectRegistry {
             } else {
                 tracing::debug!(
                     object_id = format_args!("0x{registry_object_id:08X}"),
-                    mention_object_id = format_args!("0x{:08X}", mention.object_id),
+                    mention_object_id = format_args!("0x{mention_object_id:08X}"),
                     area_resref = area_context.area_resref.as_str(),
                     active = known_active,
                     last_opcode = %char::from(last_opcode),
@@ -8359,6 +8362,193 @@ mod tests {
                 external_object_id
             ),
             None
+        );
+    }
+
+    #[test]
+    fn area_context_aggregates_split_field_mentions_by_canonical_placeable() {
+        let mut registry = ObjectRegistry::default();
+        let compact_object_id = 0x0000_0003;
+        let external_object_id = 0x8000_0003;
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_object_id,
+                appearance: 0x1234,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::AreaObjectAlias,
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let mentions = [
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x09,
+                object_id: external_object_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                    appearance: 0x1234,
+                    resref: None,
+                }),
+                placeable_state: Some(LiveObjectPlaceableState {
+                    useable: Some(true),
+                    trap_disarmable: Some(false),
+                    lockable: Some(true),
+                    locked: Some(false),
+                }),
+            },
+            LiveObjectMention {
+                opcode: b'U',
+                object_type: 0x09,
+                object_id: compact_object_id,
+                name: None,
+                position: Some(LiveObjectPosition {
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                }),
+                orientation: Some(LiveObjectOrientation {
+                    source: LiveObjectOrientationSource::Scalar,
+                    scalar_tenths_degrees: 0,
+                    vector: None,
+                }),
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: Some(LiveObjectPlaceableState {
+                    lockable: Some(true),
+                    locked: Some(false),
+                    ..LiveObjectPlaceableState::default()
+                }),
+            },
+        ];
+
+        registry.observe_mentions(&mentions);
+        registry.observe_placeable_area_context(&area_context, &mentions);
+
+        let expected_conflict = AreaPlaceableContextIdentityConflict {
+            light_rows: 0,
+            static_rows: 1,
+            module_backed_static_rows: 0,
+            module_unbacked_static_rows: 1,
+            unproven_static_rows: 1,
+            source_incompatible_static_rows: 0,
+            source_read_mismatch_static_rows: 0,
+            source_fragment_owned_static_rows: 0,
+            source_read_mismatch_and_fragment_owned_static_rows: 0,
+            area_alias_rows: 1,
+            duplicate_object_id_rows: 0,
+        };
+        assert!(
+            !registry.known.contains_key(&compact_object_id),
+            "split compact/external rows must retain one canonical registry owner"
+        );
+        let object = registry
+            .known
+            .get(&external_object_id)
+            .expect("external add must remain the canonical placeable owner");
+        assert_eq!(
+            object.area_placeable_context_overlaps, 1,
+            "one verified payload evaluates the canonical overlap once"
+        );
+        assert_eq!(
+            object.area_static_identity_conflicts, 1,
+            "field-independent identity must not be counted once per split field group"
+        );
+        assert_eq!(
+            object.latest_area_static_identity_conflict,
+            Some(expected_conflict)
+        );
+        assert_eq!(
+            object.unresolved_area_static_identity_conflict,
+            Some(expected_conflict)
+        );
+    }
+
+    #[test]
+    fn area_context_keeps_unique_light_only_overlap_as_provenance() {
+        let mut registry = ObjectRegistry::default();
+        let object_id = 0x8000_35C8;
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            light_rows: vec![AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0E60,
+                source_read_start: 4670,
+                source_read_end: 4688,
+                source_fragment_bit_start: 96,
+                source_fragment_bit_end: 96,
+                x: 89.0,
+                y: 9.0,
+                z: 0.8,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let mentions = [
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x09,
+                object_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                    appearance: 0x0E60,
+                    resref: None,
+                }),
+                placeable_state: Some(LiveObjectPlaceableState {
+                    useable: Some(true),
+                    trap_disarmable: Some(true),
+                    lockable: Some(false),
+                    locked: Some(false),
+                }),
+            },
+            LiveObjectMention {
+                opcode: b'U',
+                object_type: 0x09,
+                object_id,
+                name: None,
+                position: Some(LiveObjectPosition {
+                    x: 89.0,
+                    y: 9.0,
+                    z: 0.8,
+                }),
+                orientation: Some(LiveObjectOrientation {
+                    source: LiveObjectOrientationSource::Scalar,
+                    scalar_tenths_degrees: 0,
+                    vector: None,
+                }),
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: Some(LiveObjectPlaceableState {
+                    lockable: Some(false),
+                    locked: Some(false),
+                    ..LiveObjectPlaceableState::default()
+                }),
+            },
+        ];
+
+        registry.observe_mentions(&mentions);
+        registry.observe_placeable_area_context(&area_context, &mentions);
+
+        let object = registry
+            .known
+            .get(&object_id)
+            .expect("source-proven light placeable should remain registered");
+        assert_eq!(object.area_placeable_context_overlaps, 1);
+        assert_eq!(object.area_static_identity_conflicts, 0);
+        assert_eq!(object.latest_area_static_identity_conflict, None);
+        assert_eq!(object.unresolved_area_static_identity_conflict, None);
+        assert!(
+            registry
+                .unresolved_area_static_placeable_conflict_snapshot_for_record(0x09, object_id)
+                .is_none(),
+            "light provenance alone must not create a static conflict snapshot"
         );
     }
 
