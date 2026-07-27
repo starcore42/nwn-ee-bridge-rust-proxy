@@ -135,7 +135,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
             ) {
                 Some(summary) => {
                     observe_quickbar_stream_probe_summary(state, &summary);
-                    if !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary) {
+                    if !quickbar::rewrite_summary_needs_more_quickbar_stream_bytes(&summary) {
                         return Ok(None);
                     }
                     fragment_wait = true;
@@ -146,6 +146,13 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                         fragment_size = summary.fragment_size,
                         final_cursor = summary.final_cursor,
                         trailing_read_bytes = summary.trailing_read_bytes,
+                        fragment_declared_final_bits =
+                            summary.fragment_ownership.declared_final_bits,
+                        fragment_consumed_bits = summary.fragment_ownership.consumed_bits,
+                        fragment_consumed_bytes = summary.fragment_ownership.consumed_bytes,
+                        fragment_compact_fallback_items =
+                            summary.fragment_ownership.compact_fallback_items,
+                        fragment_tail_exact = summary.fragment_ownership.exact_tail,
                         slot_records_owned = summary.slot_records_owned,
                         spells_preserved = summary.spells_preserved,
                         general_buttons_preserved = summary.general_buttons_preserved,
@@ -276,11 +283,8 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         let should_wait = rewrite
             .as_ref()
             .map(|summary| {
-                let claimable_minimum_stream =
-                    pending_chunks >= 3 && summary.trailing_read_bytes == 0;
-                quickbar::rewrite_summary_needs_more_quickbar_bytes(summary)
+                quickbar::rewrite_summary_needs_more_quickbar_stream_bytes(summary)
                     && under_wait_budget
-                    && !claimable_minimum_stream
             })
             .unwrap_or(under_wait_budget);
         if let Some(summary) = rewrite.as_ref() {
@@ -306,6 +310,26 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                 current_sequence = reassembly.first_sequence,
                 chunks,
                 buffered,
+                fragment_declared_final_bits = rewrite
+                    .as_ref()
+                    .map(|summary| summary.fragment_ownership.declared_final_bits)
+                    .unwrap_or(0),
+                fragment_consumed_bits = rewrite
+                    .as_ref()
+                    .map(|summary| summary.fragment_ownership.consumed_bits)
+                    .unwrap_or(0),
+                fragment_consumed_bytes = rewrite
+                    .as_ref()
+                    .map(|summary| summary.fragment_ownership.consumed_bytes)
+                    .unwrap_or(0),
+                fragment_compact_fallback_items = rewrite
+                    .as_ref()
+                    .map(|summary| summary.fragment_ownership.compact_fallback_items)
+                    .unwrap_or(0),
+                fragment_tail_exact = rewrite
+                    .as_ref()
+                    .map(|summary| summary.fragment_ownership.exact_tail)
+                    .unwrap_or(false),
                 "server GuiQuickbar_SetAllButtons continuation buffering continued"
             );
             return Ok(Some(emit_family_packets_with_interleaved(

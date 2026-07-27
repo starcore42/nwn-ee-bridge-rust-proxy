@@ -1057,10 +1057,12 @@ fn quickbar_candidate_end_claims_complete_unit(
     let Some(payload) = bytes.get(offset..end) else {
         return false;
     };
+    let require_exact_direct_fragment_tail = end == bytes.len();
     quickbar_payload_claims_complete_unit(
         payload,
         quickbar_materialization,
         quickbar_stream_probe_summary,
+        require_exact_direct_fragment_tail,
     ) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
 }
 
@@ -1068,6 +1070,7 @@ fn quickbar_payload_claims_complete_unit(
     payload: &[u8],
     quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
     quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
+    require_exact_direct_fragment_tail: bool,
 ) -> bool {
     if quickbar::ee_set_all_buttons_payload_shape_valid(payload) {
         return true;
@@ -1084,6 +1087,7 @@ fn quickbar_payload_claims_complete_unit(
             payload,
             quickbar_materialization,
             quickbar_stream_probe_summary,
+            require_exact_direct_fragment_tail,
         );
     }
 
@@ -1103,6 +1107,7 @@ fn quickbar_payload_claims_complete_unit(
         payload,
         quickbar_materialization,
         quickbar_stream_probe_summary,
+        require_exact_direct_fragment_tail,
     )
 }
 
@@ -1110,6 +1115,7 @@ fn direct_quickbar_payload_claims_complete_unit(
     payload: &[u8],
     quickbar_materialization: Option<&quickbar::QuickbarMaterializationContext<'_>>,
     quickbar_stream_probe_summary: &mut Option<quickbar::QuickbarRewriteSummary>,
+    require_exact_fragment_tail: bool,
 ) -> bool {
     let mut probe = payload.to_vec();
     let Some(summary) =
@@ -1121,8 +1127,11 @@ fn direct_quickbar_payload_claims_complete_unit(
         return false;
     };
     *quickbar_stream_probe_summary = Some(summary.clone());
-    !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
-        && quickbar::ee_set_all_buttons_payload_shape_valid(&probe)
+    !(if require_exact_fragment_tail {
+        quickbar::rewrite_summary_needs_more_quickbar_stream_bytes(&summary)
+    } else {
+        quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
+    }) && quickbar::ee_set_all_buttons_payload_shape_valid(&probe)
 }
 
 fn focused_client_quickbar_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -1417,6 +1426,42 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quickbar_fragment_prefix_at_buffer_end_stays_pending_until_exact_tail() {
+        let full =
+            include_bytes!("../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin");
+        let fragment_start = u32::from_le_bytes(
+            full.get(3..7)
+                .expect("fixture should carry its CNW declared offset")
+                .try_into()
+                .expect("declared offset is one DWORD"),
+        ) as usize;
+        assert!(fragment_start < full.len());
+        let prefix = &full[..fragment_start + 1];
+        let mut prefix_summary = None;
+
+        assert!(
+            !direct_quickbar_payload_claims_complete_unit(prefix, None, &mut prefix_summary, true,),
+            "a semantic-looking fragment prefix at the current buffer end is not a complete unit"
+        );
+        let prefix_summary =
+            prefix_summary.expect("the prefix should remain available as diagnostic evidence");
+        assert!(!prefix_summary.fragment_ownership.exact_tail);
+        assert!(prefix_summary.fragment_ownership.compact_fallback_items > 0);
+
+        let mut full_summary = None;
+        assert!(
+            direct_quickbar_payload_claims_complete_unit(full, None, &mut full_summary, true,),
+            "the exact fragment tail should complete the same unit"
+        );
+        assert!(
+            full_summary
+                .expect("the exact quickbar should expose its typed summary")
+                .fragment_ownership
+                .exact_tail
+        );
+    }
 
     #[test]
     fn splits_client_and_server_status_no_body_messages() {

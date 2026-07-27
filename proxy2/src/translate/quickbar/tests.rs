@@ -425,6 +425,26 @@ fn truncated_fragment_probe_reports_compact_fallback_ownership() {
         !summary.fragment_ownership.exact_tail,
         "a transport prefix must not be misreported as exact decompile-owned fragment exhaustion"
     );
+    assert!(
+        rewrite_summary_needs_more_quickbar_stream_bytes(&summary),
+        "a byte-complete body with an incomplete BOOL tail must keep waiting in stream context"
+    );
+}
+
+#[test]
+fn complete_fragment_tail_ends_quickbar_stream_wait() {
+    let mut payload =
+        include_bytes!("../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin")
+            .to_vec();
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("the full quickbar fixture should remain semantically owned");
+
+    assert!(summary.fragment_ownership.exact_tail);
+    assert!(
+        !rewrite_summary_needs_more_quickbar_stream_bytes(&summary),
+        "the exact MSB-first fragment cursor should release the completed stream"
+    );
 }
 
 #[test]

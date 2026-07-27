@@ -58,6 +58,7 @@ pub(crate) use facade::{
     normalize_and_rewrite_quickbar_payload_with_context_for_stream_probe_if_possible,
     quickbar_has_structurally_plausible_cnw_declared,
     rewrite_simple_quickbar_payload_with_context_for_stream_probe_if_possible,
+    rewrite_summary_needs_more_quickbar_stream_bytes,
 };
 pub(crate) use model::{
     QuickbarItemMaterializationProof, QuickbarItemMaterializationStatus,

@@ -5914,7 +5914,7 @@ impl UiState {
         summary: &QuickbarRewriteSummary,
         materialization_context: InventoryItemContextSummary,
     ) -> bool {
-        if crate::translate::quickbar::rewrite_summary_needs_more_quickbar_bytes(summary) {
+        if crate::translate::quickbar::rewrite_summary_needs_more_quickbar_stream_bytes(summary) {
             return false;
         }
         let Some(profile) = summary.validated_slot_profile else {
@@ -10246,6 +10246,7 @@ mod tests {
         profile: Option<QuickbarValidatedSlotProfile>,
         trailing_read_bytes: usize,
         fragment_size: usize,
+        fragment_tail_exact: bool,
     ) -> QuickbarRewriteSummary {
         QuickbarRewriteSummary {
             old_payload_length: 1523,
@@ -10254,8 +10255,10 @@ mod tests {
             new_declared: 1702,
             read_size: 1494,
             fragment_size,
-            fragment_ownership:
-                crate::translate::quickbar::QuickbarFragmentOwnershipSummary::default(),
+            fragment_ownership: crate::translate::quickbar::QuickbarFragmentOwnershipSummary {
+                exact_tail: fragment_tail_exact,
+                ..Default::default()
+            },
             final_cursor: 1494usize.saturating_sub(trailing_read_bytes),
             trailing_read_bytes,
             direct_opcode_stream: false,
@@ -10316,7 +10319,7 @@ mod tests {
             first_page_visible_slots: 5,
             ..Default::default()
         };
-        let summary = stream_probe_rewrite_summary_with_profile(Some(profile), 0, 22);
+        let summary = stream_probe_rewrite_summary_with_profile(Some(profile), 0, 22, true);
         let context = InventoryItemContextSummary {
             direct_item_proof_objects: 1,
             ..Default::default()
@@ -10351,7 +10354,7 @@ mod tests {
             first_blank_slot: Some(0),
             ..Default::default()
         };
-        let summary = stream_probe_rewrite_summary_with_profile(Some(profile), 11, 0);
+        let summary = stream_probe_rewrite_summary_with_profile(Some(profile), 11, 0, false);
 
         ui.observe_quickbar_stream_probe(&summary, InventoryItemContextSummary::default());
         assert!(!ui.promote_quickbar_stream_probe_profile(
@@ -10365,6 +10368,28 @@ mod tests {
             ui.quickbar_item_refresh_harness_idle_reason(),
             "stream_probe_quickbar_item_candidates_without_committed_profile"
         );
+    }
+
+    #[test]
+    fn stream_probe_quickbar_profile_with_fragment_prefix_does_not_promote() {
+        let mut ui = UiState::default();
+        let profile = QuickbarValidatedSlotProfile {
+            slot_records: 36,
+            item_slots: 6,
+            spell_slots: 15,
+            blank_slots: 15,
+            first_item_slot: Some(0),
+            ..Default::default()
+        };
+        let summary = stream_probe_rewrite_summary_with_profile(Some(profile), 0, 7, false);
+
+        ui.observe_quickbar_stream_probe(&summary, InventoryItemContextSummary::default());
+        assert!(!ui.promote_quickbar_stream_probe_profile(
+            &summary,
+            InventoryItemContextSummary::default()
+        ));
+        assert_eq!(ui.quickbar_packets, 0);
+        assert_eq!(ui.last_committed_quickbar_profile, None);
     }
 
     #[test]

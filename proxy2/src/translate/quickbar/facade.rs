@@ -203,6 +203,26 @@ pub fn rewrite_summary_needs_more_quickbar_bytes(summary: &QuickbarRewriteSummar
     summary.new_payload_length < MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES
 }
 
+pub(crate) fn rewrite_summary_needs_more_quickbar_stream_bytes(
+    summary: &QuickbarRewriteSummary,
+) -> bool {
+    if rewrite_summary_needs_more_quickbar_bytes(summary) {
+        return true;
+    }
+
+    // Diamond `sub_469FD0` and EE `sub_14079DB00` both execute the fixed
+    // 36-slot loop through the shared CNWMessage reader. Every case-1 item
+    // consumes its presence BOOLs and guarded body in that same MSB-first
+    // fragment cursor. A fully consumed byte-side quickbar body therefore does
+    // not prove that a zlib/transport prefix also contains the complete BOOL
+    // tail. Only the exact tail verdict proves both storage exhaustion and the
+    // three-bit final-cursor count. Direct opcode streams and byte-only bars
+    // have no separate fragment tail to await.
+    !summary.direct_opcode_stream
+        && summary.fragment_size != 0
+        && !summary.fragment_ownership.exact_tail
+}
+
 fn quickbar_summary_has_complete_decompile_owned_slot_shape(
     summary: &QuickbarRewriteSummary,
 ) -> bool {
