@@ -178,13 +178,19 @@ struct LiveObjectExactClaimTraceSummary {
     inventory_owner_feature25_first_object_refs: u32,
     inventory_owner_feature25_first_materialized_object_refs: u32,
     inventory_owner_feature25_first_unmaterialized_object_refs: u32,
+    inventory_owner_feature25_first_item_proven_object_refs: u32,
+    inventory_owner_feature25_first_active_without_item_proof_object_refs: u32,
     inventory_owner_feature25_second_object_refs: u32,
     inventory_owner_feature25_second_materialized_object_refs: u32,
     inventory_owner_feature25_second_unmaterialized_object_refs: u32,
+    inventory_owner_feature25_second_item_proven_object_refs: u32,
+    inventory_owner_feature25_second_active_without_item_proof_object_refs: u32,
     inventory_owner_feature25_second_fragment_bits: u32,
     inventory_owner_feature25_legacy_tail_object_refs: u32,
     inventory_owner_feature25_legacy_tail_materialized_object_refs: u32,
     inventory_owner_feature25_legacy_tail_unmaterialized_object_refs: u32,
+    inventory_owner_feature25_legacy_tail_item_proven_object_refs: u32,
+    inventory_owner_feature25_legacy_tail_active_without_item_proof_object_refs: u32,
     inventory_owner_branch_4000_state_stream_mentions: u32,
     inventory_owner_branch_8000_fixed_scalar_mentions: u32,
     live_gui_records: u32,
@@ -265,8 +271,10 @@ impl LiveObjectExactClaimTraceSummary {
             ..Self::default()
         };
 
-        let mut materialized_in_payload = BTreeSet::<u32>::new();
-        materialized_in_payload.extend(claim.materialized_item_object_ids.iter().copied());
+        let mut active_in_payload = BTreeSet::<u32>::new();
+        active_in_payload.extend(claim.materialized_item_object_ids.iter().copied());
+        let mut materialized_items_in_payload = BTreeSet::<u32>::new();
+        materialized_items_in_payload.extend(claim.materialized_item_object_ids.iter().copied());
 
         for mention in &claim.mentions {
             if mention.requires_materialized_object {
@@ -435,9 +443,9 @@ impl LiveObjectExactClaimTraceSummary {
                                 .saturating_add(1);
                         }
                     }
-                    if feature25_object_id_materialized_for_trace(
+                    if feature25_object_id_active_for_trace(
                         inventory.owner_id,
-                        &materialized_in_payload,
+                        &active_in_payload,
                         &mut materialized,
                     ) {
                         trace.inventory_owner_feature25_materialized_owner_mentions = trace
@@ -453,35 +461,49 @@ impl LiveObjectExactClaimTraceSummary {
                         .saturating_add(
                             u32::try_from(feature25.first_object_ids.len()).unwrap_or(u32::MAX),
                         );
-                    let (materialized_refs, unmaterialized_refs) =
-                        count_feature25_object_ref_materialization_for_trace(
-                            &feature25.first_object_ids,
-                            &materialized_in_payload,
-                            &mut materialized,
-                        );
+                    let classification = count_feature25_object_ref_materialization_for_trace(
+                        &feature25.first_object_ids,
+                        &active_in_payload,
+                        &materialized_items_in_payload,
+                        &mut materialized,
+                    );
                     trace.inventory_owner_feature25_first_materialized_object_refs = trace
                         .inventory_owner_feature25_first_materialized_object_refs
-                        .saturating_add(materialized_refs);
+                        .saturating_add(classification.materialized_refs);
                     trace.inventory_owner_feature25_first_unmaterialized_object_refs = trace
                         .inventory_owner_feature25_first_unmaterialized_object_refs
-                        .saturating_add(unmaterialized_refs);
+                        .saturating_add(classification.unmaterialized_refs);
+                    trace.inventory_owner_feature25_first_item_proven_object_refs = trace
+                        .inventory_owner_feature25_first_item_proven_object_refs
+                        .saturating_add(classification.item_proven_refs);
+                    trace.inventory_owner_feature25_first_active_without_item_proof_object_refs =
+                        trace
+                            .inventory_owner_feature25_first_active_without_item_proof_object_refs
+                            .saturating_add(classification.active_without_item_proof_refs);
                     trace.inventory_owner_feature25_second_object_refs = trace
                         .inventory_owner_feature25_second_object_refs
                         .saturating_add(
                             u32::try_from(feature25.second_object_ids.len()).unwrap_or(u32::MAX),
                         );
-                    let (materialized_refs, unmaterialized_refs) =
-                        count_feature25_object_ref_materialization_for_trace(
-                            &feature25.second_object_ids,
-                            &materialized_in_payload,
-                            &mut materialized,
-                        );
+                    let classification = count_feature25_object_ref_materialization_for_trace(
+                        &feature25.second_object_ids,
+                        &active_in_payload,
+                        &materialized_items_in_payload,
+                        &mut materialized,
+                    );
                     trace.inventory_owner_feature25_second_materialized_object_refs = trace
                         .inventory_owner_feature25_second_materialized_object_refs
-                        .saturating_add(materialized_refs);
+                        .saturating_add(classification.materialized_refs);
                     trace.inventory_owner_feature25_second_unmaterialized_object_refs = trace
                         .inventory_owner_feature25_second_unmaterialized_object_refs
-                        .saturating_add(unmaterialized_refs);
+                        .saturating_add(classification.unmaterialized_refs);
+                    trace.inventory_owner_feature25_second_item_proven_object_refs = trace
+                        .inventory_owner_feature25_second_item_proven_object_refs
+                        .saturating_add(classification.item_proven_refs);
+                    trace.inventory_owner_feature25_second_active_without_item_proof_object_refs =
+                        trace
+                            .inventory_owner_feature25_second_active_without_item_proof_object_refs
+                            .saturating_add(classification.active_without_item_proof_refs);
                     trace.inventory_owner_feature25_second_fragment_bits = trace
                         .inventory_owner_feature25_second_fragment_bits
                         .saturating_add(
@@ -498,18 +520,26 @@ impl LiveObjectExactClaimTraceSummary {
                             u32::try_from(feature25.legacy_tail_object_ids.len())
                                 .unwrap_or(u32::MAX),
                         );
-                    let (materialized_refs, unmaterialized_refs) =
-                        count_feature25_object_ref_materialization_for_trace(
-                            &feature25.legacy_tail_object_ids,
-                            &materialized_in_payload,
-                            &mut materialized,
-                        );
+                    let classification = count_feature25_object_ref_materialization_for_trace(
+                        &feature25.legacy_tail_object_ids,
+                        &active_in_payload,
+                        &materialized_items_in_payload,
+                        &mut materialized,
+                    );
                     trace.inventory_owner_feature25_legacy_tail_materialized_object_refs = trace
                         .inventory_owner_feature25_legacy_tail_materialized_object_refs
-                        .saturating_add(materialized_refs);
+                        .saturating_add(classification.materialized_refs);
                     trace.inventory_owner_feature25_legacy_tail_unmaterialized_object_refs = trace
                         .inventory_owner_feature25_legacy_tail_unmaterialized_object_refs
-                        .saturating_add(unmaterialized_refs);
+                        .saturating_add(classification.unmaterialized_refs);
+                    trace.inventory_owner_feature25_legacy_tail_item_proven_object_refs = trace
+                        .inventory_owner_feature25_legacy_tail_item_proven_object_refs
+                        .saturating_add(classification.item_proven_refs);
+                    trace
+                        .inventory_owner_feature25_legacy_tail_active_without_item_proof_object_refs =
+                        trace
+                            .inventory_owner_feature25_legacy_tail_active_without_item_proof_object_refs
+                            .saturating_add(classification.active_without_item_proof_refs);
                 }
                 if branches.bit_4000_state_stream {
                     trace.inventory_owner_branch_4000_state_stream_mentions = trace
@@ -633,10 +663,16 @@ impl LiveObjectExactClaimTraceSummary {
             }
             match mention.opcode {
                 b'A' => {
-                    materialized_in_payload.insert(mention.object_id);
+                    active_in_payload.insert(mention.object_id);
+                    if mention.object_type == LIVE_OBJECT_ITEM_TYPE {
+                        materialized_items_in_payload.insert(mention.object_id);
+                    }
                 }
                 b'D' => {
-                    materialized_in_payload.remove(&mention.object_id);
+                    active_in_payload.remove(&mention.object_id);
+                    if mention.object_type == LIVE_OBJECT_ITEM_TYPE {
+                        materialized_items_in_payload.remove(&mention.object_id);
+                    }
                 }
                 _ => {}
             }
@@ -646,39 +682,76 @@ impl LiveObjectExactClaimTraceSummary {
     }
 }
 
-fn feature25_object_id_materialized_for_trace<F>(
+fn feature25_object_id_active_for_trace<F>(
     object_id: u32,
-    materialized_in_payload: &BTreeSet<u32>,
+    active_in_payload: &BTreeSet<u32>,
     materialized: &mut F,
 ) -> bool
 where
     F: FnMut(u8, u32) -> bool,
 {
-    materialized_in_payload.contains(&object_id) || materialized(0, object_id)
+    // Inventory owner rows and Feature-25 list entries carry no independent
+    // object-type marker, so their generic lifecycle lookup remains untyped.
+    active_in_payload.contains(&object_id) || materialized(0, object_id)
+}
+
+fn feature25_item_ref_materialized_for_trace<F>(
+    object_id: u32,
+    materialized_items_in_payload: &BTreeSet<u32>,
+    materialized: &mut F,
+) -> bool
+where
+    F: FnMut(u8, u32) -> bool,
+{
+    materialized_items_in_payload.contains(&object_id)
+        || materialized(LIVE_OBJECT_ITEM_TYPE, object_id)
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+struct Feature25ObjectRefMaterializationTraceSummary {
+    materialized_refs: u32,
+    unmaterialized_refs: u32,
+    item_proven_refs: u32,
+    active_without_item_proof_refs: u32,
 }
 
 fn count_feature25_object_ref_materialization_for_trace<F>(
     object_ids: &[u32],
-    materialized_in_payload: &BTreeSet<u32>,
+    active_in_payload: &BTreeSet<u32>,
+    materialized_items_in_payload: &BTreeSet<u32>,
     materialized: &mut F,
-) -> (u32, u32)
+) -> Feature25ObjectRefMaterializationTraceSummary
 where
     F: FnMut(u8, u32) -> bool,
 {
-    let mut materialized_refs = 0_u32;
-    let mut unmaterialized_refs = 0_u32;
+    // Diamond `sub_455940` at `0x457EDC` and EE `sub_1407B4F70` at
+    // `0x1407B79E6` remove first-list OBJECTIDs from, then add/update
+    // second-list OBJECTID + three-BOOL nodes in, the owner's visibility-node
+    // array. Those bare OBJECTIDs are not item-typed on the wire. Keep the
+    // generic active/materialized result and query type 0x06 independently;
+    // the latter is evidence about a ref, never an assumption about the list.
+    let mut summary = Feature25ObjectRefMaterializationTraceSummary::default();
     for object_id in object_ids {
-        if feature25_object_id_materialized_for_trace(
+        let active_or_materialized =
+            feature25_object_id_active_for_trace(*object_id, active_in_payload, materialized);
+        let item_proven = feature25_item_ref_materialized_for_trace(
             *object_id,
-            materialized_in_payload,
+            materialized_items_in_payload,
             materialized,
-        ) {
-            materialized_refs = materialized_refs.saturating_add(1);
+        );
+        if active_or_materialized {
+            summary.materialized_refs = summary.materialized_refs.saturating_add(1);
         } else {
-            unmaterialized_refs = unmaterialized_refs.saturating_add(1);
+            summary.unmaterialized_refs = summary.unmaterialized_refs.saturating_add(1);
+        }
+        if item_proven {
+            summary.item_proven_refs = summary.item_proven_refs.saturating_add(1);
+        } else if active_or_materialized {
+            summary.active_without_item_proof_refs =
+                summary.active_without_item_proof_refs.saturating_add(1);
         }
     }
-    (materialized_refs, unmaterialized_refs)
+    summary
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1704,12 +1777,20 @@ fn trace_live_object_exact_claim_summary(
             trace.inventory_owner_feature25_first_materialized_object_refs,
         inventory_owner_feature25_first_unmaterialized_object_refs =
             trace.inventory_owner_feature25_first_unmaterialized_object_refs,
+        inventory_owner_feature25_first_item_proven_object_refs =
+            trace.inventory_owner_feature25_first_item_proven_object_refs,
+        inventory_owner_feature25_first_active_without_item_proof_object_refs =
+            trace.inventory_owner_feature25_first_active_without_item_proof_object_refs,
         inventory_owner_feature25_second_object_refs =
             trace.inventory_owner_feature25_second_object_refs,
         inventory_owner_feature25_second_materialized_object_refs =
             trace.inventory_owner_feature25_second_materialized_object_refs,
         inventory_owner_feature25_second_unmaterialized_object_refs =
             trace.inventory_owner_feature25_second_unmaterialized_object_refs,
+        inventory_owner_feature25_second_item_proven_object_refs =
+            trace.inventory_owner_feature25_second_item_proven_object_refs,
+        inventory_owner_feature25_second_active_without_item_proof_object_refs =
+            trace.inventory_owner_feature25_second_active_without_item_proof_object_refs,
         inventory_owner_feature25_second_fragment_bits =
             trace.inventory_owner_feature25_second_fragment_bits,
         inventory_owner_feature25_legacy_tail_object_refs =
@@ -1718,6 +1799,10 @@ fn trace_live_object_exact_claim_summary(
             trace.inventory_owner_feature25_legacy_tail_materialized_object_refs,
         inventory_owner_feature25_legacy_tail_unmaterialized_object_refs =
             trace.inventory_owner_feature25_legacy_tail_unmaterialized_object_refs,
+        inventory_owner_feature25_legacy_tail_item_proven_object_refs =
+            trace.inventory_owner_feature25_legacy_tail_item_proven_object_refs,
+        inventory_owner_feature25_legacy_tail_active_without_item_proof_object_refs =
+            trace.inventory_owner_feature25_legacy_tail_active_without_item_proof_object_refs,
         inventory_owner_branch_4000_state_stream_mentions =
             trace.inventory_owner_branch_4000_state_stream_mentions,
         inventory_owner_branch_8000_fixed_scalar_mentions =
@@ -6165,16 +6250,130 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.other_object_type_mentions, 0);
         assert_eq!(trace.materialized_item_object_ids, 2);
 
-        let registry_trace =
-            LiveObjectExactClaimTraceSummary::from_claim_with_materialization(&claim, |_, id| {
-                id == 0xFFFF_FFEC || id == 0x8000_0102
-            });
+        let registry_trace = LiveObjectExactClaimTraceSummary::from_claim_with_materialization(
+            &claim,
+            |object_type, id| {
+                (object_type == 0 && matches!(id, 0xFFFF_FFEC | 0x8000_0102))
+                    || (object_type == LIVE_OBJECT_ITEM_TYPE && id == 0x8000_0102)
+            },
+        );
         assert_eq!(
             registry_trace.inventory_owner_feature25_materialized_owner_mentions,
             1
         );
         assert_eq!(
             registry_trace.inventory_owner_feature25_legacy_tail_materialized_object_refs,
+            1
+        );
+    }
+
+    #[test]
+    fn feature25_trace_separates_generic_lifecycle_from_item_proof() {
+        const OWNER_ID: u32 = 0x8000_0200;
+        const ACTIVE_CREATURE_ID: u32 = 0x8000_0201;
+        const TYPED_ITEM_ID: u32 = 0x8000_0202;
+        const GUI_MATERIALIZED_ITEM_ID: u32 = 0x8000_0203;
+        const UNKNOWN_ID: u32 = 0x8000_0204;
+
+        let refs = vec![
+            ACTIVE_CREATURE_ID,
+            TYPED_ITEM_ID,
+            GUI_MATERIALIZED_ITEM_ID,
+            UNKNOWN_ID,
+        ];
+
+        let active_creature = mention(b'A', LIVE_OBJECT_CREATURE_TYPE, ACTIVE_CREATURE_ID);
+        let typed_item = mention(b'A', LIVE_OBJECT_ITEM_TYPE, TYPED_ITEM_ID);
+        let mut inventory = mention(b'I', 0, OWNER_ID);
+        inventory.requires_materialized_object = false;
+        inventory.inventory_owner = Some(LiveObjectInventoryOwnerClaim {
+            owner_id: OWNER_ID,
+            mask: 0x2000,
+            mask_branches: LiveObjectInventoryMaskBranches::from_mask(0x2000),
+            feature25: Some(LiveObjectInventoryFeature25Claim {
+                branch_offset: 12,
+                block_end: 64,
+                first_count: 4,
+                first_object_ids: refs.clone(),
+                second_count: 4,
+                second_object_ids: refs.clone(),
+                second_fragment_bit_start: 3,
+                second_fragment_bit_end: 15,
+                legacy_tail_object_ids: refs,
+            }),
+            fragment_bits: 12,
+            bit_cursor: 3,
+            next_bit_cursor: 15,
+        });
+        let claim = live_update::ClaimSummary {
+            records_examined: 3,
+            add_records: 2,
+            inventory_records: 1,
+            materialized_item_object_ids: vec![GUI_MATERIALIZED_ITEM_ID],
+            mentions: vec![active_creature, typed_item, inventory],
+            ..Default::default()
+        };
+
+        let trace = LiveObjectExactClaimTraceSummary::from_claim_with_materialization(
+            &claim,
+            |object_type, object_id| object_type == 0 && object_id == OWNER_ID,
+        );
+
+        assert_eq!(
+            trace.inventory_owner_feature25_materialized_owner_mentions, 1,
+            "the inventory owner retains its untyped lifecycle lookup"
+        );
+        assert_eq!(trace.inventory_owner_feature25_first_object_refs, 4);
+        assert_eq!(
+            trace.inventory_owner_feature25_first_materialized_object_refs, 3,
+            "generic lifecycle retains the active creature plus both independently proven items"
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_first_unmaterialized_object_refs, 1,
+            "the unknown first-list ref remains unmaterialized"
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_first_item_proven_object_refs, 2,
+            "the typed item add and focused GUI item-create id have independent item proof"
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_first_active_without_item_proof_object_refs, 1,
+            "the active creature is visible without being relabelled as an item"
+        );
+
+        assert_eq!(trace.inventory_owner_feature25_second_object_refs, 4);
+        assert_eq!(
+            trace.inventory_owner_feature25_second_materialized_object_refs,
+            3
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_second_unmaterialized_object_refs,
+            1
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_second_item_proven_object_refs,
+            2
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_second_active_without_item_proof_object_refs,
+            1
+        );
+
+        assert_eq!(trace.inventory_owner_feature25_legacy_tail_object_refs, 4);
+        assert_eq!(
+            trace.inventory_owner_feature25_legacy_tail_materialized_object_refs,
+            3
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_legacy_tail_unmaterialized_object_refs,
+            1
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_legacy_tail_item_proven_object_refs,
+            2
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_legacy_tail_active_without_item_proof_object_refs,
             1
         );
     }
