@@ -107,22 +107,27 @@ fn observe_committed_quickbar_stream_payload(
     summary: Option<&quickbar::QuickbarRewriteSummary>,
 ) {
     let proof = VerifiedProof::family(VerifiedFamily::GuiQuickbar);
-    crate::translate::semantic::observe_verified_payload_with_area_context(
-        &mut state.semantic,
-        crate::packet::Direction::ServerToClient,
-        &proof,
-        payload,
-        Some(&state.area_context.latest_area_placeables),
-    );
     if let Some(summary) = summary {
         let materialization_context = state.semantic.objects.inventory_item_context_summary();
-        let remembered = state
-            .semantic
-            .ui
-            .remember_committed_quickbar_stream_probe(summary, materialization_context);
-        debug_assert!(
-            remembered,
-            "a committed quickbar stream payload must retain exact slot/signature ownership"
+        let probes = [crate::translate::semantic::CommittedQuickbarUnitProbe {
+            summary: summary.clone(),
+            materialization_context,
+        }];
+        let _ = crate::translate::semantic::observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
+            &mut state.semantic,
+            crate::packet::Direction::ServerToClient,
+            &proof,
+            payload,
+            Some(&state.area_context.latest_area_placeables),
+            &probes,
+        );
+    } else {
+        crate::translate::semantic::observe_verified_payload_with_area_context(
+            &mut state.semantic,
+            crate::packet::Direction::ServerToClient,
+            &proof,
+            payload,
+            Some(&state.area_context.latest_area_placeables),
         );
     }
     super::update_quickbar_item_refresh_hint(state);
@@ -734,6 +739,57 @@ mod tests {
                 .ui
                 .quickbar_item_refresh_harness_idle_reason(),
             "no_post_committed_item_context"
+        );
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn committed_buffered_quickbar_stream_promotes_exact_ee_item_bodies() {
+        let mut state = SessionState::new(
+            module_resources::ModuleResourceRuntime::default(),
+            true,
+            None,
+        );
+        let mut payload = include_bytes!(
+            "../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin"
+        )
+        .to_vec();
+        let summary = rewrite_quickbar_payload_for_stream(
+            &mut payload,
+            Some(&state.semantic.objects),
+            QuickbarRewriteMode::Committed,
+        )
+        .expect("the complete buffered Diamond quickbar should emit exact EE shape");
+        let first_item_object_id =
+            quickbar::validated_set_all_buttons_materialized_item_object_ids(&payload)
+                .and_then(|object_ids| object_ids.first().copied())
+                .expect("the emitted quickbar should contain a typed item body");
+
+        observe_committed_quickbar_stream_payload(&mut state, &payload, Some(&summary));
+
+        assert_eq!(
+            state
+                .semantic
+                .objects
+                .inventory_item_object_status(first_item_object_id),
+            crate::translate::semantic::InventoryItemObjectStatus::Proven(
+                crate::translate::semantic::InventoryItemObjectProof::ActiveObject
+            )
+        );
+        assert!(
+            state
+                .semantic
+                .ui
+                .last_committed_quickbar_stream_probe
+                .is_some(),
+            "the buffered path must bind the same committed probe that authorizes item materialization"
+        );
+        assert!(
+            state
+                .semantic
+                .ui
+                .post_committed_quickbar_item_refresh_pending,
+            "newly materialized item ids should bind to their exact slots for later GQ state"
         );
     }
 

@@ -1128,9 +1128,6 @@ fn rewrite_split_inflated_payload_for_ee(
                     }
                 }
                 rewrite.unit_families.extend(unit_families);
-                rewrite
-                    .committed_quickbar_probes
-                    .extend(unit_committed_quickbar_probes);
                 if unit_rewrite.area_rewrite.is_some() {
                     rewrite.area_rewrite = unit_rewrite.area_rewrite;
                     split_area_context = rewrite
@@ -1147,7 +1144,11 @@ fn rewrite_split_inflated_payload_for_ee(
                     unit_family,
                     &unit_payload,
                     split_area_context.as_ref(),
+                    &unit_committed_quickbar_probes,
                 );
+                rewrite
+                    .committed_quickbar_probes
+                    .extend(unit_committed_quickbar_probes);
                 translated_units.push(gameplay_stream::TranslatedGameplayUnit::Owned {
                     family: unit_family,
                     bytes: unit_payload,
@@ -1193,16 +1194,18 @@ fn observe_split_unit_shadow_state(
     family: VerifiedFamily,
     payload: &[u8],
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    committed_quickbar_probes: &[semantic::CommittedQuickbarUnitProbe],
 ) {
     let Some(shadow_state) = split_shadow_state.as_mut() else {
         return;
     };
-    crate::translate::semantic::observe_verified_payload_with_area_context(
+    let _ = crate::translate::semantic::observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
         shadow_state,
         crate::packet::Direction::ServerToClient,
         &VerifiedProof::family(family),
         payload,
         latest_area_placeables,
+        committed_quickbar_probes,
     );
 }
 
@@ -6413,6 +6416,7 @@ mod split_shadow_state_tests {
             VerifiedFamily::AreaClientArea,
             &synthetic_verified_area_client_area_payload(),
             None,
+            &[],
         );
 
         let shadow_registry = &split_shadow_state
@@ -6430,6 +6434,58 @@ mod split_shadow_state_tests {
                 semantic::InventoryItemObjectProof::ActiveObject
             ),
             "split rewriting must shadow state locally; accepted-payload reduction owns the real session update"
+        );
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn split_shadow_state_promotes_committed_quickbar_items_for_following_units() {
+        let registry = semantic::ObjectRegistry::default();
+        let mut payload = include_bytes!(
+            "../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin"
+        )
+        .to_vec();
+        let summary =
+            crate::translate::quickbar::rewrite_simple_quickbar_payload_if_possible(&mut payload)
+                .expect("the complete Diamond quickbar should emit exact EE shape");
+        let first_item_object_id =
+            crate::translate::quickbar::validated_set_all_buttons_materialized_item_object_ids(
+                &payload,
+            )
+            .and_then(|object_ids| object_ids.first().copied())
+            .expect("the emitted quickbar should contain a typed item body");
+        let probes = [semantic::CommittedQuickbarUnitProbe {
+            summary,
+            materialization_context: registry.inventory_item_context_summary(),
+        }];
+        let mut split_shadow_state = Some(semantic::SemanticSessionState {
+            objects: registry.clone(),
+            ..semantic::SemanticSessionState::default()
+        });
+
+        observe_split_unit_shadow_state(
+            &mut split_shadow_state,
+            VerifiedFamily::GuiQuickbar,
+            &payload,
+            None,
+            &probes,
+        );
+
+        assert_eq!(
+            split_shadow_state
+                .as_ref()
+                .expect("shadow state should remain available")
+                .objects
+                .inventory_item_object_status(first_item_object_id),
+            semantic::InventoryItemObjectStatus::Proven(
+                semantic::InventoryItemObjectProof::ActiveObject
+            ),
+            "a following coalesced unit must see items the EE reader materialized in the preceding committed quickbar unit"
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(first_item_object_id),
+            semantic::InventoryItemObjectStatus::Unknown,
+            "speculative split rewriting must not mutate the source registry"
         );
     }
 }

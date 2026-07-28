@@ -1912,6 +1912,84 @@ mod tests {
         );
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn oversized_deflated_rewrite_rolls_back_quickbar_item_materialization() {
+        let inflated = include_bytes!(
+            "../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin"
+        )
+        .to_vec();
+        let mut translated = inflated.clone();
+        crate::translate::quickbar::rewrite_simple_quickbar_payload_if_possible(&mut translated)
+            .expect("the complete Diamond quickbar should emit exact EE shape");
+        let first_item_object_id =
+            crate::translate::quickbar::validated_set_all_buttons_materialized_item_object_ids(
+                &translated,
+            )
+            .and_then(|object_ids| object_ids.first().copied())
+            .expect("the translated quickbar should contain a typed item body");
+        let compressed = deflate_zlib(&inflated).expect("item quickbar should deflate");
+        let payload_length = CNW_LENGTH_BYTES + compressed.len();
+        let mut record = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        record[0] = b'M';
+        write_be_u16(&mut record, 3, 54);
+        write_be_u16(&mut record, 5, 80);
+        record[7] = 0x04;
+        write_be_u16(&mut record, 8, 1);
+        write_be_u16(&mut record, 10, payload_length as u16);
+        record.extend_from_slice(&(inflated.len() as u32).to_le_bytes());
+        record.extend_from_slice(&compressed);
+        assert!(encode_legacy_m_crc(&mut record));
+        let deflated = DeflatedEnvelope {
+            inflated_length: inflated.len(),
+            compressed_length: compressed.len(),
+            plausible: true,
+        };
+        let mut state = SessionState::default();
+
+        let outcome = rewrite_coalesced_record_for_ee_with_payload_limit(
+            &record,
+            0x04,
+            None,
+            Some(&deflated),
+            payload_length,
+            &mut state,
+            54,
+            0,
+            80,
+            80,
+            0,
+            0,
+        )
+        .expect("forced oversized item quickbar rewrite should be consumed");
+
+        assert!(outcome.dropped);
+        assert_eq!(
+            state
+                .semantic
+                .objects
+                .inventory_item_object_status(first_item_object_id),
+            crate::translate::semantic::InventoryItemObjectStatus::Unknown,
+            "a rejected outer emit must restore pre-rewrite engine-facing item state"
+        );
+        assert_eq!(
+            state
+                .semantic
+                .objects
+                .inventory_item_context_summary()
+                .materialized_item_objects,
+            0
+        );
+        assert_eq!(state.semantic.ui.quickbar_packets, 0);
+        assert!(
+            state
+                .semantic
+                .ui
+                .last_committed_quickbar_stream_probe
+                .is_none()
+        );
+    }
+
     #[test]
     fn coalesced_stream_continuation_requires_known_proxy_owned_owner() {
         let record = [0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];

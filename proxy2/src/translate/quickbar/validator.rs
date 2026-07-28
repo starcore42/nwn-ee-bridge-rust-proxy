@@ -10,19 +10,56 @@ use super::*;
 /// visual-transform maps. The validator is therefore a post-translation proof,
 /// not a generic "known opcode" allow-list.
 pub(crate) fn ee_set_all_buttons_payload_shape_valid(payload: &[u8]) -> bool {
-    ee_set_all_buttons_slot_types_if_valid(payload).is_some()
+    ee_set_all_buttons_validation_if_valid(payload).is_some()
 }
 
 pub(crate) fn validated_set_all_buttons_slot_profile(
     payload: &[u8],
 ) -> Option<QuickbarValidatedSlotProfile> {
-    let slot_types = ee_set_all_buttons_slot_types_if_valid(payload)?;
-    Some(QuickbarValidatedSlotProfile::from_slot_types(&slot_types))
+    Some(validated_set_all_buttons_semantics(payload)?.0)
+}
+
+#[cfg(test)]
+pub(crate) fn validated_set_all_buttons_materialized_item_object_ids(
+    payload: &[u8],
+) -> Option<Vec<u32>> {
+    Some(validated_set_all_buttons_semantics(payload)?.1)
+}
+
+/// Returns the fixed-slot profile and every present primary/secondary item id
+/// in exact wire order after the emitted EE payload passes the complete byte
+/// and fragment-cursor validator.
+///
+/// Diamond `sub_469FD0` (`0x46A0D9..0x46A225`) reads the type-1 primary BOOL,
+/// OBJECTID, guarded body, registers the resulting client object, then reads
+/// the secondary BOOL/body. EE `sub_14079DB00` lines 2893879--2893993 and
+/// `sub_14079FAC0` preserve that order while adding the EE-only item fields.
+/// The returned ids are therefore engine-facing materialization facts only
+/// after the surrounding dispatcher binds this exact output to its committed
+/// rewrite probe; stream prefixes and speculative source parses never call it
+/// authoritatively.
+pub(crate) fn validated_set_all_buttons_semantics(
+    payload: &[u8],
+) -> Option<(QuickbarValidatedSlotProfile, Vec<u32>)> {
+    let validation = ee_set_all_buttons_validation_if_valid(payload)?;
+    Some((
+        QuickbarValidatedSlotProfile::from_slot_types(&validation.slot_types),
+        validation.materialized_item_object_ids,
+    ))
 }
 
 pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
     payload: &[u8],
 ) -> Option<Vec<u8>> {
+    Some(ee_set_all_buttons_validation_if_valid(payload)?.slot_types)
+}
+
+struct EeSetAllButtonsValidation {
+    slot_types: Vec<u8>,
+    materialized_item_object_ids: Vec<u32>,
+}
+
+fn ee_set_all_buttons_validation_if_valid(payload: &[u8]) -> Option<EeSetAllButtonsValidation> {
     let Some(high) = HighLevel::parse(payload) else {
         return None;
     };
@@ -73,6 +110,7 @@ pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
     reader.final_fragment_bits = final_fragment_bits;
 
     let mut slot_types = Vec::with_capacity(LEGACY_QUICKBAR_BUTTON_COUNT);
+    let mut materialized_item_object_ids = Vec::with_capacity(LEGACY_QUICKBAR_BUTTON_COUNT);
     for _slot in 0..LEGACY_QUICKBAR_BUTTON_COUNT {
         let Some(ty) = reader.read_byte() else {
             return None;
@@ -81,11 +119,15 @@ pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
         match ty {
             0 => {}
             1 => {
-                if !validate_ee_quickbar_item_object(&mut reader, true, model_types) {
-                    return None;
+                if let Some(object_id) =
+                    validate_ee_quickbar_item_object(&mut reader, true, model_types)?
+                {
+                    materialized_item_object_ids.push(object_id);
                 }
-                if !validate_ee_quickbar_item_object(&mut reader, false, model_types) {
-                    return None;
+                if let Some(object_id) =
+                    validate_ee_quickbar_item_object(&mut reader, false, model_types)?
+                {
+                    materialized_item_object_ids.push(object_id);
                 }
             }
             2 => {
@@ -116,7 +158,10 @@ pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
         && reader.final_fragment_bits == u8::try_from(consumed_fragment_bits % 8).unwrap_or(0)
         && quickbar_fragment_padding_zero(reader.fragments, consumed_fragment_bits)
     {
-        Some(slot_types)
+        Some(EeSetAllButtonsValidation {
+            slot_types,
+            materialized_item_object_ids,
+        })
     } else {
         None
     }
@@ -144,24 +189,19 @@ fn validate_ee_quickbar_item_object(
     reader: &mut QuickbarPacketReader<'_>,
     include_int_param: bool,
     model_types: &[i8],
-) -> bool {
-    let Some(present) = reader.read_bit() else {
-        return false;
-    };
+) -> Option<Option<u32>> {
+    let present = reader.read_bit()?;
     if !present {
-        return true;
+        return Some(None);
     }
-    if reader.read_dword().is_none() {
-        return false;
+    let object_id = reader.read_dword()?;
+    if include_int_param {
+        reader.read_i32()?;
     }
-    if include_int_param && reader.read_i32().is_none() {
-        return false;
-    }
-    let Some(base_item) = validate_ee_quickbar_item_appearance(reader, model_types) else {
-        return false;
-    };
-    validate_empty_ee_visual_transform_map(reader)
-        && validate_ee_quickbar_active_item_properties(reader, base_item)
+    let base_item = validate_ee_quickbar_item_appearance(reader, model_types)?;
+    validate_empty_ee_visual_transform_map(reader).then_some(())?;
+    validate_ee_quickbar_active_item_properties(reader, base_item).then_some(())?;
+    Some(Some(object_id))
 }
 
 fn validate_ee_quickbar_item_appearance(

@@ -198,6 +198,7 @@ pub(crate) enum QuickbarEvent {
         observed: ObservedHighLevel,
         profile: Option<QuickbarValidatedSlotProfile>,
         materialization_context: InventoryItemContextSummary,
+        materialized_item_object_ids: Vec<u32>,
     },
     Placeholder {
         observed: ObservedHighLevel,

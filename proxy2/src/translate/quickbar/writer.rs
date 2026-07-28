@@ -743,10 +743,17 @@ mod tests {
     }
 
     fn quickbar_payload_with_primary_item(item: QuickbarItemObject) -> Vec<u8> {
+        quickbar_payload_with_items(item, QuickbarItemObject::default())
+    }
+
+    fn quickbar_payload_with_items(
+        primary: QuickbarItemObject,
+        secondary: QuickbarItemObject,
+    ) -> Vec<u8> {
         let mut buttons = vec![QuickbarButton {
             kind: QuickbarButtonKind::Item {
-                primary: item,
-                secondary: QuickbarItemObject::default(),
+                primary,
+                secondary,
                 source: QuickbarItemSource::ExplicitTypeAndFragmentBits,
                 recovered_type_tag: false,
             },
@@ -766,6 +773,27 @@ mod tests {
         };
 
         build_ee_quickbar_payload(&parsed).expect("quickbar payload should write")
+    }
+
+    #[test]
+    fn exact_validator_reports_primary_and_secondary_materialization_in_wire_order() {
+        let primary = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+        let primary_object_id = primary.object_id;
+        let mut secondary = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x35]);
+        secondary.object_id = 0x8000_0043;
+        let secondary_object_id = secondary.object_id;
+        let payload = quickbar_payload_with_items(primary, secondary);
+
+        let (profile, materialized_item_object_ids) = validated_set_all_buttons_semantics(&payload)
+            .expect("the writer-built payload must validate through the exact EE reader");
+
+        assert_eq!(profile.slot_records, 36);
+        assert_eq!(profile.item_slots, 1);
+        assert_eq!(
+            materialized_item_object_ids,
+            vec![primary_object_id, secondary_object_id],
+            "EE sub_14079DB00/sub_14079FAC0 consumes primary then secondary item bodies with the shared MSB-first BOOL cursor"
+        );
     }
 
     #[test]

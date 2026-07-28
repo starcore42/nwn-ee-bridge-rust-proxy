@@ -47,6 +47,12 @@ pub(crate) struct VerifiedPayloadSemanticObservations {
         Option<LiveObjectInventoryMaterializationSummary>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FamilyPayloadSemanticObservations {
+    live_object_inventory_materialization: Option<LiveObjectInventoryMaterializationSummary>,
+    quickbar_materialized_item_objects: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CommittedQuickbarUnitProbe {
     // This is durable authority only after the committed quickbar reader and
@@ -111,8 +117,6 @@ pub(crate) fn observe_verified_payload_with_area_context_report_and_committed_qu
 ) -> VerifiedPayloadSemanticObservations {
     match proof {
         VerifiedProof::Family(family) => {
-            let live_object_inventory_materialization =
-                observe_family_payload(state, direction, *family, payload, area_context);
             let committed_quickbar_probe = match (*family, committed_quickbar_probes) {
                 (VerifiedFamily::GuiQuickbar, [probe]) => Some(probe),
                 (_, []) => None,
@@ -125,9 +129,28 @@ pub(crate) fn observe_verified_payload_with_area_context_report_and_committed_qu
                     None
                 }
             };
-            restore_committed_quickbar_probe_after_family(state, *family, committed_quickbar_probe);
+            let family_observations = observe_family_payload(
+                state,
+                direction,
+                *family,
+                payload,
+                area_context,
+                committed_quickbar_probe.is_some_and(|probe| {
+                    probe.summary.validated_slot_profile.is_some()
+                        && !quickbar::rewrite_summary_needs_more_quickbar_stream_bytes(
+                            &probe.summary,
+                        )
+                }),
+            );
+            restore_committed_quickbar_probe_after_family(
+                state,
+                *family,
+                committed_quickbar_probe,
+                family_observations.quickbar_materialized_item_objects,
+            );
             VerifiedPayloadSemanticObservations {
-                live_object_inventory_materialization,
+                live_object_inventory_materialization: family_observations
+                    .live_object_inventory_materialization,
             }
         }
         VerifiedProof::GameplayStream(families) => observe_gameplay_stream_payload(
@@ -201,8 +224,6 @@ fn observe_gameplay_stream_payload(
             let family = family_iter
                 .next()
                 .unwrap_or(VerifiedFamily::SemanticDeflated);
-            let materialization =
-                observe_family_payload(state, direction, family, message.payload, area_context);
             let unit_quickbar_probe = if (message.major, message.minor) == (0x1E, 0x01) {
                 committed_quickbar_probe_iter.next()
             } else {
@@ -213,9 +234,28 @@ fn observe_gameplay_stream_payload(
             } else {
                 None
             };
-            restore_committed_quickbar_probe_after_family(state, family, family_quickbar_probe);
+            let family_observations = observe_family_payload(
+                state,
+                direction,
+                family,
+                message.payload,
+                area_context,
+                family_quickbar_probe.is_some_and(|probe| {
+                    probe.summary.validated_slot_profile.is_some()
+                        && !quickbar::rewrite_summary_needs_more_quickbar_stream_bytes(
+                            &probe.summary,
+                        )
+                }),
+            );
+            restore_committed_quickbar_probe_after_family(
+                state,
+                family,
+                family_quickbar_probe,
+                family_observations.quickbar_materialized_item_objects,
+            );
             if observations.live_object_inventory_materialization.is_none() {
-                observations.live_object_inventory_materialization = materialization;
+                observations.live_object_inventory_materialization =
+                    family_observations.live_object_inventory_materialization;
             }
         }
     }
@@ -235,6 +275,7 @@ fn restore_committed_quickbar_probe_after_family(
     state: &mut SemanticSessionState,
     family: VerifiedFamily,
     committed_quickbar_probe: Option<&CommittedQuickbarUnitProbe>,
+    quickbar_materialized_item_objects: bool,
 ) {
     if family != VerifiedFamily::GuiQuickbar {
         return;
@@ -249,6 +290,15 @@ fn restore_committed_quickbar_probe_after_family(
         remembered,
         "a verified GuiQuickbar unit must restore exact slot/signature authority before the next coalesced unit"
     );
+    if remembered && quickbar_materialized_item_objects {
+        // EE `sub_14079DB00` processes the fixed 36-slot SetAllButtons
+        // stream in wire order and `sub_14079FAC0` constructs/registers each
+        // present typed item body before the next unit can consume state. The
+        // exact emitted-payload validator supplied the ids; wait until the
+        // matching committed probe is restored so quickbar/GQ decisions bind
+        // the newly materialized object to its exact slot.
+        remember_quickbar_item_context_if_relevant(state, "quickbar-self-materialization");
+    }
 }
 
 fn observe_family_payload(
@@ -257,8 +307,10 @@ fn observe_family_payload(
     family: VerifiedFamily,
     payload: &[u8],
     area_context: Option<&area::AreaPlaceableContext>,
-) -> Option<LiveObjectInventoryMaterializationSummary> {
+    committed_quickbar_materialization: bool,
+) -> FamilyPayloadSemanticObservations {
     let observed = observed_high_level(direction, family, payload);
+    let mut quickbar_materialized_item_objects = false;
     let event = match family {
         VerifiedFamily::ModuleInfo => ProtocolEvent::ModuleInfo(ModuleInfoEvent { observed }),
         VerifiedFamily::ServerStatusModuleResources => {
@@ -305,11 +357,24 @@ fn observe_family_payload(
                 object_ids,
             })
         }
-        VerifiedFamily::GuiQuickbar => ProtocolEvent::Quickbar(QuickbarEvent::Verified {
-            observed,
-            profile: quickbar::validated_set_all_buttons_slot_profile(payload),
-            materialization_context: state.objects.inventory_item_context_summary(),
-        }),
+        VerifiedFamily::GuiQuickbar => {
+            let validated_semantics = quickbar::validated_set_all_buttons_semantics(payload);
+            let profile = validated_semantics.as_ref().map(|(profile, _)| *profile);
+            let materialized_item_object_ids = if committed_quickbar_materialization {
+                validated_semantics
+                    .map(|(_, materialized_item_object_ids)| materialized_item_object_ids)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            quickbar_materialized_item_objects = !materialized_item_object_ids.is_empty();
+            ProtocolEvent::Quickbar(QuickbarEvent::Verified {
+                observed,
+                profile,
+                materialization_context: state.objects.inventory_item_context_summary(),
+                materialized_item_object_ids,
+            })
+        }
         VerifiedFamily::GuiQuickbarPlaceholder => {
             ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed })
         }
@@ -359,7 +424,10 @@ fn observe_family_payload(
         | VerifiedFamily::SemanticDeflated => ProtocolEvent::Other(observed),
         _ => ProtocolEvent::Other(observed),
     };
-    apply_event(state, event, area_context)
+    FamilyPayloadSemanticObservations {
+        live_object_inventory_materialization: apply_event(state, event, area_context),
+        quickbar_materialized_item_objects,
+    }
 }
 
 fn apply_event(
@@ -460,6 +528,7 @@ fn apply_event(
             observed,
             profile,
             materialization_context,
+            materialized_item_object_ids,
         }) => {
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
             state.ui.last_quickbar_family = Some(observed.family);
@@ -974,6 +1043,26 @@ fn apply_event(
                         best_item_context.cleared_inventory_item_object_ids,
                     "semantic state observed committed GuiQuickbar slot profile"
                 );
+                if !materialized_item_object_ids.is_empty() {
+                    let materialized_before = state
+                        .objects
+                        .inventory_item_context_summary()
+                        .materialized_item_objects;
+                    state
+                        .objects
+                        .observe_materialized_item_object_ids(materialized_item_object_ids);
+                    let materialized_after = state
+                        .objects
+                        .inventory_item_context_summary()
+                        .materialized_item_objects;
+                    tracing::debug!(
+                        item_object_mentions = materialized_item_object_ids.len(),
+                        newly_materialized_item_objects =
+                            materialized_after.saturating_sub(materialized_before),
+                        materialized_item_objects = materialized_after,
+                        "semantic state committed exact EE quickbar item self-materialization"
+                    );
+                }
             } else {
                 tracing::warn!(
                     payload_len = observed.payload_len,
@@ -2560,17 +2649,15 @@ mod fixture_free_tests {
     #[test]
     fn committed_quickbar_best_item_context_prefers_current_then_previous_post_then_prior() {
         let prior_context = InventoryItemContextSummary {
-            feature25_item_proof_objects: 1,
+            direct_item_proof_objects: 1,
             compact_item_emission_proof_objects: 1,
-            compact_item_emission_feature25_only_proof_objects: 1,
-            inventory_feature25_first_item_refs: 1,
+            compact_item_emission_direct_only_proof_objects: 1,
             ..Default::default()
         };
         let previous_post_context = InventoryItemContextSummary {
-            feature25_item_proof_objects: 2,
+            direct_item_proof_objects: 2,
             compact_item_emission_proof_objects: 2,
-            compact_item_emission_feature25_only_proof_objects: 2,
-            inventory_feature25_second_item_refs: 2,
+            compact_item_emission_direct_only_proof_objects: 2,
             ..Default::default()
         };
         let current_context = InventoryItemContextSummary {
@@ -2834,6 +2921,7 @@ mod fixture_free_tests {
                     ..Default::default()
                 }),
                 materialization_context: ready,
+                materialized_item_object_ids: Vec::new(),
             })
         };
         apply_event(&mut state, quickbar_event(), None);
@@ -2908,6 +2996,115 @@ mod fixture_free_tests {
         assert_eq!(state.ui.quickbar_placeholders, 1);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn exact_committed_quickbar_promotes_ee_self_materialized_items_only_with_probe_authority() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin"
+        )
+        .to_vec();
+        let summary = quickbar::rewrite_simple_quickbar_payload_if_possible(&mut payload)
+            .expect("the full Diamond quickbar should rewrite to an exact EE payload");
+        let materialized_item_object_ids =
+            quickbar::validated_set_all_buttons_materialized_item_object_ids(&payload)
+                .expect("the exact EE payload should expose present typed item objects");
+        let unique_materialized_item_object_ids = materialized_item_object_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            materialized_item_object_ids.len(),
+            usize::try_from(summary.item_objects_preserved_by_explicit_self_materialization)
+                .expect("bounded quickbar object count should fit usize"),
+            "validator evidence must cover every explicit item body emitted from the capture"
+        );
+        let first_item_object_id = *materialized_item_object_ids
+            .first()
+            .expect("the gameplay fixture should contain item bodies");
+
+        let mut unbound_state = SemanticSessionState::default();
+        observe_verified_payload(
+            &mut unbound_state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &payload,
+        );
+        assert_eq!(
+            unbound_state
+                .objects
+                .inventory_item_object_status(first_item_object_id),
+            InventoryItemObjectStatus::Unknown,
+            "an exact payload without its matched committed translator probe must not mutate engine-facing item state"
+        );
+
+        let mut committed_state = SemanticSessionState::default();
+        committed_state
+            .objects
+            .observe_materialized_item_object_ids(&[first_item_object_id]);
+        committed_state
+            .objects
+            .observe_mentions(&[LiveObjectMention {
+                opcode: b'D',
+                object_type: 0x06,
+                object_id: first_item_object_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            }]);
+        assert_eq!(
+            committed_state
+                .objects
+                .inventory_item_object_status(first_item_object_id),
+            InventoryItemObjectStatus::ClearedByItemDelete,
+            "D/06 must tombstone the item until a later authoritative body recreates it"
+        );
+        let pre_commit_context = committed_state.objects.inventory_item_context_summary();
+        let probe = CommittedQuickbarUnitProbe {
+            summary,
+            materialization_context: pre_commit_context,
+        };
+        observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
+            &mut committed_state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &payload,
+            None,
+            &[probe],
+        );
+
+        assert_eq!(
+            committed_state
+                .objects
+                .inventory_item_object_status(first_item_object_id),
+            InventoryItemObjectStatus::Proven(InventoryItemObjectProof::ActiveObject),
+            "a later committed item body must recreate the D/06 tombstone in wire order"
+        );
+        assert_eq!(
+            committed_state
+                .objects
+                .inventory_item_context_summary()
+                .materialized_item_objects,
+            unique_materialized_item_object_ids.len(),
+            "all unique primary/secondary ids must become engine-facing item objects"
+        );
+        assert_eq!(
+            committed_state
+                .ui
+                .last_committed_quickbar_materialization_context,
+            Some(pre_commit_context),
+            "rewrite provenance remains the pre-unit registry snapshot"
+        );
+        assert!(
+            committed_state
+                .ui
+                .post_committed_quickbar_item_refresh_pending,
+            "restoring the matched slot probe after self-materialization should expose missing exact GQ state"
+        );
+    }
+
     #[test]
     fn committed_quickbar_records_registry_materialization_context() {
         let owner_id = 0x8000_0010u32;
@@ -2931,6 +3128,10 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
             &live_payload,
         );
+        state
+            .objects
+            .observe_materialized_item_object_ids(&[first_item_id, second_item_id]);
+        remember_quickbar_item_context_if_relevant(&mut state, "test-direct-item-proof");
         observe_verified_payload(
             &mut state,
             Direction::ServerToClient,
@@ -2947,19 +3148,23 @@ mod fixture_free_tests {
             .last_committed_quickbar_prior_item_context
             .expect("committed quickbar should snapshot prior item context");
         assert_eq!(context.active_item_objects, 0);
-        assert_eq!(context.direct_item_proof_objects, 0);
-        assert_eq!(context.feature25_item_proof_objects, 2);
+        assert_eq!(context.materialized_item_objects, 2);
+        assert_eq!(context.direct_item_proof_objects, 2);
+        assert_eq!(
+            context.feature25_item_proof_objects, 2,
+            "Feature-25 refs become item proof only after independent direct materialization"
+        );
         assert_eq!(context.compact_item_emission_proof_objects, 2);
-        assert_eq!(context.compact_item_emission_ready_objects, 0);
+        assert_eq!(context.compact_item_emission_ready_objects, 2);
         assert_eq!(context.compact_item_emission_direct_only_proof_objects, 0);
         assert_eq!(
             context.compact_item_emission_feature25_only_proof_objects,
-            2
+            0
         );
-        assert_eq!(context.compact_item_emission_shared_proof_objects, 0);
+        assert_eq!(context.compact_item_emission_shared_proof_objects, 2);
         assert_eq!(
             context.compact_item_emission_deferred_feature25_only_objects,
-            2
+            0
         );
         assert_eq!(context.inventory_feature25_first_item_refs, 1);
         assert_eq!(context.inventory_feature25_second_item_refs, 1);
@@ -3026,11 +3231,15 @@ mod fixture_free_tests {
             &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
             &live_payload,
         );
+        state
+            .objects
+            .observe_materialized_item_object_ids(&[first_item_id, second_item_id]);
+        remember_quickbar_item_context_if_relevant(&mut state, "test-direct-item-proof");
         assert_eq!(
             state
                 .ui
                 .last_inventory_item_context_before_quickbar
-                .expect("Feature-25 item refs should retain prior context")
+                .expect("direct item proof should retain prior context")
                 .compact_item_emission_proof_objects,
             2
         );

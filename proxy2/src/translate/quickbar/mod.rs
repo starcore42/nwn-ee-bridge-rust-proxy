@@ -65,7 +65,9 @@ pub(crate) use model::{
     QuickbarMaterializationContext, QuickbarMaterializationContextSummary,
     QuickbarValidatedSlotProfile,
 };
+#[cfg(test)]
+pub(crate) use validator::validated_set_all_buttons_materialized_item_object_ids;
 pub(crate) use validator::{
-    ee_set_all_buttons_payload_shape_valid, validated_set_all_buttons_slot_profile,
+    ee_set_all_buttons_payload_shape_valid, validated_set_all_buttons_semantics,
 };
 pub use writer::build_blank_set_all_buttons_payload;

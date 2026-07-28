@@ -364,6 +364,22 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
         summary.item_buttons_preserved > 0,
         "explicit type-1 item bodies are self-materializing in EE once the item-object model is exact"
     );
+    let materialized_item_object_ids =
+        validated_set_all_buttons_materialized_item_object_ids(&payload)
+            .expect("the exact emitted EE quickbar should expose its typed item object ids");
+    assert_eq!(
+        materialized_item_object_ids.len(),
+        usize::try_from(summary.item_objects_preserved_by_explicit_self_materialization)
+            .expect("bounded quickbar object count should fit usize"),
+        "the exact EE reader visits every present primary/secondary item body before advancing the fixed slot loop"
+    );
+    assert_eq!(
+        materialized_item_object_ids.first().copied(),
+        summary
+            .first_preserved_active_item_signature
+            .map(|signature| signature.object_id),
+        "typed item-id extraction must retain the same wire order as the committed slot signatures"
+    );
     assert!(
         summary.item_buttons_blanked < 18,
         "only compact/recovered or otherwise unproven item bodies should remain deliberate blanks"
