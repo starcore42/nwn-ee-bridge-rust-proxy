@@ -586,6 +586,8 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     let mut inline_name_compact_proven = false;
     let mut low_prefix_interleaved_fragment_span_begin = None;
     let mut fragment_source_mask = raw_mask;
+    let mut source_name_inner_fragment_bits = 0usize;
+    let mut stock_diamond_source_ready = false;
     let mut legacy_low_tail_fragment_bits_to_remove = 0usize;
     let mut tail9_legacy_name_fragment_bits_to_remove = 0usize;
     let mut low_tail_zero_fragment_bits_to_insert = 0usize;
@@ -697,7 +699,48 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     } else if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
         && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
     {
-        if let Some(mut claim) = parse_compact_door_placeable_tail9_update_claim(
+        let stock_source = (object_type == DOOR_OBJECT_TYPE)
+            .then(|| {
+                reader::parse_verified_diamond_door_placeable_update_source_candidate(
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    bits,
+                    *bit_cursor,
+                )
+            })
+            .flatten()
+            .filter(|source| {
+                source.claim.read_end == *record_end
+                    && matches!(
+                        source.claim.placeable_name,
+                        Some(name)
+                            if name.selector_fragment_bits() == 3
+                                && matches!(
+                                    name.kind,
+                                    reader::VerifiedEePlaceableNameKind::LocStringTlkRef { .. }
+                                )
+                    )
+            });
+        if let Some(source) = stock_source {
+            // Prefer the complete stock reader walk over the byte-only compact
+            // tail9 interpretation. Diamond `sub_467AE0` plus
+            // `sub_44E2C0`/`sub_44EB40` and their EE counterparts share the
+            // position, orientation, appearance, scale/state, and localized
+            // name order. The exact CEP writer trace pins this U/10 source at
+            // 15 bits (2 + 5 + 5 + 3), including the fragment-owned one-bit
+            // language selector. Only ignored mask bits and EE's sixth neutral
+            // door-state BOOL require translation.
+            translated_mask = source.effective_mask;
+            fragment_source_mask = source.effective_mask;
+            source_name_inner_fragment_bits = source
+                .claim
+                .placeable_name
+                .map(|name| name.selector_fragment_bits().saturating_sub(1))
+                .unwrap_or(0);
+            can_translate_read_buffer = true;
+            stock_diamond_source_ready = true;
+        } else if let Some(mut claim) = parse_compact_door_placeable_tail9_update_claim(
             live_bytes,
             record_offset,
             *record_end,
@@ -795,6 +838,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             }
             translated_mask = claim.translated_mask;
             fragment_source_mask = claim.fragment_source_mask;
+            source_name_inner_fragment_bits = claim.name_inner_fragment_bits;
             orientation_fragment_rewrite = claim.orientation_rewrite;
             compact_tail9_claim = Some(claim);
         } else if let Some(inline_name) =
@@ -855,6 +899,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
         && !tail_ready
         && !inline_name_compact_proven
+        && !stock_diamond_source_ready
         && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
         && (raw_mask & !translated_mask) != 0
     {
@@ -1373,6 +1418,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     }
 
     let name_payload_ready = (translated_mask & LEGACY_UPDATE_NAME_MASK) == 0
+        || stock_diamond_source_ready
         || tail_ready
         || locstring::legacy_live_update_name_payload_ready(live_bytes, record_offset, *record_end);
     if (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 && !name_payload_ready {
@@ -1572,9 +1618,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             fragment_source_mask,
             translated_mask,
             orientation_fragment_rewrite,
-            compact_tail9_claim
-                .map(|claim| claim.name_inner_fragment_bits)
-                .unwrap_or(0),
+            source_name_inner_fragment_bits,
             &mut rewritten_bits,
             &mut rewritten_bit_cursor,
         ) else {

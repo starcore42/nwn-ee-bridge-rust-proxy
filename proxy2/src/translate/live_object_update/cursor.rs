@@ -11,6 +11,8 @@ use super::{
 };
 
 const LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS: usize = 4;
+const LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS: usize = 5;
+const LEGACY_SHORT_STRREF_DOOR_ADD_BOOL_BITS: usize = 8;
 const LEGACY_PLACEABLE_EMPTY_NAME_PREFIX_SCAN_BYTES: usize = 8;
 
 pub(super) fn advance_live_add_record_bit_cursor(
@@ -100,10 +102,19 @@ pub(super) fn advance_legacy_add_record_bit_cursor_for_update_pass(
             let legacy_short_strref_name =
                 legacy_short_door_strref_name_token_at(bytes, name_offset, record_end);
             if legacy_short_strref_name {
-                if bits.len().saturating_sub(*bit_cursor) < 5 {
-                    return false;
+                if let Some(next_cursor) =
+                    legacy_short_strref_door_add_fragment_end(bits, *bit_cursor)
+                {
+                    *bit_cursor = next_cursor;
+                } else {
+                    if bits.len().saturating_sub(*bit_cursor)
+                        < LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS
+                    {
+                        return false;
+                    }
+                    *bit_cursor =
+                        bit_cursor.saturating_add(LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS);
                 }
-                *bit_cursor = bit_cursor.saturating_add(5);
                 return true;
             }
             let source_inner_bits = if bits.get(*bit_cursor).copied().unwrap_or(false) {
@@ -364,13 +375,17 @@ fn advance_door_add_bit_cursor(
         && read_u32_le(bytes, name_offset) == Some(0)
         && read_u16_le(bytes, name_offset + 4).is_some();
 
+    if is_short_strref_name {
+        if let Some(next_cursor) = legacy_short_strref_door_add_fragment_end(bits, *bit_cursor) {
+            *bit_cursor = next_cursor;
+            return true;
+        }
+    }
+
     let source_inner_bits = if is_tlk_locstring {
-        // EE `sub_140796DD0` routes outer=true into
-        // `ReadCExoLocStringClient` (`sub_1409735F0`), whose inner BOOL must
-        // be true for the TLK-table DWORD shape.  Direct CExoString bytes are
-        // deliberately not accepted through the outer=true/inner=false helper
-        // path: the bridge canonicalises direct names to outer=false so the
-        // exact validator proves the same reader branch the bytes model.
+        // This seven-byte custom-server dialect carries a full 0/1 byte before
+        // the StrRef. Its two fragment selectors are deliberately kept
+        // separate from the stock four-byte/three-selector branch below.
         if !bits[*bit_cursor] || !bits.get(*bit_cursor + 1).copied().unwrap_or(false) {
             return false;
         }
@@ -397,11 +412,11 @@ fn advance_door_add_bit_cursor(
         }
         0
     } else if is_short_strref_name {
-        if bits.len().saturating_sub(*bit_cursor) < 5 {
+        if bits.len().saturating_sub(*bit_cursor) < LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS {
             return false;
         }
-        *bit_cursor = bit_cursor.saturating_add(5);
-        return *bit_cursor <= bits.len();
+        *bit_cursor = bit_cursor.saturating_add(LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS);
+        return true;
     } else {
         return false;
     };
@@ -429,8 +444,25 @@ fn legacy_short_door_strref_name_token_at(
         .unwrap_or(false)
         && record_end <= bytes.len()
         && read_u32_le(bytes, name_offset).is_some()
-        && read_u32_le(bytes, name_offset) != Some(0)
         && read_u16_le(bytes, name_offset + 4).is_some()
+}
+
+fn legacy_short_strref_door_add_fragment_end(bits: &[bool], bit_cursor: usize) -> Option<usize> {
+    let end = bit_cursor.checked_add(LEGACY_SHORT_STRREF_DOOR_ADD_BOOL_BITS)?;
+    if end > bits.len()
+        || !bits.get(bit_cursor).copied()?
+        || !bits.get(bit_cursor.checked_add(1)?).copied()?
+    {
+        return None;
+    }
+
+    // Diamond `sub_44DE30` reads the outer name BOOL. Its true branch calls
+    // `sub_53E700`, which reads inner/client-TLK BOOL=true, a one-bit language
+    // selector, and the four-byte StrRef. The door reader then owns one
+    // post-name BOOL, a WORD in the read buffer, and four trailing BOOLs:
+    // eight fragment bits total. The exact stock nwserver CEP writer trace
+    // pinned A/10 at cursors 3..11 before U/10 started at cursor 11.
+    Some(end)
 }
 
 fn legacy_tail_before_empty_door_name_token_at(

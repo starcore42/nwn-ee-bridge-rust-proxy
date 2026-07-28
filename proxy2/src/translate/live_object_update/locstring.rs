@@ -75,14 +75,21 @@ pub(super) fn tlk_locstring_ref_end(bytes: &[u8], offset: usize) -> Option<usize
         return None;
     }
 
-    // EE's shared client locstring reader (`sub_1409735F0`) consumes an inner
-    // BOOL. When that BOOL is true it reads `ReadBYTE(1, 1)` followed by
-    // `ReadDWORD(32)` instead of an inline CExoString. The byte is the observed
-    // client TLK selector in HG captures; keeping it to 0/1 avoids turning this
-    // into an arbitrary non-string byte escape hatch.
+    // Older custom-server captures expose a full 0/1 selector byte before the
+    // StrRef. This helper is only that bounded legacy dialect. Stock Diamond
+    // and EE use `fragment_selector_tlk_strref_end`: `ReadBYTE(1, 1)` is a
+    // fragment bit, not a read-buffer byte.
     if matches!(bytes[offset], 0 | 1) && read_u32_le(bytes, offset + 1).is_some() {
         Some(offset + TLK_LOCSTRING_REF_BYTES)
     } else {
         None
     }
+}
+
+pub(super) fn fragment_selector_tlk_strref_end(bytes: &[u8], offset: usize) -> Option<usize> {
+    // Diamond `sub_53E700` and EE `sub_1409735F0` read the client-TLK/language
+    // selector with `ReadBYTE(1, 1)`, so that one-bit field lives in the CNW
+    // fragment stream. Only the following 32-bit StrRef is in the read buffer.
+    read_u32_le(bytes, offset)?;
+    offset.checked_add(4)
 }

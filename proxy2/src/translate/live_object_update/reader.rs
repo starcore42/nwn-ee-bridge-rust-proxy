@@ -64,7 +64,14 @@ pub(super) struct VerifiedEePlaceableName {
     pub(super) read_end: usize,
     pub(super) selector_bit_cursor: usize,
     pub(super) locstring_selector_bit_cursor: Option<usize>,
+    fragment_selector_bits: usize,
     pub(super) kind: VerifiedEePlaceableNameKind,
+}
+
+impl VerifiedEePlaceableName {
+    pub(super) fn selector_fragment_bits(self) -> usize {
+        self.fragment_selector_bits
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -768,46 +775,72 @@ fn parse_verified_door_placeable_update_record(
         let localized = fragment_bits.get(fragment_cursor).copied()?;
         fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
         let name_read_offset = read_cursor;
-        let (name_read_end, locstring_selector_bit_cursor, kind) = if localized {
-            // Both EE door/placeable readers call `sub_1409735F0` after the
-            // outer selector.
-            // The helper reads exactly one inner BOOL. Its false branch calls
-            // `ReadCExoString(32)`; its true branch calls `ReadBYTE(1, 1)` and
-            // then `ReadDWORD(32)`. Diamond door/placeable readers `sub_44E2C0`
-            // / `sub_44EB40` -> `sub_53E700` have the same outer/inner BOOL
-            // order and the same byte-side branches. Keep
-            // this cursor explicit: treating the inner selector as a string bit
-            // would shift every following live-object record.
-            let inner_selector_bit_cursor = fragment_cursor;
-            let client_tlk_ref = fragment_bits.get(fragment_cursor).copied()?;
-            fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
-            if client_tlk_ref {
-                let name_read_end = locstring::tlk_locstring_ref_end(bytes, name_read_offset)?;
-                let client_tlk = *bytes.get(name_read_offset)?;
-                let strref = read_u32_le(bytes, name_read_offset + 1)?;
-                (
-                    name_read_end,
-                    Some(inner_selector_bit_cursor),
-                    VerifiedEePlaceableNameKind::LocStringTlkRef { client_tlk, strref },
-                )
+        let (name_read_end, locstring_selector_bit_cursor, fragment_selector_bits, kind) =
+            if localized {
+                // Both EE door/placeable readers call `sub_1409735F0` after the
+                // outer selector.
+                // The helper reads exactly one inner BOOL. Its false branch calls
+                // `ReadCExoString(32)`; its true branch calls `ReadBYTE(1, 1)` and
+                // then `ReadDWORD(32)`. Diamond door/placeable readers `sub_44E2C0`
+                // / `sub_44EB40` -> `sub_53E700` have the same outer/inner BOOL
+                // order and the same byte-side branches. Keep
+                // this cursor explicit: treating the inner selector as a string bit
+                // would shift every following live-object record.
+                let inner_selector_bit_cursor = fragment_cursor;
+                let client_tlk_ref = fragment_bits.get(fragment_cursor).copied()?;
+                fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+                if client_tlk_ref {
+                    if name_read_offset.checked_add(4) == Some(record_end) {
+                        let client_tlk = u8::from(fragment_bits.get(fragment_cursor).copied()?);
+                        fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+                        let name_read_end =
+                            locstring::fragment_selector_tlk_strref_end(bytes, name_read_offset)?;
+                        let strref = read_u32_le(bytes, name_read_offset)?;
+                        (
+                            name_read_end,
+                            Some(inner_selector_bit_cursor),
+                            3,
+                            VerifiedEePlaceableNameKind::LocStringTlkRef { client_tlk, strref },
+                        )
+                    } else if dialect == DoorPlaceableUpdateReadDialect::DiamondSourceCandidate {
+                        // Older captured custom-server rows carry a full byte
+                        // selector before the StrRef. This is a separate bounded
+                        // legacy source dialect, not the stock `ReadBYTE(1, 1)`
+                        // shape. Never admit it through the exact EE validator:
+                        // a translator must canonicalize or remove it first.
+                        let name_read_end =
+                            locstring::tlk_locstring_ref_end(bytes, name_read_offset)?;
+                        let client_tlk = *bytes.get(name_read_offset)?;
+                        let strref = read_u32_le(bytes, name_read_offset + 1)?;
+                        (
+                            name_read_end,
+                            Some(inner_selector_bit_cursor),
+                            2,
+                            VerifiedEePlaceableNameKind::LocStringTlkRef { client_tlk, strref },
+                        )
+                    } else {
+                        return None;
+                    }
+                } else {
+                    let name_read_end = inline_cexo_string_end(bytes, name_read_offset)?;
+                    let byte_length = name_read_end.checked_sub(name_read_offset + 4)?;
+                    (
+                        name_read_end,
+                        Some(inner_selector_bit_cursor),
+                        2,
+                        VerifiedEePlaceableNameKind::LocStringInlineCExoString { byte_length },
+                    )
+                }
             } else {
                 let name_read_end = inline_cexo_string_end(bytes, name_read_offset)?;
                 let byte_length = name_read_end.checked_sub(name_read_offset + 4)?;
                 (
                     name_read_end,
-                    Some(inner_selector_bit_cursor),
-                    VerifiedEePlaceableNameKind::LocStringInlineCExoString { byte_length },
+                    None,
+                    1,
+                    VerifiedEePlaceableNameKind::DirectCExoString { byte_length },
                 )
-            }
-        } else {
-            let name_read_end = inline_cexo_string_end(bytes, name_read_offset)?;
-            let byte_length = name_read_end.checked_sub(name_read_offset + 4)?;
-            (
-                name_read_end,
-                None,
-                VerifiedEePlaceableNameKind::DirectCExoString { byte_length },
-            )
-        };
+            };
         if name_read_end > record_end {
             return None;
         }
@@ -817,6 +850,7 @@ fn parse_verified_door_placeable_update_record(
             read_end: name_read_end,
             selector_bit_cursor,
             locstring_selector_bit_cursor,
+            fragment_selector_bits,
             kind,
         });
     }
@@ -880,12 +914,10 @@ pub(super) fn parse_legacy_tail9_placeable_name_for_ee(
         return None;
     }
 
-    // Diamond `sub_44EB40` and EE `sub_140797780` use the same outer name
-    // selector. The localized branch then enters Diamond `sub_53E700` / EE
-    // `sub_1409735F0`, whose inner selector chooses inline CExoString versus
-    // the one-byte client-TLK selector plus DWORD strref. Require the byte-side
-    // branch to end at this exact tail9 record boundary before it can be
-    // preserved in the EE mask.
+    // This compact-tail9 fallback includes an independently captured legacy
+    // byte-selector dialect. It is not the stock Diamond/EE `ReadBYTE(1, 1)`
+    // localized-name branch proven above. Require either bounded byte-side
+    // shape to end at this exact compact record boundary.
     let localized = fragment_bits.get(selector_bit_cursor).copied()?;
     if !localized {
         let name_end = inline_cexo_string_end(bytes, name_offset)?;
@@ -1089,9 +1121,8 @@ mod tests {
         live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
         live.extend_from_slice(&object_id.to_le_bytes());
         live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
-        live.push(1); // ReadBYTE(1, 1) client TLK selector.
         live.extend_from_slice(&strref.to_le_bytes());
-        let bits = [true, true]; // outer locstring, inner client-TLK ref.
+        let bits = [true, true, true]; // outer locstring, inner client-TLK ref, one-bit language selector.
 
         let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
             .expect("EE placeable locstring TLK ref should exact-claim");
@@ -1108,7 +1139,43 @@ mod tests {
                 strref
             }
         );
-        assert_eq!(claim.next_bit_cursor, 2);
+        assert_eq!(claim.next_bit_cursor, 3);
+    }
+
+    #[test]
+    fn exact_ee_placeable_update_rejects_custom_byte_selector_tlk_layout() {
+        let object_id = 0x1234_ABCD_u32;
+        let strref = 0x0100_75D6_u32;
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
+        live.push(1); // Captured custom source byte, not EE `ReadBYTE(1, 1)`.
+        live.extend_from_slice(&strref.to_le_bytes());
+        let bits = [true, true];
+
+        assert!(
+            parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
+                .is_none(),
+            "the exact EE reader must require a fragment-owned language selector and four-byte StrRef"
+        );
+
+        let source = parse_verified_diamond_door_placeable_update_source_candidate(
+            &live,
+            0,
+            live.len(),
+            &bits,
+            0,
+        )
+        .expect("the bounded custom byte-selector source dialect remains parseable");
+        assert_eq!(
+            source
+                .claim
+                .placeable_name
+                .expect("custom source name")
+                .selector_fragment_bits(),
+            2
+        );
     }
 
     #[test]
@@ -1180,19 +1247,70 @@ mod tests {
     }
 
     #[test]
-    fn ee_placeable_update_parser_rejects_invalid_locstring_tlk_selector() {
+    fn stock_diamond_u10_source_claims_exact_writer_cursor_and_tlk_selector() {
+        // Stock `nwserver.exe` terminal-writer trace 6 finalized this exact
+        // U/10 row. Diamond `sub_467AE0` consumes position, scalar orientation,
+        // appearance/scale, five door-state BOOLs, then `sub_53E700` consumes
+        // outer/inner/language name BOOLs before the four-byte StrRef.
+        let mut live = vec![b'U', DOOR_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_0004_u32.to_le_bytes());
+        live.extend_from_slice(&0xFFFF_FFF7_u32.to_le_bytes());
+        live.extend_from_slice(&[
+            0xD0, 0x07, 0xF4, 0x01, 0x0F, 0x0F, 0xA8, 0x2E, 0x02, 0x00, 0x00, 0x80, 0x3F, 0x16,
+            0x00, 0xE5, 0x14, 0x00, 0x00,
+        ]);
+        let diamond_bits = [
+            false, false, // position residuals.
+            false, true, true, false, false, // scalar orientation.
+            true, false, false, false, true, // five Diamond door-state BOOLs.
+            true, true, false, // outer locstring, inner TLK ref, language selector.
+        ];
+
+        let source = parse_verified_diamond_door_placeable_update_source_candidate(
+            &live,
+            0,
+            live.len(),
+            &diamond_bits,
+            0,
+        )
+        .expect("stock Diamond U/10 source should exact-claim");
+        assert_eq!(source.claim.read_end, live.len());
+        assert_eq!(source.claim.next_bit_cursor, diamond_bits.len());
+        let name = source.claim.placeable_name.expect("localized name");
+        assert_eq!(name.selector_fragment_bits(), 3);
+        assert_eq!(
+            name.kind,
+            VerifiedEePlaceableNameKind::LocStringTlkRef {
+                client_tlk: 0,
+                strref: 0x0000_14E5,
+            }
+        );
+
+        let mut ee_live = live;
+        ee_live[6..10].copy_from_slice(&source.effective_mask.to_le_bytes());
+        let mut ee_bits = diamond_bits.to_vec();
+        let state_end = source.claim.state_bit_cursor.expect("door state cursor")
+            + LEGACY_UPDATE_STATE_FRAGMENT_BITS;
+        ee_bits.insert(state_end, false);
+        let ee_claim =
+            parse_verified_ee_door_placeable_update_record(&ee_live, 0, ee_live.len(), &ee_bits, 0)
+                .expect("EE U/10 should claim after its neutral sixth door-state BOOL is inserted");
+        assert_eq!(ee_claim.next_bit_cursor, diamond_bits.len() + 1);
+    }
+
+    #[test]
+    fn ee_placeable_update_parser_rejects_missing_fragment_tlk_selector() {
         let object_id = 0x1234_ABCD_u32;
         let mut live = Vec::new();
         live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
         live.extend_from_slice(&object_id.to_le_bytes());
         live.extend_from_slice(&LEGACY_UPDATE_NAME_MASK.to_le_bytes());
-        live.push(2); // ReadBYTE(1, 1) can only produce 0 or 1.
         live.extend_from_slice(&0x0100_75D6_u32.to_le_bytes());
 
         assert!(
             parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[true, true], 0,)
                 .is_none(),
-            "the nested TLK branch must retain the decompiled one-bit client selector"
+            "the nested TLK branch owns a third fragment bit before the StrRef"
         );
     }
 

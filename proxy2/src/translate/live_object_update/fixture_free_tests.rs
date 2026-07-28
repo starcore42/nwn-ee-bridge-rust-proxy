@@ -399,14 +399,14 @@ fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
     ]
 }
 
-fn legacy_tail9_door_update_cep_name_suffix_source_bits() -> Vec<bool> {
+fn synthetic_compact_tail9_door_update_name_token_source_bits() -> Vec<bool> {
     // Same local/HG compact tail9 family as `legacy_tail9_door_update_source_bits`,
-    // with the CEP v2.3 state/name-bit values. This is capture-backed cursor
+    // with the independently captured custom state/name-bit values. This is capture-backed cursor
     // evidence, not proof of the normal Diamond `0x445160` writer shape or the
     // 0x4401F0 add/snapshot mask seed.
     vec![
         false, true, // position residual bits.
-        true, false, false, false, true, // legacy door state bits from the CEP v2.3 stream.
+        true, false, false, false, true, // custom compact door state bits.
         true, // legacy name branch owning the following four-byte suffix.
     ]
 }
@@ -432,47 +432,51 @@ fn legacy_tail9_door_update_expected_ee_bits() -> Vec<bool> {
     bits
 }
 
-fn legacy_tail9_door_update_cep_name_suffix_expected_ee_bits() -> Vec<bool> {
+fn synthetic_compact_tail9_door_update_name_token_expected_ee_bits() -> Vec<bool> {
     let mut bits = vec![false, true]; // position residual bits.
     bits.extend_from_slice(&ee_scalar_orientation_fragment_bits_from_legacy_facing(
         0x2EA8,
     ));
-    bits.extend_from_slice(&[true, false, false, false, true]); // CEP v2.3 legacy door state bits.
+    bits.extend_from_slice(&[true, false, false, false, true]); // custom compact door state bits.
     bits.push(false); // EE-only neutral door/placeable state BOOL.
     bits
 }
 
-fn legacy_short_strref_door_add_live_bytes() -> Vec<u8> {
+fn legacy_short_strref_door_add_live_bytes_with_strref(strref: u32) -> Vec<u8> {
     let mut live = vec![b'A', super::DOOR_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_0004u32.to_le_bytes());
     live.extend_from_slice(&0u32.to_le_bytes()); // generic door row follows.
     live.extend_from_slice(&0x0000_000Du32.to_le_bytes());
-    live.extend_from_slice(&0x0000_14E5u32.to_le_bytes()); // legacy short-name token.
+    live.extend_from_slice(&strref.to_le_bytes());
     live.extend_from_slice(&0x0016u16.to_le_bytes()); // door state tail.
     live
 }
 
-fn legacy_short_strref_door_add_source_bits_with_state(state_bits: [bool; 4]) -> Vec<bool> {
-    let mut bits = vec![true]; // Diamond short-name/locstring branch.
+fn legacy_short_strref_door_add_live_bytes() -> Vec<u8> {
+    legacy_short_strref_door_add_live_bytes_with_strref(0x0000_14E5)
+}
+
+fn legacy_short_strref_door_add_source_bits_with_state(state_bits: [bool; 5]) -> Vec<bool> {
+    // Diamond `sub_44DE30` delegates the localized name to `sub_53E700`:
+    // outer locstring, inner TLK ref, and its one-bit language selector. The
+    // five remaining BOOLs are the post-name door fields from `sub_44DE30`.
+    let mut bits = vec![true, true, false];
     bits.extend_from_slice(&state_bits);
     bits
 }
 
 fn legacy_short_strref_door_add_source_bits() -> Vec<bool> {
-    legacy_short_strref_door_add_source_bits_with_state([true, false, true, false])
+    legacy_short_strref_door_add_source_bits_with_state([true, false, false, true, true])
 }
 
-fn legacy_short_strref_door_add_expected_ee_bits_with_state(state_bits: [bool; 4]) -> Vec<bool> {
-    let mut bits = vec![
-        false, // canonical EE direct empty-name branch.
-        false, // inserted first post-name state BOOL for the normalized empty name.
-    ];
-    bits.extend_from_slice(&state_bits);
-    bits
+fn legacy_short_strref_door_add_expected_ee_bits_with_state(state_bits: [bool; 5]) -> Vec<bool> {
+    // EE preserves the same localized TLK selector and five door BOOLs. The
+    // only A/10 translation is the byte-buffer visual-transform insertion.
+    legacy_short_strref_door_add_source_bits_with_state(state_bits)
 }
 
 fn legacy_short_strref_door_add_expected_ee_bits() -> Vec<bool> {
-    legacy_short_strref_door_add_expected_ee_bits_with_state([true, false, true, false])
+    legacy_short_strref_door_add_expected_ee_bits_with_state([true, false, false, true, true])
 }
 
 fn ee_shaped_generic_door_add_live_bytes() -> Vec<u8> {
@@ -5593,7 +5597,7 @@ fn compact_tail9_bits_do_not_match_stock_u10_orientation_state_writer() {
         ("plain", legacy_tail9_door_update_source_bits()),
         (
             "cep-name-suffix",
-            legacy_tail9_door_update_cep_name_suffix_source_bits(),
+            synthetic_compact_tail9_door_update_name_token_source_bits(),
         ),
     ] {
         let live = door_update_0x17_live_bytes_for_object(0x8000_0004);
@@ -5719,8 +5723,9 @@ fn tail9_door_update_before_typed_item_create_rejects_shifted_following_item_upd
 }
 
 #[test]
-fn cep_tail9_name_suffix_before_typed_item_create_preserves_following_full_item_update_bits() {
-    // The live CEP v2.3 stream differs from the older constructed tail9 sibling:
+fn synthetic_compact_tail9_name_token_before_typed_item_create_preserves_following_full_item_update_bits()
+ {
+    // This synthetic compact fallback differs from the plain tail9 sibling:
     // the U/10 source bits have the legacy name branch set and the read buffer
     // carries a four-byte legacy suffix after the tail9 state WORD. This legacy
     // compact path owns only that one name BOOL before returning to the next
@@ -5733,14 +5738,14 @@ fn cep_tail9_name_suffix_before_typed_item_create_preserves_following_full_item_
     ));
 
     let mut bits = legacy_short_strref_door_add_source_bits();
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
     bits.extend_from_slice(&following_update_bits);
     let mut payload = live_object_payload_with_bits(&live, bits);
 
     super::rewrite_update_records_payload_if_possible(&mut payload)
-        .expect("CEP-like tail9 name suffix plus A/6/U6 stream should rewrite exactly");
+        .expect("synthetic compact-tail9 name token plus A/6/U6 stream should rewrite exactly");
 
     let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
         .expect("declared length") as usize;
@@ -5748,24 +5753,25 @@ fn cep_tail9_name_suffix_before_typed_item_create_preserves_following_full_item_
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
     let mut expected = legacy_short_strref_door_add_expected_ee_bits();
-    expected.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    expected.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
     expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
         expected.as_slice(),
-        "CEP-like tail9 name suffix must not move the following U/6 cursor"
+        "synthetic compact-tail9 name token must not move the following U/6 cursor"
     );
 
     let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten CEP-like door/tail9/A6/U6 stream should exact-claim");
+        .expect("rewritten synthetic compact door/tail9/A6/U6 stream should exact-claim");
     assert_eq!(claim.add_records, 2);
     assert_eq!(claim.update_records, 2);
 }
 
 #[test]
-fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_preserves_u6_bits() {
-    // This matches the generalized private CEP v2.3 handoff shape without
+fn synthetic_compact_tail9_name_token_before_legacy_width_item_create_without_visual_map_preserves_u6_bits()
+ {
+    // This keeps the independently captured compact fallback shape without
     // depending on that fixture: a legacy door add, `U/10` tail9 with its
     // four-byte legacy name suffix, a Diamond-width typed item create missing
     // EE's item visual map, then the following full item update.
@@ -5779,14 +5785,14 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_pres
     ));
 
     let mut bits = legacy_short_strref_door_add_source_bits();
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
     bits.extend_from_slice(&following_update_bits);
     let mut payload = live_object_payload_with_bits(&live, bits);
 
     super::rewrite_update_records_payload_if_possible(&mut payload)
-        .expect("CEP-like tail9/no-map A6/U6 stream should rewrite exactly");
+        .expect("synthetic compact-tail9/no-map A6/U6 stream should rewrite exactly");
 
     let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
         .expect("declared length") as usize;
@@ -5794,7 +5800,7 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_pres
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
     let mut expected = legacy_short_strref_door_add_expected_ee_bits();
-    expected.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    expected.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
     expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
@@ -5804,18 +5810,17 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_pres
     );
 
     let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten CEP-like no-map door/tail9/A6/U6 stream should exact-claim");
+        .expect("rewritten synthetic compact no-map door/tail9/A6/U6 stream should exact-claim");
     assert_eq!(claim.add_records, 2);
     assert_eq!(claim.update_records, 2);
 }
 
 #[test]
-fn cep_tail9_name_suffix_with_actual_short_strref_state_preserves_no_map_u6_bits() {
-    // The private CEP v2.3 starter stream's leading short-strref A/10 carries
-    // post-name state bits 1010. Normalizing the legacy short-name row to EE's
-    // direct empty-name shape preserves those state values; it still does not
-    // move the later no-map A/6 to full U/6 cursor handoff.
-    let actual_short_strref_state_bits = [true, false, true, false];
+fn synthetic_compact_tail9_name_token_with_actual_short_strref_state_preserves_no_map_u6_bits() {
+    // The stock localized-TLK A/10 prefix carries
+    // five post-name door BOOLs 10011. EE preserves those bits and the nested
+    // name selectors; only the byte-buffer visual transform is inserted.
+    let actual_short_strref_state_bits = [true, false, false, true, true];
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(
@@ -5827,7 +5832,7 @@ fn cep_tail9_name_suffix_with_actual_short_strref_state_preserves_no_map_u6_bits
 
     let mut bits =
         legacy_short_strref_door_add_source_bits_with_state(actual_short_strref_state_bits);
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
     bits.extend_from_slice(&following_update_bits);
@@ -5843,7 +5848,7 @@ fn cep_tail9_name_suffix_with_actual_short_strref_state_preserves_no_map_u6_bits
             .expect("rewritten fragment bits");
     let mut expected =
         legacy_short_strref_door_add_expected_ee_bits_with_state(actual_short_strref_state_bits);
-    expected.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    expected.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
     expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
@@ -5859,8 +5864,8 @@ fn cep_tail9_name_suffix_with_actual_short_strref_state_preserves_no_map_u6_bits
 }
 
 #[test]
-fn cep_tail9_name_suffix_does_not_supply_two_residue_bits_before_item_update() {
-    // Negative sibling for the exact CEP tail9 bit pattern. Even with the
+fn synthetic_compact_tail9_name_token_does_not_supply_two_residue_bits_before_item_update() {
+    // Negative sibling for the synthetic compact-tail9 pattern. Even with the
     // legacy name branch true and the four-byte suffix removed from the read
     // buffer, the next U/6 may validate at cursor +2 only if some separate
     // decompile-backed owner consumed those two bits first.
@@ -5889,7 +5894,7 @@ fn cep_tail9_name_suffix_does_not_supply_two_residue_bits_before_item_update() {
     );
 
     let mut bits = legacy_short_strref_door_add_source_bits();
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     bits.extend_from_slice(&shifted_item_bits);
     let mut payload = live_object_payload_with_bits(&live, bits);
@@ -5897,7 +5902,7 @@ fn cep_tail9_name_suffix_does_not_supply_two_residue_bits_before_item_update() {
 
     assert!(
         super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
-        "CEP-like tail9 name suffix must not skip unowned bits before the following U/6"
+        "synthetic compact-tail9 name token must not skip unowned bits before the following U/6"
     );
     assert_eq!(
         payload, original,
@@ -5906,11 +5911,12 @@ fn cep_tail9_name_suffix_does_not_supply_two_residue_bits_before_item_update() {
 }
 
 #[test]
-fn cep_tail9_name_suffix_with_actual_short_strref_state_does_not_supply_residue_bits() {
-    // Negative sibling for the actual CEP v2.3 leading A/10 state values. The
+fn synthetic_compact_tail9_name_token_with_actual_short_strref_state_does_not_supply_residue_bits()
+{
+    // Negative sibling for the stock localized A/10 state values. The
     // short-name normalization preserves those four bits but cannot donate two
     // extra source bits before the later no-map A/6 to U/6 handoff.
-    let actual_short_strref_state_bits = [true, false, true, false];
+    let actual_short_strref_state_bits = [true, false, false, true, true];
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(
@@ -5939,7 +5945,7 @@ fn cep_tail9_name_suffix_with_actual_short_strref_state_does_not_supply_residue_
 
     let mut bits =
         legacy_short_strref_door_add_source_bits_with_state(actual_short_strref_state_bits);
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     bits.extend_from_slice(&shifted_item_bits);
     let mut payload = live_object_payload_with_bits(&live, bits);
@@ -5956,7 +5962,7 @@ fn cep_tail9_name_suffix_with_actual_short_strref_state_does_not_supply_residue_
 }
 
 #[test]
-fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_does_not_supply_residue_bits()
+fn synthetic_compact_tail9_name_token_before_legacy_width_item_create_without_visual_map_does_not_supply_residue_bits()
  {
     // Negative sibling for the no-visual-map typed item-create branch above.
     // The EE visual-map bytes and active-property BOOL are inserted
@@ -5989,7 +5995,7 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_does
     );
 
     let mut bits = legacy_short_strref_door_add_source_bits();
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     bits.extend_from_slice(&shifted_item_bits);
     let mut payload = live_object_payload_with_bits(&live, bits);
@@ -6006,13 +6012,13 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_does
 }
 
 #[test]
-fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
-    // Replay the public shape of the raw CEP v2.3 no-map handoff observed in
+fn synthetic_compact_tail9_name_token_no_map_replays_raw_neighbor_u6_bits_without_repair() {
+    // Replay the synthetic compact no-map handoff retained for fallback coverage from
     // the private stream: A/10 `11010`, U/10 `01100011`, A/6 `00100`, then a
     // following U/6 whose first bits are `01110101100000`. The U/6 reader fits
     // only at cursor +2; without a decompile-backed owner for those two leading
     // bits, the packet-level rewrite must leave the stream unclaimed.
-    let actual_short_strref_state_bits = [true, false, true, false];
+    let actual_short_strref_state_bits = [true, false, false, true, true];
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(
@@ -6057,7 +6063,7 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
 
     let mut bits =
         legacy_short_strref_door_add_source_bits_with_state(actual_short_strref_state_bits);
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     bits.extend_from_slice(&shifted_item_bits);
     let mut payload = live_object_payload_with_bits(&live, bits);
@@ -6067,7 +6073,7 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         super::rewrite_update_records_payload_with_area_context_attempt(&mut payload, None);
     assert!(
         attempt.summary.is_none(),
-        "raw CEP no-map handoff must not skip two unowned bits before the following U/6"
+        "synthetic compact no-map handoff must not skip two unowned bits before the following U/6"
     );
     let failure = attempt
         .failure
@@ -6497,13 +6503,13 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     );
     assert_eq!(
         payload, original,
-        "failed raw CEP handoff proof must leave the source stream untouched"
+        "failed synthetic compact handoff proof must leave the source stream untouched"
     );
 }
 
 #[test]
-fn ee_shaped_door_add_cep_tail9_no_map_replays_raw_neighbor_u6_bits_without_repair() {
-    // The private CEP v2.3 debug pass first normalizes the leading A/10 to
+fn ee_shaped_door_add_synthetic_compact_tail9_no_map_replays_raw_neighbor_u6_bits_without_repair() {
+    // This synthetic fallback starts from an already-EE-shaped leading A/10 and
     // EE-shaped direct-empty/state bits, then reaches the same U/10 name suffix,
     // no-map A/6, and raw U/6 bits. The normalized prefix is still just a
     // boundary proof; it cannot own the two bits needed by the item update.
@@ -6550,7 +6556,7 @@ fn ee_shaped_door_add_cep_tail9_no_map_replays_raw_neighbor_u6_bits_without_repa
     );
 
     let mut bits = ee_shaped_generic_door_add_bits();
-    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     bits.extend_from_slice(&shifted_item_bits);
     let mut payload = live_object_payload_with_bits(&live, bits);
@@ -6568,36 +6574,33 @@ fn ee_shaped_door_add_cep_tail9_no_map_replays_raw_neighbor_u6_bits_without_repa
 
 #[test]
 fn cep_raw_fragment_tail_starts_semantic_bits_after_cnw_header() {
-    // The checked-in CEP v2.3 starter stream's raw tail starts
-    // `7A 63 23 AC ...`. Its first three MSB bits are the CNW final-valid-bit
-    // count, so live-object source bits start only after
-    // `CNW_FRAGMENT_HEADER_BITS`. The tail9 span below is local/HG compact
-    // evidence, not the normal Diamond `0x445160` orientation-BOOL writer path.
-    // The following U/6's first two bits are part of that item row, not reusable
-    // header/storage residue.
-    let raw_a10_bits = [true, true, false, true, false];
-    let raw_tail9_u10_bits = [false, true, true, false, false, false, true, true];
-    // Server `nwserver.exe` 0x4401F0 identifies item type 6 via table byte
-    // 0x6338AD, writes `A/type/id`, then delegates to 0x436E80 for byte-only
-    // appearance data and 0x436C60 for exactly this no-map source cursor:
-    // name selector false, then four Diamond active-property/status BOOLs.
-    let raw_no_map_a6_bits = [false, false, true, false, false];
-    let raw_shifted_u6_prefix_bits = [
-        false, true, // unowned pre-cursor residue in the private trace.
-        true, true, // item position residuals only if a prior owner consumes the residue.
-        false, true, false, true, true, // scalar-orientation selector plus residual bits.
-        false, false, false, false, false, // item state bits observed before the name branch.
+    // The stock Diamond writer trace and checked-in CEP fixture are byte-for-byte
+    // identical (`5B8475...B0632CF`). After the three-bit CNW header, the exact
+    // row split is A/10=8, U/10=15, A/6=6, U/6=9 bits. The formerly apparent
+    // two-bit U/6 residue was created by partitioning the preceding rows too
+    // narrowly.
+    let raw_a10_bits = [true, true, false, true, false, false, true, true];
+    let raw_u10_bits = [
+        false, false, false, true, true, false, false, true, false, false, false, true, true, true,
+        false,
     ];
+    let raw_a6_bits = [true, false, true, true, false, false];
+    let raw_u6_bits = [false, false, false, false, false, false, false, true, false];
 
     let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
     let a10_start = fragment_bits.len();
     fragment_bits.extend_from_slice(&raw_a10_bits);
-    let tail9_start = fragment_bits.len();
-    fragment_bits.extend_from_slice(&raw_tail9_u10_bits);
-    let no_map_a6_start = fragment_bits.len();
-    fragment_bits.extend_from_slice(&raw_no_map_a6_bits);
-    let shifted_u6_start = fragment_bits.len();
-    fragment_bits.extend_from_slice(&raw_shifted_u6_prefix_bits);
+    let u10_start = fragment_bits.len();
+    fragment_bits.extend_from_slice(&raw_u10_bits);
+    let a6_start = fragment_bits.len();
+    fragment_bits.extend_from_slice(&raw_a6_bits);
+    let u6_start = fragment_bits.len();
+    fragment_bits.extend_from_slice(&raw_u6_bits);
+    let u6_end = fragment_bits.len();
+    // The checked-in packet continues after this four-row proof. Two following
+    // bits retain its three-valid-bits final-byte header while keeping this test
+    // independent of the next row family.
+    fragment_bits.extend_from_slice(&[false, false]);
 
     let packed =
         super::bits::pack_msb_valid_bits(fragment_bits.clone(), super::CNW_FRAGMENT_HEADER_BITS);
@@ -6611,54 +6614,91 @@ fn cep_raw_fragment_tail_starts_semantic_bits_after_cnw_header() {
         "CNW fragment header encodes the final-byte valid-bit count"
     );
     assert_eq!(a10_start, super::CNW_FRAGMENT_HEADER_BITS);
-    assert_eq!(tail9_start, 8);
-    assert_eq!(no_map_a6_start, 16);
-    assert_eq!(shifted_u6_start, 21);
+    assert_eq!(u10_start, 11);
+    assert_eq!(a6_start, 26);
+    assert_eq!(u6_start, 32);
+    assert_eq!(u6_end, 41);
     assert_eq!(
-        &decoded[a10_start..tail9_start],
+        &decoded[a10_start..u10_start],
         &raw_a10_bits,
-        "raw A/10 source bits must begin after the CNW header"
+        "stock A/10 owns its nested localized-name selectors and five door BOOLs"
     );
     assert_eq!(
-        &decoded[tail9_start..no_map_a6_start],
-        &raw_tail9_u10_bits,
-        "tail9 U/10 source bits match the local/HG compact evidence width"
+        &decoded[u10_start..a6_start],
+        &raw_u10_bits,
+        "stock U/10 owns position, scalar orientation, state, and localized-name selectors"
     );
     assert_eq!(
-        &decoded[no_map_a6_start..shifted_u6_start],
-        &raw_no_map_a6_bits,
-        "typed A/6 no-map source bits do not own following item bits"
+        &decoded[a6_start..u6_start],
+        &raw_a6_bits,
+        "stock A/6 owns its inline-name selector and four item BOOLs"
     );
     assert_eq!(
-        &decoded[shifted_u6_start..],
-        &raw_shifted_u6_prefix_bits,
-        "the apparent cursor +2 fit starts inside the following U/6 source bits"
-    );
-
-    let mut repaired_prefix_bits =
-        legacy_short_strref_door_add_expected_ee_bits_with_state([true, false, true, false]);
-    repaired_prefix_bits
-        .extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
-    repaired_prefix_bits.extend_from_slice(&[false, false, false, true, false, false]);
-    assert_eq!(
-        super::CNW_FRAGMENT_HEADER_BITS + repaired_prefix_bits.len(),
-        28,
-        "after proven prior rewrites the item row still starts at the true CEP cursor"
+        &decoded[u6_start..u6_end],
+        &raw_u6_bits,
+        "stock U/6 starts at the exact writer handoff with no skipped residue"
     );
 }
 
 #[test]
-fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
-    // The private CEP v2.3 trace reaches the Lance U/6 after the normalized
-    // A/10, tail9 U/10, and no-map A/6 rewrites at bit cursor 28. Several
+fn stock_short_strref_zero_uses_fragment_selectors_not_empty_direct_string_shape() {
+    // A zero StrRef is byte-identical to a zero-length direct CExoString.
+    // Diamond `sub_44DE30 -> sub_53E700` makes the fragment-owned outer/inner
+    // BOOLs authoritative, so the stock localized branch still owns all eight
+    // A/10 bits and preserves the DWORD.
+    let live = legacy_short_strref_door_add_live_bytes_with_strref(0);
+    let source_bits = legacy_short_strref_door_add_source_bits();
+    let mut decoded_source = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    decoded_source.extend_from_slice(&source_bits);
+    let mut source_cursor = super::CNW_FRAGMENT_HEADER_BITS;
+    assert!(
+        super::cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
+            &live,
+            &decoded_source,
+            0,
+            live.len(),
+            &mut source_cursor,
+        ),
+        "source cursor must use fragment selectors to disambiguate StrRef zero"
+    );
+    assert_eq!(source_cursor, decoded_source.len());
+    let mut payload = live_object_payload_with_bits(&live, source_bits.clone());
+
+    crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    )
+    .expect("zero StrRef stock door add should rewrite exactly");
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let emitted =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    assert_eq!(
+        &emitted[super::CNW_FRAGMENT_HEADER_BITS..],
+        source_bits.as_slice(),
+        "localized StrRef zero must not be normalized to outer=false direct string"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_some(),
+        "localized StrRef zero output must satisfy the exact EE reader"
+    );
+}
+
+#[test]
+fn synthetic_compact_no_map_u6_neighboring_cursor_fits_are_not_ownership_proof() {
+    // This retained compact-tail9 negative reaches its synthetic U/6
+    // after A/10, compact U/10, and no-map A/6 rewrites. Several
     // neighboring cursors can validate the scalar-shaped item bytes, but
     // Diamond `sub_467AE0` / EE `sub_14079C050` still branch on the current
     // orientation bit before reading those bytes. A neighboring fit is only
     // evidence that some prior reader would need to own the skipped bits.
-    let actual_short_strref_state_bits = [true, false, true, false];
+    let actual_short_strref_state_bits = [true, false, false, true, true];
     let mut prefix_bits =
         legacy_short_strref_door_add_expected_ee_bits_with_state(actual_short_strref_state_bits);
-    prefix_bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    prefix_bits
+        .extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
     prefix_bits.extend_from_slice(&[false, false, false, true, false, false]); // no-map A/6 after EE repair.
 
     let shifted_item_bits = vec![
@@ -6667,15 +6707,15 @@ fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
         false, true, false, true, true, // scalar orientation selector plus residual bits.
         false, false, false, false, false, // item state bits.
         false, // direct CExoString item name.
-        false, false, // following-stream bits available in the private trace.
+        false, false, // following-stream bits retained by this synthetic fixture.
     ];
 
     let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
     fragment_bits.extend_from_slice(&prefix_bits);
     let item_cursor = fragment_bits.len();
     assert_eq!(
-        item_cursor, 28,
-        "public CEP-style prefix should match the private trace cursor"
+        item_cursor, 30,
+        "the synthetic prefix owns eight A/10 bits before the compact fallback"
     );
     fragment_bits.extend_from_slice(&shifted_item_bits);
 
@@ -6725,7 +6765,7 @@ fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
 
     let mut source_bits =
         legacy_short_strref_door_add_source_bits_with_state(actual_short_strref_state_bits);
-    source_bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    source_bits.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_source_bits());
     source_bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
     source_bits.extend_from_slice(&shifted_item_bits);
     let mut payload = live_object_payload_with_bits(&live, source_bits);
@@ -6790,10 +6830,9 @@ fn tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update()
 
 #[test]
 fn short_strref_door_add_before_tail9_item_handoff_preserves_full_item_update_bits() {
-    // The full CEP-like prefix includes a short-strref `A/10` door add before
-    // the `U/10` tail9 row. Diamond owns five source bits for that add; EE
-    // receives the canonical six-bit empty-name/state shape after one inserted
-    // BOOL. That normalization must not move the following item `U/6` cursor.
+    // This constructed compact-tail9 sibling includes the stock localized-TLK
+    // `A/10` door add before the compact `U/10`. Diamond and EE both own all
+    // eight A/10 source bits; only the byte-buffer visual map is inserted.
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
@@ -6834,9 +6873,9 @@ fn short_strref_door_add_before_tail9_item_handoff_preserves_full_item_update_bi
 
 #[test]
 fn short_strref_door_add_before_tail9_item_handoff_does_not_supply_two_residue_bits() {
-    // Negative sibling for the CEP v2.3 handoff: the initial `A/10` short-name
-    // row owns exactly five Diamond bits, not seven. The later U/6 may validate
-    // at cursor + 2 only if some separate reader consumed those two bits first.
+    // Negative sibling for the constructed compact handoff: the initial A/10
+    // owns exactly eight Diamond bits. The later U/6 may validate at cursor + 2
+    // only if some separate reader consumed those two bits first.
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());

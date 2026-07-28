@@ -3459,7 +3459,13 @@ fn rewrite_legacy_door_add_record_for_ee(
             .saturating_add(CNW_LENGTH_BYTES as u32);
     }
 
-    let name_shape = legacy_door_add_name_shape_at(bytes, name_offset, *record_end)?;
+    let name_shape = legacy_door_add_name_shape_with_fragment_at(
+        bytes,
+        name_offset,
+        *record_end,
+        bits,
+        *bit_cursor,
+    )?;
     if crate::translate::live_object_update::live_object_debug_env_enabled(
         "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
     ) {
@@ -3509,20 +3515,32 @@ fn rewrite_legacy_door_add_record_for_ee(
         *bit_cursor += 6;
         summary.fragment_bits_changed = true;
     } else if matches!(name_shape.kind, DoorAddNameKind::ShortStrRef) {
-        if bits.len().saturating_sub(*bit_cursor) < 5 {
-            return None;
+        if let Some(next_bit_cursor) = legacy_short_strref_door_add_fragment_end(bits, *bit_cursor)
+        {
+            // Diamond `sub_44DE30 -> sub_53E700` owns outer=true,
+            // inner/client-TLK=true, a one-bit language selector, then the
+            // post-name BOOL and four trailing door BOOLs. A stock nwserver
+            // writer trace pinned those eight bits at cursors 3..11
+            // (`11010011`). EE preserves the same localized branch; only the
+            // missing visual-transform map above needs materialization.
+            *bit_cursor = next_bit_cursor;
+        } else {
+            // Independently captured HG custom rows reuse this six-byte suffix
+            // without the required outer=true/inner=true StrRef selectors and
+            // with only four following door BOOLs. Preserve that bounded
+            // legacy dialect by canonicalizing its token DWORD to an empty
+            // direct CExoString.
+            let end = bit_cursor.checked_add(LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS)?;
+            if end > bits.len() {
+                return None;
+            }
+            write_u32_le(bytes, name_offset, 0)?;
+            summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
+            insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+            summary.bits_inserted = summary.bits_inserted.saturating_add(1);
+            summary.fragment_bits_changed = true;
+            *bit_cursor = end + 1;
         }
-        write_u32_le(bytes, name_offset, 0)?;
-        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
-        insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
-        summary.bits_inserted = summary.bits_inserted.saturating_add(1);
-        // Diamond short door-name rows carry the outer name BOOL followed by
-        // four shared post-name door state BOOLs. EE's canonical direct
-        // empty-name path has no StrRef read-buffer field, so the StrRef DWORD
-        // is normalized to a zero-length CExoString and the single missing
-        // post-name BOOL is inserted at the decompile-owned cursor.
-        *bit_cursor += 6;
-        summary.fragment_bits_changed = true;
     } else if bits.get(*bit_cursor).copied().unwrap_or(false) {
         match name_shape.kind {
             DoorAddNameKind::TlkLocString => {
@@ -4433,8 +4451,13 @@ fn advance_live_add_record_bit_cursor(
                 } else {
                     visual_offset
                 };
-            let Some(name_shape) = legacy_door_add_name_shape_at(bytes, name_offset, record_end)
-            else {
+            let Some(name_shape) = legacy_door_add_name_shape_with_fragment_at(
+                bytes,
+                name_offset,
+                record_end,
+                bits,
+                *bit_cursor,
+            ) else {
                 return false;
             };
             if *bit_cursor >= bits.len() {
@@ -4461,11 +4484,20 @@ fn advance_live_add_record_bit_cursor(
                     return *bit_cursor <= bits.len();
                 }
                 DoorAddNameKind::ShortStrRef => {
-                    if bits.len().saturating_sub(*bit_cursor) < 5 {
-                        return false;
+                    if let Some(next_cursor) =
+                        legacy_short_strref_door_add_fragment_end(bits, *bit_cursor)
+                    {
+                        *bit_cursor = next_cursor;
+                    } else {
+                        if bits.len().saturating_sub(*bit_cursor)
+                            < LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS
+                        {
+                            return false;
+                        }
+                        *bit_cursor =
+                            bit_cursor.saturating_add(LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS);
                     }
-                    *bit_cursor = bit_cursor.saturating_add(5);
-                    return *bit_cursor <= bits.len();
+                    return true;
                 }
             };
             *bit_cursor = bit_cursor.saturating_add(6 + source_inner_bits);
@@ -4589,8 +4621,46 @@ impl DoorAddNameShape {
 }
 
 const LEGACY_COMPACT_DOOR_TAIL_BOOL_BITS: usize = 4;
+const LEGACY_COMPACT_DOOR_NAME_TOKEN_BOOL_BITS: usize = 5;
+const LEGACY_SHORT_STRREF_DOOR_ADD_BOOL_BITS: usize = 8;
 const LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS: usize = 4;
 const LEGACY_PLACEABLE_EMPTY_NAME_PREFIX_SCAN_BYTES: usize = 8;
+
+fn legacy_short_strref_door_add_fragment_end(bits: &[bool], bit_cursor: usize) -> Option<usize> {
+    let end = bit_cursor.checked_add(LEGACY_SHORT_STRREF_DOOR_ADD_BOOL_BITS)?;
+    if end > bits.len()
+        || !bits.get(bit_cursor).copied()?
+        || !bits.get(bit_cursor.checked_add(1)?).copied()?
+    {
+        return None;
+    }
+    Some(end)
+}
+
+fn legacy_door_add_name_shape_with_fragment_at(
+    bytes: &[u8],
+    name_offset: usize,
+    record_end: usize,
+    bits: &[bool],
+    bit_cursor: usize,
+) -> Option<DoorAddNameShape> {
+    if name_offset.checked_add(4 + 2) == Some(record_end)
+        && read_u32_le(bytes, name_offset).is_some()
+        && read_u16_le(bytes, name_offset + 4).is_some()
+        && legacy_short_strref_door_add_fragment_end(bits, bit_cursor).is_some()
+    {
+        // A zero StrRef has the same four read-buffer bytes as an empty direct
+        // CExoString. The writer-owned outer=true/inner=true selectors are the
+        // discriminator: stock Diamond and EE both route that shape through
+        // the localized StrRef reader, regardless of the DWORD value.
+        return Some(DoorAddNameShape {
+            kind: DoorAddNameKind::ShortStrRef,
+            legacy_model_token: None,
+        });
+    }
+
+    legacy_door_add_name_shape_at(bytes, name_offset, record_end)
+}
 
 fn legacy_door_add_name_shape_at(
     bytes: &[u8],
@@ -4647,11 +4717,9 @@ fn legacy_door_add_name_shape_at(
         && read_u32_le(bytes, name_offset).is_some()
         && read_u16_le(bytes, name_offset + 4).is_some()
     {
-        // Normal legacy HG door rows can carry a four-byte short StrRef/name
-        // token before the final WORD state. EE's door add reader has no
-        // matching read-buffer slot, so the writer normalizes this exact
-        // six-byte suffix to an empty direct CExoString plus the same state
-        // WORD.
+        // Stock Diamond and EE localized-name readers both carry this
+        // four-byte StrRef before the final WORD state; their outer, inner,
+        // and one-bit language selectors live in the fragment stream.
         Some(DoorAddNameShape {
             kind: DoorAddNameKind::ShortStrRef,
             legacy_model_token: None,
@@ -4689,11 +4757,10 @@ fn looks_like_legacy_door_tlk_locstring_at(
         return false;
     }
 
-    // `sub_1409735F0` reads inner/client-tlk BOOL=true, then ReadBYTE(1, 1)
-    // and ReadDWORD(32) before returning to the door reader, which consumes the
-    // final WORD tail. `ReadBYTE(1, 1)` yields the observed 0/1 client TLK
-    // selector in HG captures; keep this exact so arbitrary non-string bytes do
-    // not become a generic door-name escape hatch.
+    // Some older custom-server captures carry a full 0/1 byte before the
+    // StrRef. Keep that seven-byte legacy dialect bounded and separate from
+    // the stock Diamond/EE localized-name branch, whose one-bit language
+    // selector belongs to the fragment stream.
     matches!(bytes[name_offset], 0 | 1)
         && read_u32_le(bytes, name_offset + 1).is_some()
         && read_u16_le(bytes, name_offset + LEGACY_DOOR_TLK_LOCSTRING_BYTES).is_some()

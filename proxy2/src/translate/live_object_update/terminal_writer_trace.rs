@@ -2033,8 +2033,8 @@ mod tests {
                             requirement.emitted_read_buffer_cursor,
                             requirement.emitted_read_buffer_end,
                         ),
-                        (182, 243, 243),
-                        "EE plan coordinates remain in the independently staged work buffer"
+                        (172, 233, 233),
+                        "the exact stock door path inserts only the EE visual map before the staged terminal record"
                     );
                     let correlation = correlate_loaded_terminal_writer_trace_journal(
                         requirement,
@@ -2063,7 +2063,7 @@ mod tests {
         assert_eq!(unique_summary.terminal_source_fragment_bits_owned, 13);
         assert_eq!(
             unique_summary.terminal_emitted_residual_fragment_bits_removed,
-            17
+            13
         );
         assert!(super::super::claim_payload_if_verified(&unique_payload).is_some());
 
@@ -2330,16 +2330,16 @@ mod tests {
         assert_eq!(unique.source_fragment_bit_start, Some(63));
         assert_eq!(unique.source_fragment_bit_end, Some(76));
         assert_eq!(unique.source_fragment_bit_count, Some(13));
-        assert_eq!(unique.emitted_read_buffer_cursor, Some(243));
-        assert_eq!(unique.emitted_read_buffer_end, Some(243));
-        assert_eq!(unique.emitted_fragment_bit_start, Some(71));
+        assert_eq!(unique.emitted_read_buffer_cursor, Some(233));
+        assert_eq!(unique.emitted_read_buffer_end, Some(233));
+        assert_eq!(unique.emitted_fragment_bit_start, Some(75));
         assert_eq!(unique.emitted_fragment_bit_end, Some(88));
-        assert_eq!(unique.emitted_fragment_bit_count, Some(17));
+        assert_eq!(unique.emitted_fragment_bit_count, Some(13));
         assert!(unique.proof_join_ready);
         assert!(unique.exact_final_validator_accepted);
-        assert_eq!(unique.candidate_payload_bytes, Some(259));
-        assert_eq!(unique.candidate_fragment_bit_end, Some(71));
-        assert_eq!(unique.candidate_fragment_final_bits, Some(7));
+        assert_eq!(unique.candidate_payload_bytes, Some(250));
+        assert_eq!(unique.candidate_fragment_bit_end, Some(75));
+        assert_eq!(unique.candidate_fragment_final_bits, Some(3));
         assert_eq!(unique.terminal_exact_writer_rewrites, 1);
         assert_eq!(
             std::fs::read(&payload_path).expect("reread proof payload"),

@@ -7615,18 +7615,23 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
-    fn dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit()
-     {
+    fn dispatcher_claims_local_cepv23_starter_lance_lute_patron_stock_writer_stream() {
         // Local CEP v2.3 starter seq17 from 2026-05-23: NPC/placeable add
         // records for Lance, Lute, and Tavern Patron arrive as a declared
-        // P/05/01 stream. The current typed passes make progress inside the
-        // stream, but the U/6 handoff and terminal tail still lack a
-        // decompile-backed owner, so strict dispatch must leave it unclaimed.
+        // P/05/01 stream. A 2026-07-28 stock nwserver writer trace reproduced
+        // this exact 411-byte payload (SHA-256 5B8475DA...32CF) and pinned the
+        // leading A/10 -> U/10 -> A/6 -> U/6 source cursor at 8/15/6/9 bits.
+        // Strict dispatch must preserve those stock reader branches, insert
+        // only EE-owned fields, and exact-claim the complete stream.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_cepv23_starter_seq17_lance_lute_patron_liveobject_20260523_unclaimed.bin"
         )
         .to_vec();
         let original = payload.clone();
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw CEP v2.3 source still carries Diamond masks and add shapes"
+        );
 
         let started = std::time::Instant::now();
         let rewrite = dispatch_live_object_fixture(&mut payload);
@@ -7634,40 +7639,19 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(3),
             "dispatcher CEP v2.3 starter live-object claim must stay bounded"
         );
-        assert!(
-            !rewrite.any_rewrite(),
-            "dispatcher must not claim CEP v2.3 starter live-object without exact boundary proof"
-        );
+        assert!(rewrite.any_rewrite());
         assert_eq!(
-            rewrite.quarantine_reason,
-            Some("item-update-cursor-failed-before-valid-neighbor-focus-row-prefix"),
-            "dispatcher should preserve the bounded U/6 ledger failure reason"
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
         );
-        let failure = rewrite
-            .live_object_update_failure
-            .expect("dispatcher should retain the bounded live-object U/6 failure evidence");
+        assert_ne!(payload, original);
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("writer-proven CEP v2.3 stream must exact-claim after translation");
+        assert!(claim.add_records >= 4);
+        assert!(claim.update_records >= 4);
         assert_eq!(
-            failure.kind,
-            crate::translate::live_object_update::LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborFocusRowPrefix
-        );
-        let evidence = failure
-            .item_update_cursor_evidence
-            .expect("dispatcher failure should include item cursor evidence");
-        let neighbor = evidence
-            .unowned_neighbor
-            .expect("dispatcher failure should include the validating unowned neighbor");
-        assert_eq!(neighbor.delta, 2);
-        assert_eq!(
-            neighbor.gap_origin,
-            crate::translate::live_object_update::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
-        );
-        assert_eq!(
-            payload, original,
-            "failed dispatcher claim must leave CEP v2.3 boundary evidence unchanged"
-        );
-        assert!(
-            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
-            "raw CEP v2.3 starter payload should remain unclaimed active evidence"
+            claim.declared,
+            payload.len().saturating_sub(claim.fragment_bytes)
         );
     }
 
