@@ -1699,6 +1699,76 @@ fn trace_live_object_exact_claim_summary(
     claim: &live_update::ClaimSummary,
     object_registry: Option<&semantic::ObjectRegistry>,
 ) {
+    let cursor_ambiguous_profiles = claim
+        .record_profiles
+        .iter()
+        .filter(|profile| {
+            profile.gui_item.as_ref().is_some_and(|item| {
+                item.matching_fragment_bit_widths.len() > 1
+                    || item.matching_record_ends.len() > 1
+                    || item.matching_record_ends_truncated
+            })
+        })
+        .count();
+    let emit_record_profiles = claim.live_gui_item_create_records >= 8
+        || cursor_ambiguous_profiles != 0
+        || crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_LIVE_GUI_PROFILE",
+        );
+    if emit_record_profiles {
+        for profile in &claim.record_profiles {
+            let gui_item = profile.gui_item.as_ref();
+            tracing::debug!(
+                family = family_name,
+                record_index = profile.index,
+                record_family = profile.family,
+                offset = profile.offset,
+                record_end = profile.record_end,
+                read_buffer_bytes = profile.read_buffer_bytes,
+                opcode = profile.opcode,
+                marker = profile.marker,
+                inner_opcode = profile.inner_opcode.unwrap_or_default(),
+                inner_opcode_known = profile.inner_opcode.is_some(),
+                object_id = profile.object_id.unwrap_or_default(),
+                object_id_known = profile.object_id.is_some(),
+                fragment_bit_start = profile.fragment_bit_start,
+                fragment_bit_end = profile.fragment_bit_end,
+                fragment_bits = profile.fragment_bits,
+                gui_item = gui_item.is_some(),
+                gui_item_base_item = gui_item.map(|item| item.base_item).unwrap_or_default(),
+                gui_item_model_type = gui_item
+                    .and_then(|item| item.model_type)
+                    .unwrap_or_default(),
+                gui_item_model_type_known = gui_item.and_then(|item| item.model_type).is_some(),
+                gui_item_source_fragment_bits = gui_item
+                    .map(|item| item.selected_source_fragment_bits)
+                    .unwrap_or_default(),
+                gui_item_ee_extra_fragment_bits = gui_item
+                    .map(|item| item.selected_ee_extra_fragment_bits)
+                    .unwrap_or_default(),
+                gui_item_selected_fragment_bits = gui_item
+                    .map(|item| item.selected_fragment_bits)
+                    .unwrap_or_default(),
+                gui_item_name_proof = gui_item
+                    .map(|item| item.selected_name_proof)
+                    .unwrap_or(""),
+                gui_item_matching_candidates = gui_item
+                    .map(|item| item.matching_candidates)
+                    .unwrap_or_default(),
+                gui_item_matching_fragment_bit_widths = ?gui_item
+                    .map(|item| item.matching_fragment_bit_widths.as_slice()),
+                gui_item_matching_candidate_profiles = ?gui_item
+                    .map(|item| item.matching_candidate_profiles.as_slice()),
+                gui_item_matching_record_ends = ?gui_item
+                    .map(|item| item.matching_record_ends.as_slice()),
+                gui_item_matching_record_ends_truncated = gui_item
+                    .map(|item| item.matching_record_ends_truncated)
+                    .unwrap_or(false),
+                "server live-object exact record boundary profile"
+            );
+        }
+    }
+
     let trace = LiveObjectExactClaimTraceSummary::from_claim_with_materialization(
         claim,
         |object_type, object_id| {
@@ -1713,6 +1783,10 @@ fn trace_live_object_exact_claim_summary(
         live_bytes_length = claim.live_bytes_length,
         fragment_bytes = claim.fragment_bytes,
         records_examined = trace.records_examined,
+        record_profiles_retained = claim.record_profiles.len(),
+        record_profiles_truncated = claim.record_profiles_truncated,
+        cursor_ambiguous_profiles,
+        record_profile_events_emitted = emit_record_profiles,
         add_records = trace.add_records,
         update_records = trace.update_records,
         delete_records = trace.delete_records,

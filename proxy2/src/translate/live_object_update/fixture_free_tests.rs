@@ -601,8 +601,9 @@ fn ee_shaped_model_type2_typed_item_create_live_bytes() -> Vec<u8> {
     live.extend_from_slice(b"Lance");
     live.extend_from_slice(&2u32.to_le_bytes());
     live.extend_from_slice(&1u32.to_le_bytes());
+    live.extend_from_slice(&[0; 8]); // EE build-0x24 INT32 zero plus empty CExoString.
     live.extend_from_slice(&[0, 0, 0xFF]);
-    live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live.extend_from_slice(&[2, 3, 4, 5, 6, 7, 8, 9]);
     live
 }
 
@@ -628,7 +629,7 @@ fn inject_live_boundary_lookalike_into_item_property_values(live: &mut [u8]) {
         .position(|window| window == b"Lance")
         .expect("item name in typed item-create fixture");
     let active_property_tail_start = name_start + b"Lance".len();
-    let value_bytes_start = active_property_tail_start + 11;
+    let value_bytes_start = active_property_tail_start + 19;
     live[value_bytes_start..value_bytes_start + 8].copy_from_slice(&[
         b'U',
         super::ITEM_OBJECT_TYPE,
@@ -672,7 +673,7 @@ fn legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes() -> Ve
     live.extend_from_slice(&2u32.to_le_bytes());
     live.extend_from_slice(&1u32.to_le_bytes());
     live.extend_from_slice(&[0, 0, 0xFF]);
-    live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live.extend_from_slice(&[2, 3, 4, 5, 6, 7, 8, 9]);
     live
 }
 
@@ -687,7 +688,7 @@ fn legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes() ->
     live.extend_from_slice(&2u32.to_le_bytes());
     live.extend_from_slice(&1u32.to_le_bytes());
     live.extend_from_slice(&[0, 0, 0xFF]);
-    live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live.extend_from_slice(&[2, 3, 4, 5, 6, 7, 8, 9]);
     live
 }
 
@@ -2419,6 +2420,31 @@ fn live_gui_inventory_delete_row_is_read_buffer_only() {
 }
 
 #[test]
+fn exact_record_profiles_are_bounded_for_large_live_gui_streams() {
+    let rows = super::MAX_LIVE_OBJECT_RECORD_PROFILES + 44;
+    let mut live = Vec::with_capacity(rows * 3);
+    for _ in 0..rows {
+        live.extend_from_slice(&[b'G', b'Q', 0]);
+    }
+
+    let payload = live_gui_read_buffer_payload(&live);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("fixed zero-row GQ records should remain exact read-buffer records");
+
+    assert_eq!(claim.records_examined as usize, rows);
+    assert_eq!(claim.live_gui_read_buffer_records as usize, rows);
+    assert_eq!(
+        claim.record_profiles.len(),
+        super::MAX_LIVE_OBJECT_RECORD_PROFILES
+    );
+    assert_eq!(claim.record_profiles_truncated, 44);
+    assert_eq!(
+        claim.record_profiles.last().map(|profile| profile.index),
+        Some((super::MAX_LIVE_OBJECT_RECORD_PROFILES - 1) as u32)
+    );
+}
+
+#[test]
 fn live_gui_quickbar_link_row_requires_object_id_at_row_offset_two() {
     // `G Q` is read-buffer-only, but its row boundary is still byte-exact:
     // Diamond `sub_4589A0` / EE `sub_1407B3F30` read count, then nine-byte rows
@@ -2612,6 +2638,37 @@ fn live_gui_missing_inventory_add_opcode_rewrites_only_with_item_bit_proof() {
         .expect("repaired GUI item-create row should exact-claim");
     assert_eq!(claim.live_gui_item_create_records, 1);
     assert_eq!(claim.live_gui_fragment_bits, item_bits.len() as u32);
+    assert_eq!(claim.record_profiles.len(), 1);
+    let profile = &claim.record_profiles[0];
+    assert_eq!(profile.index, 0);
+    assert_eq!(profile.family, "live-gui");
+    assert_eq!(profile.offset, 0);
+    assert_eq!(profile.record_end, live.len());
+    assert_eq!(profile.read_buffer_bytes, live.len());
+    assert_eq!(profile.opcode, b'G');
+    assert_eq!(profile.marker, b'I');
+    assert_eq!(profile.inner_opcode, Some(b'A'));
+    assert_eq!(profile.object_id, Some(0x8000_00B8));
+    assert_eq!(profile.fragment_bit_start, super::CNW_FRAGMENT_HEADER_BITS);
+    assert_eq!(
+        profile.fragment_bit_end,
+        super::CNW_FRAGMENT_HEADER_BITS + item_bits.len()
+    );
+    assert_eq!(profile.fragment_bits, item_bits.len());
+    let gui_item = profile.gui_item.as_ref().expect("typed GUI item profile");
+    assert_eq!(gui_item.object_id, 0x8000_00B8);
+    assert_eq!(gui_item.base_item, 0x01);
+    assert_eq!(gui_item.model_type, Some(2));
+    assert_eq!(gui_item.selected_fragment_bits, item_bits.len());
+    assert!(gui_item.matching_candidates >= 1);
+    assert!(!gui_item.matching_candidate_profiles.is_empty());
+    assert!(
+        gui_item
+            .matching_fragment_bit_widths
+            .contains(&item_bits.len())
+    );
+    assert_eq!(gui_item.matching_record_ends, vec![live.len()]);
+    assert!(!gui_item.matching_record_ends_truncated);
     assert_eq!(
         claim.live_bytes_length + super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES,
         declared

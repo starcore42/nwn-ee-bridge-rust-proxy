@@ -604,16 +604,17 @@ fn write_quickbar_active_item_properties(
     writer.write_bit(active_props.post_name_bool1);
     writer.write_dword(active_props.cost);
     writer.write_dword(active_props.stack_or_charges);
-    // EE `sub_14076BD30` reads one additional post-DWORD BOOL that Diamond
-    // `sub_451020` does not write. The live-object equipment translator calls
-    // this the EE-only active-property / CanUseItem bit and inserts it as false;
-    // quickbar item buttons use the same item-property reader, so emit the same
-    // decompile-backed neutral value here instead of shifting the property count
-    // into a BOOL slot.
-    writer.write_bit(false);
     writer.write_bit(active_props.post_name_bool2);
     writer.write_bit(active_props.post_name_bool3);
     writer.write_bit(active_props.post_name_bool4);
+    // Diamond server helper 0x436C60 writes these four source BOOLs in order;
+    // its second field is CanUseItem. EE server `sub_1404C7DA0` preserves all
+    // four and appends a new +0x468 field after the legacy +0x458/+0x450 fields.
+    // Quickbar item buttons enter the same EE item-property reader, so append the
+    // neutral EE-only value here instead of shifting Diamond's three post-DWORD
+    // fields.
+    writer.write_bit(false);
+    append_empty_ee_build36_active_item_pair(writer)?;
     let property_count = u8::try_from(active_props.properties.len()).ok()?;
     if property_count > MAX_REASONABLE_QUICKBAR_ITEM_PROPERTIES {
         return None;
@@ -647,10 +648,21 @@ fn write_empty_quickbar_active_item_properties(
     writer.write_bit(false);
     writer.write_bit(false);
     writer.write_bit(false);
+    append_empty_ee_build36_active_item_pair(writer)?;
     writer.write_byte(0);
     writer.write_byte(0);
     writer.write_byte(0);
     Some(())
+}
+
+fn append_empty_ee_build36_active_item_pair(writer: &mut QuickbarPacketWriter) -> Option<()> {
+    // EE `sub_14076BD30` checks ServerSatisfiesBuild(0x2001, 0x24, 2)
+    // immediately after the five active-property BOOLs. The EE-facing bridge
+    // takes that branch, which consumes one INT32 and one CExoString before
+    // the property-count BYTE. Diamond has neither field, so emit the neutral
+    // pair: zero INT32 followed by an empty length-prefixed string.
+    writer.write_i32(0);
+    writer.write_string(&[])
 }
 
 fn write_quickbar_loc_string(
@@ -1140,14 +1152,24 @@ mod tests {
         assert_eq!(reader.read_bit(), Some(active_props.post_name_bool1));
         assert_eq!(reader.read_dword(), Some(active_props.cost));
         assert_eq!(reader.read_dword(), Some(active_props.stack_or_charges));
-        assert_eq!(
-            reader.read_bit(),
-            Some(false),
-            "EE-only CanUseItem bit is inserted after the shared pre-DWORD BOOL"
-        );
         assert_eq!(reader.read_bit(), Some(active_props.post_name_bool2));
         assert_eq!(reader.read_bit(), Some(active_props.post_name_bool3));
         assert_eq!(reader.read_bit(), Some(active_props.post_name_bool4));
+        assert_eq!(
+            reader.read_bit(),
+            Some(false),
+            "EE-only active-property bit is appended after all four Diamond fields"
+        );
+        assert_eq!(
+            reader.read_i32(),
+            Some(0),
+            "EE build-0x24 active-item integer is neutral"
+        );
+        assert_eq!(
+            reader.read_string(),
+            Some(Vec::new()),
+            "EE build-0x24 active-item string is neutral"
+        );
         assert_eq!(
             reader.read_byte(),
             Some(u8::try_from(active_props.properties.len()).unwrap())
@@ -1308,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn active_property_direct_name_keeps_can_use_insert_after_pre_dword_bool() {
+    fn active_property_direct_name_appends_ee_only_bit_after_legacy_fields() {
         let active_props = QuickbarActiveItemProperties {
             has_armor_word: true,
             armor_word: 0xBEEF,
@@ -1347,10 +1369,43 @@ mod tests {
         assert_common_active_property_tail(&mut reader, &active_props);
 
         let mut shifted = payload.clone();
-        flip_fragment_bit(&mut shifted, 6);
+        flip_fragment_bit(&mut shifted, 9);
         assert!(
             !ee_set_all_buttons_payload_shape_valid(&shifted),
-            "validator must reject a true EE-only CanUseItem bit instead of treating it as a shifted active-property field"
+            "validator must reject a true EE-only final active-property bit"
+        );
+
+        let mut pair_reader = ee_reader_for_payload(&payload);
+        skip_primary_armor_item_prefix(&mut pair_reader, active_props.armor_word);
+        assert_eq!(pair_reader.read_bit(), Some(false));
+        assert_eq!(
+            pair_reader.read_string(),
+            Some(active_props.string_name.clone())
+        );
+        assert_eq!(pair_reader.read_bit(), Some(active_props.post_name_bool1));
+        assert_eq!(pair_reader.read_dword(), Some(active_props.cost));
+        assert_eq!(
+            pair_reader.read_dword(),
+            Some(active_props.stack_or_charges)
+        );
+        assert_eq!(pair_reader.read_bit(), Some(active_props.post_name_bool2));
+        assert_eq!(pair_reader.read_bit(), Some(active_props.post_name_bool3));
+        assert_eq!(pair_reader.read_bit(), Some(active_props.post_name_bool4));
+        assert_eq!(pair_reader.read_bit(), Some(false));
+        let pair_payload_offset = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + pair_reader.cursor;
+
+        let mut nonneutral_integer = payload.clone();
+        nonneutral_integer[pair_payload_offset] = 1;
+        assert!(
+            !ee_set_all_buttons_payload_shape_valid(&nonneutral_integer),
+            "validator must reject a nonneutral EE build-0x24 active-item integer"
+        );
+
+        let mut nonempty_string = payload.clone();
+        nonempty_string[pair_payload_offset + CNW_LENGTH_BYTES] = 1;
+        assert!(
+            !ee_set_all_buttons_payload_shape_valid(&nonempty_string),
+            "validator must reject a nonempty EE build-0x24 active-item string"
         );
     }
 
@@ -1406,10 +1461,10 @@ mod tests {
         assert_common_active_property_tail(&mut reader, &active_props);
 
         let mut shifted = payload.clone();
-        flip_fragment_bit(&mut shifted, 7);
+        flip_fragment_bit(&mut shifted, 10);
         assert!(
             !ee_set_all_buttons_payload_shape_valid(&shifted),
-            "validator must reject a true EE-only CanUseItem bit after token-name bits"
+            "validator must reject a true EE-only final bit after token-name and legacy fields"
         );
     }
 
@@ -1461,10 +1516,10 @@ mod tests {
         assert_common_active_property_tail(&mut reader, &active_props);
 
         let mut shifted = payload.clone();
-        flip_fragment_bit(&mut shifted, 7);
+        flip_fragment_bit(&mut shifted, 10);
         assert!(
             !ee_set_all_buttons_payload_shape_valid(&shifted),
-            "validator must reject a true EE-only CanUseItem bit after inline locstring-name bits"
+            "validator must reject a true EE-only final bit after inline-name and legacy fields"
         );
     }
 }

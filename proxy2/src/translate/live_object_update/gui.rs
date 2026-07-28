@@ -39,7 +39,8 @@
 //! accepts the zero form.
 
 use super::{
-    LiveObjectQuickbarItemUseCountUpdate, appearance, bits, boundary, read_u16_le, read_u32_le,
+    LiveObjectGuiItemRecordProfile, LiveObjectQuickbarItemUseCountUpdate, appearance, bits,
+    boundary, read_u16_le, read_u32_le,
 };
 
 const LIVE_GUI_OPCODE: u8 = b'G';
@@ -685,10 +686,11 @@ fn looks_like_character_sheet_object_id(object_id: u32) -> bool {
         || boundary::looks_like_legacy_live_object_id_value(object_id)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct LiveGuiRecordClaim {
     pub item_create: bool,
     pub fragment_bits: usize,
+    pub item_profile: Option<LiveObjectGuiItemRecordProfile>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -840,6 +842,26 @@ pub(super) fn try_get_verified_ee_live_gui_record_end(
         })
 }
 
+pub(super) fn verified_ee_live_gui_item_record_end_candidates(
+    bytes: &[u8],
+    offset: usize,
+    search_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<appearance::VerifiedEeItemCreateRecordEndCandidates> {
+    let scan_end = search_end.min(bytes.len());
+    let item_object_offset = legacy_live_gui_item_object_offset(bytes, offset, scan_end)?;
+    Some(
+        appearance::verified_ee_gui_item_create_record_end_candidates(
+            bytes,
+            item_object_offset,
+            scan_end,
+            fragment_bits,
+            bit_cursor,
+        ),
+    )
+}
+
 pub(super) fn is_verified_live_gui_read_buffer_record(
     bytes: &[u8],
     offset: usize,
@@ -861,6 +883,7 @@ pub(super) fn advance_verified_live_gui_record(
         return Some(LiveGuiRecordClaim {
             item_create: false,
             fragment_bits: 0,
+            item_profile: None,
         });
     }
 
@@ -877,24 +900,40 @@ pub(super) fn advance_verified_live_gui_record(
             return Some(LiveGuiRecordClaim {
                 item_create: false,
                 fragment_bits: (*bit_cursor).saturating_sub(before),
+                item_profile: None,
             });
         }
     }
 
     let item_object_offset = legacy_live_gui_item_object_offset(bytes, offset, record_end)?;
     let before = *bit_cursor;
-    if !appearance::advance_verified_ee_item_create_record(
+    let fragment_claim = appearance::verified_ee_item_create_fragment_claim(
         bytes,
         item_object_offset,
         record_end,
         fragment_bits,
-        bit_cursor,
-    ) {
-        return None;
-    }
+        *bit_cursor,
+    )?;
+    *bit_cursor = bit_cursor.saturating_add(fragment_claim.selected_fragment_bits);
+    let object_id = read_u32_le(bytes, item_object_offset)?;
+    let base_item = read_u32_le(bytes, item_object_offset.checked_add(4)?)?;
     Some(LiveGuiRecordClaim {
         item_create: true,
         fragment_bits: (*bit_cursor).saturating_sub(before),
+        item_profile: Some(LiveObjectGuiItemRecordProfile {
+            object_id,
+            base_item,
+            model_type: crate::translate::baseitems::base_item_model_type(base_item),
+            selected_source_fragment_bits: fragment_claim.selected_source_fragment_bits,
+            selected_ee_extra_fragment_bits: fragment_claim.selected_ee_extra_fragment_bits,
+            selected_fragment_bits: fragment_claim.selected_fragment_bits,
+            selected_name_proof: fragment_claim.selected_name_proof,
+            matching_candidates: fragment_claim.matching_candidates,
+            matching_fragment_bit_widths: fragment_claim.matching_fragment_bit_widths,
+            matching_candidate_profiles: fragment_claim.matching_candidate_profiles,
+            matching_record_ends: Vec::new(),
+            matching_record_ends_truncated: false,
+        }),
     })
 }
 
@@ -909,6 +948,7 @@ pub(super) fn advance_legacy_live_gui_record_for_transport(
         return Some(LiveGuiRecordClaim {
             item_create: false,
             fragment_bits: 0,
+            item_profile: None,
         });
     }
 
@@ -925,6 +965,7 @@ pub(super) fn advance_legacy_live_gui_record_for_transport(
             return Some(LiveGuiRecordClaim {
                 item_create: false,
                 fragment_bits: (*bit_cursor).saturating_sub(before),
+                item_profile: None,
             });
         }
     }
@@ -943,6 +984,7 @@ pub(super) fn advance_legacy_live_gui_record_for_transport(
     Some(LiveGuiRecordClaim {
         item_create: true,
         fragment_bits: (*bit_cursor).saturating_sub(before),
+        item_profile: None,
     })
 }
 

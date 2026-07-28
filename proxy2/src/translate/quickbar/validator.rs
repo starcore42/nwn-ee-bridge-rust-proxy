@@ -283,17 +283,25 @@ fn validate_ee_quickbar_active_item_properties(
         return false;
     }
 
-    let Some(ee_only_can_use_item) = reader.read_bit() else {
+    // Diamond `sub_451020` consumes three more source BOOLs after the two
+    // DWORDs. Diamond server helper 0x436C60 proves the first is CanUseItem and
+    // EE server `sub_1404C7DA0` preserves all three before appending its +0x468
+    // field.
+    if reader.read_bit().is_none() || reader.read_bit().is_none() || reader.read_bit().is_none() {
+        return false;
+    }
+
+    let Some(ee_only_active_property) = reader.read_bit() else {
         return false;
     };
-    if ee_only_can_use_item {
+    if ee_only_active_property {
         // Diamond has no source bit for this EE-only field. The translator owns
         // the semantic expansion and must emit the same neutral false value used
         // by the live-object equipment item translator.
         return false;
     }
 
-    if reader.read_bit().is_none() || reader.read_bit().is_none() || reader.read_bit().is_none() {
+    if !validate_empty_ee_build36_active_item_pair(reader) {
         return false;
     }
 
@@ -321,6 +329,14 @@ fn validate_ee_quickbar_active_item_properties(
         }
     }
     true
+}
+
+fn validate_empty_ee_build36_active_item_pair(reader: &mut QuickbarPacketReader<'_>) -> bool {
+    // EE `sub_14076BD30` checks ServerSatisfiesBuild(0x2001, 0x24, 2) after
+    // the five active-property BOOLs and, on the EE branch, reads an INT32 plus
+    // a CExoString before the property-count BYTE. The bridge owns only the
+    // neutral expansion of those EE-only fields.
+    reader.read_i32() == Some(0) && reader.read_string().is_some_and(|text| text.is_empty())
 }
 
 #[cfg(test)]

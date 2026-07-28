@@ -20118,6 +20118,49 @@ pub struct LiveObjectQuickbarItemUseCountUpdate {
     pub use_count: u16,
 }
 
+const MAX_LIVE_OBJECT_RECORD_PROFILES: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveObjectGuiItemFragmentCandidateProfile {
+    pub source_fragment_bits: usize,
+    pub ee_extra_fragment_bits: usize,
+    pub fragment_bits: usize,
+    pub name_proof: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveObjectGuiItemRecordProfile {
+    pub object_id: u32,
+    pub base_item: u32,
+    pub model_type: Option<i8>,
+    pub selected_source_fragment_bits: usize,
+    pub selected_ee_extra_fragment_bits: usize,
+    pub selected_fragment_bits: usize,
+    pub selected_name_proof: &'static str,
+    pub matching_candidates: usize,
+    pub matching_fragment_bit_widths: Vec<usize>,
+    pub matching_candidate_profiles: Vec<LiveObjectGuiItemFragmentCandidateProfile>,
+    pub matching_record_ends: Vec<usize>,
+    pub matching_record_ends_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveObjectRecordBoundaryProfile {
+    pub index: u32,
+    pub family: &'static str,
+    pub offset: usize,
+    pub record_end: usize,
+    pub read_buffer_bytes: usize,
+    pub opcode: u8,
+    pub marker: u8,
+    pub inner_opcode: Option<u8>,
+    pub object_id: Option<u32>,
+    pub fragment_bit_start: usize,
+    pub fragment_bit_end: usize,
+    pub fragment_bits: usize,
+    pub gui_item: Option<LiveObjectGuiItemRecordProfile>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LiveObjectUpdateClaimSummary {
     pub declared: usize,
@@ -20144,6 +20187,8 @@ pub struct LiveObjectUpdateClaimSummary {
     pub creature_update_records: u32,
     pub delete_records: u32,
     pub mentions: Vec<LiveObjectRecordMention>,
+    pub record_profiles: Vec<LiveObjectRecordBoundaryProfile>,
+    pub record_profiles_truncated: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -20815,11 +20860,14 @@ fn claim_payload_if_verified_with_reject(
                 live_object_record_object_id(live_bytes, offset, record_end)
                     .map(|object_id| (object_id, bit_cursor));
             trace_claim_accept(
+                &mut summary,
                 "creature-appearance",
                 live_bytes,
                 offset,
                 record_end,
+                record_bit_cursor,
                 bit_cursor,
+                None,
             );
             offset = record_end;
             continue;
@@ -20844,17 +20892,39 @@ fn claim_payload_if_verified_with_reject(
                 record_bit_cursor,
                 bit_cursor,
             );
-            trace_claim_accept("inventory", live_bytes, offset, record_end, bit_cursor);
+            trace_claim_accept(
+                &mut summary,
+                "inventory",
+                live_bytes,
+                offset,
+                record_end,
+                record_bit_cursor,
+                bit_cursor,
+                None,
+            );
             offset = record_end;
             continue;
         }
-        if let Some(gui_claim) = gui::advance_verified_live_gui_record(
+        if let Some(mut gui_claim) = gui::advance_verified_live_gui_record(
             live_bytes,
             offset,
             record_end,
             &fragment_bits,
             &mut bit_cursor,
         ) {
+            if let Some(item_profile) = gui_claim.item_profile.as_mut()
+                && let Some(record_end_candidates) =
+                    gui::verified_ee_live_gui_item_record_end_candidates(
+                        live_bytes,
+                        offset,
+                        live_bytes.len(),
+                        &fragment_bits,
+                        record_bit_cursor,
+                    )
+            {
+                item_profile.matching_record_ends = record_end_candidates.record_ends;
+                item_profile.matching_record_ends_truncated = record_end_candidates.truncated;
+            }
             if gui_claim.item_create {
                 summary.live_gui_item_create_records =
                     summary.live_gui_item_create_records.saturating_add(1);
@@ -20884,18 +20954,30 @@ fn claim_payload_if_verified_with_reject(
                     gui::verified_quickbar_item_use_count_updates(live_bytes, offset, record_end),
                 );
             }
-            trace_claim_accept("live-gui", live_bytes, offset, record_end, bit_cursor);
+            trace_claim_accept(
+                &mut summary,
+                "live-gui",
+                live_bytes,
+                offset,
+                record_end,
+                record_bit_cursor,
+                bit_cursor,
+                gui_claim.item_profile,
+            );
             offset = record_end;
             continue;
         }
         if world_status::is_verified_work_remaining_record(live_bytes, offset, record_end) {
             summary.world_status_records = summary.world_status_records.saturating_add(1);
             trace_claim_accept(
+                &mut summary,
                 "world-status-work-remaining",
                 live_bytes,
                 offset,
                 record_end,
+                record_bit_cursor,
                 bit_cursor,
+                None,
             );
             offset = record_end;
             continue;
@@ -20917,7 +20999,16 @@ fn claim_payload_if_verified_with_reject(
                 record_bit_cursor,
                 bit_cursor,
             );
-            trace_claim_accept("add", live_bytes, offset, record_end, bit_cursor);
+            trace_claim_accept(
+                &mut summary,
+                "add",
+                live_bytes,
+                offset,
+                record_end,
+                record_bit_cursor,
+                bit_cursor,
+                None,
+            );
             offset = record_end;
             continue;
         }
@@ -20939,7 +21030,16 @@ fn claim_payload_if_verified_with_reject(
                 record_bit_cursor,
                 bit_cursor,
             );
-            trace_claim_accept("update", live_bytes, offset, record_end, bit_cursor);
+            trace_claim_accept(
+                &mut summary,
+                "update",
+                live_bytes,
+                offset,
+                record_end,
+                record_bit_cursor,
+                bit_cursor,
+                None,
+            );
             offset = record_end;
             continue;
         }
@@ -20965,11 +21065,14 @@ fn claim_payload_if_verified_with_reject(
                 live_object_record_object_id(live_bytes, offset, record_end)
                     .map(|object_id| (object_id, bit_cursor));
             trace_claim_accept(
+                &mut summary,
                 "creature-appearance",
                 live_bytes,
                 offset,
                 record_end,
+                record_bit_cursor,
                 bit_cursor,
+                None,
             );
             offset = record_end;
             continue;
@@ -20995,11 +21098,14 @@ fn claim_payload_if_verified_with_reject(
                 live_object_record_object_id(live_bytes, offset, record_end)
                     .map(|object_id| (object_id, bit_cursor));
             trace_claim_accept(
+                &mut summary,
                 "noop-creature-appearance",
                 live_bytes,
                 offset,
                 record_end,
+                record_bit_cursor,
                 bit_cursor,
+                None,
             );
             offset = record_end;
             continue;
@@ -21020,11 +21126,14 @@ fn claim_payload_if_verified_with_reject(
                 bit_cursor,
             );
             trace_claim_accept(
+                &mut summary,
                 "creature-visual-transform",
                 live_bytes,
                 offset,
                 record_end,
+                record_bit_cursor,
                 bit_cursor,
+                None,
             );
             offset = record_end;
             continue;
@@ -21058,11 +21167,14 @@ fn claim_payload_if_verified_with_reject(
                 }
             }
             trace_claim_accept(
+                &mut summary,
                 "creature-update",
                 live_bytes,
                 offset,
                 record_end,
+                record_bit_cursor,
                 bit_cursor,
+                None,
             );
             offset = record_end;
             continue;
@@ -21114,7 +21226,16 @@ fn claim_payload_if_verified_with_reject(
                 record_bit_cursor,
                 bit_cursor,
             );
-            trace_claim_accept("delete", live_bytes, offset, record_end, bit_cursor);
+            trace_claim_accept(
+                &mut summary,
+                "delete",
+                live_bytes,
+                offset,
+                record_end,
+                record_bit_cursor,
+                bit_cursor,
+                None,
+            );
             offset = record_end;
             continue;
         }
@@ -38481,21 +38602,52 @@ fn live_object_payload_from_parts(live_bytes: &[u8], fragment_bits: &[bool]) -> 
 }
 
 fn trace_claim_accept(
+    summary: &mut LiveObjectUpdateClaimSummary,
     family: &'static str,
     live_bytes: &[u8],
     offset: usize,
     record_end: usize,
-    bit_cursor: usize,
+    fragment_bit_start: usize,
+    fragment_bit_end: usize,
+    gui_item: Option<LiveObjectGuiItemRecordProfile>,
 ) {
+    let opcode = live_bytes.get(offset).copied().unwrap_or_default();
+    let marker = live_bytes.get(offset + 1).copied().unwrap_or_default();
+    let object_id = gui_item
+        .as_ref()
+        .map(|item| item.object_id)
+        .or_else(|| live_object_record_object_id(live_bytes, offset, record_end));
+    if summary.record_profiles.len() < MAX_LIVE_OBJECT_RECORD_PROFILES {
+        summary
+            .record_profiles
+            .push(LiveObjectRecordBoundaryProfile {
+                index: u32::try_from(summary.record_profiles.len()).unwrap_or(u32::MAX),
+                family,
+                offset,
+                record_end,
+                read_buffer_bytes: record_end.saturating_sub(offset),
+                opcode,
+                marker,
+                inner_opcode: (opcode == b'G')
+                    .then(|| live_bytes.get(offset + 2).copied())
+                    .flatten(),
+                object_id,
+                fragment_bit_start,
+                fragment_bit_end,
+                fragment_bits: fragment_bit_end.saturating_sub(fragment_bit_start),
+                gui_item,
+            });
+    } else {
+        summary.record_profiles_truncated = summary.record_profiles_truncated.saturating_add(1);
+    }
+
     if !crate::translate::live_object_update::live_object_debug_env_enabled(
         "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
     ) {
         return;
     }
     eprintln!(
-        "live-object claim accepted: family={family} offset={offset} record_end={record_end} bit_cursor={bit_cursor} opcode=0x{:02X} marker=0x{:02X}",
-        live_bytes.get(offset).copied().unwrap_or_default(),
-        live_bytes.get(offset + 1).copied().unwrap_or_default()
+        "live-object claim accepted: family={family} offset={offset} record_end={record_end} fragment_bit_start={fragment_bit_start} fragment_bit_end={fragment_bit_end} opcode=0x{opcode:02X} marker=0x{marker:02X}",
     );
 }
 

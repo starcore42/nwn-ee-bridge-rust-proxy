@@ -22,13 +22,14 @@
 
 use super::{
     CNW_FRAGMENT_HEADER_BITS, DOOR_OBJECT_TYPE, ITEM_OBJECT_TYPE,
-    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID,
-    MAX_LIVE_OBJECT_NAME_BYTES, MAX_REASONABLE_LIVE_PAYLOAD_BYTES,
-    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, bits, boundary,
-    fragment_spans, read_u16_le, read_u32_le,
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LiveObjectGuiItemFragmentCandidateProfile,
+    MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MAX_LIVE_OBJECT_NAME_BYTES,
+    MAX_REASONABLE_LIVE_PAYLOAD_BYTES, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE,
+    TRIGGER_OBJECT_TYPE, bits, boundary, fragment_spans, read_u16_le, read_u32_le,
 };
 
 const LEGACY_CREATURE_TYPE: u8 = 0x05;
+const MAX_ITEM_CREATE_DIAGNOSTIC_CANDIDATES: usize = 16;
 const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
 const LEGACY_CREATURE_VISUAL_TRANSFORM_UPDATE_HEADER_BYTES: usize = 7;
 const LEGACY_APPEARANCE_NAME_MASK: u16 = 0x0400;
@@ -68,6 +69,7 @@ const LEGACY_APPEARANCE_ACTIVE_PROPERTY_BYTES: usize = 7;
 const LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS: usize = 4;
 const LEGACY_APPEARANCE_MIN_ACTIVE_PROPERTY_TAIL_BYTES: usize = 11;
 const EE_APPEARANCE_ACTIVE_PROPERTY_EXTRA_BOOL_BITS: usize = 1;
+const EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES: usize = 8;
 const EE_MODEL_TYPE_3_ARMOR_ACCESSORY_TABLE_BYTES: usize = 0x72;
 const LEGACY_APPEARANCE_ITEM_NAME_INLINE_CEXO_BITS: usize = 1;
 const LEGACY_APPEARANCE_ITEM_NAME_BARE_INLINE_LOCSTRING_BITS: usize = 2;
@@ -97,12 +99,16 @@ fn ee_active_property_extra_bool_insert_offset(name_bits: usize) -> usize {
     // (0x45110D..0x45114A) reads one BOOL, two DWORDs, then three more BOOLs
     // before the property-count BYTE. EE `sub_14076BD30`
     // (0x14076BF1E..0x14076BF75) reads one BOOL, the same two DWORDs, then
-    // four BOOLs. The EE-only BOOL is therefore the first post-DWORD BOOL,
-    // immediately after the shared pre-DWORD BOOL in fragment-stream order.
-    // Diamond server `nwserver.exe` agrees: the `A/6` add writer reaches item
-    // body helper 0x436C60, writes the name selector at 0x436CE1/0x436D1B,
-    // then owns four source BOOLs at 0x436D52, 0x436D8F, 0x436D9D, 0x436DAB.
-    name_bits.saturating_add(1)
+    // four BOOLs. Reader shape alone does not identify which field EE added.
+    //
+    // The writers establish the exact order. Diamond server helper 0x436C60
+    // writes the name selector at 0x436CE1/0x436D1B, then four source BOOLs at
+    // 0x436D52, 0x436D8F (CanUseItem), 0x436D9D, and 0x436DAB. EE server
+    // `sub_1404C7DA0` preserves those four fields in the same order (including
+    // CanUseItem at 0x1404C7EF4/0x1404C7EFE) and writes its new +0x468 field
+    // last, after the legacy +0x458 and +0x450 fields. Thus the neutral EE-only
+    // BOOL belongs after every Diamond active-property BOOL.
+    name_bits.saturating_add(LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS)
 }
 
 // Diamond full-appearance records can be followed immediately by a creature U
@@ -210,6 +216,9 @@ enum CreatureAppearanceByteInsert {
     EeFeature23ItemAppearanceHighByte {
         offset: usize,
     },
+    EeBuild24ActivePropertyMetadata {
+        offset: usize,
+    },
     EeModelType3ArmorAccessoryTable {
         offset: usize,
         legacy_palette: [u8; 6],
@@ -248,6 +257,7 @@ impl CreatureAppearanceByteInsert {
             | Self::EeFeature23CreatureBodyPartHighByte { offset }
             | Self::EeFeature0eCreatureTailByte { offset }
             | Self::EeFeature23ItemAppearanceHighByte { offset }
+            | Self::EeBuild24ActivePropertyMetadata { offset }
             | Self::EeModelType3ArmorAccessoryTable { offset, .. }
             | Self::EmbeddedVisibleEquipmentObjectIdSuffix { offset, .. }
             | Self::LegacyVisualTransformIdentity { offset }
@@ -264,6 +274,7 @@ impl CreatureAppearanceByteInsert {
             | Self::EeFeature23CreatureBodyPartHighByte { .. }
             | Self::EeFeature0eCreatureTailByte { .. }
             | Self::EeFeature23ItemAppearanceHighByte { .. } => 0,
+            Self::EeBuild24ActivePropertyMetadata { .. } => 4,
             Self::EeModelType3ArmorAccessoryTable { .. } => 1,
             Self::EmbeddedVisibleEquipmentObjectIdSuffix { .. } => 1,
             Self::LegacyVisualTransformIdentity { .. }
@@ -298,6 +309,9 @@ impl CreatureAppearanceByteInsert {
             | Self::EeFeature23CreatureBodyPartHighByte { .. }
             | Self::EeFeature0eCreatureTailByte { .. }
             | Self::EeFeature23ItemAppearanceHighByte { .. } => vec![0],
+            Self::EeBuild24ActivePropertyMetadata { .. } => {
+                vec![0; EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES]
+            }
             Self::EeModelType3ArmorAccessoryTable { legacy_palette, .. } => {
                 ee_model_type_3_armor_accessory_table_from_legacy_palette(*legacy_palette)
             }
@@ -387,6 +401,16 @@ enum LegacyItemNameFragmentProof {
 }
 
 impl LegacyItemNameFragmentProof {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::InlineCExoString => "inline-cexo-string",
+            Self::LocStringToken => "locstring-token",
+            Self::LocStringInlineCExoString => "locstring-inline-cexo-string",
+            Self::BareInlineLocString => "bare-inline-locstring",
+        }
+    }
+
     fn matches(self, fragment_bits: &[bool], bit_cursor: usize) -> bool {
         match self {
             Self::None => true,
@@ -2277,16 +2301,102 @@ pub(super) fn try_get_verified_ee_gui_item_create_record_end(
     None
 }
 
-pub(super) fn advance_verified_ee_item_create_record(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VerifiedEeItemCreateRecordEndCandidates {
+    pub record_ends: Vec<usize>,
+    pub truncated: bool,
+}
+
+pub(super) fn verified_ee_gui_item_create_record_end_candidates(
+    bytes: &[u8],
+    item_object_offset: usize,
+    search_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> VerifiedEeItemCreateRecordEndCandidates {
+    let Some(max_item_end) =
+        item_object_offset.checked_add(4 + LEGACY_APPEARANCE_MAX_ITEM_ADD_BYTES)
+    else {
+        return VerifiedEeItemCreateRecordEndCandidates {
+            record_ends: Vec::new(),
+            truncated: false,
+        };
+    };
+    let scan_end = search_end.min(bytes.len()).min(max_item_end);
+    let Some(min_end) = item_object_offset
+        .checked_add(4)
+        .and_then(|end| end.checked_add(1))
+    else {
+        return VerifiedEeItemCreateRecordEndCandidates {
+            record_ends: Vec::new(),
+            truncated: false,
+        };
+    };
+    if min_end > scan_end {
+        return VerifiedEeItemCreateRecordEndCandidates {
+            record_ends: Vec::new(),
+            truncated: false,
+        };
+    }
+
+    let mut record_ends = Vec::new();
+    for record_end in min_end..=scan_end {
+        if !gui_item_create_record_end_lands_on_stream_boundary(
+            bytes, record_end, search_end, false,
+        ) {
+            continue;
+        }
+        if verified_ee_item_create_fragment_claim(
+            bytes,
+            item_object_offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+        )
+        .is_none()
+        {
+            continue;
+        }
+        if record_ends.len() == MAX_ITEM_CREATE_DIAGNOSTIC_CANDIDATES {
+            return VerifiedEeItemCreateRecordEndCandidates {
+                record_ends,
+                truncated: true,
+            };
+        }
+        record_ends.push(record_end);
+    }
+    VerifiedEeItemCreateRecordEndCandidates {
+        record_ends,
+        truncated: false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VerifiedEeItemCreateFragmentClaim {
+    pub selected_source_fragment_bits: usize,
+    pub selected_ee_extra_fragment_bits: usize,
+    pub selected_fragment_bits: usize,
+    pub selected_name_proof: &'static str,
+    pub matching_candidates: usize,
+    pub matching_fragment_bit_widths: Vec<usize>,
+    pub matching_candidate_profiles: Vec<LiveObjectGuiItemFragmentCandidateProfile>,
+}
+
+pub(super) fn verified_ee_item_create_fragment_claim(
     bytes: &[u8],
     item_object_offset: usize,
     record_end: usize,
     fragment_bits: &[bool],
-    bit_cursor: &mut usize,
-) -> bool {
+    bit_cursor: usize,
+) -> Option<VerifiedEeItemCreateFragmentClaim> {
     let debug = crate::translate::live_object_update::live_object_debug_env_enabled(
         "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
     );
+    let mut selected = None;
+    let mut matching_candidates = 0usize;
+    let mut matching_fragment_bit_widths = Vec::new();
+    let mut matching_candidate_profiles = Vec::new();
+
     for record in parse_legacy_item_create_record_candidates(bytes, item_object_offset, record_end)
     {
         let Some(ee_bits) = record
@@ -2302,12 +2412,11 @@ pub(super) fn advance_verified_ee_item_create_record(
         };
         if !record
             .name_fragment_proof
-            .matches(fragment_bits, *bit_cursor)
+            .matches(fragment_bits, bit_cursor)
         {
             if debug {
                 eprintln!(
-                    "live-object item-create exact reject: reason=name-proof item_object_offset={item_object_offset} record_end={record_end} bit_cursor={} record_bits={} ee_extra_bits={} proof={:?}",
-                    *bit_cursor,
+                    "live-object item-create exact reject: reason=name-proof item_object_offset={item_object_offset} record_end={record_end} bit_cursor={bit_cursor} record_bits={} ee_extra_bits={} proof={:?}",
                     record.fragment_bits_consumed,
                     record.ee_extra_fragment_bits,
                     record.name_fragment_proof
@@ -2316,13 +2425,12 @@ pub(super) fn advance_verified_ee_item_create_record(
             continue;
         }
         if !record.ee_extra_byte_inserts.is_empty()
-            || ee_bits > fragment_bits.len().saturating_sub(*bit_cursor)
+            || ee_bits > fragment_bits.len().saturating_sub(bit_cursor)
         {
             if debug {
                 eprintln!(
-                    "live-object item-create exact reject: reason=shape-or-bits item_object_offset={item_object_offset} record_end={record_end} bit_cursor={} ee_bits={ee_bits} remaining_bits={} byte_inserts={}",
-                    *bit_cursor,
-                    fragment_bits.len().saturating_sub(*bit_cursor),
+                    "live-object item-create exact reject: reason=shape-or-bits item_object_offset={item_object_offset} record_end={record_end} bit_cursor={bit_cursor} ee_bits={ee_bits} remaining_bits={} byte_inserts={}",
+                    fragment_bits.len().saturating_sub(bit_cursor),
                     record.ee_extra_byte_inserts.len()
                 );
             }
@@ -2342,16 +2450,70 @@ pub(super) fn advance_verified_ee_item_create_record(
         {
             if debug {
                 eprintln!(
-                    "live-object item-create exact reject: reason=missing-inserted-bits item_object_offset={item_object_offset} record_end={record_end} bit_cursor={} insert_offsets={:?}",
-                    *bit_cursor, record.ee_extra_insert_offsets
+                    "live-object item-create exact reject: reason=missing-inserted-bits item_object_offset={item_object_offset} record_end={record_end} bit_cursor={bit_cursor} insert_offsets={:?}",
+                    record.ee_extra_insert_offsets
                 );
             }
             continue;
         }
-        *bit_cursor = bit_cursor.saturating_add(ee_bits);
-        return true;
+
+        matching_candidates = matching_candidates.saturating_add(1);
+        matching_fragment_bit_widths.push(ee_bits);
+        if matching_candidate_profiles.len() < MAX_ITEM_CREATE_DIAGNOSTIC_CANDIDATES {
+            matching_candidate_profiles.push(LiveObjectGuiItemFragmentCandidateProfile {
+                source_fragment_bits: record.fragment_bits_consumed,
+                ee_extra_fragment_bits: record.ee_extra_fragment_bits,
+                fragment_bits: ee_bits,
+                name_proof: record.name_fragment_proof.as_str(),
+            });
+        }
+        if selected.is_none() {
+            selected = Some((
+                record.fragment_bits_consumed,
+                record.ee_extra_fragment_bits,
+                ee_bits,
+                record.name_fragment_proof.as_str(),
+            ));
+        }
     }
-    false
+
+    let (
+        selected_source_fragment_bits,
+        selected_ee_extra_fragment_bits,
+        selected_fragment_bits,
+        selected_name_proof,
+    ) = selected?;
+    matching_fragment_bit_widths.sort_unstable();
+    matching_fragment_bit_widths.dedup();
+    Some(VerifiedEeItemCreateFragmentClaim {
+        selected_source_fragment_bits,
+        selected_ee_extra_fragment_bits,
+        selected_fragment_bits,
+        selected_name_proof,
+        matching_candidates,
+        matching_fragment_bit_widths,
+        matching_candidate_profiles,
+    })
+}
+
+pub(super) fn advance_verified_ee_item_create_record(
+    bytes: &[u8],
+    item_object_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    let Some(claim) = verified_ee_item_create_fragment_claim(
+        bytes,
+        item_object_offset,
+        record_end,
+        fragment_bits,
+        *bit_cursor,
+    ) else {
+        return false;
+    };
+    *bit_cursor = bit_cursor.saturating_add(claim.selected_fragment_bits);
+    true
 }
 
 fn item_create_record_end_lands_on_stream_boundary(
@@ -7813,6 +7975,7 @@ fn visible_equipment_parse_subobject_proof_rank(
             CreatureAppearanceByteInsert::EeFeature23ItemAppearanceHighByte { .. } => {
                 item_high_bytes = item_high_bytes.saturating_add(1);
             }
+            CreatureAppearanceByteInsert::EeBuild24ActivePropertyMetadata { .. } => {}
             CreatureAppearanceByteInsert::LegacyVisualTransformIdentity { .. }
             | CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity { .. }
             | CreatureAppearanceByteInsert::LegacyVisualTransformIdentitySuffix { .. }
@@ -8640,11 +8803,28 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
     if active_offset > record_end {
         return;
     }
-    let active_tails = legacy_active_item_properties_tail_candidates_for_visible_equipment(
-        base_item,
-        appearance_layout.model_type,
-        &bytes[active_offset..record_end],
-    );
+    let active_bytes = &bytes[active_offset..record_end];
+    let active_tails = match dialect {
+        ItemAppearanceWireDialect::LegacyDiamond => {
+            legacy_active_item_properties_tail_candidates_for_visible_equipment(
+                base_item,
+                appearance_layout.model_type,
+                active_bytes,
+            )
+        }
+        ItemAppearanceWireDialect::EeBuild8193 => {
+            let Some(active_tails) =
+                ee_build_24_active_item_properties_tail_candidates_for_visible_equipment(
+                    base_item,
+                    appearance_layout.model_type,
+                    active_bytes,
+                )
+            else {
+                return;
+            };
+            active_tails
+        }
+    };
     for active_tail in active_tails {
         if dialect == ItemAppearanceWireDialect::LegacyDiamond
             && appearance_layout.slot_zero_body_visual_compat
@@ -8706,14 +8886,19 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
                 CreatureAppearanceByteInsert::MissingSecondInlineNameLength { offset, length },
             );
         }
+        if dialect == ItemAppearanceWireDialect::LegacyDiamond {
+            let relative_offset = active_tail.metadata_insert_relative_offset;
+            let Some(offset) = active_offset.checked_add(relative_offset) else {
+                continue;
+            };
+            active_byte_inserts
+                .push(CreatureAppearanceByteInsert::EeBuild24ActivePropertyMetadata { offset });
+        }
         // EE `sub_14079FAC0` calls `sub_140973160` before `sub_14076BD30`.
-        // The current-build visual-map path reads INT map counts, but the bridge
-        // deliberately emits the legacy expanded identity map bytes here. On that
-        // EE object-map path, `sub_140973160` reads the two zero DWORD counts,
-        // whose matching build gate skips the current-build identity-selector
-        // BOOL. The only fragment-bit delta for this captured visible-equipment
-        // armor record is therefore the active-property BOOL added by EE's
-        // `sub_14076BD30`.
+        // ServerSatisfiesBuild(2001, 0x23, 0) is a local branch guard, not a wire
+        // BOOL. The identity-map form is exactly two zero DWORD counts and adds
+        // no fragment bits. The only fragment-bit delta for this visible-
+        // equipment record is therefore EE's final active-property BOOL.
         ee_extra_insert_offsets.extend(active_tail.ee_extra_insert_offsets);
         candidates.push(LegacyAppearanceItemAddRecord {
             fragment_bits_consumed: active_tail.fragment_bits_consumed,
@@ -8729,6 +8914,7 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
 struct LegacyVisibleEquipmentActiveTail {
     fragment_bits_consumed: usize,
     ee_extra_insert_offsets: Vec<usize>,
+    metadata_insert_relative_offset: usize,
     missing_inline_name_length: Option<usize>,
     missing_inline_name_relative_offset: usize,
     visual_transform_identity_prefix_bytes: usize,
@@ -8969,6 +9155,56 @@ fn parse_legacy_active_item_properties_tail_for_visible_equipment(
         .next()
 }
 
+fn ee_build_24_active_item_properties_tail_candidates_for_visible_equipment(
+    base_item: u32,
+    model_type: i8,
+    tail: &[u8],
+) -> Option<Vec<LegacyVisibleEquipmentActiveTail>> {
+    // BNVR advertises the proxy-owned 8193.36.5 server dialect. EE
+    // `sub_14076BD30` therefore takes its `(0x2001, 0x24, 2)` branch after the
+    // five active-property BOOLs and reads an INT32 plus a CExoString before
+    // the property-count BYTE (0x14076BF7D..0x14076C00D). Diamond has neither
+    // field. The translator emits the only semantics Diamond can express:
+    // integer zero and an empty string, encoded as eight zero read-buffer
+    // bytes. Requiring that exact neutral pair here makes the EE validator
+    // independent of the legacy tail shape it translates.
+    let mut accepted: Option<Vec<LegacyVisibleEquipmentActiveTail>> = None;
+    for metadata_offset in 0..=tail
+        .len()
+        .saturating_sub(EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES)
+    {
+        let metadata_end =
+            metadata_offset.saturating_add(EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES);
+        if tail.get(metadata_offset..metadata_end)
+            != Some(&[0; EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES])
+        {
+            continue;
+        }
+
+        let mut legacy_tail =
+            Vec::with_capacity(tail.len() - EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES);
+        legacy_tail.extend_from_slice(&tail[..metadata_offset]);
+        legacy_tail.extend_from_slice(&tail[metadata_end..]);
+        let candidates: Vec<_> =
+            legacy_active_item_properties_tail_candidates_for_visible_equipment(
+                base_item,
+                model_type,
+                &legacy_tail,
+            )
+            .into_iter()
+            .filter(|candidate| candidate.metadata_insert_relative_offset == metadata_offset)
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        if accepted.is_some() {
+            return None;
+        }
+        accepted = Some(candidates);
+    }
+    accepted
+}
+
 fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
     base_item: u32,
     model_type: i8,
@@ -8985,8 +9221,8 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
 
     // Diamond `sub_451020` first reads the item name selector BOOL. When that
     // selector takes the localized-name path, `sub_53E700` reads one more BOOL
-    // before its BYTE/DWORD locstring token. EE then adds the later
-    // active-property `CanUseItem` BOOL that Diamond does not write.
+    // before its BYTE/DWORD locstring token. EE then appends one final
+    // active-property BOOL after Diamond's four source BOOLs.
     if base_item == LEGACY_ARMOR_BASE_ITEM
         && parse_legacy_active_item_properties_tail_after_name(tail, cursor + 1)
     {
@@ -9001,6 +9237,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         candidates.push(LegacyVisibleEquipmentActiveTail {
             fragment_bits_consumed: name_bits + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
             ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(name_bits)],
+            metadata_insert_relative_offset: cursor + 1 + 8,
             missing_inline_name_length: None,
             missing_inline_name_relative_offset: 0,
             visual_transform_identity_prefix_bytes: 0,
@@ -9019,6 +9256,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         candidates.push(LegacyVisibleEquipmentActiveTail {
             fragment_bits_consumed: name_bits + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
             ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(name_bits)],
+            metadata_insert_relative_offset: cursor + 4 + 8,
             missing_inline_name_length: None,
             missing_inline_name_relative_offset: 0,
             visual_transform_identity_prefix_bytes: 0,
@@ -9048,6 +9286,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                     ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                         name_bits,
                     )],
+                    metadata_insert_relative_offset: prefix + name_len + 8,
                     missing_inline_name_length: Some(name_len),
                     missing_inline_name_relative_offset: prefix,
                     visual_transform_identity_prefix_bytes: prefix,
@@ -9061,6 +9300,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                     ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                         name_bits,
                     )],
+                    metadata_insert_relative_offset: prefix + name_len + 8,
                     missing_inline_name_length: Some(name_len),
                     missing_inline_name_relative_offset: prefix,
                     visual_transform_identity_prefix_bytes: prefix,
@@ -9084,6 +9324,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                 ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                     name_bits,
                 )],
+                metadata_insert_relative_offset: prefix + 4 + 8,
                 missing_inline_name_length: None,
                 missing_inline_name_relative_offset: 0,
                 visual_transform_identity_prefix_bytes: prefix,
@@ -9092,11 +9333,14 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         }
     }
 
-    if parse_legacy_active_item_properties_tail_after_inline_string(tail, cursor) {
+    if let Some(active_property_body_start) =
+        legacy_active_item_properties_body_start_after_inline_string(tail, cursor)
+    {
         let name_bits = LEGACY_APPEARANCE_ITEM_NAME_INLINE_CEXO_BITS;
         candidates.push(LegacyVisibleEquipmentActiveTail {
             fragment_bits_consumed: name_bits + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
             ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(name_bits)],
+            metadata_insert_relative_offset: active_property_body_start + 8,
             missing_inline_name_length: None,
             missing_inline_name_relative_offset: 0,
             visual_transform_identity_prefix_bytes: 0,
@@ -9115,6 +9359,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         candidates.push(LegacyVisibleEquipmentActiveTail {
             fragment_bits_consumed: name_bits + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
             ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(name_bits)],
+            metadata_insert_relative_offset: active_property_body_start + 8,
             missing_inline_name_length: None,
             missing_inline_name_relative_offset: 0,
             visual_transform_identity_prefix_bytes: 0,
@@ -9140,6 +9385,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                 ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                     name_bits,
                 )],
+                metadata_insert_relative_offset: cursor + name_len + 8,
                 missing_inline_name_length: Some(name_len),
                 missing_inline_name_relative_offset: 0,
                 visual_transform_identity_prefix_bytes: 0,
@@ -9153,6 +9399,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                 ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                     name_bits,
                 )],
+                metadata_insert_relative_offset: cursor + name_len + 8,
                 missing_inline_name_length: Some(name_len),
                 missing_inline_name_relative_offset: 0,
                 visual_transform_identity_prefix_bytes: 0,
@@ -9179,6 +9426,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                 ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                     name_bits,
                 )],
+                metadata_insert_relative_offset: cursor + 1 + name_len + 8,
                 missing_inline_name_length: Some(name_len),
                 missing_inline_name_relative_offset: 1,
                 visual_transform_identity_prefix_bytes: 1,
@@ -9192,13 +9440,16 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                 ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                     name_bits,
                 )],
+                metadata_insert_relative_offset: cursor + 1 + name_len + 8,
                 missing_inline_name_length: Some(name_len),
                 missing_inline_name_relative_offset: 1,
                 visual_transform_identity_prefix_bytes: 1,
                 name_fragment_proof: LegacyItemNameFragmentProof::LocStringInlineCExoString,
             });
         }
-        if parse_legacy_active_item_properties_tail_after_bare_inline_string(tail, cursor) {
+        if let Some(active_property_body_start) =
+            legacy_active_item_properties_body_start_after_bare_inline_string(tail, cursor)
+        {
             // The same decompiled item-name path used by armor rows also shows
             // up in HG model-type-2 GUI repository rows: the fragment stream
             // selects the locstring helper's inline-string branch, while the
@@ -9214,6 +9465,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
                 ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
                     name_bits,
                 )],
+                metadata_insert_relative_offset: active_property_body_start + 8,
                 missing_inline_name_length: None,
                 missing_inline_name_relative_offset: 0,
                 visual_transform_identity_prefix_bytes: 0,
@@ -9222,8 +9474,9 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         }
     }
 
-    if base_item == LEGACY_ARMOR_BASE_ITEM
-        && parse_legacy_active_item_properties_tail_after_bare_inline_string(tail, cursor)
+    if let Some(active_property_body_start) = (base_item == LEGACY_ARMOR_BASE_ITEM)
+        .then(|| legacy_active_item_properties_body_start_after_bare_inline_string(tail, cursor))
+        .flatten()
     {
         // Diamond `sub_451020` uses the same active-item name reader reached by
         // quickbar item buttons: the first BOOL selects the locstring helper,
@@ -9237,6 +9490,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         candidates.push(LegacyVisibleEquipmentActiveTail {
             fragment_bits_consumed: name_bits + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
             ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(name_bits)],
+            metadata_insert_relative_offset: active_property_body_start + 8,
             missing_inline_name_length: None,
             missing_inline_name_relative_offset: 0,
             visual_transform_identity_prefix_bytes: 0,
@@ -9248,6 +9502,7 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         candidates.push(LegacyVisibleEquipmentActiveTail {
             fragment_bits_consumed: LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
             ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(0)],
+            metadata_insert_relative_offset: cursor + 8,
             missing_inline_name_length: None,
             missing_inline_name_relative_offset: 0,
             visual_transform_identity_prefix_bytes: 0,
@@ -9258,52 +9513,52 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
     candidates
 }
 
-fn parse_legacy_active_item_properties_tail_after_inline_string(
+fn legacy_active_item_properties_body_start_after_inline_string(
     tail: &[u8],
     cursor: usize,
-) -> bool {
+) -> Option<usize> {
     let Some(length) = read_u32_le(tail, cursor) else {
-        return false;
+        return None;
     };
     let Ok(length) = usize::try_from(length) else {
-        return false;
+        return None;
     };
     if length > MAX_LIVE_OBJECT_NAME_BYTES {
-        return false;
+        return None;
     }
     let Some(name_start) = cursor.checked_add(4) else {
-        return false;
+        return None;
     };
     let Some(name_end) = name_start.checked_add(length) else {
-        return false;
+        return None;
     };
     if name_end > tail.len() {
-        return false;
+        return None;
     }
     if length != 0
         && !mostly_printable_message_string(&tail[name_start..name_end])
         && !nul_padded_printable_message_string(&tail[name_start..name_end])
     {
-        return false;
+        return None;
     }
-    parse_legacy_active_item_properties_tail_after_name(tail, name_end)
+    parse_legacy_active_item_properties_tail_after_name(tail, name_end).then_some(name_end)
 }
 
-fn parse_legacy_active_item_properties_tail_after_bare_inline_string(
+fn legacy_active_item_properties_body_start_after_bare_inline_string(
     tail: &[u8],
     cursor: usize,
-) -> bool {
+) -> Option<usize> {
     let Some(length) = read_u32_le(tail, cursor) else {
-        return false;
+        return None;
     };
     if length != 0 {
-        return false;
+        return None;
     }
     let Some(text_start) = cursor.checked_add(4) else {
-        return false;
+        return None;
     };
     if text_start >= tail.len() || !is_legacy_bare_active_item_name_byte(tail[text_start]) {
-        return false;
+        return None;
     }
 
     let text_limit = tail
@@ -9314,7 +9569,7 @@ fn parse_legacy_active_item_properties_tail_after_bare_inline_string(
         text_end += 1;
     }
     if text_end == text_start {
-        return false;
+        return None;
     }
 
     // A byte in the first active-property DWORD may itself be printable.  The
@@ -9324,9 +9579,17 @@ fn parse_legacy_active_item_properties_tail_after_bare_inline_string(
     // EE `sub_14076BD30` define the suffix boundary, so use the same bounded
     // longest-first endpoint search as the quickbar active-property parser and
     // accept only the endpoint whose complete byte tail is exact.
-    (text_start + 1..=text_end).rev().any(|candidate_end| {
+    (text_start + 1..=text_end).rev().find(|&candidate_end| {
         parse_legacy_active_item_properties_tail_after_name(tail, candidate_end)
     })
+}
+
+#[cfg(test)]
+fn parse_legacy_active_item_properties_tail_after_bare_inline_string(
+    tail: &[u8],
+    cursor: usize,
+) -> bool {
+    legacy_active_item_properties_body_start_after_bare_inline_string(tail, cursor).is_some()
 }
 
 fn legacy_direct_bare_inline_active_item_name_length(tail: &[u8], cursor: usize) -> Option<usize> {
@@ -9585,6 +9848,14 @@ mod public_tests {
     fn push_no_name_active_property_tail(bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // shared DWORD.
         bytes.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]); // shared DWORD.
+        bytes.push(0); // active-property count.
+        bytes.extend_from_slice(&[0, 0]); // value-mask trailer.
+    }
+
+    fn push_ee_build_24_no_name_active_property_tail(bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // shared DWORD.
+        bytes.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]); // shared DWORD.
+        bytes.extend_from_slice(&[0; EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES]);
         bytes.push(0); // active-property count.
         bytes.extend_from_slice(&[0, 0]); // value-mask trailer.
     }
@@ -9929,10 +10200,10 @@ mod public_tests {
         vec![
             false, // creature direct CExoString name.
             true,  // shared pre-DWORD active-property BOOL.
-            false, // EE-only CanUseItem BOOL inserted after the shared pre-DWORD BOOL.
-            false, // first shared post-DWORD active-property BOOL.
+            false, // first shared post-DWORD active-property BOOL (CanUseItem).
             true,  // second shared post-DWORD active-property BOOL.
             false, // third shared post-DWORD active-property BOOL.
+            false, // EE-only final active-property BOOL.
         ]
     }
 
@@ -10069,7 +10340,7 @@ mod public_tests {
         if base_item == LEGACY_ARMOR_BASE_ITEM {
             push_u16(bytes, 0x1234);
         }
-        push_no_name_active_property_tail(bytes);
+        push_ee_build_24_no_name_active_property_tail(bytes);
         high_offsets
     }
 
@@ -10092,10 +10363,10 @@ mod public_tests {
     fn ee_no_name_active_property_bits() -> Vec<bool> {
         vec![
             true,  // shared pre-DWORD active-property BOOL.
-            false, // EE-only CanUseItem BOOL inserted by sub_14076BD30.
-            false, // second shared post-DWORD BOOL.
-            true,  // third shared post-DWORD BOOL.
-            false, // fourth shared post-DWORD BOOL.
+            false, // first shared post-DWORD BOOL (CanUseItem).
+            true,  // second shared post-DWORD BOOL.
+            false, // third shared post-DWORD BOOL.
+            false, // EE-only final active-property BOOL.
         ]
     }
 
@@ -10156,15 +10427,16 @@ mod public_tests {
         assert_eq!(rewrite.bits_removed, 0);
         assert_eq!(
             rewrite.bytes_inserted,
-            3 + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len(),
-            "model-type-2 high bytes plus the EE item visual map are inserted"
+            3 + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
+                + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES,
+            "model-type-2 high bytes, EE item visual map, and build-0x24 active metadata are inserted"
         );
         assert_eq!(rewrite.bytes_removed, 0);
         assert_eq!(record_end, bytes.len());
         assert_eq!(
             fragment_bits,
-            [true, false, false, true, false],
-            "EE's active-property BOOL is inserted after the first shared Diamond BOOL"
+            [true, false, true, false, false],
+            "EE's active-property BOOL is appended after all four Diamond fields"
         );
 
         let mut bit_cursor = 0usize;
@@ -10208,6 +10480,40 @@ mod public_tests {
                     "model type {model_type} base item {base_item:#X} must reject nonzero widened high byte at offset {high_offset}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn item_create_exact_validator_requires_neutral_build_24_active_metadata() {
+        let (bytes, _) = ee_item_create_record(0x01, 2);
+        let bits = ee_no_name_active_property_bits();
+        let metadata_start = bytes
+            .windows(4)
+            .position(|window| window == [0x55, 0x66, 0x77, 0x88])
+            .and_then(|second_dword_start| second_dword_start.checked_add(4))
+            .expect("EE test item should contain the second active-property DWORD");
+        assert_eq!(
+            &bytes[metadata_start..metadata_start + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES],
+            &[0; EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES]
+        );
+
+        for corrupt_offset in [
+            metadata_start,
+            metadata_start + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES - 1,
+        ] {
+            let mut corrupted = bytes.clone();
+            corrupted[corrupt_offset] = 1;
+            let mut bit_cursor = 0usize;
+            assert!(
+                !advance_verified_ee_item_create_record(
+                    &corrupted,
+                    0,
+                    corrupted.len(),
+                    &bits,
+                    &mut bit_cursor,
+                ),
+                "EE exact validation must reject non-neutral build-0x24 metadata byte {corrupt_offset}"
+            );
         }
     }
 
@@ -10645,8 +10951,9 @@ mod public_tests {
         assert_eq!(rewrite.bits_removed, 0);
         assert_eq!(
             rewrite.bytes_inserted,
-            3 + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len(),
-            "model-type-2 item parts widen to WORDs and EE reads an object visual-transform map"
+            3 + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
+                + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES,
+            "model-type-2 item parts widen to WORDs and EE reads visual-transform and build-24 active-property bytes"
         );
         assert_eq!(
             try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
@@ -11275,15 +11582,16 @@ mod public_tests {
         .expect("legacy full appearance with one visible-equipment item should widen");
 
         assert_eq!(
-            rewrite.bytes_inserted, 32,
-            "full body widening plus three model-type-2 item bytes and EE item visual map should be inserted"
+            rewrite.bytes_inserted,
+            32 + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES,
+            "full body widening plus model-type-2, visual-map, and build-24 active-property bytes should be inserted"
         );
         assert_eq!(rewrite.bits_inserted, 1);
         assert_eq!(rewrite.bits_removed, 0);
         assert_eq!(
             fragment_bits,
-            [false, true, false, false, true, false],
-            "EE active-property BOOL is inserted after the shared pre-DWORD active-property BOOL"
+            [false, true, false, true, false, false],
+            "EE active-property BOOL is appended after all four Diamond fields"
         );
         assert_eq!(record_end, bytes.len());
         assert_eq!(
@@ -11513,13 +11821,16 @@ mod public_tests {
             0,
         )
         .expect("legacy full appearance with value-masked equipment should widen");
-        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            32 + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES
+        );
         assert_eq!(rewrite.bits_inserted, 1);
         assert_eq!(rewrite.bits_removed, 0);
         assert_eq!(
             fragment_bits,
-            [false, true, false, false, true, false],
-            "EE still inserts only the active-property CanUseItem BOOL before the post-DWORD state bits"
+            [false, true, false, true, false, false],
+            "EE appends exactly one neutral active-property BOOL after Diamond's four source fields"
         );
 
         let mut ee_cursor = 0usize;
@@ -11592,13 +11903,16 @@ mod public_tests {
         )
         .expect("legacy full appearance with locstring-inline equipment should widen");
 
-        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            32 + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES
+        );
         assert_eq!(rewrite.bits_inserted, 1);
         assert_eq!(rewrite.bits_removed, 0);
         assert_eq!(
             fragment_bits,
-            [false, true, false, true, false, false, true, false],
-            "EE active-property BOOL is inserted after the shared pre-DWORD BOOL, not before the inline-name branch"
+            [false, true, false, true, false, true, false, false],
+            "EE active-property BOOL follows the inline-name branch and all four Diamond fields"
         );
         assert_eq!(
             try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
@@ -11716,14 +12030,17 @@ mod public_tests {
             0,
         )
         .expect("legacy token-named visible equipment should widen");
-        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            32 + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES
+        );
         assert_eq!(rewrite.bits_inserted, 1);
         assert_eq!(
             fragment_bits,
             [
-                true, false, false, true, true, false, true, false, false, true, false
+                true, false, false, true, true, false, true, false, true, false, false
             ],
-            "source token item should insert only EE's active-property BOOL after the shared pre-DWORD BOOL"
+            "source token item should append only EE's active-property BOOL after all Diamond fields"
         );
         let mut ee_cursor = 0usize;
         assert!(advance_verified_ee_creature_appearance_record(
@@ -11774,15 +12091,18 @@ mod public_tests {
             0,
         )
         .expect("legacy inline-named visible equipment should widen");
-        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            32 + EE_BUILD_24_ACTIVE_PROPERTY_METADATA_BYTES
+        );
         assert_eq!(rewrite.bits_inserted, 1);
         assert_eq!(rewrite.bits_removed, 0);
         assert_eq!(
             fragment_bits,
             [
-                true, false, false, true, false, true, false, false, true, false
+                true, false, false, true, false, true, false, true, false, false
             ],
-            "source inline item should insert only EE's active-property BOOL after the shared pre-DWORD BOOL"
+            "source inline item should append only EE's active-property BOOL after all Diamond fields"
         );
 
         let mut stale_bits = vec![
