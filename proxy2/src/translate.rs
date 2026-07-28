@@ -28,6 +28,7 @@ pub(crate) mod client_gui_event;
 pub(crate) mod client_gui_inventory;
 mod client_high;
 pub(crate) mod client_input;
+pub(crate) mod client_inventory;
 pub(crate) mod client_login;
 pub(crate) mod client_module;
 pub(crate) mod client_quickbar;
@@ -136,6 +137,7 @@ pub enum VerifiedFamily {
     ClientDialog,
     ClientGuiEvent,
     ClientGuiInventory,
+    ClientInventory,
     ClientInput,
     ClientJournal,
     ClientLogin,
@@ -203,6 +205,7 @@ impl VerifiedFamily {
             Self::ClientDialog => "ClientDialog",
             Self::ClientGuiEvent => "ClientGuiEvent",
             Self::ClientGuiInventory => "ClientGuiInventory",
+            Self::ClientInventory => "ClientInventory",
             Self::ClientInput => "ClientInput",
             Self::ClientJournal => "ClientJournal",
             Self::ClientLogin => "ClientLogin",

@@ -14,11 +14,11 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 use super::{
     VerifiedFamily, ambient, area, area_change_day_night, area_visual_effect, camera, char_list,
     chat, client_area, client_char_list, client_character_sheet, client_device, client_gui_event,
-    client_gui_inventory, client_input, client_login, client_module, client_quickbar,
-    client_server_status, client_side_message, custom_token, cutscene, dialog, game_obj_update,
-    gui_timing_event, inventory, item_update_active_props, journal, loadbar, login, module,
-    module_resources, module_time, party, play_module_character_list, player_list, quickbar,
-    safe_projectile, server_status, sound,
+    client_gui_inventory, client_input, client_inventory, client_login, client_module,
+    client_quickbar, client_server_status, client_side_message, custom_token, cutscene, dialog,
+    game_obj_update, gui_timing_event, inventory, item_update_active_props, journal, loadbar,
+    login, module, module_resources, module_time, party, play_module_character_list, player_list,
+    quickbar, safe_projectile, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -235,6 +235,7 @@ fn focused_high_level_unit_end_with_quickbar_materialization(
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
+        (0x0C, 0x0B) => focused_client_inventory_unit_end(bytes, offset),
         (0x03, 0x01) => focused_module_info_unit_end(bytes, offset),
         (0x03, 0x02) => focused_client_module_unit_end(bytes, offset),
         (0x03, 0x03) => focused_module_time_unit_end(bytes, offset),
@@ -495,6 +496,12 @@ fn focused_client_gui_inventory_unit_end(bytes: &[u8], offset: usize) -> Focused
     focused_claimed_unit_end(bytes, offset, 1, |payload| {
         let mut probe = payload.to_vec();
         client_gui_inventory::claim_or_rewrite_payload_if_verified(&mut probe).is_some()
+    })
+}
+
+fn focused_client_inventory_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        client_inventory::claim_payload_if_verified(payload).is_some()
     })
 }
 
@@ -2878,6 +2885,32 @@ mod tests {
     }
 
     #[test]
+    fn splits_client_inventory_false_branch_with_focused_fragment_owner() {
+        let mut bytes = client_inventory_equip_toggle_payload(0x8001_5AE8, None, 0x88);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x0C, 0x0B, status_offset);
+    }
+
+    #[test]
+    fn splits_client_inventory_true_branch_with_focused_fragment_owner() {
+        let mut bytes = client_inventory_equip_toggle_payload(0x8001_5AE8, Some(0x8001_5B01), 0x90);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x0C, 0x0B, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_client_inventory_tail_before_following_status() {
+        let mut bytes = client_inventory_equip_toggle_payload(0x8001_5AE8, None, 0xA0);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted client Inventory_EquipToggle row to remain unclaimed",
+        );
+    }
+
+    #[test]
     fn splits_client_character_sheet_with_focused_fragment_owner() {
         let mut bytes = client_character_sheet_status_payload(0x00, 0xFFFF_FFFE, 0x7C);
         let status_offset = bytes.len();
@@ -3399,6 +3432,22 @@ mod tests {
         let mut payload = vec![0x70, 0x0D, 0x01];
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn client_inventory_equip_toggle_payload(
+        primary_object_id: u32,
+        secondary_object_id: Option<u32>,
+        fragment_tail: u8,
+    ) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + secondary_object_id.map(|_| 4).unwrap_or(0);
+        let mut payload = vec![0x70, 0x0C, 0x0B];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&primary_object_id.to_le_bytes());
+        if let Some(secondary_object_id) = secondary_object_id {
+            payload.extend_from_slice(&secondary_object_id.to_le_bytes());
+        }
         payload.push(fragment_tail);
         payload
     }

@@ -10,9 +10,9 @@ use crate::{
     packet::{hex_prefix, m::HighLevel},
     translate::{
         VerifiedFamily, chat, client_area, client_char_list, client_character_sheet,
-        client_gui_event, client_gui_inventory, client_input, client_login, client_module,
-        client_quickbar, client_server_status, dialog, journal, party, play_module_character_list,
-        semantic::SemanticSessionState,
+        client_gui_event, client_gui_inventory, client_input, client_inventory, client_login,
+        client_module, client_quickbar, client_server_status, dialog, journal, party,
+        play_module_character_list, semantic::SemanticSessionState,
     },
 };
 
@@ -142,6 +142,25 @@ pub fn claim_or_rewrite_payload_if_verified(
             family_name: "ClientGuiInventory",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientGuiInventory,
+        });
+    }
+    if client_translator_may_claim_parsed_high_level("ClientInventory", high)
+        && let Some(summary) = client_inventory::claim_payload_if_verified(payload)
+    {
+        tracing::info!(
+            packet_name = summary.packet_name,
+            primary_object_id = %format_args!("0x{:08X}", summary.primary_object_id),
+            secondary_object_id = ?summary
+                .secondary_object_id
+                .map(|object_id| format_args!("0x{object_id:08X}").to_string()),
+            declared = summary.declared,
+            fragment_bytes = summary.fragment_bytes,
+            "client Inventory payload validated for Diamond/1.69"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientInventory",
+            packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientInventory,
         });
     }
     if client_translator_may_claim_parsed_high_level("ClientCharacterSheet", high)
@@ -285,6 +304,7 @@ fn client_translator_may_claim_parsed_high_level(family_name: &str, high: HighLe
                 )
         }
         "ClientGuiInventory" => high.major == 0x0D && matches!(high.minor, 0x01 | 0x02),
+        "ClientInventory" => high.major == 0x0C && high.minor == 0x0B,
         "ClientParty" => high.major == 0x0E && high.minor == 0x02,
         "ClientCharList" => high.major == 0x11 && matches!(high.minor, 0x01 | 0x03),
         "ClientDialog" => high.major == 0x14 && high.minor == 0x03,
@@ -320,6 +340,7 @@ mod tests {
             ("ClientInput", high(0x06, 0x01)),
             ("ClientInput", high(0x06, 0x11)),
             ("ClientGuiInventory", high(0x0D, 0x02)),
+            ("ClientInventory", high(0x0C, 0x0B)),
             ("ClientParty", high(0x0E, 0x02)),
             ("ClientCharList", high(0x11, 0x03)),
             ("ClientDialog", high(0x14, 0x03)),
@@ -347,6 +368,7 @@ mod tests {
             ("ClientArea", high(0x04, 0x01)),
             ("ClientInput", high(0x06, 0x04)),
             ("ClientGuiInventory", high(0x0D, 0x03)),
+            ("ClientInventory", high(0x0C, 0x0A)),
             ("ClientParty", high(0x0E, 0x0E)),
             ("ClientCharList", high(0x11, 0x04)),
             ("ClientDialog", high(0x14, 0x01)),
@@ -397,6 +419,21 @@ mod tests {
         assert_eq!(claim.family_name, "ClientDialog");
         assert_eq!(claim.packet_name, "Dialog_Reply");
         assert_eq!(claim.verified_family, VerifiedFamily::ClientDialog);
+    }
+
+    #[test]
+    fn client_inventory_equip_toggle_emits_client_inventory_family() {
+        let mut payload = vec![
+            0x70, 0x0C, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0xE8, 0x5A, 0x01, 0x80, 0x88,
+        ];
+        let mut state = SemanticSessionState::default();
+
+        let claim = claim_or_rewrite_payload_if_verified(&mut payload, &mut state)
+            .expect("live Inventory_EquipToggle should be claimed");
+
+        assert_eq!(claim.family_name, "ClientInventory");
+        assert_eq!(claim.packet_name, "Inventory_EquipToggle");
+        assert_eq!(claim.verified_family, VerifiedFamily::ClientInventory);
     }
 
     #[test]

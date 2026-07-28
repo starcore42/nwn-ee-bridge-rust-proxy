@@ -735,6 +735,36 @@ mod tests {
     }
 
     #[test]
+    fn client_inventory_equip_toggle_forwards_identical_verified_frame() {
+        let payload = [
+            0x70, 0x0C, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0xE8, 0x5A, 0x01, 0x80, 0x88,
+        ];
+        let packet = build_client_m_frame(0x0056, 0x003B, &payload);
+        let view = MFrameView::parse(&packet).expect("live-shaped M frame should parse");
+        let mut state = SemanticSessionState::default();
+
+        let translated = translate_client_frame(packet.clone(), &view, &mut state)
+            .expect("verified Inventory_EquipToggle should forward");
+
+        assert_eq!(translated.family, VerifiedFamily::ClientInventory);
+        assert!(!translated.elide_client_sequence);
+        assert!(translated.semantic_observations.is_empty());
+        assert_eq!(
+            translated.packet.as_deref(),
+            Some(packet.as_slice()),
+            "identity-compatible packet must not become an empty quarantine carrier"
+        );
+        let out_view =
+            MFrameView::parse(translated.packet.as_deref().unwrap()).expect("output should parse");
+        assert!(out_view.crc_valid);
+        assert_eq!(out_view.payload_length, payload.len());
+        assert_eq!(
+            &translated.packet.unwrap()[LEGACY_GAMEPLAY_PAYLOAD_OFFSET..],
+            payload.as_slice()
+        );
+    }
+
+    #[test]
     fn malformed_device_advertise_property_is_not_semantically_claimed() {
         let payload = [0x70, 0x36, 0x01, 0x04, 0x00, 0x00, 0x00];
         let packet = build_client_m_frame(0x002B, 0x0003, &payload);

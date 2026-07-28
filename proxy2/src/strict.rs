@@ -17,12 +17,12 @@ use crate::{
     translate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, ambient, area, area_change_day_night,
         area_visual_effect, camera, char_list, chat, client_area, client_char_list,
-        client_character_sheet, client_gui_event, client_gui_inventory, client_input, client_login,
-        client_module, client_quickbar, client_server_admin, client_server_status,
-        client_side_message, custom_token, cutscene, dialog, game_obj_update, gameplay_stream,
-        gui_timing_event, inventory, item_update_active_props, journal, live_object_update,
-        loadbar, login, module, module_resources, module_time, party, play_module_character_list,
-        player_list, quickbar, safe_projectile, server_status, sound,
+        client_character_sheet, client_gui_event, client_gui_inventory, client_input,
+        client_inventory, client_login, client_module, client_quickbar, client_server_admin,
+        client_server_status, client_side_message, custom_token, cutscene, dialog, game_obj_update,
+        gameplay_stream, gui_timing_event, inventory, item_update_active_props, journal,
+        live_object_update, loadbar, login, module, module_resources, module_time, party,
+        play_module_character_list, player_list, quickbar, safe_projectile, server_status, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -550,6 +550,7 @@ fn client_verified_family(family: VerifiedFamily) -> bool {
             | VerifiedFamily::ClientDialog
             | VerifiedFamily::ClientGuiEvent
             | VerifiedFamily::ClientGuiInventory
+            | VerifiedFamily::ClientInventory
             | VerifiedFamily::ClientInput
             | VerifiedFamily::ClientJournal
             | VerifiedFamily::ClientLogin
@@ -1467,6 +1468,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ClientGuiInventory => {
             high.major == 0x0D && client_gui_inventory::claim_payload_if_verified(payload).is_some()
         }
+        VerifiedFamily::ClientInventory => {
+            high.major == 0x0C && client_inventory::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::ClientInput => {
             high.major == 0x06 && client_input::claim_payload_if_verified(payload).is_some()
         }
@@ -1793,6 +1797,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x0C, 0x01 | 0x02) => {
             HighPayloadValidation::Exact(inventory::claim_payload_if_verified(payload).is_some())
         }
+        (0x0C, 0x0B) => HighPayloadValidation::Exact(
+            client_inventory::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x0E, 0x01..=0x0E) => HighPayloadValidation::Exact(party_shape_valid(payload)),
         (0x10, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(camera::claim_payload_if_verified(payload).is_some())
@@ -5373,6 +5380,36 @@ mod bn_synthetic_direction_tests {
 
         assert_eq!(decision.verdict, Verdict::Allow);
         assert_eq!(decision.reason, "known-bnxr-extended-server-control");
+    }
+
+    #[test]
+    fn client_inventory_equip_toggle_has_exact_client_verified_family() {
+        let exact_false = [
+            0x70, 0x0C, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0xE8, 0x5A, 0x01, 0x80, 0x88,
+        ];
+        assert!(verified_family_direction_valid(
+            Direction::ClientToServer,
+            VerifiedFamily::ClientInventory,
+        ));
+        assert!(!verified_family_direction_valid(
+            Direction::ServerToClient,
+            VerifiedFamily::ClientInventory,
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientInventory,
+            &exact_false,
+        ));
+        assert!(exact_high_payload_shape_valid(&exact_false));
+
+        let mut true_guard_without_second_object = exact_false;
+        true_guard_without_second_object[11] = 0x98;
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientInventory,
+            &true_guard_without_second_object,
+        ));
+        assert!(!exact_high_payload_shape_valid(
+            &true_guard_without_second_object
+        ));
     }
 }
 

@@ -373,6 +373,10 @@ impl HighLevel {
             // Inventory family confirmed from EE's packet-name table and
             // `CNWSMessage::SendServerToPlayerInventory_Equip`.
             (0x0C, 0x01) => "Inventory_Equip",
+            // EE and Diamond inventory-handler case 11 both read one item id,
+            // one BOOL, and an optional second item id before exact
+            // overflow/underflow checks.
+            (0x0C, 0x0B) => "Inventory_EquipToggle",
             // GUI inventory family confirmed from EE's packet-name table and
             // `CNWSMessage::SendPlayerToServerGuiInventory_Status` /
             // `HandlePlayerToServerGuiInventoryMessage`. Strict/client
