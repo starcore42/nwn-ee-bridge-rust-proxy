@@ -3604,6 +3604,8 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     let mut tail_offset = inline_name_end.unwrap_or(name_offset + 4);
     let before_bits = bits.clone();
     let legacy_outer_locstring = before_bits.get(*bit_cursor).copied().unwrap_or(false);
+    let observed_name_inner_bit = before_bits.get(*bit_cursor + 1).copied();
+    let observed_name_language_bit = before_bits.get(*bit_cursor + 2).copied();
     let legacy_inner_client_tlk = !short_name
         && legacy_outer_locstring
         && before_bits.get(*bit_cursor + 1).copied().unwrap_or(false);
@@ -3626,6 +3628,15 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     } else {
         None
     };
+    // Prefix evidence only: a following compact U/09 can supply the same
+    // apparent third selector bit, so this must not authorize a rewrite until
+    // a bounded successor/terminal walk proves record ownership.
+    let stock_tlk_name_prefix_candidate = short_name
+        && legacy_outer_locstring
+        && observed_name_inner_bit == Some(true)
+        && observed_name_language_bit.is_some()
+        && compact_short_name_token_tail_end.is_some()
+        && remaining_source_bits >= 12;
     if remaining_source_bits < required_source_bits
         && compact_empty_inline_name.is_none()
         && compact_short_name_token_tail_end.is_none()
@@ -3786,8 +3797,12 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         appearance,
         placeable_model_status = ?placeable_model_status,
         short_name,
+        name_token = read_u32_le(bytes, name_offset),
         legacy_outer_locstring,
         legacy_inner_client_tlk,
+        observed_name_inner_bit,
+        observed_name_language_bit,
+        stock_tlk_name_prefix_candidate,
         direct_name_mode_repair,
         inline_locstring_name,
         compact_empty_inline_name = compact_empty_inline_name.is_some(),
@@ -3801,7 +3816,7 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         placeable_add_state = ?source_state_bits,
         ee_light_is_on = false,
         tail = %format_hex_slice(bytes, tail_offset, (*record_end).saturating_sub(tail_offset).min(16)),
-        bits = %format_bit_slice(&before_bits, *bit_cursor, required_source_bits.min(16)),
+        bits = %format_bit_slice(&before_bits, *bit_cursor, remaining_source_bits.min(24)),
         "server->client live-object placeable add candidate"
     );
 
@@ -5718,6 +5733,18 @@ mod placeable_add_semantic_tests {
 mod placeable_name_mode_tests {
     use super::*;
 
+    fn stock_tlk_placeable_add_record(strref: u32) -> (Vec<u8>, usize) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE, 0xDC, 0x34, 0x00, 0x80]);
+        bytes.extend_from_slice(&strref.to_le_bytes());
+        bytes.push(5);
+        bytes.extend_from_slice(&2025u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES);
+        let record_end = bytes.len();
+        (bytes, record_end)
+    }
+
     fn inline_placeable_add_record() -> (Vec<u8>, usize) {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE, 0xDC, 0x34, 0x00, 0x80]);
@@ -5728,6 +5755,31 @@ mod placeable_name_mode_tests {
         bytes.extend_from_slice(&0u16.to_le_bytes());
         let record_end = bytes.len();
         (bytes, record_end)
+    }
+
+    #[test]
+    fn already_ee_stock_tlk_placeable_add_owns_language_and_final_guard_bits() {
+        let (bytes, record_end) = stock_tlk_placeable_add_record(0x0100_75D6);
+        let bits = vec![
+            true, true, false, // outer, inner TLK, one-bit language selector.
+            true, false, true, false, true, false, true, false, true,  // Diamond state.
+            false, // EE-only final visual-transform guard.
+        ];
+        let mut bit_cursor = 0usize;
+
+        assert!(
+            crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                &bytes,
+                0,
+                record_end,
+                &bits,
+                &mut bit_cursor,
+            )
+        );
+        assert_eq!(
+            bit_cursor, 13,
+            "the transport/add-map walker must not hand the stock TLK language bit to the state tail"
+        );
     }
 
     #[test]
