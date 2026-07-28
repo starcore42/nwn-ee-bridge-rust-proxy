@@ -2523,7 +2523,10 @@ mod fixture_free_tests {
     use super::*;
     use crate::{
         packet::Direction,
-        translate::{VerifiedFamily, VerifiedProof},
+        translate::{
+            VerifiedFamily, VerifiedProof,
+            semantic::state::{Feature25ReferenceSources, InventoryEquipmentHandoffOutcome},
+        },
     };
 
     fn pack_msb_valid_bits(mut bits: Vec<bool>, header_bits: usize) -> Vec<u8> {
@@ -2630,7 +2633,7 @@ mod fixture_free_tests {
     }
 
     #[test]
-    fn live_object_feature25_references_feed_deferred_inventory_state() {
+    fn live_object_feature25_references_remain_unproven_visibility_state() {
         let owner_id = 0x8000_0010u32;
         let first_item_id = 0x8000_0100u32;
         let second_item_id = 0x8000_0101u32;
@@ -2658,10 +2661,11 @@ mod fixture_free_tests {
         );
         assert_eq!(
             state.objects.inventory_item_object_status(first_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25FirstList
-            ),
-            "Feature-25 first-list refs should retain their deferred source"
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                first_visibility_removal_list: true,
+                ..Default::default()
+            }),
+            "the decompiled first list removes visibility nodes and carries no item type"
         );
         assert_eq!(
             state.objects.inventory_item_object_proof(second_item_id),
@@ -2670,14 +2674,34 @@ mod fixture_free_tests {
         );
         assert_eq!(
             state.objects.inventory_item_object_status(second_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25SecondList
-            ),
-            "Feature-25 second-list refs should stay distinguishable from first-list refs"
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                second_visibility_add_or_update_list: true,
+                ..Default::default()
+            }),
+            "the decompiled second list adds or updates visibility nodes and carries no item type"
         );
         assert!(
             !state.objects.has_active_object_id(second_item_id),
-            "deferred Feature-25 refs must not become active lifecycle materialization"
+            "unproven Feature-25 visibility refs must not become active lifecycle materialization"
+        );
+        let summary = state.objects.inventory_item_context_summary();
+        assert_eq!(summary.inventory_feature25_visibility_ref_objects, 2);
+        assert_eq!(summary.inventory_feature25_visibility_only_objects, 2);
+        assert_eq!(summary.inventory_feature25_first_visibility_refs, 1);
+        assert_eq!(summary.inventory_feature25_second_visibility_refs, 1);
+        assert_eq!(summary.inventory_feature25_legacy_source_tail_refs, 0);
+        assert_eq!(summary.feature25_item_proof_objects, 0);
+        assert_eq!(summary.compact_item_emission_proof_objects, 0);
+        assert_eq!(summary.compact_item_emission_candidate, None);
+        assert_eq!(summary.compact_item_emission_ready_candidate, None);
+        assert!(
+            !summary.has_quickbar_item_context_evidence(),
+            "visibility-only refs must remain outside quickbar item evidence"
+        );
+        assert_eq!(
+            summary.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::NoItemEvidence,
+            "visibility-only refs must remain outside inventory/equipment item evidence"
         );
     }
 

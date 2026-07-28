@@ -232,6 +232,24 @@ impl SemanticSessionState {
                 first_active_item,
             )
             .as_str();
+        tracing::debug!(
+            inventory_feature25_visibility_ref_objects = summary
+                .item_context
+                .inventory_feature25_visibility_ref_objects,
+            inventory_feature25_visibility_only_objects = summary
+                .item_context
+                .inventory_feature25_visibility_only_objects,
+            inventory_feature25_legacy_source_tail_ref_objects = summary
+                .item_context
+                .inventory_feature25_legacy_source_tail_ref_objects,
+            inventory_feature25_visibility_ref_mentions = summary
+                .item_context
+                .inventory_feature25_visibility_ref_mentions(),
+            inventory_feature25_visibility_without_item_proof_ref_mentions = summary
+                .item_context
+                .inventory_feature25_visibility_without_item_proof_ref_mentions(),
+            "semantic Feature-25 visibility provenance at unresolved quickbar refresh"
+        );
         tracing::warn!(
             updates_since_committed_quickbar = summary.updates_since_committed_quickbar,
             events_since_pending_refresh = summary.events_since_pending_refresh,
@@ -541,10 +559,18 @@ impl InventoryItemObjectProof {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Feature25ReferenceSources {
+    pub(crate) first_visibility_removal_list: bool,
+    pub(crate) second_visibility_add_or_update_list: bool,
+    pub(crate) legacy_source_tail: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InventoryItemObjectStatus {
     Proven(InventoryItemObjectProof),
     DeferredFeature25(InventoryItemObjectProof),
+    UnprovenFeature25Reference(Feature25ReferenceSources),
     ClearedByItemDelete,
     ClearedByAreaReset,
     Unknown,
@@ -555,6 +581,7 @@ impl InventoryItemObjectStatus {
         match self {
             Self::Proven(_) => "proven",
             Self::DeferredFeature25(_) => "deferred_feature25",
+            Self::UnprovenFeature25Reference(_) => "unproven_feature25_reference",
             Self::ClearedByItemDelete => "cleared_by_item_delete",
             Self::ClearedByAreaReset => "cleared_by_area_reset",
             Self::Unknown => "unknown",
@@ -564,7 +591,10 @@ impl InventoryItemObjectStatus {
     pub(crate) fn proof(self) -> Option<InventoryItemObjectProof> {
         match self {
             Self::Proven(proof) | Self::DeferredFeature25(proof) => Some(proof),
-            Self::ClearedByItemDelete | Self::ClearedByAreaReset | Self::Unknown => None,
+            Self::UnprovenFeature25Reference(_)
+            | Self::ClearedByItemDelete
+            | Self::ClearedByAreaReset
+            | Self::Unknown => None,
         }
     }
 }
@@ -638,20 +668,18 @@ pub(crate) struct ObjectRegistry {
     pub(crate) known: BTreeMap<u32, KnownObjectState>,
     session_creature_ids_by_compact: BTreeMap<u32, u32>,
     materialized_item_object_ids: BTreeSet<u32>,
-    inventory_feature25_first_item_refs: BTreeSet<u32>,
-    inventory_feature25_second_item_refs: BTreeSet<u32>,
-    inventory_feature25_legacy_tail_item_refs: BTreeSet<u32>,
+    inventory_feature25_first_visibility_refs: BTreeSet<u32>,
+    inventory_feature25_second_visibility_refs: BTreeSet<u32>,
+    inventory_feature25_legacy_source_tail_refs: BTreeSet<u32>,
     cleared_inventory_item_object_ids: BTreeMap<u32, InventoryItemObjectClearReason>,
     pub(crate) inventory_feature25_reference_records: u64,
-    pub(crate) inventory_feature25_first_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_second_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_legacy_tail_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_first_materialized_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_first_deferred_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_second_materialized_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_second_deferred_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_legacy_tail_materialized_item_ref_mentions: u64,
-    pub(crate) inventory_feature25_legacy_tail_deferred_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_visibility_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_visibility_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_source_tail_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_item_proven_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_visibility_without_item_proof_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_item_proven_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_visibility_without_item_proof_ref_mentions: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -659,6 +687,9 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) active_item_objects: usize,
     pub(crate) materialized_item_objects: usize,
     pub(crate) direct_item_proof_objects: usize,
+    pub(crate) inventory_feature25_visibility_ref_objects: usize,
+    pub(crate) inventory_feature25_visibility_only_objects: usize,
+    pub(crate) inventory_feature25_legacy_source_tail_ref_objects: usize,
     pub(crate) feature25_item_proof_objects: usize,
     pub(crate) compact_item_emission_proof_objects: usize,
     pub(crate) compact_item_emission_candidate: Option<InventoryItemContextCandidate>,
@@ -669,11 +700,19 @@ pub(crate) struct InventoryItemContextSummary {
     pub(crate) compact_item_emission_feature25_only_proof_objects: usize,
     pub(crate) compact_item_emission_shared_proof_objects: usize,
     pub(crate) compact_item_emission_deferred_feature25_only_objects: usize,
+    pub(crate) inventory_feature25_first_visibility_refs: usize,
+    pub(crate) inventory_feature25_second_visibility_refs: usize,
+    pub(crate) inventory_feature25_legacy_source_tail_refs: usize,
     pub(crate) inventory_feature25_first_item_refs: usize,
     pub(crate) inventory_feature25_second_item_refs: usize,
     pub(crate) inventory_feature25_legacy_tail_item_refs: usize,
     pub(crate) cleared_inventory_item_object_ids: usize,
     pub(crate) inventory_feature25_reference_records: u64,
+    pub(crate) inventory_feature25_first_visibility_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_visibility_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_source_tail_ref_mentions: u64,
+    pub(crate) inventory_feature25_first_visibility_without_item_proof_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_visibility_without_item_proof_ref_mentions: u64,
     pub(crate) inventory_feature25_first_item_ref_mentions: u64,
     pub(crate) inventory_feature25_second_item_ref_mentions: u64,
     pub(crate) inventory_feature25_legacy_tail_item_ref_mentions: u64,
@@ -705,9 +744,7 @@ impl InventoryItemContextSummary {
     }
 
     pub(crate) fn has_quickbar_item_context_evidence(&self) -> bool {
-        self.direct_item_proof_objects != 0
-            || self.feature25_item_proof_objects != 0
-            || self.cleared_inventory_item_object_ids != 0
+        self.direct_item_proof_objects != 0 || self.cleared_inventory_item_object_ids != 0
     }
 
     pub(crate) fn has_compact_quickbar_item_proof(&self) -> bool {
@@ -721,6 +758,18 @@ impl InventoryItemContextSummary {
     pub(crate) fn has_deferred_feature25_refs(&self) -> bool {
         self.inventory_feature25_deferred_item_ref_mentions() != 0
             || self.compact_item_emission_deferred_feature25_only_objects != 0
+    }
+
+    pub(crate) fn inventory_feature25_visibility_ref_mentions(&self) -> u64 {
+        self.inventory_feature25_first_visibility_ref_mentions
+            .saturating_add(self.inventory_feature25_second_visibility_ref_mentions)
+    }
+
+    pub(crate) fn inventory_feature25_visibility_without_item_proof_ref_mentions(&self) -> u64 {
+        self.inventory_feature25_first_visibility_without_item_proof_ref_mentions
+            .saturating_add(
+                self.inventory_feature25_second_visibility_without_item_proof_ref_mentions,
+            )
     }
 
     pub(crate) fn inventory_feature25_item_ref_mentions(&self) -> u64 {
@@ -3510,19 +3559,19 @@ impl ObjectRegistry {
     pub(crate) fn reset_for_area(&mut self) {
         if !self.known.is_empty()
             || !self.materialized_item_object_ids.is_empty()
-            || !self.inventory_feature25_first_item_refs.is_empty()
-            || !self.inventory_feature25_second_item_refs.is_empty()
-            || !self.inventory_feature25_legacy_tail_item_refs.is_empty()
+            || !self.inventory_feature25_first_visibility_refs.is_empty()
+            || !self.inventory_feature25_second_visibility_refs.is_empty()
+            || !self.inventory_feature25_legacy_source_tail_refs.is_empty()
         {
             tracing::debug!(
                 known_objects = self.known.len(),
                 materialized_item_objects = self.materialized_item_object_ids.len(),
-                inventory_feature25_first_item_refs =
-                    self.inventory_feature25_first_item_refs.len(),
-                inventory_feature25_second_item_refs =
-                    self.inventory_feature25_second_item_refs.len(),
-                inventory_feature25_legacy_tail_item_refs =
-                    self.inventory_feature25_legacy_tail_item_refs.len(),
+                inventory_feature25_first_visibility_refs =
+                    self.inventory_feature25_first_visibility_refs.len(),
+                inventory_feature25_second_visibility_refs =
+                    self.inventory_feature25_second_visibility_refs.len(),
+                inventory_feature25_legacy_source_tail_refs =
+                    self.inventory_feature25_legacy_source_tail_refs.len(),
                 cleared_inventory_item_object_ids = self.cleared_inventory_item_object_ids.len(),
                 session_creature_aliases = self.session_creature_ids_by_compact.len(),
                 "semantic object registry reset for new Area_ClientArea"
@@ -3531,9 +3580,9 @@ impl ObjectRegistry {
         self.remember_inventory_item_proofs_cleared_by_area_reset();
         self.known.clear();
         self.materialized_item_object_ids.clear();
-        self.inventory_feature25_first_item_refs.clear();
-        self.inventory_feature25_second_item_refs.clear();
-        self.inventory_feature25_legacy_tail_item_refs.clear();
+        self.inventory_feature25_first_visibility_refs.clear();
+        self.inventory_feature25_second_visibility_refs.clear();
+        self.inventory_feature25_legacy_source_tail_refs.clear();
     }
 
     pub(crate) fn observe_player_list_object_ids(&mut self, object_ids: &[PlayerListObjectIds]) {
@@ -3724,6 +3773,9 @@ impl ObjectRegistry {
             }
             if mention.opcode == b'D' && mention.object_type == ITEM_OBJECT_TYPE {
                 self.forget_inventory_item_object_id(registry_object_id);
+            } else if mention.opcode == b'A' && mention.object_type == ITEM_OBJECT_TYPE {
+                self.cleared_inventory_item_object_ids
+                    .remove(&registry_object_id);
             }
         }
     }
@@ -4054,37 +4106,31 @@ impl ObjectRegistry {
 
     fn forget_inventory_item_object_id(&mut self, object_id: u32) {
         let removed_materialized = self.materialized_item_object_ids.remove(&object_id);
-        let removed_first = self.inventory_feature25_first_item_refs.remove(&object_id);
-        let removed_second = self.inventory_feature25_second_item_refs.remove(&object_id);
-        let removed_legacy_tail = self
-            .inventory_feature25_legacy_tail_item_refs
-            .remove(&object_id);
         self.remember_inventory_item_object_clear(
             object_id,
             InventoryItemObjectClearReason::ItemDelete,
         );
-        if removed_materialized || removed_first || removed_second || removed_legacy_tail {
+        if removed_materialized {
             tracing::debug!(
                 object_id = format_args!("0x{object_id:08X}"),
                 removed_materialized,
-                removed_feature25_first = removed_first,
-                removed_feature25_second = removed_second,
-                removed_feature25_legacy_tail = removed_legacy_tail,
-                "live-object item delete cleared deferred inventory item proof"
+                retained_feature25_first_visibility_ref = self
+                    .inventory_feature25_first_visibility_refs
+                    .contains(&object_id),
+                retained_feature25_second_visibility_ref = self
+                    .inventory_feature25_second_visibility_refs
+                    .contains(&object_id),
+                retained_feature25_legacy_source_tail_ref = self
+                    .inventory_feature25_legacy_source_tail_refs
+                    .contains(&object_id),
+                "live-object item delete cleared typed item proof while retaining visibility provenance"
             );
         }
     }
 
     fn remember_inventory_item_proofs_cleared_by_area_reset(&mut self) {
         self.cleared_inventory_item_object_ids.clear();
-        let mut cleared_ids: Vec<u32> = self
-            .materialized_item_object_ids
-            .iter()
-            .chain(self.inventory_feature25_first_item_refs.iter())
-            .chain(self.inventory_feature25_second_item_refs.iter())
-            .chain(self.inventory_feature25_legacy_tail_item_refs.iter())
-            .copied()
-            .collect();
+        let mut cleared_ids: Vec<u32> = self.materialized_item_object_ids.iter().copied().collect();
         cleared_ids.extend(
             self.known
                 .values()
@@ -4116,80 +4162,73 @@ impl ObjectRegistry {
         &mut self,
         references: &[LiveObjectInventoryFeature25Reference],
     ) {
+        // Diamond `sub_455940` at `0x457EDC` and EE `sub_1407B4F70` at
+        // `0x1407B79E6` read a DWORD first count plus bare OBJECTIDs, then a
+        // DWORD second count plus OBJECTID/BOOL/BOOL/BOOL rows. Both mutate
+        // CNWVisibilityNode arrays; neither list carries an object type.
+        // Preserve those ids as visibility provenance. The legacy compatibility
+        // tail is separate source-only evidence: neither client consumes it.
+        // Item-facing state may use only the first/second visibility union's
+        // intersection with an independent typed item add or GUI materialization.
         for reference in references {
             self.inventory_feature25_reference_records =
                 self.inventory_feature25_reference_records.saturating_add(1);
             let first_observation =
-                classify_inventory_feature25_item_refs(&reference.first_object_ids, |object_id| {
+                classify_feature25_visibility_refs(&reference.first_object_ids, |object_id| {
                     self.has_known_inventory_item_object_id(object_id)
                 });
             let second_observation =
-                classify_inventory_feature25_item_refs(&reference.second_object_ids, |object_id| {
+                classify_feature25_visibility_refs(&reference.second_object_ids, |object_id| {
                     self.has_known_inventory_item_object_id(object_id)
                 });
-            let legacy_tail_observation = classify_inventory_feature25_item_refs(
-                &reference.legacy_tail_object_ids,
-                |object_id| self.has_known_inventory_item_object_id(object_id),
-            );
-            let first_refs = observe_inventory_feature25_item_refs(
-                &mut self.inventory_feature25_first_item_refs,
-                &mut self.cleared_inventory_item_object_ids,
+            let first_refs = observe_feature25_visibility_refs(
+                &mut self.inventory_feature25_first_visibility_refs,
                 &reference.first_object_ids,
             );
-            let second_refs = observe_inventory_feature25_item_refs(
-                &mut self.inventory_feature25_second_item_refs,
-                &mut self.cleared_inventory_item_object_ids,
+            let second_refs = observe_feature25_visibility_refs(
+                &mut self.inventory_feature25_second_visibility_refs,
                 &reference.second_object_ids,
             );
-            let legacy_tail_refs = observe_inventory_feature25_item_refs(
-                &mut self.inventory_feature25_legacy_tail_item_refs,
-                &mut self.cleared_inventory_item_object_ids,
+            let legacy_tail_refs = observe_feature25_visibility_refs(
+                &mut self.inventory_feature25_legacy_source_tail_refs,
                 &reference.legacy_tail_object_ids,
             );
             debug_assert_eq!(first_refs, first_observation.accepted);
             debug_assert_eq!(second_refs, second_observation.accepted);
-            debug_assert_eq!(legacy_tail_refs, legacy_tail_observation.accepted);
-            self.inventory_feature25_first_item_ref_mentions = self
-                .inventory_feature25_first_item_ref_mentions
+            self.inventory_feature25_first_visibility_ref_mentions = self
+                .inventory_feature25_first_visibility_ref_mentions
                 .saturating_add(first_refs);
-            self.inventory_feature25_second_item_ref_mentions = self
-                .inventory_feature25_second_item_ref_mentions
+            self.inventory_feature25_second_visibility_ref_mentions = self
+                .inventory_feature25_second_visibility_ref_mentions
                 .saturating_add(second_refs);
-            self.inventory_feature25_legacy_tail_item_ref_mentions = self
-                .inventory_feature25_legacy_tail_item_ref_mentions
+            self.inventory_feature25_legacy_source_tail_ref_mentions = self
+                .inventory_feature25_legacy_source_tail_ref_mentions
                 .saturating_add(legacy_tail_refs);
-            self.inventory_feature25_first_materialized_item_ref_mentions = self
-                .inventory_feature25_first_materialized_item_ref_mentions
-                .saturating_add(first_observation.materialized);
-            self.inventory_feature25_first_deferred_item_ref_mentions = self
-                .inventory_feature25_first_deferred_item_ref_mentions
-                .saturating_add(first_observation.deferred);
-            self.inventory_feature25_second_materialized_item_ref_mentions = self
-                .inventory_feature25_second_materialized_item_ref_mentions
-                .saturating_add(second_observation.materialized);
-            self.inventory_feature25_second_deferred_item_ref_mentions = self
-                .inventory_feature25_second_deferred_item_ref_mentions
-                .saturating_add(second_observation.deferred);
-            self.inventory_feature25_legacy_tail_materialized_item_ref_mentions = self
-                .inventory_feature25_legacy_tail_materialized_item_ref_mentions
-                .saturating_add(legacy_tail_observation.materialized);
-            self.inventory_feature25_legacy_tail_deferred_item_ref_mentions = self
-                .inventory_feature25_legacy_tail_deferred_item_ref_mentions
-                .saturating_add(legacy_tail_observation.deferred);
+            self.inventory_feature25_first_item_proven_ref_mentions = self
+                .inventory_feature25_first_item_proven_ref_mentions
+                .saturating_add(first_observation.item_proven);
+            self.inventory_feature25_first_visibility_without_item_proof_ref_mentions = self
+                .inventory_feature25_first_visibility_without_item_proof_ref_mentions
+                .saturating_add(first_observation.without_item_proof);
+            self.inventory_feature25_second_item_proven_ref_mentions = self
+                .inventory_feature25_second_item_proven_ref_mentions
+                .saturating_add(second_observation.item_proven);
+            self.inventory_feature25_second_visibility_without_item_proof_ref_mentions = self
+                .inventory_feature25_second_visibility_without_item_proof_ref_mentions
+                .saturating_add(second_observation.without_item_proof);
             if first_refs != 0 || second_refs != 0 || legacy_tail_refs != 0 {
                 tracing::debug!(
                     owner_id = format_args!("0x{:08X}", reference.owner_id),
                     mask = format_args!("0x{:04X}", reference.mask),
-                    first_refs,
-                    first_materialized_refs = first_observation.materialized,
-                    first_deferred_refs = first_observation.deferred,
-                    second_refs,
-                    second_materialized_refs = second_observation.materialized,
-                    second_deferred_refs = second_observation.deferred,
-                    legacy_tail_refs,
-                    legacy_tail_materialized_refs = legacy_tail_observation.materialized,
-                    legacy_tail_deferred_refs = legacy_tail_observation.deferred,
-                    "semantic object registry observed deferred inventory Feature-25 item references"
+                    first_visibility_refs = first_refs,
+                    first_item_proven_refs = first_observation.item_proven,
+                    first_visibility_without_item_proof_refs = first_observation.without_item_proof,
+                    second_visibility_refs = second_refs,
+                    second_item_proven_refs = second_observation.item_proven,
+                    second_visibility_without_item_proof_refs =
+                        second_observation.without_item_proof,
+                    legacy_source_tail_refs = legacy_tail_refs,
+                    "semantic object registry observed Feature-25 visibility and legacy source-tail references"
                 );
             }
         }
@@ -4202,74 +4241,48 @@ impl ObjectRegistry {
         match self.inventory_item_object_status(object_id) {
             InventoryItemObjectStatus::Proven(proof) => Some(proof),
             InventoryItemObjectStatus::DeferredFeature25(_)
+            | InventoryItemObjectStatus::UnprovenFeature25Reference(_)
             | InventoryItemObjectStatus::ClearedByItemDelete
             | InventoryItemObjectStatus::ClearedByAreaReset
             | InventoryItemObjectStatus::Unknown => None,
         }
     }
 
-    fn inventory_feature25_item_object_proof(
-        &self,
-        object_id: u32,
-    ) -> Option<InventoryItemObjectProof> {
-        if self
-            .inventory_feature25_first_item_refs
-            .contains(&object_id)
-        {
-            return Some(InventoryItemObjectProof::Feature25FirstList);
+    fn feature25_reference_sources(&self, object_id: u32) -> Feature25ReferenceSources {
+        Feature25ReferenceSources {
+            first_visibility_removal_list: self
+                .inventory_feature25_first_visibility_refs
+                .contains(&object_id),
+            second_visibility_add_or_update_list: self
+                .inventory_feature25_second_visibility_refs
+                .contains(&object_id),
+            legacy_source_tail: self
+                .inventory_feature25_legacy_source_tail_refs
+                .contains(&object_id),
         }
-        if self
-            .inventory_feature25_second_item_refs
-            .contains(&object_id)
-        {
-            return Some(InventoryItemObjectProof::Feature25SecondList);
-        }
-        if self
-            .inventory_feature25_legacy_tail_item_refs
-            .contains(&object_id)
-        {
-            return Some(InventoryItemObjectProof::Feature25LegacyTail);
-        }
-        None
     }
 
     pub(crate) fn inventory_item_object_status(&self, object_id: u32) -> InventoryItemObjectStatus {
         if self.has_known_inventory_item_object_id(object_id) {
             return InventoryItemObjectStatus::Proven(InventoryItemObjectProof::ActiveObject);
         }
-        if self
-            .inventory_feature25_first_item_refs
-            .contains(&object_id)
-        {
-            return InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25FirstList,
-            );
-        }
-        if self
-            .inventory_feature25_second_item_refs
-            .contains(&object_id)
-        {
-            return InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25SecondList,
-            );
-        }
-        if self
-            .inventory_feature25_legacy_tail_item_refs
-            .contains(&object_id)
-        {
-            return InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25LegacyTail,
-            );
-        }
-        match self.cleared_inventory_item_object_ids.get(&object_id) {
+        let tombstone = match self.cleared_inventory_item_object_ids.get(&object_id) {
             Some(InventoryItemObjectClearReason::ItemDelete) => {
                 InventoryItemObjectStatus::ClearedByItemDelete
             }
             Some(InventoryItemObjectClearReason::AreaReset) => {
                 InventoryItemObjectStatus::ClearedByAreaReset
             }
-            None => InventoryItemObjectStatus::Unknown,
-        }
+            None => {
+                let sources = self.feature25_reference_sources(object_id);
+                if sources != Feature25ReferenceSources::default() {
+                    InventoryItemObjectStatus::UnprovenFeature25Reference(sources)
+                } else {
+                    InventoryItemObjectStatus::Unknown
+                }
+            }
+        };
+        tombstone
     }
 
     pub(crate) fn inventory_item_object_proven_neighborhood(
@@ -4314,40 +4327,15 @@ impl ObjectRegistry {
             return Some(candidate);
         }
 
-        if let Some(object_id) = direct_item_proof_objects
-            .difference(feature25_item_proof_objects)
-            .next()
-            .copied()
-        {
-            return Some(InventoryItemContextCandidate {
-                object_id,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::DirectOnly,
-            });
-        }
-
-        if let Some(object_id) = direct_item_proof_objects
-            .intersection(feature25_item_proof_objects)
-            .next()
-            .copied()
-        {
-            return Some(InventoryItemContextCandidate {
-                object_id,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::Shared,
-            });
-        }
-
-        let object_id = feature25_item_proof_objects
-            .difference(direct_item_proof_objects)
-            .next()
-            .copied()?;
+        let object_id = direct_item_proof_objects.iter().next().copied()?;
         Some(InventoryItemContextCandidate {
             object_id,
-            proof: self
-                .inventory_feature25_item_object_proof(object_id)
-                .unwrap_or(InventoryItemObjectProof::Feature25FirstList),
-            source: InventoryItemContextCandidateSource::Feature25Only,
+            proof: InventoryItemObjectProof::ActiveObject,
+            source: if feature25_item_proof_objects.contains(&object_id) {
+                InventoryItemContextCandidateSource::Shared
+            } else {
+                InventoryItemContextCandidateSource::DirectOnly
+            },
         })
     }
 
@@ -4365,26 +4353,15 @@ impl ObjectRegistry {
             return Some(candidate);
         }
 
-        if let Some(object_id) = direct_item_proof_objects
-            .difference(feature25_item_proof_objects)
-            .next()
-            .copied()
-        {
-            return Some(InventoryItemContextCandidate {
-                object_id,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::DirectOnly,
-            });
-        }
-
-        let object_id = direct_item_proof_objects
-            .intersection(feature25_item_proof_objects)
-            .next()
-            .copied()?;
+        let object_id = direct_item_proof_objects.iter().next().copied()?;
         Some(InventoryItemContextCandidate {
             object_id,
             proof: InventoryItemObjectProof::ActiveObject,
-            source: InventoryItemContextCandidateSource::Shared,
+            source: if feature25_item_proof_objects.contains(&object_id) {
+                InventoryItemContextCandidateSource::Shared
+            } else {
+                InventoryItemContextCandidateSource::DirectOnly
+            },
         })
     }
 
@@ -4434,24 +4411,29 @@ impl ObjectRegistry {
             .collect::<BTreeSet<_>>();
         let mut direct_item_proof_objects = self.materialized_item_object_ids.clone();
         direct_item_proof_objects.extend(active_item_objects.iter().copied());
-        let mut feature25_item_proof_objects = self.inventory_feature25_first_item_refs.clone();
-        feature25_item_proof_objects
-            .extend(self.inventory_feature25_second_item_refs.iter().copied());
-        feature25_item_proof_objects.extend(
-            self.inventory_feature25_legacy_tail_item_refs
+        let mut feature25_visibility_refs = self.inventory_feature25_first_visibility_refs.clone();
+        feature25_visibility_refs.extend(
+            self.inventory_feature25_second_visibility_refs
                 .iter()
                 .copied(),
         );
-        let mut compact_item_emission_proof_objects = direct_item_proof_objects.clone();
-        compact_item_emission_proof_objects.extend(feature25_item_proof_objects.iter().copied());
+        // Only the first removal and second add/update lists are client-owned
+        // visibility-node data. `legacy_source_tail_refs` records bytes that
+        // neither client consumes and is deliberately excluded from this union.
+        // The union is used only to annotate independently proven item ids; it
+        // never promotes a visibility-only id.
+        let feature25_item_proof_objects = feature25_visibility_refs
+            .intersection(&direct_item_proof_objects)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let compact_item_emission_proof_objects = direct_item_proof_objects.clone();
         let compact_item_emission_direct_only_proof_objects = direct_item_proof_objects
-            .difference(&feature25_item_proof_objects)
+            .difference(&feature25_visibility_refs)
             .count();
-        let compact_item_emission_feature25_only_proof_objects = feature25_item_proof_objects
+        let compact_item_emission_feature25_only_proof_objects = 0;
+        let compact_item_emission_shared_proof_objects = feature25_item_proof_objects.len();
+        let inventory_feature25_visibility_only_objects = feature25_visibility_refs
             .difference(&direct_item_proof_objects)
-            .count();
-        let compact_item_emission_shared_proof_objects = direct_item_proof_objects
-            .intersection(&feature25_item_proof_objects)
             .count();
         let compact_item_emission_candidate = self.compact_item_emission_candidate(
             &direct_item_proof_objects,
@@ -4468,6 +4450,11 @@ impl ObjectRegistry {
             active_item_objects: active_item_objects.len(),
             materialized_item_objects: self.materialized_item_object_ids.len(),
             direct_item_proof_objects: direct_item_proof_objects.len(),
+            inventory_feature25_visibility_ref_objects: feature25_visibility_refs.len(),
+            inventory_feature25_visibility_only_objects,
+            inventory_feature25_legacy_source_tail_ref_objects: self
+                .inventory_feature25_legacy_source_tail_refs
+                .len(),
             feature25_item_proof_objects: feature25_item_proof_objects.len(),
             compact_item_emission_proof_objects: compact_item_emission_proof_objects.len(),
             compact_item_emission_candidate,
@@ -4477,33 +4464,50 @@ impl ObjectRegistry {
             compact_item_emission_direct_only_proof_objects,
             compact_item_emission_feature25_only_proof_objects,
             compact_item_emission_shared_proof_objects,
-            compact_item_emission_deferred_feature25_only_objects:
-                compact_item_emission_feature25_only_proof_objects,
-            inventory_feature25_first_item_refs: self.inventory_feature25_first_item_refs.len(),
-            inventory_feature25_second_item_refs: self.inventory_feature25_second_item_refs.len(),
-            inventory_feature25_legacy_tail_item_refs: self
-                .inventory_feature25_legacy_tail_item_refs
+            compact_item_emission_deferred_feature25_only_objects: 0,
+            inventory_feature25_first_visibility_refs: self
+                .inventory_feature25_first_visibility_refs
                 .len(),
+            inventory_feature25_second_visibility_refs: self
+                .inventory_feature25_second_visibility_refs
+                .len(),
+            inventory_feature25_legacy_source_tail_refs: self
+                .inventory_feature25_legacy_source_tail_refs
+                .len(),
+            inventory_feature25_first_item_refs: self
+                .inventory_feature25_first_visibility_refs
+                .intersection(&direct_item_proof_objects)
+                .count(),
+            inventory_feature25_second_item_refs: self
+                .inventory_feature25_second_visibility_refs
+                .intersection(&direct_item_proof_objects)
+                .count(),
+            inventory_feature25_legacy_tail_item_refs: 0,
             cleared_inventory_item_object_ids: self.cleared_inventory_item_object_ids.len(),
             inventory_feature25_reference_records: self.inventory_feature25_reference_records,
+            inventory_feature25_first_visibility_ref_mentions: self
+                .inventory_feature25_first_visibility_ref_mentions,
+            inventory_feature25_second_visibility_ref_mentions: self
+                .inventory_feature25_second_visibility_ref_mentions,
+            inventory_feature25_legacy_source_tail_ref_mentions: self
+                .inventory_feature25_legacy_source_tail_ref_mentions,
+            inventory_feature25_first_visibility_without_item_proof_ref_mentions: self
+                .inventory_feature25_first_visibility_without_item_proof_ref_mentions,
+            inventory_feature25_second_visibility_without_item_proof_ref_mentions: self
+                .inventory_feature25_second_visibility_without_item_proof_ref_mentions,
             inventory_feature25_first_item_ref_mentions: self
-                .inventory_feature25_first_item_ref_mentions,
+                .inventory_feature25_first_item_proven_ref_mentions,
             inventory_feature25_second_item_ref_mentions: self
-                .inventory_feature25_second_item_ref_mentions,
-            inventory_feature25_legacy_tail_item_ref_mentions: self
-                .inventory_feature25_legacy_tail_item_ref_mentions,
+                .inventory_feature25_second_item_proven_ref_mentions,
+            inventory_feature25_legacy_tail_item_ref_mentions: 0,
             inventory_feature25_first_materialized_item_ref_mentions: self
-                .inventory_feature25_first_materialized_item_ref_mentions,
-            inventory_feature25_first_deferred_item_ref_mentions: self
-                .inventory_feature25_first_deferred_item_ref_mentions,
+                .inventory_feature25_first_item_proven_ref_mentions,
+            inventory_feature25_first_deferred_item_ref_mentions: 0,
             inventory_feature25_second_materialized_item_ref_mentions: self
-                .inventory_feature25_second_materialized_item_ref_mentions,
-            inventory_feature25_second_deferred_item_ref_mentions: self
-                .inventory_feature25_second_deferred_item_ref_mentions,
-            inventory_feature25_legacy_tail_materialized_item_ref_mentions: self
-                .inventory_feature25_legacy_tail_materialized_item_ref_mentions,
-            inventory_feature25_legacy_tail_deferred_item_ref_mentions: self
-                .inventory_feature25_legacy_tail_deferred_item_ref_mentions,
+                .inventory_feature25_second_item_proven_ref_mentions,
+            inventory_feature25_second_deferred_item_ref_mentions: 0,
+            inventory_feature25_legacy_tail_materialized_item_ref_mentions: 0,
+            inventory_feature25_legacy_tail_deferred_item_ref_mentions: 0,
         }
     }
 
@@ -4860,53 +4864,48 @@ fn compact_session_alias_from_player_list(object_id: u32) -> Option<u32> {
     (compact_id != 0).then_some(compact_id)
 }
 
-fn observe_inventory_feature25_item_refs(
-    target: &mut BTreeSet<u32>,
-    cleared: &mut BTreeMap<u32, InventoryItemObjectClearReason>,
-    object_ids: &[u32],
-) -> u64 {
+fn observe_feature25_visibility_refs(target: &mut BTreeSet<u32>, object_ids: &[u32]) -> u64 {
     let mut accepted = 0_u64;
     for object_id in object_ids.iter().copied() {
-        if !valid_inventory_feature25_item_ref(object_id) {
+        if !valid_feature25_visibility_ref(object_id) {
             continue;
         }
         target.insert(object_id);
-        cleared.remove(&object_id);
         accepted = accepted.saturating_add(1);
     }
     accepted
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct InventoryFeature25ItemRefObservation {
+struct Feature25VisibilityRefObservation {
     accepted: u64,
-    materialized: u64,
-    deferred: u64,
+    item_proven: u64,
+    without_item_proof: u64,
 }
 
-fn classify_inventory_feature25_item_refs<F>(
+fn classify_feature25_visibility_refs<F>(
     object_ids: &[u32],
-    mut materialized: F,
-) -> InventoryFeature25ItemRefObservation
+    mut item_proven: F,
+) -> Feature25VisibilityRefObservation
 where
     F: FnMut(u32) -> bool,
 {
-    let mut observation = InventoryFeature25ItemRefObservation::default();
+    let mut observation = Feature25VisibilityRefObservation::default();
     for object_id in object_ids.iter().copied() {
-        if !valid_inventory_feature25_item_ref(object_id) {
+        if !valid_feature25_visibility_ref(object_id) {
             continue;
         }
         observation.accepted = observation.accepted.saturating_add(1);
-        if materialized(object_id) {
-            observation.materialized = observation.materialized.saturating_add(1);
+        if item_proven(object_id) {
+            observation.item_proven = observation.item_proven.saturating_add(1);
         } else {
-            observation.deferred = observation.deferred.saturating_add(1);
+            observation.without_item_proof = observation.without_item_proof.saturating_add(1);
         }
     }
     observation
 }
 
-fn valid_inventory_feature25_item_ref(object_id: u32) -> bool {
+fn valid_feature25_visibility_ref(object_id: u32) -> bool {
     valid_inventory_item_context_id(object_id)
 }
 
@@ -7325,9 +7324,9 @@ pub(crate) struct SyntheticState {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryEquipmentClientGuiInventoryClaim, InventoryEquipmentClientGuiInventoryClaimKind,
-        InventoryEquipmentHandoffOutcome, InventoryEquipmentServerInventoryClaim,
-        InventoryFeature25HandoffOutcome, InventoryFeature25MaterializationOutcome,
+        Feature25ReferenceSources, InventoryEquipmentClientGuiInventoryClaim,
+        InventoryEquipmentClientGuiInventoryClaimKind, InventoryEquipmentHandoffOutcome,
+        InventoryEquipmentServerInventoryClaim,
     };
 
     use crate::translate::area::{
@@ -9612,7 +9611,7 @@ mod tests {
     }
 
     #[test]
-    fn item_delete_clears_only_matching_feature25_quickbar_item_ref() {
+    fn item_delete_tombstones_item_proof_without_erasing_feature25_visibility_history() {
         let mut registry = ObjectRegistry::default();
         let first_item_id = 0x8000_0101;
         let second_item_id = 0x8000_0102;
@@ -9633,16 +9632,18 @@ mod tests {
         );
         assert_eq!(
             registry.inventory_item_object_status(first_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25FirstList
-            )
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                first_visibility_removal_list: true,
+                ..Default::default()
+            })
         );
         assert_eq!(registry.inventory_item_object_proof(second_item_id), None);
         assert_eq!(
             registry.inventory_item_object_status(second_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25SecondList
-            )
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                second_visibility_add_or_update_list: true,
+                ..Default::default()
+            })
         );
         assert_eq!(
             registry.inventory_item_object_proof(legacy_tail_item_id),
@@ -9650,9 +9651,10 @@ mod tests {
         );
         assert_eq!(
             registry.inventory_item_object_status(legacy_tail_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25LegacyTail
-            )
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                legacy_source_tail: true,
+                ..Default::default()
+            })
         );
 
         registry.observe_mentions(&[LiveObjectMention {
@@ -9684,10 +9686,11 @@ mod tests {
         );
         assert_eq!(
             registry.inventory_item_object_status(first_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25FirstList
-            ),
-            "deleting one item must not clear unrelated first-list refs"
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                first_visibility_removal_list: true,
+                ..Default::default()
+            }),
+            "deleting one item must not erase unrelated first-list visibility provenance"
         );
         assert_eq!(
             registry.inventory_item_object_proof(legacy_tail_item_id),
@@ -9696,10 +9699,11 @@ mod tests {
         );
         assert_eq!(
             registry.inventory_item_object_status(legacy_tail_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25LegacyTail
-            ),
-            "deleting one item must not clear unrelated legacy-tail refs"
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                legacy_source_tail: true,
+                ..Default::default()
+            }),
+            "deleting one item must not erase unrelated legacy source-tail provenance"
         );
         assert_eq!(
             registry.inventory_item_object_proof(survivor_item_id),
@@ -9708,27 +9712,36 @@ mod tests {
         );
         assert_eq!(
             registry.inventory_item_object_status(survivor_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25FirstList
-            ),
-            "other refs in the same Feature-25 claim remain visible as deferred status"
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                first_visibility_removal_list: true,
+                ..Default::default()
+            }),
+            "other refs in the same Feature-25 claim remain visible as unproven visibility provenance"
         );
-    }
 
-    #[test]
-    fn feature25_reference_metrics_separate_materialized_and_deferred_item_refs() {
-        let mut registry = ObjectRegistry::default();
-        let gui_materialized_item_id = 0x8000_0201;
-        let active_item_id = 0x8000_0202;
-        let first_deferred_item_id = 0x8000_0203;
-        let second_deferred_item_id = 0x8000_0204;
-        let legacy_tail_deferred_item_id = 0x8000_0205;
+        let deleted = registry.inventory_item_context_summary();
+        assert_eq!(deleted.inventory_feature25_second_visibility_refs, 1);
+        assert_eq!(
+            deleted.inventory_feature25_second_item_refs, 0,
+            "retained visibility history must stop intersecting after typed item deletion"
+        );
+        registry.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
+            owner_id: 0x8000_0005,
+            mask: 0x2000,
+            first_object_ids: Vec::new(),
+            second_object_ids: vec![second_item_id],
+            legacy_tail_object_ids: Vec::new(),
+        }]);
+        assert_eq!(
+            registry.inventory_item_object_status(second_item_id),
+            InventoryItemObjectStatus::ClearedByItemDelete,
+            "a later bare visibility ref must not clear or override the typed item tombstone"
+        );
 
-        registry.observe_materialized_item_object_ids(&[gui_materialized_item_id]);
         registry.observe_mentions(&[LiveObjectMention {
             opcode: b'A',
             object_type: ITEM_OBJECT_TYPE,
-            object_id: active_item_id,
+            object_id: second_item_id,
             name: None,
             position: None,
             orientation: None,
@@ -9736,360 +9749,182 @@ mod tests {
             placeable_appearance: None,
             placeable_state: None,
         }]);
-        registry.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
-            owner_id: 0xFFFF_FFEC,
-            mask: 0x2E00,
-            first_object_ids: vec![gui_materialized_item_id, first_deferred_item_id],
-            second_object_ids: vec![active_item_id, second_deferred_item_id],
-            legacy_tail_object_ids: vec![legacy_tail_deferred_item_id],
-        }]);
-
-        assert_eq!(registry.inventory_feature25_first_item_ref_mentions, 2);
         assert_eq!(
-            registry.inventory_feature25_first_materialized_item_ref_mentions,
-            1
+            registry.inventory_item_object_status(second_item_id),
+            InventoryItemObjectStatus::Proven(InventoryItemObjectProof::ActiveObject),
+            "a typed A/06 re-add must clear the tombstone and restore direct item proof"
         );
         assert_eq!(
-            registry.inventory_feature25_first_deferred_item_ref_mentions,
-            1
-        );
-        assert_eq!(registry.inventory_feature25_second_item_ref_mentions, 2);
-        assert_eq!(
-            registry.inventory_feature25_second_materialized_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            registry.inventory_feature25_second_deferred_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            registry.inventory_feature25_legacy_tail_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            registry.inventory_feature25_legacy_tail_materialized_item_ref_mentions,
-            0
-        );
-        assert_eq!(
-            registry.inventory_feature25_legacy_tail_deferred_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            registry.inventory_item_object_proof(first_deferred_item_id),
-            None,
-            "live 2026-07-07 evidence keeps deferred Feature-25 refs reference-only for compact item emission"
-        );
-        assert_eq!(
-            registry.inventory_item_object_status(first_deferred_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25FirstList
-            )
-        );
-        assert_eq!(
-            registry.inventory_item_object_proof(second_deferred_item_id),
-            None
-        );
-        assert_eq!(
-            registry.inventory_item_object_status(second_deferred_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25SecondList
-            )
-        );
-        assert_eq!(
-            registry.inventory_item_object_proof(legacy_tail_deferred_item_id),
-            None
-        );
-        assert_eq!(
-            registry.inventory_item_object_status(legacy_tail_deferred_item_id),
-            InventoryItemObjectStatus::DeferredFeature25(
-                InventoryItemObjectProof::Feature25LegacyTail
-            )
-        );
-
-        let summary = registry.inventory_item_context_summary();
-        assert_eq!(summary.active_item_objects, 1);
-        assert_eq!(summary.materialized_item_objects, 1);
-        assert_eq!(
-            summary.direct_item_proof_objects, 2,
-            "active live item and GUI-materialized item ids are distinct direct proofs"
-        );
-        assert_eq!(
-            summary.feature25_item_proof_objects, 5,
-            "Feature-25 proof inventory is the unique union of first, second, and legacy-tail refs"
-        );
-        assert_eq!(
-            summary.compact_item_emission_proof_objects, 5,
-            "Feature-25 refs already include the two direct-proof ids in this fixture"
-        );
-        assert_eq!(
-            summary.compact_item_emission_ready_objects, 2,
-            "only direct item proof can make compact quickbar item emission ready"
-        );
-        assert_eq!(
-            summary.compact_item_emission_direct_only_proof_objects, 0,
-            "both direct-proof ids are also present in Feature-25 refs"
-        );
-        assert_eq!(
-            summary.compact_item_emission_feature25_only_proof_objects, 3,
-            "three deferred Feature-25 refs have no direct item materialization"
-        );
-        assert_eq!(
-            summary.compact_item_emission_shared_proof_objects, 2,
-            "direct and Feature-25 proof overlap should stay explicit for quickbar policy"
-        );
-        assert_eq!(
-            summary.compact_item_emission_candidate,
-            Some(InventoryItemContextCandidate {
-                object_id: gui_materialized_item_id,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::Shared,
-            }),
-            "the deterministic harness candidate should point at the lowest shared direct/Feature-25 proof when no direct-only proof exists"
-        );
-        assert_eq!(
-            summary.compact_item_emission_ready_candidate,
-            Some(InventoryItemContextCandidate {
-                object_id: gui_materialized_item_id,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::Shared,
-            }),
-            "emission-ready candidate selection must ignore deferred-only Feature-25 refs"
-        );
-        assert_eq!(
-            summary.compact_item_emission_deferred_feature25_only_objects, 3,
-            "deferred-only Feature-25 refs remain diagnostic but are not emission-ready"
-        );
-        assert_eq!(summary.inventory_feature25_first_item_refs, 2);
-        assert_eq!(summary.inventory_feature25_second_item_refs, 2);
-        assert_eq!(summary.inventory_feature25_legacy_tail_item_refs, 1);
-        assert_eq!(summary.inventory_feature25_reference_records, 1);
-        assert_eq!(summary.inventory_feature25_first_item_ref_mentions, 2);
-        assert_eq!(
-            summary.inventory_feature25_first_materialized_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            summary.inventory_feature25_first_deferred_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            summary.inventory_feature25_second_materialized_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            summary.inventory_feature25_second_deferred_item_ref_mentions,
-            1
-        );
-        assert_eq!(
-            summary.inventory_feature25_legacy_tail_materialized_item_ref_mentions,
-            0
-        );
-        assert_eq!(
-            summary.inventory_feature25_legacy_tail_deferred_item_ref_mentions,
-            1
-        );
-        assert_eq!(summary.inventory_feature25_item_ref_mentions(), 5);
-        assert_eq!(
-            summary.inventory_feature25_materialized_item_ref_mentions(),
-            2
-        );
-        assert_eq!(summary.inventory_feature25_deferred_item_ref_mentions(), 3);
-        assert_eq!(
-            summary.inventory_feature25_materialization_outcome(),
-            InventoryFeature25MaterializationOutcome::MixedItemRefs
-        );
-        assert_eq!(
-            summary.inventory_feature25_handoff_outcome(),
-            InventoryFeature25HandoffOutcome::MixedItemRefsWithReadyItemState,
-            "mixed Feature-25 refs plus direct item state can hand off to the quickbar/UI writer"
-        );
-        assert!(summary.inventory_equipment_handoff_ready());
-        assert_eq!(
-            summary.inventory_equipment_handoff_outcome(),
-            InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs,
-            "ready direct/materialized item state drives UI handoff while deferred Feature-25 refs stay reference-only"
-        );
-        let live_like_deferred = InventoryItemContextSummary {
-            inventory_feature25_reference_records: 13,
-            inventory_feature25_first_item_ref_mentions: 6,
-            inventory_feature25_first_deferred_item_ref_mentions: 6,
-            inventory_feature25_second_item_ref_mentions: 7,
-            inventory_feature25_second_deferred_item_ref_mentions: 7,
-            ..Default::default()
-        };
-        assert_eq!(
-            live_like_deferred.inventory_feature25_item_ref_mentions(),
-            13
-        );
-        assert_eq!(
-            live_like_deferred.inventory_feature25_materialized_item_ref_mentions(),
-            0
-        );
-        assert_eq!(
-            live_like_deferred.inventory_feature25_deferred_item_ref_mentions(),
-            13
-        );
-        assert_eq!(
-            live_like_deferred.inventory_feature25_materialization_outcome(),
-            InventoryFeature25MaterializationOutcome::AllItemRefsDeferred
-        );
-        assert_eq!(
-            live_like_deferred.inventory_feature25_handoff_outcome(),
-            InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithoutReadyItemState,
-            "deferred-only Feature-25 refs are reference-only unless separate ready item state exists"
-        );
-        assert!(!live_like_deferred.inventory_equipment_handoff_ready());
-        assert_eq!(
-            live_like_deferred.inventory_equipment_handoff_outcome(),
-            InventoryEquipmentHandoffOutcome::Feature25RefsWithoutReadyItemState,
-            "Feature-25-only refs are not an inventory/equipment UI handoff source"
-        );
-        let live_like_deferred_with_ready_state = InventoryItemContextSummary {
-            compact_item_emission_ready_objects: 18,
-            ..live_like_deferred
-        };
-        assert_eq!(
-            live_like_deferred_with_ready_state.inventory_feature25_handoff_outcome(),
-            InventoryFeature25HandoffOutcome::AllItemRefsDeferredWithReadyItemState,
-            "2026-07-07 live HG shape keeps Feature-25 refs deferred while direct state carries quickbar handoff"
-        );
-        assert!(live_like_deferred_with_ready_state.inventory_equipment_handoff_ready());
-        assert_eq!(
-            live_like_deferred_with_ready_state.inventory_equipment_handoff_outcome(),
-            InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs,
-            "2026-07-07 live HG shape consumes ready direct item state without materializing deferred Feature-25 refs"
+            registry
+                .inventory_item_context_summary()
+                .cleared_inventory_item_object_ids,
+            0,
+            "direct item proof and tombstone state must remain disjoint"
         );
     }
 
     #[test]
-    fn compact_item_emission_candidate_prefers_direct_then_shared_then_feature25() {
-        let mut direct_only = ObjectRegistry::default();
-        direct_only.observe_materialized_item_object_ids(&[0x8000_0100]);
-        direct_only.observe_inventory_feature25_references(&[
-            LiveObjectInventoryFeature25Reference {
-                owner_id: 0xFFFF_FFEC,
-                mask: 0x2000,
-                first_object_ids: vec![0x8000_0200],
-                second_object_ids: vec![],
-                legacy_tail_object_ids: vec![],
-            },
-        ]);
-        let direct_only_summary = direct_only.inventory_item_context_summary();
+    fn feature25_visibility_refs_intersect_only_independent_item_proof() {
+        let mut registry = ObjectRegistry::default();
+        let gui_materialized_item_id = 0x8000_0201;
+        let active_item_id = 0x8000_0202;
+        let active_creature_id = 0x8000_0203;
+        let unknown_id = 0x8000_0204;
+
+        // Observe the bare wire refs first to prove later item evidence is
+        // intersected dynamically instead of being inferred from Feature-25.
+        registry.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
+            owner_id: 0xFFFF_FFEC,
+            mask: 0x2E00,
+            first_object_ids: vec![gui_materialized_item_id, active_creature_id],
+            second_object_ids: vec![active_item_id, active_creature_id],
+            legacy_tail_object_ids: vec![unknown_id],
+        }]);
+
+        let visibility_only = registry.inventory_item_context_summary();
         assert_eq!(
-            direct_only_summary.compact_item_emission_candidate,
-            Some(InventoryItemContextCandidate {
-                object_id: 0x8000_0100,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::DirectOnly,
+            visibility_only.inventory_feature25_visibility_ref_objects,
+            3
+        );
+        assert_eq!(
+            visibility_only.inventory_feature25_visibility_only_objects,
+            3
+        );
+        assert_eq!(
+            visibility_only.inventory_feature25_legacy_source_tail_ref_objects,
+            1
+        );
+        assert_eq!(visibility_only.feature25_item_proof_objects, 0);
+        assert_eq!(visibility_only.compact_item_emission_proof_objects, 0);
+        assert_eq!(visibility_only.compact_item_emission_candidate, None);
+        assert!(!visibility_only.has_quickbar_item_context_evidence());
+        assert_eq!(
+            visibility_only.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::NoItemEvidence
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(active_creature_id),
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                first_visibility_removal_list: true,
+                second_visibility_add_or_update_list: true,
+                legacy_source_tail: false,
             })
         );
-        assert_eq!(direct_only_summary.compact_item_emission_ready_objects, 1);
-        assert_eq!(
-            direct_only_summary.compact_item_emission_ready_candidate,
-            direct_only_summary.compact_item_emission_candidate
-        );
-        assert_eq!(
-            direct_only_summary.inventory_equipment_handoff_outcome(),
-            InventoryEquipmentHandoffOutcome::ReadyItemStateWithDeferredFeature25Refs
-        );
 
-        let mut quickbar_preferred = ObjectRegistry::default();
-        quickbar_preferred.observe_materialized_item_object_ids(&[0x8000_0100, 0x8000_0108]);
-        let quickbar_preferred_summary = quickbar_preferred
-            .inventory_item_context_summary_with_preferred_ready_candidate(Some(0x8000_0108));
+        registry.observe_materialized_item_object_ids(&[gui_materialized_item_id]);
+        registry.observe_mentions(&[
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: ITEM_OBJECT_TYPE,
+                object_id: active_item_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            },
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x05,
+                object_id: active_creature_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: None,
+                placeable_state: None,
+            },
+        ]);
+        let intersected = registry.inventory_item_context_summary();
+        assert_eq!(intersected.direct_item_proof_objects, 2);
+        assert_eq!(intersected.inventory_feature25_visibility_ref_objects, 3);
+        assert_eq!(intersected.inventory_feature25_visibility_only_objects, 1);
         assert_eq!(
-            quickbar_preferred_summary.compact_item_emission_ready_candidate,
-            Some(InventoryItemContextCandidate {
-                object_id: 0x8000_0108,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::DirectOnly,
+            intersected.inventory_feature25_legacy_source_tail_ref_objects,
+            1
+        );
+        assert_eq!(intersected.feature25_item_proof_objects, 2);
+        assert_eq!(intersected.compact_item_emission_proof_objects, 2);
+        assert_eq!(
+            intersected.compact_item_emission_feature25_only_proof_objects,
+            0
+        );
+        assert_eq!(intersected.compact_item_emission_shared_proof_objects, 2);
+        assert_eq!(
+            intersected.compact_item_emission_deferred_feature25_only_objects,
+            0
+        );
+        assert_eq!(intersected.inventory_feature25_first_visibility_refs, 2);
+        assert_eq!(intersected.inventory_feature25_second_visibility_refs, 2);
+        assert_eq!(intersected.inventory_feature25_legacy_source_tail_refs, 1);
+        assert_eq!(intersected.inventory_feature25_first_item_refs, 1);
+        assert_eq!(intersected.inventory_feature25_second_item_refs, 1);
+        assert_eq!(intersected.inventory_feature25_legacy_tail_item_refs, 0);
+        assert_eq!(
+            registry.inventory_item_object_status(active_creature_id),
+            InventoryItemObjectStatus::UnprovenFeature25Reference(Feature25ReferenceSources {
+                first_visibility_removal_list: true,
+                second_visibility_add_or_update_list: true,
+                legacy_source_tail: false,
             }),
-            "a directly proven preserved quickbar item must outrank an unrelated lower object id"
+            "active creature lifecycle must not become item proof through Feature-25"
         );
-        assert_eq!(
-            quickbar_preferred_summary.compact_item_emission_candidate,
-            quickbar_preferred_summary.compact_item_emission_ready_candidate
-        );
-        assert_eq!(
-            quickbar_preferred
-                .inventory_item_context_summary_with_preferred_ready_candidate(Some(0x8000_0109))
-                .compact_item_emission_ready_candidate,
-            Some(InventoryItemContextCandidate {
-                object_id: 0x8000_0100,
-                proof: InventoryItemObjectProof::ActiveObject,
-                source: InventoryItemContextCandidateSource::DirectOnly,
-            }),
-            "an unproven preferred id must not bypass the normal proof-priority fallback"
-        );
+    }
 
-        let mut pure_ready = ObjectRegistry::default();
-        pure_ready.observe_materialized_item_object_ids(&[0x8000_0100]);
-        assert_eq!(
-            pure_ready
-                .inventory_item_context_summary()
-                .inventory_equipment_handoff_outcome(),
-            InventoryEquipmentHandoffOutcome::ReadyItemState,
-            "ready direct/materialized state without deferred Feature-25 refs uses the simple ready outcome"
-        );
-
-        let mut shared = ObjectRegistry::default();
-        shared.observe_materialized_item_object_ids(&[0x8000_0100]);
-        shared.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
+    #[test]
+    fn compact_item_candidate_uses_direct_order_and_visibility_only_never_candidates() {
+        let mut registry = ObjectRegistry::default();
+        registry.observe_materialized_item_object_ids(&[0x8000_0100, 0x8000_0200]);
+        registry.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
             owner_id: 0xFFFF_FFEC,
             mask: 0x2000,
-            first_object_ids: vec![0x8000_0100, 0x8000_0200],
-            second_object_ids: vec![],
-            legacy_tail_object_ids: vec![],
+            first_object_ids: vec![0x8000_0100],
+            second_object_ids: vec![0x8000_0300],
+            legacy_tail_object_ids: Vec::new(),
         }]);
-        let shared_summary = shared.inventory_item_context_summary();
+        let summary = registry.inventory_item_context_summary();
         assert_eq!(
-            shared_summary.compact_item_emission_candidate,
+            summary.compact_item_emission_candidate,
             Some(InventoryItemContextCandidate {
                 object_id: 0x8000_0100,
                 proof: InventoryItemObjectProof::ActiveObject,
                 source: InventoryItemContextCandidateSource::Shared,
-            })
-        );
-        assert_eq!(shared_summary.compact_item_emission_ready_objects, 1);
-        assert_eq!(
-            shared_summary.compact_item_emission_ready_candidate,
-            shared_summary.compact_item_emission_candidate
+            }),
+            "Feature-25 overlap may annotate the lowest direct candidate but must not reorder direct proof"
         );
 
-        let mut feature25_only = ObjectRegistry::default();
-        feature25_only.observe_inventory_feature25_references(&[
+        let mut visibility_only = ObjectRegistry::default();
+        visibility_only.observe_inventory_feature25_references(&[
             LiveObjectInventoryFeature25Reference {
                 owner_id: 0xFFFF_FFEC,
                 mask: 0x2000,
-                first_object_ids: vec![],
+                first_object_ids: vec![0x8000_0400],
                 second_object_ids: vec![0x8000_0300],
-                legacy_tail_object_ids: vec![],
+                legacy_tail_object_ids: vec![0x8000_0500],
             },
         ]);
-        let feature25_only_summary = feature25_only.inventory_item_context_summary();
+        let visibility_only = visibility_only.inventory_item_context_summary();
         assert_eq!(
-            feature25_only_summary.compact_item_emission_candidate,
-            Some(InventoryItemContextCandidate {
-                object_id: 0x8000_0300,
-                proof: InventoryItemObjectProof::Feature25SecondList,
-                source: InventoryItemContextCandidateSource::Feature25Only,
-            })
+            visibility_only.inventory_feature25_visibility_ref_objects,
+            2
         );
         assert_eq!(
-            feature25_only_summary.compact_item_emission_ready_objects,
-            0
+            visibility_only.inventory_feature25_visibility_only_objects,
+            2
         );
         assert_eq!(
-            feature25_only_summary.compact_item_emission_ready_candidate, None,
-            "Feature-25-only refs stay available for diagnostics but cannot drive item emission"
-        );
-        assert_eq!(
-            feature25_only_summary.compact_item_emission_deferred_feature25_only_objects,
+            visibility_only.inventory_feature25_legacy_source_tail_ref_objects,
             1
         );
+        assert_eq!(visibility_only.feature25_item_proof_objects, 0);
+        assert_eq!(visibility_only.compact_item_emission_proof_objects, 0);
+        assert_eq!(visibility_only.compact_item_emission_candidate, None);
+        assert_eq!(visibility_only.compact_item_emission_ready_candidate, None);
         assert_eq!(
-            feature25_only_summary.inventory_equipment_handoff_outcome(),
-            InventoryEquipmentHandoffOutcome::Feature25RefsWithoutReadyItemState
+            visibility_only.inventory_equipment_handoff_outcome(),
+            InventoryEquipmentHandoffOutcome::NoItemEvidence,
+            "visibility-only ids must remain outside inventory handoff evidence"
         );
     }
 

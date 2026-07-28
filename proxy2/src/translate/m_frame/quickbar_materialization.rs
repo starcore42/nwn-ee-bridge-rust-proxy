@@ -174,6 +174,12 @@ fn quickbar_materialization_status_from_registry(
                 quickbar_materialization_proof_from_registry(proof),
             )
         }
+        semantic::InventoryItemObjectStatus::UnprovenFeature25Reference(_) => {
+            // Feature-25 OBJECTIDs are visibility-node/source references, not
+            // item materialization. Keep the writer on the same fail-closed
+            // unknown path until typed item or GUI materialization exists.
+            quickbar::QuickbarItemMaterializationStatus::Unknown
+        }
         semantic::InventoryItemObjectStatus::ClearedByItemDelete => {
             quickbar::QuickbarItemMaterializationStatus::ClearedByItemDelete
         }
