@@ -86,6 +86,10 @@ use terminal_claim::{
     TerminalFragmentClaim, TerminalFragmentClaimSet, TerminalFragmentDisposition,
 };
 
+pub(crate) use add::{
+    VerifiedDiamondPlaceableAddLocalizedName, VerifiedDiamondPlaceableAddSource,
+    VerifiedDiamondPlaceableAddState, parse_verified_diamond_placeable_add_localized_name_source,
+};
 pub(crate) use terminal_evidence::{
     LIVE_OBJECT_UPDATE_DOOR_PLACEABLE_FRAGMENT_FIELD_LIMIT,
     LIVE_OBJECT_UPDATE_END_ALIGNED_DIAMOND_READER_CANDIDATE_LIMIT,
@@ -254,6 +258,14 @@ const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_0001;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const MAX_LIVE_OBJECT_NAME_BYTES: usize = 128;
 const MAX_REASONABLE_LIVE_PAYLOAD_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyPlaceableAddLocalizedSourceResolution {
+    NotCandidate,
+    ProvenFixed(add::VerifiedDiamondPlaceableAddSource),
+    ProvenCompact { extra_source_bits: usize },
+    Unresolved,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LiveObjectFixtureDumpKey {
@@ -23445,19 +23457,240 @@ fn ee_placeable_add_legacy_source_repair_claims_following_same_object_update(
     ) && verified_cursor == candidate_cursor
 }
 
-fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
+pub(crate) fn resolve_legacy_placeable_add_localized_source_for_update_pass(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> LegacyPlaceableAddLocalizedSourceResolution {
+    let source = add::parse_verified_diamond_placeable_add_localized_name_source(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    );
+
+    let fixed_name_proven = source.is_some_and(|source| {
+        verified_localized_placeable_add_source_rewrite_is_bounded(
+            live_bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+            source,
+        )
+    });
+    let compact_source_bits = compact_legacy_placeable_add_rewrite_has_unique_cursor_proof(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    );
+    let compact_byte_shape =
+        boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+            live_bytes, offset, record_end,
+        ) == Some(record_end);
+    let localized_name_prefix_candidate = fragment_bits.get(bit_cursor).copied() == Some(true)
+        && fragment_bits.get(bit_cursor + 1).copied() == Some(true)
+        && add::looks_like_diamond_placeable_add_localized_name_source_byte_shape(
+            live_bytes, offset, record_end,
+        );
+
+    match (source, fixed_name_proven, compact_source_bits) {
+        (Some(source), true, None) => {
+            LegacyPlaceableAddLocalizedSourceResolution::ProvenFixed(source)
+        }
+        (_, false, Some(extra_source_bits)) => {
+            LegacyPlaceableAddLocalizedSourceResolution::ProvenCompact { extra_source_bits }
+        }
+        (Some(_), false, None) | (_, true, Some(_)) => {
+            LegacyPlaceableAddLocalizedSourceResolution::Unresolved
+        }
+        (None, false, None) if compact_byte_shape || localized_name_prefix_candidate => {
+            LegacyPlaceableAddLocalizedSourceResolution::Unresolved
+        }
+        (None, false, None) => LegacyPlaceableAddLocalizedSourceResolution::NotCandidate,
+        (None, true, _) => unreachable!("a missing fixed source cannot have fixed cursor proof"),
+    }
+}
+
+fn verified_localized_placeable_add_source_rewrite_is_bounded(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    source: add::VerifiedDiamondPlaceableAddSource,
+) -> bool {
+    if record_end > live_bytes.len()
+        || source.next_bit_cursor > fragment_bits.len()
+        || source.next_bit_cursor <= bit_cursor
+    {
+        return false;
+    }
+
+    let terminal_source = record_end == live_bytes.len();
+    if terminal_source && source.next_bit_cursor != fragment_bits.len() {
+        return false;
+    }
+
+    let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
+        return false;
+    };
+    if !terminal_source {
+        let top_level_same_object_update = live_bytes.get(record_end).copied() == Some(b'U')
+            && live_bytes.get(record_end + 1).copied() == Some(PLACEABLE_OBJECT_TYPE)
+            && read_u32_le(live_bytes, record_end + 2).is_some_and(|object_id| {
+                object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+            });
+        let missing_opcode_same_object_update =
+            boundary::try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+                live_bytes,
+                record_end,
+                live_bytes.len(),
+                PLACEABLE_OBJECT_TYPE,
+                add_object_id,
+            )
+            .is_some();
+        if !top_level_same_object_update && !missing_opcode_same_object_update {
+            return false;
+        }
+    }
+
+    let mut candidate_live = live_bytes.to_vec();
+    let mut candidate_record_end = record_end;
+    let mut candidate_bits = fragment_bits.to_vec();
+    let mut candidate_cursor = bit_cursor;
+    if crate::translate::live_object::rewrite_verified_placeable_add_localized_source_for_update_pass(
+        &mut candidate_live,
+        &mut candidate_record_end,
+        &mut candidate_bits,
+        &mut candidate_cursor,
+        offset,
+        source,
+    )
+    .is_none()
+    {
+        return false;
+    }
+
+    let after_add_cursor = candidate_cursor;
+    let mut verified_add_cursor = bit_cursor;
+    if !add::advance_verified_add_record(
+        &candidate_live,
+        offset,
+        candidate_record_end,
+        &candidate_bits,
+        &mut verified_add_cursor,
+    ) || verified_add_cursor != after_add_cursor
+    {
+        return false;
+    }
+
+    if terminal_source {
+        return candidate_record_end == candidate_live.len()
+            && after_add_cursor == candidate_bits.len();
+    }
+
+    if !(candidate_live.get(candidate_record_end).copied() == Some(b'U')
+        && candidate_live.get(candidate_record_end + 1).copied() == Some(PLACEABLE_OBJECT_TYPE))
+    {
+        if boundary::try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+            &candidate_live,
+            candidate_record_end,
+            candidate_live.len(),
+            PLACEABLE_OBJECT_TYPE,
+            add_object_id,
+        )
+        .is_some()
+        {
+            if candidate_live.get(candidate_record_end).copied() == Some(0)
+                && candidate_live.get(candidate_record_end + 1).copied()
+                    == Some(PLACEABLE_OBJECT_TYPE)
+            {
+                candidate_live[candidate_record_end] = b'U';
+            } else {
+                candidate_live.insert(candidate_record_end, b'U');
+            }
+        } else {
+            return false;
+        }
+    }
+    if candidate_live.get(candidate_record_end).copied() != Some(b'U')
+        || candidate_live.get(candidate_record_end + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+        || !read_u32_le(&candidate_live, candidate_record_end + 2).is_some_and(|object_id| {
+            object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+        })
+    {
+        return false;
+    }
+
+    let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        &candidate_live,
+        candidate_record_end,
+        candidate_live.len(),
+    )
+    .min(candidate_live.len());
+    if following_end <= candidate_record_end {
+        return false;
+    }
+
+    let following_is_terminal = following_end == candidate_live.len();
+    let mut exact_following_cursor = after_add_cursor;
+    if record::advance_verified_update_record_for_ee(
+        &candidate_live,
+        candidate_record_end,
+        following_end,
+        &candidate_bits,
+        &mut exact_following_cursor,
+    ) {
+        return !following_is_terminal || exact_following_cursor == candidate_bits.len();
+    }
+
+    let mut candidate_following_end = following_end;
+    let mut candidate_reliable = true;
+    if record::rewrite_update_record_for_ee(
+        &mut candidate_live,
+        &mut candidate_following_end,
+        &mut candidate_bits,
+        &mut candidate_cursor,
+        &mut candidate_reliable,
+        candidate_record_end,
+    )
+    .is_none()
+        || !candidate_reliable
+    {
+        return false;
+    }
+
+    let mut verified_cursor = after_add_cursor;
+    record::advance_verified_update_record_for_ee(
+        &candidate_live,
+        candidate_record_end,
+        candidate_following_end,
+        &candidate_bits,
+        &mut verified_cursor,
+    ) && verified_cursor == candidate_cursor
+        && (!following_is_terminal || candidate_cursor == candidate_bits.len())
+}
+
+fn compact_legacy_placeable_add_rewrite_has_unique_cursor_proof(
     live_bytes: &[u8],
     offset: usize,
     record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
-    if record_end >= live_bytes.len()
+    if record_end > live_bytes.len()
         || live_bytes.get(offset).copied() != Some(b'A')
         || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
     {
         return None;
     }
+    let terminal_source = record_end == live_bytes.len();
 
     let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
         return None;
@@ -23476,7 +23709,7 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
             add_object_id,
         )
         .is_some();
-    if !has_top_level_following_update && !has_missing_opcode_following_update {
+    if !terminal_source && !has_top_level_following_update && !has_missing_opcode_following_update {
         return None;
     }
 
@@ -23545,6 +23778,31 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         return None;
     }
 
+    if terminal_source {
+        let mut proven_extra_source_bits = None;
+        for extra_compact_source_bits in [0usize, 2usize] {
+            if extra_compact_source_bits != 0 && !legacy_short_name_token {
+                continue;
+            }
+            let mut trial_bits = candidate_bits.clone();
+            let drain_end = after_add_cursor.checked_add(extra_compact_source_bits)?;
+            if drain_end > trial_bits.len() {
+                continue;
+            }
+            trial_bits.drain(after_add_cursor..drain_end);
+            if candidate_record_end == candidate_live.len() && after_add_cursor == trial_bits.len()
+            {
+                if proven_extra_source_bits
+                    .replace(extra_compact_source_bits)
+                    .is_some()
+                {
+                    return None;
+                }
+            }
+        }
+        return proven_extra_source_bits;
+    }
+
     if !(candidate_live.get(candidate_record_end).copied() == Some(b'U')
         && candidate_live.get(candidate_record_end + 1).copied() == Some(PLACEABLE_OBJECT_TYPE))
     {
@@ -23588,6 +23846,7 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         return None;
     }
 
+    let mut proven_extra_source_bits = None;
     for extra_compact_source_bits in [0usize, 2usize] {
         if extra_compact_source_bits != 0 && !legacy_short_name_token {
             continue;
@@ -23609,6 +23868,27 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         }
 
         let mut candidate_following_end = following_end;
+        let mut exact_following_cursor = after_add_cursor;
+        if record::advance_verified_update_record_for_ee(
+            &trial_live,
+            candidate_record_end,
+            candidate_following_end,
+            &trial_bits,
+            &mut exact_following_cursor,
+        ) {
+            if candidate_following_end != trial_live.len()
+                || exact_following_cursor == trial_bits.len()
+            {
+                if proven_extra_source_bits
+                    .replace(extra_compact_source_bits)
+                    .is_some()
+                {
+                    return None;
+                }
+            }
+            continue;
+        }
+
         let mut candidate_reliable = true;
         if record::rewrite_update_record_for_ee(
             &mut trial_live,
@@ -23632,19 +23912,21 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
             &trial_bits,
             &mut verified_cursor,
         ) && verified_cursor == trial_cursor
+            && (candidate_following_end != trial_live.len() || trial_cursor == trial_bits.len())
         {
-            return Some(extra_compact_source_bits);
+            if proven_extra_source_bits
+                .replace(extra_compact_source_bits)
+                .is_some()
+            {
+                return None;
+            }
         }
     }
 
-    // The compact add rewrite above already proved the legacy `A/9` byte
-    // shape, advanced the decompile-owned source BOOLs, emitted an exact EE add
-    // row, and found a following same-object update boundary. Some mixed
-    // streams need that add inserted before the following update's terminal
-    // low-tail cursor can be proven by the normal record pass. Let the next
-    // iteration own that update; the transaction still cannot emit unless the
-    // final exact live-object validator accepts the whole stream.
-    Some(0)
+    // A matching object id and plausible row boundary are not cursor proof.
+    // Do not mutate the add unless one explicit compact-width candidate lets
+    // the following update exact-claim at its own bit cursor.
+    proven_extra_source_bits
 }
 
 fn legacy_door_add_repair_claims_following_same_object_update(
@@ -24958,38 +25240,52 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     }
                 }
 
-                if let Some(extra_compact_source_bits) =
-                    compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
+                let localized_source_resolution =
+                    resolve_legacy_placeable_add_localized_source_for_update_pass(
                         &live_bytes,
                         offset,
                         record_end,
                         &fragment_bits,
                         bit_cursor,
-                    )
-                {
+                    );
+                let resolved_source_rewrite = match localized_source_resolution {
+                    LegacyPlaceableAddLocalizedSourceResolution::ProvenFixed(_)
+                    | LegacyPlaceableAddLocalizedSourceResolution::ProvenCompact { .. } => {
+                        Some(localized_source_resolution)
+                    }
+                    LegacyPlaceableAddLocalizedSourceResolution::NotCandidate
+                    | LegacyPlaceableAddLocalizedSourceResolution::Unresolved => None,
+                };
+                if let Some(source_rewrite_resolution) = resolved_source_rewrite {
                     let add_start_bit_cursor = bit_cursor;
                     let before_fragment_bits_len = fragment_bits.len();
+                    let ledger_family = match source_rewrite_resolution {
+                        LegacyPlaceableAddLocalizedSourceResolution::ProvenFixed(_) => {
+                            "add-localized-source-rewrite"
+                        }
+                        LegacyPlaceableAddLocalizedSourceResolution::ProvenCompact { .. } => {
+                            "add-compact-rewrite"
+                        }
+                        LegacyPlaceableAddLocalizedSourceResolution::NotCandidate
+                        | LegacyPlaceableAddLocalizedSourceResolution::Unresolved => {
+                            unreachable!("only proven source rewrites reach the commit path")
+                        }
+                    };
                     if let Some(add_rewrite) =
-                        crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
+                        crate::translate::live_object::rewrite_resolved_placeable_add_source_for_update_pass(
                             &mut live_bytes,
                             &mut record_end,
                             &mut fragment_bits,
                             &mut bit_cursor,
                             offset,
+                            source_rewrite_resolution,
+                            area_context,
                         )
                     {
-                        if extra_compact_source_bits != 0 {
-                            let drain_end = bit_cursor.checked_add(extra_compact_source_bits)?;
-                            if drain_end > fragment_bits.len() {
-                                return None;
-                            }
-                            fragment_bits.drain(bit_cursor..drain_end);
-                        }
                         changed |= add_rewrite.maps_inserted != 0
                             || add_rewrite.bytes_inserted != 0
                             || add_rewrite.bytes_removed != 0
                             || add_rewrite.fragment_bits_changed
-                            || extra_compact_source_bits != 0
                             || add_rewrite.legacy_door_model_tokens_removed != 0;
                         summary.bytes_inserted = summary
                             .bytes_inserted
@@ -25017,9 +25313,8 @@ fn rewrite_update_records_payload_with_area_context_inner(
                                 bits_inserted: usize::try_from(add_rewrite.bits_inserted)
                                     .unwrap_or(usize::MAX),
                                 bits_removed: usize::try_from(add_rewrite.bits_removed)
-                                    .unwrap_or(usize::MAX)
-                                    .saturating_add(extra_compact_source_bits),
-                                family: "add-compact-rewrite",
+                                    .unwrap_or(usize::MAX),
+                                family: ledger_family,
                             },
                         ) {
                             trace_update_rewrite_cursor_unreliable(

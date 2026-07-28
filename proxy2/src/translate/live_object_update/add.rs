@@ -246,6 +246,223 @@ mod tests {
         live
     }
 
+    fn diamond_placeable_add_localized_name(
+        name_bytes: &[u8],
+        optional_object_id: Option<u32>,
+    ) -> Vec<u8> {
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_0042u32.to_le_bytes());
+        live.extend_from_slice(name_bytes);
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0x0002u16.to_le_bytes());
+        if let Some(object_id) = optional_object_id {
+            live.extend_from_slice(&object_id.to_le_bytes());
+        }
+        live
+    }
+
+    #[test]
+    fn diamond_placeable_add_source_claims_stock_tlk_tail_and_exact_suffix() {
+        let strref = 0x0100_75D6u32;
+        let live = diamond_placeable_add_localized_name(&strref.to_le_bytes(), None);
+        let leading_bits = [false, true];
+        let source_bits = [
+            true, true, true, // outer locstring, inner TLK, client-TLK selector.
+            true, false, true, false, true, false, true, false,
+            true,
+            // Nine post-name state BOOLs; optional-object guard is false.
+        ];
+        let following_bits = [true, false, true];
+        let bits = leading_bits
+            .into_iter()
+            .chain(source_bits)
+            .chain(following_bits)
+            .collect::<Vec<_>>();
+
+        let claim = parse_verified_diamond_placeable_add_localized_name_source(
+            &live,
+            0,
+            live.len(),
+            &bits,
+            leading_bits.len(),
+        )
+        .expect("stock Diamond A/09 localized name should exact-claim");
+        assert_eq!(
+            claim.name,
+            VerifiedDiamondPlaceableAddLocalizedName::StockTlk {
+                client_tlk: true,
+                strref,
+            }
+        );
+        assert_eq!(claim.byte_layout.tail_offset, 10);
+        assert_eq!(claim.byte_layout.base_tail_end, 15);
+        assert_eq!(claim.byte_layout.optional_object_id, None);
+        assert_eq!(claim.post_name_bit, leading_bits.len() + 3);
+        assert_eq!(
+            claim.next_bit_cursor,
+            leading_bits.len() + source_bits.len()
+        );
+        assert_eq!(
+            claim.state,
+            VerifiedDiamondPlaceableAddState {
+                reputation_visual: true,
+                static_plot: true,
+                useable: false,
+                trap_disarmable: true,
+                lockable: false,
+                locked: true,
+                unknown_1ac: false,
+                name_valid: true,
+            }
+        );
+        assert_eq!(
+            &bits[claim.next_bit_cursor..],
+            &following_bits,
+            "the stock parser must own exactly 12 source bits"
+        );
+    }
+
+    #[test]
+    fn diamond_placeable_add_source_claims_custom_byte_tlk_optional_branch() {
+        let strref = 0x0100_75D6u32;
+        let optional_object_id = 0x8000_1234u32;
+        let mut custom_name = vec![1];
+        custom_name.extend_from_slice(&strref.to_le_bytes());
+        let live = diamond_placeable_add_localized_name(&custom_name, Some(optional_object_id));
+        let leading_bits = [false];
+        let source_bits = [
+            true, true, // outer locstring, inner TLK; selector is a source byte.
+            false, true, false, true, false, true, false, true,
+            false,
+            // Nine post-name state BOOLs; optional-object guard is true.
+        ];
+        let following_bits = [false, false];
+        let bits = leading_bits
+            .into_iter()
+            .chain(source_bits)
+            .chain(following_bits)
+            .collect::<Vec<_>>();
+
+        let claim = parse_verified_diamond_placeable_add_localized_name_source(
+            &live,
+            0,
+            live.len(),
+            &bits,
+            leading_bits.len(),
+        )
+        .expect("custom byte-selector A/09 localized name should exact-claim");
+        assert_eq!(
+            claim.name,
+            VerifiedDiamondPlaceableAddLocalizedName::CustomByteTlk {
+                client_tlk: 1,
+                strref,
+            }
+        );
+        assert_eq!(claim.byte_layout.tail_offset, 11);
+        assert_eq!(claim.byte_layout.base_tail_end, 16);
+        assert_eq!(
+            claim.byte_layout.optional_object_id,
+            Some(optional_object_id)
+        );
+        assert_eq!(claim.post_name_bit, leading_bits.len() + 2);
+        assert_eq!(
+            claim.next_bit_cursor,
+            leading_bits.len() + source_bits.len()
+        );
+        assert_eq!(
+            claim.state,
+            VerifiedDiamondPlaceableAddState {
+                reputation_visual: false,
+                static_plot: false,
+                useable: true,
+                trap_disarmable: false,
+                lockable: true,
+                locked: false,
+                unknown_1ac: true,
+                name_valid: false,
+            }
+        );
+        assert_eq!(
+            &bits[claim.next_bit_cursor..],
+            &following_bits,
+            "the custom parser must own exactly 11 source bits"
+        );
+    }
+
+    #[test]
+    fn diamond_placeable_add_source_rejects_unbounded_or_mismatched_branches() {
+        let strref = 0x0100_75D6u32;
+        let stock_live = diamond_placeable_add_localized_name(&strref.to_le_bytes(), None);
+        let stock_bits = [
+            true, true, false, // stock name selectors.
+            false, true, false, false, false, false, false, false,
+            false,
+            // Guard says optional OBJECTID, but the bytes end at the base tail.
+        ];
+        assert!(
+            parse_verified_diamond_placeable_add_localized_name_source(
+                &stock_live,
+                0,
+                stock_live.len(),
+                &stock_bits,
+                0,
+            )
+            .is_none(),
+            "the optional-object BOOL must agree with exact guarded bytes"
+        );
+
+        let mut invalid_custom_name = vec![2];
+        invalid_custom_name.extend_from_slice(&strref.to_le_bytes());
+        let invalid_custom_live = diamond_placeable_add_localized_name(&invalid_custom_name, None);
+        let custom_bits = [
+            true, true, // selector would be a byte.
+            false, false, false, false, false, false, false, false, false,
+        ];
+        assert!(
+            parse_verified_diamond_placeable_add_localized_name_source(
+                &invalid_custom_live,
+                0,
+                invalid_custom_live.len(),
+                &custom_bits,
+                0,
+            )
+            .is_none(),
+            "the custom source selector byte is bounded to the captured 0/1 dialect"
+        );
+
+        let valid_custom_name = {
+            let mut name = vec![0];
+            name.extend_from_slice(&strref.to_le_bytes());
+            name
+        };
+        let mut extra_byte_live = diamond_placeable_add_localized_name(&valid_custom_name, None);
+        extra_byte_live.push(0);
+        assert!(
+            parse_verified_diamond_placeable_add_localized_name_source(
+                &extra_byte_live,
+                0,
+                extra_byte_live.len(),
+                &custom_bits,
+                0,
+            )
+            .is_none(),
+            "the source parser must own the whole bounded byte record"
+        );
+
+        assert!(
+            parse_verified_diamond_placeable_add_localized_name_source(
+                &stock_live,
+                0,
+                stock_live.len(),
+                &stock_bits[..stock_bits.len() - 1],
+                0,
+            )
+            .is_none(),
+            "the source parser must own all nine post-name BOOLs"
+        );
+    }
+
     #[test]
     fn placeable_add_fragment_layout_ties_state_cursor_to_optional_branch() {
         let live = ee_placeable_add(Some(0x8000_1234));
@@ -447,6 +664,231 @@ fn verified_ee_door_add_record(bytes: &[u8], offset: usize, record_end: usize) -
     }
 
     name_offset + 6 == record_end && read_u16_le(bytes, name_offset + 4).is_some()
+}
+
+const DIAMOND_PLACEABLE_ADD_POST_NAME_FRAGMENT_BITS: usize = 9;
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VerifiedDiamondPlaceableAddSourceLayout {
+    pub(crate) tail_offset: usize,
+    pub(crate) base_tail_end: usize,
+    pub(crate) optional_object_id: Option<u32>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VerifiedDiamondPlaceableAddSource {
+    pub(crate) byte_layout: VerifiedDiamondPlaceableAddSourceLayout,
+    pub(crate) name: VerifiedDiamondPlaceableAddLocalizedName,
+    pub(crate) state: VerifiedDiamondPlaceableAddState,
+    pub(crate) post_name_bit: usize,
+    pub(crate) next_bit_cursor: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VerifiedDiamondPlaceableAddLocalizedName {
+    StockTlk { client_tlk: bool, strref: u32 },
+    CustomByteTlk { client_tlk: u8, strref: u32 },
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VerifiedDiamondPlaceableAddState {
+    pub(crate) reputation_visual: bool,
+    pub(crate) static_plot: bool,
+    pub(crate) useable: bool,
+    pub(crate) trap_disarmable: bool,
+    pub(crate) lockable: bool,
+    pub(crate) locked: bool,
+    pub(crate) unknown_1ac: bool,
+    pub(crate) name_valid: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiamondPlaceableAddLocalizedNameMode {
+    StockTlk,
+    CustomByteTlk,
+}
+
+/// Recognize only the read-buffer footprint shared by the bounded stock and
+/// custom localized-name source parsers. This does not authorize translation:
+/// fragment ownership and the optional-object guard still require the typed
+/// parser plus successor/terminal cursor proof.
+pub(crate) fn looks_like_diamond_placeable_add_localized_name_source_byte_shape(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> bool {
+    if offset
+        .checked_add(6)
+        .is_none_or(|header_end| header_end > record_end)
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'A')
+        || bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+    {
+        return false;
+    }
+
+    let name_offset = offset + 6;
+    [
+        locstring::fragment_selector_tlk_strref_end(bytes, name_offset),
+        locstring::tlk_locstring_ref_end(bytes, name_offset),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|tail_offset| {
+        let Some(base_tail_end) = tail_offset.checked_add(1 + 2 + 2) else {
+            return false;
+        };
+        read_u16_le(bytes, tail_offset + 1).is_some()
+            && read_u16_le(bytes, tail_offset + 3).is_some()
+            && (base_tail_end == record_end
+                || base_tail_end.checked_add(4).is_some_and(|optional_end| {
+                    optional_end == record_end && read_u32_le(bytes, base_tail_end).is_some()
+                }))
+    })
+}
+
+/// Parse one bounded Diamond/HG source `A/09` localized-name record.
+///
+/// Diamond `sub_44E4A0` -> `sub_53E700` owns the stock name as three fragment
+/// bits (outer locstring, inner TLK, one-bit client-TLK selector) followed by a
+/// four-byte StrRef. Older custom-server captures instead keep the first two
+/// fragment bits and store a full 0/1 selector byte before the StrRef. After
+/// either name shape, `sub_44E4A0` owns the same five-byte read-buffer tail,
+/// an optional four-byte OBJECTID guarded by the second post-name BOOL, and
+/// exactly nine post-name fragment BOOLs.
+///
+/// This is a source classifier only. It deliberately does not choose between
+/// a localized-name candidate and a compact four-byte token based on payload
+/// plausibility; callers must prove record ownership with a bounded successor
+/// walk or a terminal fragment cursor before authorizing canonicalization.
+#[allow(dead_code)]
+pub(crate) fn parse_verified_diamond_placeable_add_localized_name_source(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<VerifiedDiamondPlaceableAddSource> {
+    if bit_cursor >= fragment_bits.len()
+        || !fragment_bits.get(bit_cursor).copied()?
+        || !fragment_bits.get(bit_cursor.checked_add(1)?).copied()?
+    {
+        return None;
+    }
+
+    parse_verified_diamond_placeable_add_localized_name_source_for_mode(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        DiamondPlaceableAddLocalizedNameMode::StockTlk,
+    )
+    .or_else(|| {
+        parse_verified_diamond_placeable_add_localized_name_source_for_mode(
+            bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+            DiamondPlaceableAddLocalizedNameMode::CustomByteTlk,
+        )
+    })
+}
+
+fn parse_verified_diamond_placeable_add_localized_name_source_for_mode(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    name_mode: DiamondPlaceableAddLocalizedNameMode,
+) -> Option<VerifiedDiamondPlaceableAddSource> {
+    if offset.checked_add(6)? > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied()? != b'A'
+        || bytes.get(offset.checked_add(1)?).copied()? != PLACEABLE_OBJECT_TYPE
+    {
+        return None;
+    }
+
+    let name_offset = offset.checked_add(6)?;
+    let (name, name_fragment_bits, tail_offset) = match name_mode {
+        DiamondPlaceableAddLocalizedNameMode::StockTlk => {
+            let client_tlk = fragment_bits.get(bit_cursor.checked_add(2)?).copied()?;
+            let strref = read_u32_le(bytes, name_offset)?;
+            let tail_offset = locstring::fragment_selector_tlk_strref_end(bytes, name_offset)?;
+            (
+                VerifiedDiamondPlaceableAddLocalizedName::StockTlk { client_tlk, strref },
+                3usize,
+                tail_offset,
+            )
+        }
+        DiamondPlaceableAddLocalizedNameMode::CustomByteTlk => {
+            let tail_offset = locstring::tlk_locstring_ref_end(bytes, name_offset)?;
+            let client_tlk = *bytes.get(name_offset)?;
+            let strref = read_u32_le(bytes, name_offset.checked_add(1)?)?;
+            (
+                VerifiedDiamondPlaceableAddLocalizedName::CustomByteTlk { client_tlk, strref },
+                2usize,
+                tail_offset,
+            )
+        }
+    };
+
+    // Diamond reads BYTE type, WORD appearance, and WORD static tail values
+    // before consulting the optional-object fragment guard.
+    let base_tail_end = tail_offset.checked_add(1 + 2 + 2)?;
+    if base_tail_end > record_end
+        || read_u16_le(bytes, tail_offset.checked_add(1)?).is_none()
+        || read_u16_le(bytes, tail_offset.checked_add(3)?).is_none()
+    {
+        return None;
+    }
+
+    let post_name_bit = bit_cursor.checked_add(name_fragment_bits)?;
+    let next_bit_cursor =
+        post_name_bit.checked_add(DIAMOND_PLACEABLE_ADD_POST_NAME_FRAGMENT_BITS)?;
+    let state_bits = fragment_bits.get(post_name_bit..next_bit_cursor)?;
+    let optional_object_guard = *state_bits.get(1)?;
+
+    let optional_object_id = if optional_object_guard {
+        let optional_object_id = read_u32_le(bytes, base_tail_end)?;
+        if base_tail_end.checked_add(4)? != record_end {
+            return None;
+        }
+        Some(optional_object_id)
+    } else {
+        if base_tail_end != record_end {
+            return None;
+        }
+        None
+    };
+
+    Some(VerifiedDiamondPlaceableAddSource {
+        byte_layout: VerifiedDiamondPlaceableAddSourceLayout {
+            tail_offset,
+            base_tail_end,
+            optional_object_id,
+        },
+        name,
+        state: VerifiedDiamondPlaceableAddState {
+            reputation_visual: state_bits[0],
+            static_plot: state_bits[2],
+            useable: state_bits[3],
+            trap_disarmable: state_bits[4],
+            lockable: state_bits[5],
+            locked: state_bits[6],
+            unknown_1ac: state_bits[7],
+            name_valid: state_bits[8],
+        },
+        post_name_bit,
+        next_bit_cursor,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

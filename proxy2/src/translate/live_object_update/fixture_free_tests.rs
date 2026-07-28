@@ -701,6 +701,31 @@ fn compact_placeable_token_name_add_live_bytes() -> Vec<u8> {
     live
 }
 
+fn fixed_stock_tlk_placeable_add_live_bytes(object_id: u32, strref: u32) -> Vec<u8> {
+    let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(&strref.to_le_bytes());
+    live.push(0x05);
+    live.extend_from_slice(&0x1231u16.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live
+}
+
+fn fixed_custom_tlk_placeable_add_live_bytes(
+    object_id: u32,
+    client_tlk: u8,
+    strref: u32,
+) -> Vec<u8> {
+    let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.push(client_tlk);
+    live.extend_from_slice(&strref.to_le_bytes());
+    live.push(0x05);
+    live.extend_from_slice(&0x1231u16.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live
+}
+
 fn inline_placeable_add_with_legacy_scalar_visual_transform_live_bytes(object_id: u32) -> Vec<u8> {
     let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
     live.extend_from_slice(&object_id.to_le_bytes());
@@ -4623,6 +4648,303 @@ fn compact_placeable_token_add_rewrites_before_following_same_object_update() {
         .expect("compact add/update pair should claim after bounded rewrite");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn terminal_compact_placeable_add_requires_the_exact_terminal_bit_cursor() {
+    let live = compact_placeable_token_name_add_live_bytes();
+    let exact_source_bits = vec![true, true, false, true];
+    assert!(matches!(
+        super::resolve_legacy_placeable_add_localized_source_for_update_pass(
+            &live,
+            0,
+            live.len(),
+            &exact_source_bits,
+            0,
+        ),
+        super::LegacyPlaceableAddLocalizedSourceResolution::ProvenCompact {
+            extra_source_bits: 0
+        }
+    ));
+
+    let mut exact_payload = live_object_payload_with_bits(&live, exact_source_bits.clone());
+    crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut exact_payload,
+        None,
+    )
+    .expect("exact terminal compact A/09 should rewrite in the direct add-map pass");
+    let claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("rewritten terminal compact A/09 should exact-claim");
+    assert_eq!(claim.add_records, 1);
+
+    let mut residual_bits = exact_source_bits;
+    residual_bits.push(true);
+    assert_eq!(
+        super::resolve_legacy_placeable_add_localized_source_for_update_pass(
+            &live,
+            0,
+            live.len(),
+            &residual_bits,
+            0,
+        ),
+        super::LegacyPlaceableAddLocalizedSourceResolution::Unresolved,
+        "a terminal byte boundary without an exact terminal bit cursor is not proof"
+    );
+    let mut residual_payload = live_object_payload_with_bits(&live, residual_bits);
+    let original = residual_payload.clone();
+    assert!(
+        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut residual_payload,
+            None,
+        )
+        .is_none()
+    );
+    assert_eq!(residual_payload, original);
+}
+
+#[test]
+fn terminal_stock_tlk_placeable_add_canonicalizes_to_exact_ee_layout() {
+    // Diamond `sub_44E4A0` -> `sub_53E700` owns outer/inner/language,
+    // the four-byte StrRef, then nine state BOOLs. The terminal cursor proves
+    // this is the fixed localized-name layout rather than a compact token.
+    let object_id = 0x8000_34FDu32;
+    let strref = 0x0100_75D6u32;
+    let live = fixed_stock_tlk_placeable_add_live_bytes(object_id, strref);
+    let source_bits = vec![
+        true, true, false, // outer, inner TLK, client/server TLK selector
+        true, false, true, false, true, false, true, false, true, // state
+    ];
+    let resolution = super::resolve_legacy_placeable_add_localized_source_for_update_pass(
+        &live,
+        0,
+        live.len(),
+        &source_bits,
+        0,
+    );
+    assert!(matches!(
+        resolution,
+        super::LegacyPlaceableAddLocalizedSourceResolution::ProvenFixed(_)
+    ));
+
+    let mut payload = live_object_payload_with_bits(&live, source_bits);
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("terminal fixed stock-TLK A/09 should canonicalize");
+    assert_eq!(rewrite.bytes_inserted, 8);
+    assert_eq!(rewrite.bits_inserted, 1);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("canonical stock-TLK A/09 should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 0);
+    assert_eq!(
+        super::read_u32_le(
+            &payload,
+            super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + 6,
+        ),
+        Some(strref),
+        "canonicalization must preserve the stock StrRef bytes"
+    );
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("canonical stock-TLK fragment bits");
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        &[
+            true, true, false, true, false, true, false, true, false, true, false, true, false,
+        ],
+        "EE owns the Diamond localized bits and state plus one neutral final guard"
+    );
+}
+
+#[test]
+fn terminal_custom_byte_tlk_placeable_add_moves_selector_into_ee_fragment_bits() {
+    // The custom-server source dialect stores the 0/1 TLK selector as a byte.
+    // Canonical EE keeps only the DWORD StrRef in the read buffer and owns the
+    // selector as the third localized-name fragment bit.
+    let object_id = 0x8000_34FEu32;
+    let strref = 0x0100_88C6u32;
+    let live = fixed_custom_tlk_placeable_add_live_bytes(object_id, 1, strref);
+    let source_bits = vec![
+        true, true, // outer and inner TLK
+        false, false, true, true, false, true, false, true, true, // state
+    ];
+    let resolution = super::resolve_legacy_placeable_add_localized_source_for_update_pass(
+        &live,
+        0,
+        live.len(),
+        &source_bits,
+        0,
+    );
+    assert!(matches!(
+        resolution,
+        super::LegacyPlaceableAddLocalizedSourceResolution::ProvenFixed(_)
+    ));
+
+    let mut payload = live_object_payload_with_bits(&live, source_bits);
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("terminal fixed custom-TLK A/09 should canonicalize");
+    assert_eq!(rewrite.bytes_inserted, 8);
+    assert_eq!(rewrite.bytes_removed, 1);
+    assert_eq!(rewrite.bits_inserted, 2);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("canonical custom-TLK A/09 should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(
+        super::read_u32_le(
+            &payload,
+            super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + 6,
+        ),
+        Some(strref),
+        "the selector byte must be removed without shifting or changing the StrRef"
+    );
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("canonical custom-TLK fragment bits");
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        &[
+            true, true, true, false, false, true, true, false, true, false, true, true, false,
+        ],
+        "the byte selector becomes EE's language bit before the preserved state"
+    );
+}
+
+#[test]
+fn custom_byte_tlk_optional_guard_mismatch_stays_unresolved_and_unchanged() {
+    let live = fixed_custom_tlk_placeable_add_live_bytes(0x8000_34FE, 1, 0x0100_88C6);
+    let source_bits = vec![
+        true, true, // outer and inner TLK
+        false, true, false, false, false, false, false, false,
+        true,
+        // The optional guard is true, but the bounded custom row has no OBJECTID.
+    ];
+    assert_eq!(
+        super::resolve_legacy_placeable_add_localized_source_for_update_pass(
+            &live,
+            0,
+            live.len(),
+            &source_bits,
+            0,
+        ),
+        super::LegacyPlaceableAddLocalizedSourceResolution::Unresolved
+    );
+
+    let mut payload = live_object_payload_with_bits(&live, source_bits);
+    let original = payload.clone();
+    assert!(
+        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut payload,
+            None,
+        )
+        .is_none()
+    );
+    assert_eq!(payload, original);
+}
+
+#[test]
+fn localized_looking_compact_placeable_add_keeps_following_same_object_update_bits() {
+    // Generalized from live sequence 41: compact A/09 owns `1101`, while the
+    // following same-object U/09 owns the next bits. The combined prefix begins
+    // with outer/inner=true and is byte-shaped like a stock StrRef row, but the
+    // exact U cursor must select the compact interpretation.
+    let object_id = 0x8000_18CAu32;
+    let add = compact_placeable_token_name_add_live_bytes();
+    let update = with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+        object_id,
+    );
+    let add_end = add.len();
+    let mut live = add;
+    live.extend_from_slice(&update);
+    let update_bits = exact_scalar_door_placeable_update_bits(super::PLACEABLE_OBJECT_TYPE);
+    let mut source_bits = vec![true, true, false, true];
+    source_bits.extend_from_slice(&update_bits);
+
+    assert!(matches!(
+        super::resolve_legacy_placeable_add_localized_source_for_update_pass(
+            &live,
+            0,
+            add_end,
+            &source_bits,
+            0,
+        ),
+        super::LegacyPlaceableAddLocalizedSourceResolution::ProvenCompact {
+            extra_source_bits: 0
+        }
+    ));
+
+    let mut payload = live_object_payload_with_bits(&live, source_bits);
+    super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("localized-looking compact A/09 should use the exact following U/09 proof");
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten compact A/09 plus exact U/09 should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("rewritten compact A/09 fragment bits");
+    let owned = &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..];
+    assert_eq!(
+        &owned[12..],
+        update_bits.as_slice(),
+        "the fixed-name trial must not steal any following U/09 bits"
+    );
+}
+
+#[test]
+fn localized_looking_add_with_wrong_object_update_stays_unresolved_and_unchanged() {
+    let add_object_id = 0x8000_18CAu32;
+    let add = compact_placeable_token_name_add_live_bytes();
+    let update = with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+        add_object_id + 1,
+    );
+    let add_end = add.len();
+    let mut live = add;
+    live.extend_from_slice(&update);
+    let mut source_bits = vec![true, true, false, true];
+    source_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits(
+        super::PLACEABLE_OBJECT_TYPE,
+    ));
+
+    assert_eq!(
+        super::resolve_legacy_placeable_add_localized_source_for_update_pass(
+            &live,
+            0,
+            add_end,
+            &source_bits,
+            0,
+        ),
+        super::LegacyPlaceableAddLocalizedSourceResolution::Unresolved,
+        "a plausible localized prefix is not authorization without same-object cursor proof"
+    );
+
+    let mut payload = live_object_payload_with_bits(&live, source_bits);
+    let original = payload.clone();
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "the update pass must not mutate an unresolved A/09 candidate"
+    );
+    assert_eq!(payload, original);
+    assert!(
+        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut payload,
+            None,
+        )
+        .is_none(),
+        "the direct add-map pass must enforce the same proof boundary"
+    );
+    assert_eq!(
+        payload, original,
+        "unresolved source bytes and fragment bits must remain available for quarantine"
+    );
 }
 
 #[test]

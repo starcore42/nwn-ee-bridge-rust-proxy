@@ -2031,14 +2031,16 @@ fn rewrite_creature_add_visual_transform_maps_inner(
                 }
                 let before_fragment_bits_len = bits.len();
                 let before_fragment_bit_cursor = fragment_bit_cursor;
-                if let Some(record_rewrite) = rewrite_legacy_door_placeable_add_record_for_ee(
-                    &mut live_bytes,
-                    &mut record_end,
-                    bits,
-                    &mut fragment_bit_cursor,
-                    offset,
-                    area_context,
-                ) {
+                if let Some(record_rewrite) =
+                    rewrite_legacy_door_placeable_add_record_with_source_resolution_for_ee(
+                        &mut live_bytes,
+                        &mut record_end,
+                        bits,
+                        &mut fragment_bit_cursor,
+                        offset,
+                        area_context,
+                    )
+                {
                     maps_inserted = maps_inserted.saturating_add(record_rewrite.maps_inserted);
                     bytes_inserted = bytes_inserted.saturating_add(record_rewrite.bytes_inserted);
                     bytes_removed = bytes_removed.saturating_add(record_rewrite.bytes_removed);
@@ -3301,6 +3303,307 @@ pub(crate) fn rewrite_legacy_door_placeable_add_record_for_update_pass(
         fragment_bits_changed: rewrite.fragment_bits_changed,
         legacy_door_model_tokens_removed: rewrite.legacy_door_model_tokens_removed,
     })
+}
+
+fn rewrite_legacy_door_placeable_add_record_with_source_resolution_for_ee(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<DoorPlaceableAddRewrite> {
+    if bytes.get(record_offset).copied() != Some(b'A')
+        || bytes.get(record_offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+    {
+        return rewrite_legacy_door_placeable_add_record_for_ee(
+            bytes,
+            record_end,
+            bits,
+            bit_cursor,
+            record_offset,
+            area_context,
+        );
+    }
+
+    match crate::translate::live_object_update::resolve_legacy_placeable_add_localized_source_for_update_pass(
+        bytes,
+        record_offset,
+        *record_end,
+        bits,
+        *bit_cursor,
+    ) {
+        crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::NotCandidate => {
+            rewrite_legacy_door_placeable_add_record_for_ee(
+                bytes,
+                record_end,
+                bits,
+                bit_cursor,
+                record_offset,
+                area_context,
+            )
+        }
+        crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::ProvenFixed(source) => {
+            let rewrite = rewrite_verified_placeable_add_localized_source_with_area_context(
+                bytes,
+                record_end,
+                bits,
+                bit_cursor,
+                record_offset,
+                source,
+                area_context,
+            )?;
+            Some(DoorPlaceableAddRewrite {
+                maps_inserted: rewrite.maps_inserted,
+                bytes_inserted: rewrite.bytes_inserted,
+                bytes_removed: rewrite.bytes_removed,
+                bits_inserted: rewrite.bits_inserted,
+                bits_removed: rewrite.bits_removed,
+                fragment_bits_changed: rewrite.fragment_bits_changed,
+                legacy_door_model_tokens_removed: rewrite.legacy_door_model_tokens_removed,
+            })
+        }
+        crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::ProvenCompact {
+            extra_source_bits,
+        } => {
+            let mut rewrite = rewrite_legacy_door_placeable_add_record_for_ee(
+                bytes,
+                record_end,
+                bits,
+                bit_cursor,
+                record_offset,
+                area_context,
+            )?;
+            if extra_source_bits != 0 {
+                let drain_end = bit_cursor.checked_add(extra_source_bits)?;
+                if drain_end > bits.len() {
+                    return None;
+                }
+                bits.drain(*bit_cursor..drain_end);
+                rewrite.bits_removed = rewrite
+                    .bits_removed
+                    .saturating_add(u32::try_from(extra_source_bits).unwrap_or(u32::MAX));
+                rewrite.fragment_bits_changed = true;
+            }
+            Some(rewrite)
+        }
+        crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::Unresolved => {
+            // A four-/five-byte localized-name candidate is intentionally
+            // non-authorizing. Defer the record until a same-object U/09 or
+            // exact terminal cursor selects one source dialect.
+            None
+        }
+    }
+}
+
+pub(crate) fn rewrite_verified_placeable_add_localized_source_for_update_pass(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+    source: crate::translate::live_object_update::VerifiedDiamondPlaceableAddSource,
+) -> Option<DoorPlaceableAddUpdatePassRewrite> {
+    rewrite_verified_placeable_add_localized_source_with_area_context(
+        bytes,
+        record_end,
+        bits,
+        bit_cursor,
+        record_offset,
+        source,
+        None,
+    )
+}
+
+fn rewrite_verified_placeable_add_localized_source_with_area_context(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+    source: crate::translate::live_object_update::VerifiedDiamondPlaceableAddSource,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<DoorPlaceableAddUpdatePassRewrite> {
+    let start_bit_cursor = *bit_cursor;
+    let reparsed =
+        crate::translate::live_object_update::parse_verified_diamond_placeable_add_localized_name_source(
+            bytes,
+            record_offset,
+            *record_end,
+            bits,
+            start_bit_cursor,
+        )?;
+    if reparsed != source || source.next_bit_cursor <= start_bit_cursor {
+        return None;
+    }
+
+    let mut candidate_bytes = bytes.clone();
+    let mut candidate_record_end = *record_end;
+    let mut candidate_bits = bits.clone();
+    let name_offset = record_offset.checked_add(6)?;
+    let (client_tlk, source_name_bits, custom_selector_byte) = match source.name {
+        crate::translate::live_object_update::VerifiedDiamondPlaceableAddLocalizedName::StockTlk {
+            client_tlk,
+            ..
+        } => (client_tlk, 3usize, None),
+        crate::translate::live_object_update::VerifiedDiamondPlaceableAddLocalizedName::CustomByteTlk {
+            client_tlk,
+            ..
+        } => (client_tlk != 0, 2usize, Some(client_tlk)),
+    };
+    let source_bit_count = source.next_bit_cursor.checked_sub(start_bit_cursor)?;
+    if source_bit_count != source_name_bits + 9 {
+        return None;
+    }
+
+    let object_id = read_u32_le(&candidate_bytes, record_offset.checked_add(2)?)?;
+    let appearance = read_u16_le(
+        &candidate_bytes,
+        source.byte_layout.tail_offset.checked_add(1)?,
+    )?;
+    let area_module_state_override = area_context.and_then(|context| {
+        context
+            .placeable_overlap_for_object_id(object_id)
+            .unique_module_backed_static_state()
+    });
+    let source_state = source.state;
+    let emitted_state = placeable_add_state_with_area_module_override(
+        PlaceableAddStateBits {
+            reputation_visual: source_state.reputation_visual,
+            static_plot: source_state.static_plot,
+            useable: source_state.useable,
+            trap_disarmable: source_state.trap_disarmable,
+            lockable: source_state.lockable,
+            locked: source_state.locked,
+            unknown_1ac: source_state.unknown_1ac,
+            name_valid: source_state.name_valid,
+        },
+        area_module_state_override,
+        object_id,
+        appearance,
+        record_offset,
+        *record_end,
+    );
+
+    let mut bytes_removed = 0u32;
+    if let Some(selector_byte) = custom_selector_byte {
+        if candidate_bytes.get(name_offset).copied()? != selector_byte {
+            return None;
+        }
+        candidate_bytes.remove(name_offset);
+        candidate_record_end = candidate_record_end.checked_sub(1)?;
+        bytes_removed = 1;
+    }
+
+    let optional_object_id = source.byte_layout.optional_object_id.is_some();
+    let emitted_bits = [
+        true,
+        true,
+        client_tlk,
+        emitted_state.reputation_visual,
+        optional_object_id,
+        emitted_state.static_plot,
+        emitted_state.useable,
+        emitted_state.trap_disarmable,
+        emitted_state.lockable,
+        emitted_state.locked,
+        emitted_state.unknown_1ac,
+        emitted_state.name_valid,
+        false,
+    ];
+    candidate_bits.splice(
+        start_bit_cursor..source.next_bit_cursor,
+        emitted_bits.iter().copied(),
+    );
+    let emitted_bit_cursor = start_bit_cursor.checked_add(emitted_bits.len())?;
+
+    // The source parser owns the complete Diamond byte record, so the current
+    // record end is exactly the visual-transform handoff. EE
+    // `sub_1407A7800` reads one additional neutral BOOL and then the
+    // `ObjectVisualTransformData` map at this cursor.
+    candidate_bytes.splice(
+        candidate_record_end..candidate_record_end,
+        EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES,
+    );
+    candidate_record_end =
+        candidate_record_end.checked_add(EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len())?;
+
+    let mut verified_cursor = start_bit_cursor;
+    if !crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+        &candidate_bytes,
+        record_offset,
+        candidate_record_end,
+        &candidate_bits,
+        &mut verified_cursor,
+    ) || verified_cursor != emitted_bit_cursor
+    {
+        return None;
+    }
+
+    *bytes = candidate_bytes;
+    *record_end = candidate_record_end;
+    *bits = candidate_bits;
+    *bit_cursor = emitted_bit_cursor;
+
+    Some(DoorPlaceableAddUpdatePassRewrite {
+        maps_inserted: 1,
+        bytes_inserted: EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32,
+        bytes_removed,
+        bits_inserted: u32::try_from(emitted_bits.len().saturating_sub(source_bit_count))
+            .unwrap_or(u32::MAX),
+        bits_removed: 0,
+        fragment_bits_changed: true,
+        legacy_door_model_tokens_removed: 0,
+    })
+}
+
+pub(crate) fn rewrite_resolved_placeable_add_source_for_update_pass(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+    resolution: crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<DoorPlaceableAddUpdatePassRewrite> {
+    match resolution {
+        crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::ProvenFixed(source) => {
+            rewrite_verified_placeable_add_localized_source_with_area_context(
+                bytes,
+                record_end,
+                bits,
+                bit_cursor,
+                record_offset,
+                source,
+                area_context,
+            )
+        }
+        crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::ProvenCompact {
+            extra_source_bits,
+        } => {
+            let mut rewrite = rewrite_legacy_door_placeable_add_record_for_update_pass(
+                bytes,
+                record_end,
+                bits,
+                bit_cursor,
+                record_offset,
+            )?;
+            if extra_source_bits != 0 {
+                let drain_end = bit_cursor.checked_add(extra_source_bits)?;
+                if drain_end > bits.len() {
+                    return None;
+                }
+                bits.drain(*bit_cursor..drain_end);
+                rewrite.bits_removed = rewrite
+                    .bits_removed
+                    .saturating_add(u32::try_from(extra_source_bits).unwrap_or(u32::MAX));
+                rewrite.fragment_bits_changed = true;
+            }
+            Some(rewrite)
+        }
+        crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::NotCandidate
+        | crate::translate::live_object_update::LegacyPlaceableAddLocalizedSourceResolution::Unresolved => None,
+    }
 }
 
 fn rewrite_legacy_door_placeable_add_record_for_ee(
@@ -5283,6 +5586,17 @@ mod placeable_add_semantic_tests {
         (bytes, record_end)
     }
 
+    fn stock_tlk_placeable_add_source_record() -> (Vec<u8>, usize) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE, 0x85, 0x00, 0x00, 0x80]);
+        bytes.extend_from_slice(&0x0100_75D6u32.to_le_bytes());
+        bytes.push(5);
+        bytes.extend_from_slice(&0x000Eu16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        let record_end = bytes.len();
+        (bytes, record_end)
+    }
+
     fn area_context_with_static_module_state(
         object_id_confidence: crate::translate::area::AreaPlaceableContextObjectIdConfidence,
         include_light_alias: bool,
@@ -5528,6 +5842,43 @@ mod placeable_add_semantic_tests {
             )
         );
         assert_eq!(verified_cursor, bit_cursor);
+    }
+
+    #[test]
+    fn stock_tlk_placeable_add_rewrite_keeps_unique_module_state_reconciliation() {
+        let (mut bytes, mut record_end) = stock_tlk_placeable_add_source_record();
+        let mut bits = vec![
+            true, true, false, // outer, inner TLK, language selector
+            true, false, false, false, true, false, true, true, true, // source state
+        ];
+        let module_state = AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let expected =
+            legacy_placeable_add_state_bits(&bits, 0, 2).with_module_static_state(module_state);
+        let area_context = area_context_with_static_module_state(
+            crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+            false,
+        );
+        let mut bit_cursor = 0usize;
+
+        rewrite_legacy_door_placeable_add_record_with_source_resolution_for_ee(
+            &mut bytes,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            0,
+            Some(&area_context),
+        )
+        .expect("fixed stock-TLK add should keep the module-backed state override");
+
+        assert_eq!(bit_cursor, 13);
+        assert_ee_placeable_add_state_bits(&bits, 3, expected, false);
     }
 
     #[test]
@@ -8670,7 +9021,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_placeable_add_with_one_residue_bit_rewrites_to_exact_ee_shape() {
+    fn terminal_compact_placeable_add_with_one_bit_stays_unresolved() {
         let mut live = Vec::new();
         live.push(b'A');
         live.push(PLACEABLE_OBJECT_TYPE);
@@ -8680,16 +9031,16 @@ mod tests {
 
         let fragment_bits = vec![
             false, false, false, // CNW fragment length header, rewritten by pack.
-            false, // stale compact add source residue drained before EE guards.
+            false, // Diamond compact A/09 owns four source BOOLs, not one.
         ];
         let mut payload = live_object_payload(live, fragment_bits);
+        let original = payload.clone();
 
-        let summary = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
-            .expect("one-residue compact placeable add rewrite");
-        assert_eq!(summary.maps_inserted, 1);
         assert!(
-            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+            rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None).is_none(),
+            "a byte boundary plus one residual BOOL is not an exact terminal cursor proof"
         );
+        assert_eq!(payload, original);
     }
 
     #[test]
