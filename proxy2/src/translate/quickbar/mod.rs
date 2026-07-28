@@ -23,6 +23,7 @@ mod fragments;
 mod general;
 mod item;
 mod model;
+mod object_ids;
 mod reader;
 mod spell;
 mod split;
@@ -65,6 +66,7 @@ pub(crate) use model::{
     QuickbarMaterializationContext, QuickbarMaterializationContextSummary,
     QuickbarValidatedSlotProfile,
 };
+pub(crate) use object_ids::ee_quickbar_object_id_wire_value;
 #[cfg(test)]
 pub(crate) use validator::validated_set_all_buttons_materialized_item_object_ids;
 pub(crate) use validator::{

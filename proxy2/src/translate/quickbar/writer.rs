@@ -482,7 +482,7 @@ fn write_quickbar_item_object(
     if !item.present {
         return Some(());
     }
-    writer.write_dword(ee_server_object_id_wire_value(item.object_id));
+    writer.write_dword(ee_quickbar_object_id_wire_value(item.object_id));
     if include_int_param {
         writer.write_i32(item.int_param);
     }
@@ -676,14 +676,6 @@ fn write_quickbar_active_value_mask_bytes(
         if (active_props.value_mask & (1u8 << bit)) != 0 {
             writer.write_byte(values.next().unwrap_or(0));
         }
-    }
-}
-
-fn ee_server_object_id_wire_value(object_id: u32) -> u32 {
-    if object_id == NWN_OBJECT_INVALID || (object_id & EE_SERVER_OBJECT_ID_MARKER_BIT) != 0 {
-        object_id
-    } else {
-        object_id | EE_SERVER_OBJECT_ID_MARKER_BIT
     }
 }
 

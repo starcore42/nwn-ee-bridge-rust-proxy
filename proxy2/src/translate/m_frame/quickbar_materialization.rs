@@ -163,7 +163,25 @@ fn quickbar_materialization_status_from_registry(
     registry: &semantic::ObjectRegistry,
     object_id: u32,
 ) -> quickbar::QuickbarItemMaterializationStatus {
-    match registry.inventory_item_object_status(object_id) {
+    // Live-object and GUI lifecycle evidence can legitimately retain the raw
+    // Diamond id, so preserve any exact status first. Only a genuinely unknown
+    // raw id may fall back to the external id that the quickbar writer emits
+    // and EE registers. In particular, a raw tombstone or deferred/reference
+    // status must remain fail-closed rather than being hidden by high-id proof.
+    let raw_status = registry.inventory_item_object_status(object_id);
+    let status = if raw_status == semantic::InventoryItemObjectStatus::Unknown {
+        let ee_object_id = quickbar::ee_quickbar_object_id_wire_value(object_id);
+        registry.inventory_item_object_status(ee_object_id)
+    } else {
+        raw_status
+    };
+    quickbar_materialization_status_from_inventory_status(status)
+}
+
+fn quickbar_materialization_status_from_inventory_status(
+    status: semantic::InventoryItemObjectStatus,
+) -> quickbar::QuickbarItemMaterializationStatus {
+    match status {
         semantic::InventoryItemObjectStatus::Proven(proof) => {
             quickbar::QuickbarItemMaterializationStatus::Proven(
                 quickbar_materialization_proof_from_registry(proof),
@@ -208,6 +226,92 @@ fn quickbar_materialization_proof_from_registry(
         semantic::InventoryItemObjectProof::Feature25LegacyTail => {
             quickbar::QuickbarItemMaterializationProof::InventoryFeature25LegacyTail
         }
+    }
+}
+
+#[cfg(test)]
+mod fixture_free_tests {
+    use super::*;
+
+    #[test]
+    fn registry_proof_lookup_preserves_raw_low_id_proof() {
+        let compact_object_id = 0x0000_0042;
+        let mut registry = semantic::ObjectRegistry::default();
+        registry.observe_materialized_item_object_ids(&[compact_object_id]);
+
+        assert_eq!(
+            quickbar_materialization_status_from_registry(&registry, compact_object_id),
+            quickbar::QuickbarItemMaterializationStatus::Proven(
+                quickbar::QuickbarItemMaterializationProof::ActiveObject,
+            ),
+            "raw low-id GUI/item lifecycle proof remains authoritative"
+        );
+    }
+
+    #[test]
+    fn registry_proof_lookup_falls_back_to_the_ee_quickbar_object_id_namespace() {
+        let compact_object_id = 0x0000_0042;
+        let ee_object_id = 0x8000_0042;
+        let mut registry = semantic::ObjectRegistry::default();
+        registry.observe_materialized_item_object_ids(&[ee_object_id]);
+
+        assert_eq!(
+            quickbar_materialization_status_from_registry(&registry, compact_object_id),
+            quickbar::QuickbarItemMaterializationStatus::Proven(
+                quickbar::QuickbarItemMaterializationProof::ActiveObject,
+            ),
+            "a compact Diamond source id must reuse the object already registered by the EE quickbar writer"
+        );
+        assert_eq!(
+            quickbar_materialization_status_from_registry(&registry, ee_object_id),
+            quickbar::QuickbarItemMaterializationStatus::Proven(
+                quickbar::QuickbarItemMaterializationProof::ActiveObject,
+            )
+        );
+        assert_eq!(
+            quickbar_materialization_status_from_registry(
+                &registry,
+                quickbar::ee_quickbar_object_id_wire_value(0x7F00_0000),
+            ),
+            quickbar::QuickbarItemMaterializationStatus::Unknown,
+            "the stock invalid sentinel must not alias a materialized external object"
+        );
+    }
+
+    #[test]
+    fn registry_proof_lookup_does_not_bypass_raw_tombstones_or_deferred_status() {
+        let compact_object_id = 0x0000_0042;
+        let ee_object_id = 0x8000_0042;
+        let mut registry = semantic::ObjectRegistry::default();
+        registry.observe_materialized_item_object_ids(&[compact_object_id, ee_object_id]);
+        registry.observe_mentions(&[semantic::LiveObjectMention {
+            opcode: b'D',
+            object_type: 0x06,
+            object_id: compact_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        assert_eq!(
+            quickbar_materialization_status_from_registry(&registry, compact_object_id),
+            quickbar::QuickbarItemMaterializationStatus::ClearedByItemDelete,
+            "raw item deletion must not fall through to surviving canonical-id proof"
+        );
+        assert_eq!(
+            quickbar_materialization_status_from_inventory_status(
+                semantic::InventoryItemObjectStatus::DeferredFeature25(
+                    semantic::InventoryItemObjectProof::Feature25FirstList,
+                ),
+            ),
+            quickbar::QuickbarItemMaterializationStatus::DeferredFeature25(
+                quickbar::QuickbarItemMaterializationProof::InventoryFeature25FirstList,
+            ),
+            "deferred Feature-25 state must remain deferred and therefore fail closed"
+        );
     }
 }
 

@@ -629,7 +629,11 @@ fn quickbar_active_item_signature(
     }
     let active_props = item.active_props.as_ref()?;
     Some(QuickbarActiveItemSignature {
-        object_id: item.object_id,
+        // The committed signature is consumed alongside emitted EE payload
+        // state and later matched against EE-facing G Q rows. Use the same
+        // external-id form as the typed writer rather than retaining a compact
+        // Diamond source id that EE never registers under that value.
+        object_id: ee_quickbar_object_id_wire_value(item.object_id),
         base_item: item.base_item,
         appearance_type: item.appearance_type,
         active_property_count: u32::try_from(active_props.properties.len()).unwrap_or(u32::MAX),
@@ -1269,6 +1273,121 @@ mod tests {
             active_props: Some(QuickbarActiveItemProperties::default()),
             appearance_bytes,
         }
+    }
+
+    #[test]
+    fn compact_item_identity_stays_ee_canonical_through_committed_gq_state() {
+        let compact_object_id = 0x0000_0042;
+        let ee_object_id = 0x8000_0042;
+        let mut buttons = vec![QuickbarButton {
+            kind: QuickbarButtonKind::Item {
+                primary: shield_item(compact_object_id),
+                secondary: QuickbarItemObject::default(),
+                source: QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                recovered_type_tag: false,
+            },
+        }];
+        buttons.extend((1..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
+            kind: QuickbarButtonKind::General { bytes: vec![0] },
+        }));
+        let parsed = QuickbarParse {
+            envelope: b'P',
+            declared: 0,
+            read_size: 0,
+            fragment_size: 1,
+            fragment_ownership: QuickbarFragmentOwnershipSummary {
+                exact_tail: true,
+                ..QuickbarFragmentOwnershipSummary::default()
+            },
+            final_cursor: 0,
+            buttons,
+            direct_opcode_stream: false,
+        };
+        let payload = super::super::writer::build_ee_quickbar_payload(&parsed)
+            .expect("typed compact-id quickbar should emit exact EE shape");
+        let new_declared = read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES)
+            .expect("emitted quickbar should carry a declared boundary");
+        let summary =
+            summarize_quickbar_rewrite(&parsed, &payload, 0, payload.len(), 0, new_declared, None);
+
+        assert_eq!(
+            summary
+                .first_preserved_active_item_signature
+                .map(|signature| signature.object_id),
+            Some(ee_object_id),
+            "committed slot authority must name the id written to EE"
+        );
+        assert_eq!(
+            validated_set_all_buttons_semantics(&payload)
+                .expect("emitted quickbar should pass the complete EE reader")
+                .1,
+            vec![ee_object_id],
+            "the exact validator must observe the same canonical id"
+        );
+
+        let mut state = crate::translate::semantic::SemanticSessionState::default();
+        let probe = crate::translate::semantic::CommittedQuickbarUnitProbe {
+            summary,
+            materialization_context:
+                crate::translate::semantic::InventoryItemContextSummary::default(),
+        };
+        crate::translate::semantic::observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
+            &mut state,
+            crate::packet::Direction::ServerToClient,
+            &crate::translate::VerifiedProof::family(
+                crate::translate::VerifiedFamily::GuiQuickbar,
+            ),
+            &payload,
+            None,
+            &[probe],
+        );
+
+        assert_eq!(
+            state.objects.inventory_item_object_status(ee_object_id),
+            crate::translate::semantic::InventoryItemObjectStatus::Proven(
+                crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            ),
+            "semantic state must promote the emitted EE id"
+        );
+        let hint = state
+            .ui
+            .quickbar_item_refresh_harness_hint()
+            .expect("the canonicalized committed slot should bind its ready item candidate");
+        assert_eq!(hint.candidate.object_id, ee_object_id);
+        assert_eq!(hint.candidate_preserved_active_item_slot, Some(0));
+        assert_eq!(
+            hint.candidate_preserved_active_item_signature
+                .map(|signature| signature.object_id),
+            Some(ee_object_id)
+        );
+
+        state.ui.observe_quickbar_item_use_count_updates(&[
+            crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate {
+                slot: 0,
+                button_type: crate::translate::client_quickbar::ITEM_SET_BUTTON_TYPE,
+                object_id: ee_object_id,
+                active_property_index: 0,
+                use_count: 1,
+            },
+        ]);
+        let resolved = state
+            .ui
+            .resolve_pending_quickbar_item_refresh_with_prior_use_count_state()
+            .expect("matching canonical G Q state should resolve the compact-source slot");
+        assert_eq!(resolved.object_id, ee_object_id);
+        assert!(!state.ui.post_committed_quickbar_item_refresh_pending);
+        assert!(
+            state
+                .ui
+                .post_committed_quickbar_item_refresh_resolved_by_prior_use_count_state
+        );
+        assert_eq!(
+            state
+                .objects
+                .inventory_item_object_status(compact_object_id),
+            crate::translate::semantic::InventoryItemObjectStatus::Unknown,
+            "semantic state must not create a second compact-id object"
+        );
     }
 
     #[test]
