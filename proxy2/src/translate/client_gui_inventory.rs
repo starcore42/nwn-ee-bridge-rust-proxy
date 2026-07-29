@@ -174,9 +174,10 @@ fn status_payload_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn select_panel_payload_shape_valid(payload: &[u8]) -> bool {
-    // EE `SendServerToPlayerInventory_SelectPanel` and the player-to-server
-    // handler both own a one-byte read cursor plus one fragment BOOL. The same
-    // packed single-BOOL fragment byte shape is used by `GuiInventory_Status`.
+    // The player-to-server handler owns a one-byte read cursor plus one
+    // fragment BOOL. Server-to-player SelectPanel is direction-asymmetric: its
+    // decompiled writer/reader own the byte only and are validated separately
+    // by `gui_inventory`.
     read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)
         .and_then(|declared| usize::try_from(declared).ok())
         == Some(SELECT_PANEL_DECLARED_BYTES)

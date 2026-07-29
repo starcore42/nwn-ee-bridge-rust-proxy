@@ -16,9 +16,9 @@ use super::{
     chat, client_area, client_char_list, client_character_sheet, client_device, client_gui_event,
     client_gui_inventory, client_input, client_inventory, client_login, client_module,
     client_quickbar, client_server_status, client_side_message, custom_token, cutscene, dialog,
-    game_obj_update, gui_timing_event, inventory, item_update_active_props, journal, loadbar,
-    login, module, module_resources, module_time, party, play_module_character_list, player_list,
-    quickbar, safe_projectile, server_status, sound,
+    game_obj_update, gui_inventory, gui_timing_event, inventory, item_update_active_props, journal,
+    loadbar, login, module, module_resources, module_time, party, play_module_character_list,
+    player_list, quickbar, safe_projectile, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -234,7 +234,7 @@ fn focused_high_level_unit_end_with_quickbar_materialization(
         (0x03, 0x0E) => focused_module_end_game_unit_end(bytes, offset),
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
-        (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
+        (0x0C, 0x01 | 0x02 | 0x07 | 0x08) => focused_inventory_unit_end(bytes, offset),
         (0x0C, 0x0B) => focused_client_inventory_unit_end(bytes, offset),
         (0x03, 0x01) => focused_module_info_unit_end(bytes, offset),
         (0x03, 0x02) => focused_client_module_unit_end(bytes, offset),
@@ -249,6 +249,7 @@ fn focused_high_level_unit_end_with_quickbar_materialization(
             0x01 | 0x02 | 0x03 | 0x05 | 0x06 | 0x07 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x0E
             | 0x10 | 0x11,
         ) => focused_client_input_unit_end(bytes, offset),
+        (0x0D, 0x02) if high.envelope == b'P' => focused_gui_inventory_unit_end(bytes, offset),
         (0x0D, 0x01 | 0x02) => focused_client_gui_inventory_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x10, _) => focused_camera_unit_end(bytes, offset),
@@ -496,6 +497,12 @@ fn focused_client_gui_inventory_unit_end(bytes: &[u8], offset: usize) -> Focused
     focused_claimed_unit_end(bytes, offset, 1, |payload| {
         let mut probe = payload.to_vec();
         client_gui_inventory::claim_or_rewrite_payload_if_verified(&mut probe).is_some()
+    })
+}
+
+fn focused_gui_inventory_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        gui_inventory::claim_payload_if_verified(payload).is_some()
     })
 }
 
@@ -2507,6 +2514,33 @@ mod tests {
     }
 
     #[test]
+    fn splits_live_select_panel_then_unequip_without_stealing_a_neighbor() {
+        let mut bytes = gui_inventory_select_panel_payload(0x02, 0x62);
+        let unequip_offset = bytes.len();
+        bytes.extend_from_slice(&inventory_unequip_payload(0x07, 0x8001_59F9, 0x82));
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.envelope, b'P');
+                assert_eq!((message.major, message.minor), (0x0D, 0x02));
+                assert_eq!(message.payload.len(), 9);
+            }
+            _ => panic!("expected server GuiInventory_SelectPanel unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, unequip_offset);
+                assert_eq!((message.major, message.minor), (0x0C, 0x07));
+                assert_eq!(message.payload.len(), 12);
+            }
+            _ => panic!("expected server Inventory_Unequip unit"),
+        }
+    }
+
+    #[test]
     fn splits_legacy_inventory_equip_rewrite_shape_before_following_status() {
         let mut bytes = legacy_inventory_equip_payload(1, 0x8000_1234, 4, 0x90);
         let status_offset = bytes.len();
@@ -3436,6 +3470,15 @@ mod tests {
         payload
     }
 
+    fn gui_inventory_select_panel_payload(panel: u8, fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 1;
+        let mut payload = vec![b'P', 0x0D, 0x02];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(panel);
+        payload.push(fragment_tail);
+        payload
+    }
+
     fn client_inventory_equip_toggle_payload(
         primary_object_id: u32,
         secondary_object_id: Option<u32>,
@@ -3603,6 +3646,15 @@ mod tests {
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(&object_id.to_le_bytes());
         payload.extend_from_slice(&equip_slot.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn inventory_unequip_payload(minor: u8, object_id: u32, fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 4;
+        let mut payload = vec![b'P', 0x0C, minor];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
         payload.push(fragment_tail);
         payload
     }

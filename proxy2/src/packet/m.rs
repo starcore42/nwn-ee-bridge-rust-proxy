@@ -373,6 +373,12 @@ impl HighLevel {
             // Inventory family confirmed from EE's packet-name table and
             // `CNWSMessage::SendServerToPlayerInventory_Equip`.
             (0x0C, 0x01) => "Inventory_Equip",
+            (0x0C, 0x02) => "Inventory_EquipCancel",
+            // EE and Diamond writers emit only OBJECTIDServer + BOOL for
+            // Unequip/UnequipCancel; their client-reader cases immediately
+            // perform exact overflow/underflow checks after that common prefix.
+            (0x0C, 0x07) => "Inventory_Unequip",
+            (0x0C, 0x08) => "Inventory_UnequipCancel",
             // EE and Diamond inventory-handler case 11 both read one item id,
             // one BOOL, and an optional second item id before exact
             // overflow/underflow checks.

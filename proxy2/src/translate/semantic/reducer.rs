@@ -1097,65 +1097,83 @@ fn apply_event(
                 );
                 return None;
             }
-            let consumer =
-                InventoryEquipmentHandoffConsumer::from_verified_family(event.observed.family);
-            let item_context = inventory_equipment_handoff_context(state);
-            let server_inventory_claim = event.inventory_claim.map(|claim| {
-                InventoryEquipmentServerInventoryClaim::new(
-                    claim.minor,
-                    claim.object_id,
-                    claim.alternate_inventory_context,
-                    claim.equip_slot,
-                )
-            });
-            let client_gui_inventory_claim = event
-                .client_gui_inventory_claim
-                .map(InventoryEquipmentClientGuiInventoryClaim::from);
-            let client_gui_inventory_claim_known = client_gui_inventory_claim.is_some();
-            let consumed = state.ui.observe_inventory_equipment_handoff(
-                consumer,
-                item_context,
-                server_inventory_claim,
-                client_gui_inventory_claim,
-            );
-            let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
-            let last_bridge_emission = state.ui.last_inventory_equipment_bridge_handoff_emission;
-            let last_bridge_state_update = state
-                .ui
-                .last_inventory_equipment_bridge_handoff_state_update;
-            tracing::debug!(
-                consumer = consumer.as_str(),
-                consumed,
-                inventory_equipment_bridge_handoff_ready = bridge_plan.ready_to_emit(),
-                inventory_equipment_bridge_handoff_emissions =
-                    state.ui.inventory_equipment_bridge_handoff_emissions,
-                inventory_equipment_bridge_handoff_last_emitted_event_index = last_bridge_emission
-                    .map(|emission| emission.plan.event_index)
-                    .unwrap_or(0),
-                inventory_equipment_bridge_handoff_state_updates =
-                    state.ui.inventory_equipment_bridge_handoff_state_updates,
-                inventory_equipment_bridge_handoff_last_state_update_emission_index =
-                    last_bridge_state_update
-                        .map(|update| update.emission_index)
-                        .unwrap_or(0),
-                inventory_equipment_bridge_handoff_last_state_update_candidate_object_id =
-                    last_bridge_state_update
-                        .map(|update| update.candidate.object_id)
-                        .unwrap_or(0),
-                inventory_equipment_handoff_ready =
-                    item_context.inventory_equipment_handoff_ready(),
-                inventory_equipment_handoff_outcome =
-                    item_context.inventory_equipment_handoff_outcome().as_str(),
-                server_inventory_claim_known = server_inventory_claim.is_some(),
-                client_gui_inventory_claim_known,
-                compact_item_emission_ready_objects =
-                    item_context.compact_item_emission_ready_objects,
-                compact_item_emission_deferred_feature25_only_objects =
-                    item_context.compact_item_emission_deferred_feature25_only_objects,
-                inventory_feature25_deferred_item_ref_mentions =
-                    item_context.inventory_feature25_deferred_item_ref_mentions(),
-                "semantic state observed inventory/equipment handoff consumer"
-            );
+            let server_unequip = event
+                .inventory_claim
+                .is_some_and(|claim| claim.shape == inventory::InventoryShape::Unequip);
+            if server_unequip {
+                // Unequip/UnequipCancel is already an exact pass-through state
+                // transition for the EE client. It owns no slot and must not
+                // clear a pending Equip claim or replace a ready bridge update
+                // with a synthetic "missing claim" handoff.
+                tracing::debug!(
+                    family = event.observed.family.as_str(),
+                    "semantic state observed server Inventory unequip without mutating equipment handoff"
+                );
+            } else {
+                let consumer =
+                    InventoryEquipmentHandoffConsumer::from_verified_family(event.observed.family);
+                let item_context = inventory_equipment_handoff_context(state);
+                let server_inventory_claim = event.inventory_claim.and_then(|claim| {
+                    claim.shape.equip_slot().map(|equip_slot| {
+                        InventoryEquipmentServerInventoryClaim::new(
+                            claim.minor,
+                            claim.object_id,
+                            claim.alternate_inventory_context,
+                            equip_slot,
+                        )
+                    })
+                });
+                let client_gui_inventory_claim = event
+                    .client_gui_inventory_claim
+                    .map(InventoryEquipmentClientGuiInventoryClaim::from);
+                let client_gui_inventory_claim_known = client_gui_inventory_claim.is_some();
+                let consumed = state.ui.observe_inventory_equipment_handoff(
+                    consumer,
+                    item_context,
+                    server_inventory_claim,
+                    client_gui_inventory_claim,
+                );
+                let bridge_plan = state.ui.inventory_equipment_handoff_bridge_plan();
+                let last_bridge_emission =
+                    state.ui.last_inventory_equipment_bridge_handoff_emission;
+                let last_bridge_state_update = state
+                    .ui
+                    .last_inventory_equipment_bridge_handoff_state_update;
+                tracing::debug!(
+                    consumer = consumer.as_str(),
+                    consumed,
+                    inventory_equipment_bridge_handoff_ready = bridge_plan.ready_to_emit(),
+                    inventory_equipment_bridge_handoff_emissions =
+                        state.ui.inventory_equipment_bridge_handoff_emissions,
+                    inventory_equipment_bridge_handoff_last_emitted_event_index =
+                        last_bridge_emission
+                            .map(|emission| emission.plan.event_index)
+                            .unwrap_or(0),
+                    inventory_equipment_bridge_handoff_state_updates =
+                        state.ui.inventory_equipment_bridge_handoff_state_updates,
+                    inventory_equipment_bridge_handoff_last_state_update_emission_index =
+                        last_bridge_state_update
+                            .map(|update| update.emission_index)
+                            .unwrap_or(0),
+                    inventory_equipment_bridge_handoff_last_state_update_candidate_object_id =
+                        last_bridge_state_update
+                            .map(|update| update.candidate.object_id)
+                            .unwrap_or(0),
+                    inventory_equipment_handoff_ready =
+                        item_context.inventory_equipment_handoff_ready(),
+                    inventory_equipment_handoff_outcome =
+                        item_context.inventory_equipment_handoff_outcome().as_str(),
+                    server_inventory_claim_known = server_inventory_claim.is_some(),
+                    client_gui_inventory_claim_known,
+                    compact_item_emission_ready_objects =
+                        item_context.compact_item_emission_ready_objects,
+                    compact_item_emission_deferred_feature25_only_objects =
+                        item_context.compact_item_emission_deferred_feature25_only_objects,
+                    inventory_feature25_deferred_item_ref_mentions =
+                        item_context.inventory_feature25_deferred_item_ref_mentions(),
+                    "semantic state observed inventory/equipment handoff consumer"
+                );
+            }
         }
         ProtocolEvent::ClientGuiEvent(event) => {
             state.ui.client_gui_event_packets = state.ui.client_gui_event_packets.saturating_add(1);
@@ -2860,6 +2878,107 @@ mod fixture_free_tests {
                 .inventory_feature25_materialized_item_ref_mentions(),
             0,
             "handoff consumption must not materialize deferred Feature-25 refs"
+        );
+    }
+
+    #[test]
+    fn unequip_does_not_clear_pending_or_replace_ready_equip_handoff() {
+        let object_id = 0x8001_5219;
+        let equip_slot = 4;
+        let inventory_event = |minor, shape, declared| {
+            ProtocolEvent::Inventory(InventoryEvent {
+                observed: observed_high_level(
+                    Direction::ServerToClient,
+                    VerifiedFamily::Inventory,
+                    &[b'P', 0x0C, minor],
+                ),
+                inventory_claim: Some(inventory::InventoryClaimSummary {
+                    minor,
+                    old_declared: declared,
+                    new_declared: declared,
+                    legacy_prefix_removed: false,
+                    object_id,
+                    alternate_inventory_context: false,
+                    shape,
+                    fragment_bytes: 1,
+                }),
+                client_gui_inventory_claim: None,
+            })
+        };
+        let equip_event =
+            || inventory_event(0x01, inventory::InventoryShape::Equip { equip_slot }, 15);
+        let unequip_event = || inventory_event(0x07, inventory::InventoryShape::Unequip, 11);
+        let ready = InventoryItemContextSummary {
+            direct_item_proof_objects: 1,
+            compact_item_emission_proof_objects: 1,
+            compact_item_emission_ready_objects: 1,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            ..Default::default()
+        };
+
+        let mut pending_state = SemanticSessionState::default();
+        apply_event(&mut pending_state, equip_event(), None);
+        assert_eq!(pending_state.ui.inventory_equipment_handoff_events, 1);
+        assert_eq!(
+            pending_state
+                .ui
+                .inventory_equipment_handoff_blocked_without_ready_state_events,
+            1
+        );
+
+        apply_event(&mut pending_state, unequip_event(), None);
+        assert_eq!(pending_state.ui.inventory_packets, 2);
+        assert_eq!(
+            pending_state.ui.inventory_equipment_handoff_events, 1,
+            "Unequip must not enter or cancel the synthetic equipment handoff"
+        );
+        assert!(
+            pending_state
+                .ui
+                .consume_pending_server_inventory_handoff_if_ready(ready),
+            "the prior pending Equip claim must survive a pass-through Unequip"
+        );
+        let pending_update = pending_state
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update
+            .expect("ready item evidence should drain the retained Equip");
+        assert_eq!(
+            pending_update
+                .server_inventory_claim
+                .expect("drained update should retain the Equip claim")
+                .equip_slot,
+            equip_slot
+        );
+
+        let mut ready_state = SemanticSessionState::default();
+        ready_state
+            .ui
+            .last_inventory_item_context_after_committed_quickbar = Some(ready);
+        apply_event(&mut ready_state, equip_event(), None);
+        let ready_update = ready_state
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update
+            .expect("ready Equip should create a bridge update");
+
+        apply_event(&mut ready_state, unequip_event(), None);
+        assert_eq!(ready_state.ui.inventory_packets, 2);
+        assert_eq!(ready_state.ui.inventory_equipment_handoff_events, 1);
+        assert_eq!(
+            ready_state
+                .ui
+                .inventory_equipment_bridge_handoff_state_updates,
+            1
+        );
+        assert_eq!(
+            ready_state
+                .ui
+                .last_inventory_equipment_bridge_handoff_state_update,
+            Some(ready_update),
+            "Unequip must not replace an actionable Equip update"
         );
     }
 

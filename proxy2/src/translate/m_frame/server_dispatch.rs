@@ -11,10 +11,10 @@ use crate::{
     translate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, ambient, area, area_change_day_night,
         area_visual_effect, camera, char_list, chat, client_side_message, cnw_message,
-        custom_token, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
-        inventory, item_update_active_props, journal, live_object, loadbar, login, module,
-        module_resources, module_time, party, play_module_character_list, player_list, quickbar,
-        safe_projectile, semantic, sound,
+        custom_token, cutscene, dialog, game_obj_update, gameplay_stream, gui_inventory,
+        gui_timing_event, inventory, item_update_active_props, journal, live_object, loadbar,
+        login, module, module_resources, module_time, party, play_module_character_list,
+        player_list, quickbar, safe_projectile, semantic, sound,
     },
 };
 
@@ -867,6 +867,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_inventory,
     },
     ServerToClientTranslator {
+        family_name: "GuiInventory",
+        verified_family: Some(VerifiedFamily::GuiInventory),
+        translate: translate_gui_inventory,
+    },
+    ServerToClientTranslator {
         family_name: "ItemUpdate_ActiveProperties",
         verified_family: Some(VerifiedFamily::ItemUpdateActiveProperties),
         translate: translate_item_update_active_properties,
@@ -1357,7 +1362,8 @@ fn translator_may_claim_parsed_high_level(family_name: &str, high: HighLevel) ->
         "Sound" => high.major == 0x17 && high.minor == 0x03,
         "Ambient" => high.major == 0x28 && matches!(high.minor, 0x01..=0x08),
         "Dialog" => high.major == 0x14 && matches!(high.minor, 0x01 | 0x02 | 0x04 | 0x05),
-        "Inventory" => high.major == 0x0C && matches!(high.minor, 0x01 | 0x02),
+        "Inventory" => high.major == 0x0C && matches!(high.minor, 0x01 | 0x02 | 0x07 | 0x08),
+        "GuiInventory" => high.major == 0x0D && high.minor == 0x02,
         "ItemUpdate_ActiveProperties" => high.major == 0x18 && matches!(high.minor, 0x01 | 0x02),
         "GameObjUpdate_ObjControl" => high.major == 0x05 && high.minor == 0x02,
         "GameObjUpdate_VisEffect" => high.major == 0x05 && high.minor == 0x03,
@@ -4005,6 +4011,19 @@ fn translate_inventory(
     }
 }
 
+fn translate_gui_inventory(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if gui_inventory::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
 fn translate_item_update_active_properties(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
@@ -5547,6 +5566,43 @@ mod direct_area_dispatch_tests {
             .expect("direct area claim must retain its area rewrite summary");
         assert_eq!(summary.placeable_context.area_resref, "voyage");
         assert_eq!(summary.placeable_context.static_rows.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod inventory_response_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_claims_live_select_panel_and_unequip_as_two_exact_families() {
+        let select_panel = [b'P', 0x0D, 0x02, 0x08, 0, 0, 0, 0x02, 0x62];
+        let unequip = [
+            b'P', 0x0C, 0x07, 0x0B, 0, 0, 0, 0xF9, 0x59, 0x01, 0x80, 0x82,
+        ];
+        let mut payload = select_panel.into_iter().chain(unequip).collect::<Vec<_>>();
+        let original = payload.clone();
+
+        let rewrite = rewrite_inflated_payload_for_ee(
+            &mut payload,
+            None,
+            SemanticScope::CoalescedSpan,
+            None,
+            None,
+            None,
+        );
+
+        assert!(!rewrite.should_quarantine());
+        assert_eq!(
+            rewrite.verified_proof(),
+            VerifiedProof::GameplayStream(vec![
+                VerifiedFamily::GuiInventory,
+                VerifiedFamily::Inventory,
+            ])
+        );
+        assert_eq!(
+            payload, original,
+            "Diamond and EE layouts are identical for both response units"
+        );
     }
 }
 

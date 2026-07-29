@@ -1115,7 +1115,7 @@ mod tests {
             .expect("queued Inventory payload should be exact EE shape");
         assert_eq!(claim.object_id, 0x8000_1234);
         assert!(claim.alternate_inventory_context);
-        assert_eq!(claim.equip_slot, 4);
+        assert_eq!(claim.shape.equip_slot(), Some(4));
     }
 
     #[test]
@@ -2062,7 +2062,7 @@ mod tests {
             replay_claim.alternate_inventory_context,
             claim.alternate_inventory_context
         );
-        assert_eq!(replay_claim.equip_slot, claim.equip_slot);
+        assert_eq!(replay_claim.shape.equip_slot(), Some(claim.equip_slot));
 
         assert!(
             !maybe_queue_confirmed_inventory_replay(&mut state, 62, 82)
@@ -2579,6 +2579,6 @@ mod tests {
             .expect("queued Inventory payload should be exact EE shape");
         assert_eq!(claim.object_id, 0x8000_5678);
         assert!(!claim.alternate_inventory_context);
-        assert_eq!(claim.equip_slot, 0x0002_0000);
+        assert_eq!(claim.shape.equip_slot(), Some(0x0002_0000));
     }
 }

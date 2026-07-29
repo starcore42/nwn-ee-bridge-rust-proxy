@@ -20,8 +20,8 @@ use crate::{
         client_character_sheet, client_gui_event, client_gui_inventory, client_input,
         client_inventory, client_login, client_module, client_quickbar, client_server_admin,
         client_server_status, client_side_message, custom_token, cutscene, dialog, game_obj_update,
-        gameplay_stream, gui_timing_event, inventory, item_update_active_props, journal,
-        live_object_update, loadbar, login, module, module_resources, module_time, party,
+        gameplay_stream, gui_inventory, gui_timing_event, inventory, item_update_active_props,
+        journal, live_object_update, loadbar, login, module, module_resources, module_time, party,
         play_module_character_list, player_list, quickbar, safe_projectile, server_status, sound,
     },
 };
@@ -518,6 +518,7 @@ fn server_verified_family(family: VerifiedFamily) -> bool {
             | VerifiedFamily::GameObjUpdateVisEffect
             | VerifiedFamily::GameObjUpdateDestroyItem
             | VerifiedFamily::GameObjUpdateLiveObject
+            | VerifiedFamily::GuiInventory
             | VerifiedFamily::GuiTimingEvent
             | VerifiedFamily::GuiQuickbar
             | VerifiedFamily::GuiQuickbarPlaceholder
@@ -1515,6 +1516,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::GameObjUpdateDestroyItem => {
             high.major == 0x05 && game_obj_update_shape_valid(payload, 0x07)
         }
+        VerifiedFamily::GuiInventory => {
+            high.major == 0x0D
+                && high.minor == 0x02
+                && gui_inventory::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::GuiTimingEvent => {
             high.major == 0x30
                 && high.minor == 0x01
@@ -1610,6 +1616,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::GameObjUpdateVisEffect
             | VerifiedFamily::GameObjUpdateDestroyItem
             | VerifiedFamily::GameObjUpdateLiveObject
+            | VerifiedFamily::GuiInventory
             | VerifiedFamily::GuiTimingEvent
             | VerifiedFamily::GuiQuickbar
             | VerifiedFamily::GuiQuickbarPlaceholder
@@ -1791,10 +1798,13 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x0A, 0x01 | 0x02 | 0x03) => {
             HighPayloadValidation::Exact(player_list_shape_valid(payload))
         }
+        (0x0D, 0x02) if high.envelope == b'P' => HighPayloadValidation::Exact(
+            gui_inventory::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x0D, 0x01 | 0x02) => HighPayloadValidation::Exact(
             client_gui_inventory::claim_payload_if_verified(payload).is_some(),
         ),
-        (0x0C, 0x01 | 0x02) => {
+        (0x0C, 0x01 | 0x02 | 0x07 | 0x08) => {
             HighPayloadValidation::Exact(inventory::claim_payload_if_verified(payload).is_some())
         }
         (0x0C, 0x0B) => HighPayloadValidation::Exact(
@@ -3338,7 +3348,7 @@ mod tests {
             .expect("focused Inventory owner should claim exact equip payload");
 
         assert_eq!(claim.object_id, 0x8000_1234);
-        assert_eq!(claim.equip_slot, 4);
+        assert_eq!(claim.shape.equip_slot(), Some(4));
         assert!(verified_family_inflated_payload_valid(
             VerifiedFamily::Inventory,
             &exact_equip
@@ -3383,6 +3393,43 @@ mod tests {
             ),
             "a shifted Inventory fragment tail must not be split before the status signal"
         );
+    }
+
+    #[test]
+    fn strict_claims_live_select_panel_and_unequip_with_directional_shapes() {
+        let select_panel = [b'P', 0x0D, 0x02, 0x08, 0, 0, 0, 0x02, 0x62];
+        let unequip = [
+            b'P', 0x0C, 0x07, 0x0B, 0, 0, 0, 0xF9, 0x59, 0x01, 0x80, 0x82,
+        ];
+
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::GuiInventory,
+            &select_panel
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Inventory,
+            &unequip
+        ));
+        assert!(exact_high_payload_shape_valid(&select_panel));
+        assert!(exact_high_payload_shape_valid(&unequip));
+
+        let stream = select_panel.into_iter().chain(unequip).collect::<Vec<_>>();
+        assert!(verified_gameplay_stream_payload_valid(
+            Direction::ServerToClient,
+            &[VerifiedFamily::GuiInventory, VerifiedFamily::Inventory],
+            &stream,
+        ));
+        assert!(!verified_gameplay_stream_payload_valid(
+            Direction::ClientToServer,
+            &[VerifiedFamily::GuiInventory, VerifiedFamily::Inventory],
+            &stream,
+        ));
+
+        let client_bool_cursor = [b'P', 0x0D, 0x02, 0x08, 0, 0, 0, 0x02, 0x80];
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::GuiInventory,
+            &client_bool_cursor
+        ));
     }
 
     #[test]
