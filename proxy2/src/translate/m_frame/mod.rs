@@ -1134,7 +1134,7 @@ fn translate_client_to_server_packet(
         && !(translated.family == VerifiedFamily::ConsumedEmptyMFrame
             && !translated.semantic_observations.is_empty());
     for observation in &translated.semantic_observations {
-        observe_verified_client_payload(state, observation.family, &observation.payload);
+        observe_verified_client_payload(state, observation.family, &observation.payload, None);
     }
     if observe_packet && let Some(packet) = translated.packet.as_ref() {
         observe_verified_client_m_packet(state, translated.family, packet);
@@ -3213,13 +3213,29 @@ fn observe_verified_client_m_packet(
     let Some(payload) = parse_window::primary_payload(packet, &view) else {
         return;
     };
-    observe_verified_client_payload(state, family, payload);
+    let forwarded_client_frame = if family == VerifiedFamily::ClientGuiInventory {
+        client_gui_inventory::claim_payload_if_verified(payload).map(|claim| {
+            (
+                view.sequence,
+                view.ack_sequence,
+                semantic::InventoryEquipmentClientGuiInventoryClaim::from(claim),
+            )
+        })
+    } else {
+        None
+    };
+    observe_verified_client_payload(state, family, payload, forwarded_client_frame);
 }
 
 fn observe_verified_client_payload(
     state: &mut SessionState,
     family: VerifiedFamily,
     payload: &[u8],
+    forwarded_client_frame: Option<(
+        u16,
+        u16,
+        semantic::InventoryEquipmentClientGuiInventoryClaim,
+    )>,
 ) {
     let proof = VerifiedProof::family(family);
     crate::translate::semantic::observe_verified_payload(
@@ -3231,6 +3247,7 @@ fn observe_verified_client_payload(
     if family == VerifiedFamily::ClientGuiInventory {
         inventory_equipment::maybe_record_non_server_inventory_equipment_bridge_output_decision(
             state,
+            forwarded_client_frame,
         );
     }
     update_quickbar_item_refresh_hint(state);
@@ -3360,6 +3377,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         .last_queued_client_gui_status_output
         .unwrap_or_default();
     let last_client_gui_status_known = bridge.last_queued_client_gui_status_output.is_some();
+    let last_client_gui_status_origin = if !last_client_gui_status_known {
+        "none"
+    } else if bridge.client_gui_status_request_is_forwarded() {
+        "forwarded_client"
+    } else {
+        "proxy_owned"
+    };
     let last_client_gui_status_candidate = last_client_gui_status.candidate;
     let last_client_gui_status_candidate_known = last_client_gui_status_candidate.is_some();
     let last_client_gui_status_candidate_object_id = last_client_gui_status_candidate
@@ -3735,6 +3759,9 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_output_last_queued_trigger_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_synthetic_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_queued_client_gui_status_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_forwarded_client_gui_status_requests\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_origin\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_last_forwarded_client_gui_status_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_known\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_update_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_emission_index\": {},\n",
@@ -3753,7 +3780,9 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_candidate_source\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_ready_objects\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_deferred_feature25_only_objects\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_non_inventory_live_object_packets_ignored\": {},\n",
             "  \"inventory_equipment_bridge_output_client_gui_status_response_live_object_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_inventory_record_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_client_gui_status_response_live_gui_record_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_client_gui_status_response_materialized_item_packets\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_known\": {},\n",
@@ -3761,6 +3790,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_server_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_server_peer_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_inventory_records\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_ids\": {},\n",
@@ -3785,6 +3815,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_server_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_server_peer_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_inventory_records\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_fragment_bits\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_ids\": {},\n",
@@ -3929,6 +3960,11 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         last.trigger_sequence,
         last.synthetic_sequence,
         bridge.queued_client_gui_status_outputs,
+        bridge.forwarded_client_gui_status_requests,
+        last_client_gui_status_origin,
+        bridge
+            .last_forwarded_client_gui_status_update_index
+            .unwrap_or(0),
         last_client_gui_status_known,
         last_client_gui_status.update_index,
         last_client_gui_status.emission_index,
@@ -3947,7 +3983,9 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         last_client_gui_status_candidate_source,
         last_client_gui_status.ready_objects,
         last_client_gui_status.deferred_feature25_only_objects,
+        bridge.client_gui_status_non_inventory_live_object_packets_ignored,
         bridge.client_gui_status_response_live_object_packets,
+        bridge.client_gui_status_response_inventory_record_packets,
         bridge.client_gui_status_response_live_gui_record_packets,
         bridge.client_gui_status_response_materialized_item_packets,
         last_client_gui_status_response_known,
@@ -3955,6 +3993,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         last_client_gui_status_response.server_sequence,
         last_client_gui_status_response.server_peer_ack_sequence,
         last_client_gui_status_response.ack_sequence,
+        last_client_gui_status_response.inventory_records,
         last_client_gui_status_response.live_gui_records,
         last_client_gui_status_response.live_gui_fragment_bits,
         last_client_gui_status_response.materialized_item_object_ids,
@@ -3979,6 +4018,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         best_client_gui_status_response.server_sequence,
         best_client_gui_status_response.server_peer_ack_sequence,
         best_client_gui_status_response.ack_sequence,
+        best_client_gui_status_response.inventory_records,
         best_client_gui_status_response.live_gui_records,
         best_client_gui_status_response.live_gui_fragment_bits,
         best_client_gui_status_response.materialized_item_object_ids,
@@ -10368,6 +10408,10 @@ mod tests {
     #[test]
     fn reliable_client_slot_replays_first_translation_and_rejects_conflicts() {
         let mut state = SessionState::default();
+        state
+            .sequence
+            .client_sequence_shifts
+            .push(SequenceShift { base: 78, delta: 3 });
         let candidate = crate::translate::semantic::InventoryItemContextCandidate {
             object_id: 0x8001_5B01,
             proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
@@ -10406,10 +10450,39 @@ mod tests {
             "first sequence/payload must apply its semantic bridge handoff"
         );
         assert_eq!(
-            state.inventory_equipment.queued_client_gui_status_outputs, 1,
-            "first bridge handoff should queue one synthetic status request"
+            state
+                .inventory_equipment
+                .forwarded_client_gui_status_requests,
+            1,
+            "first bridge handoff should adopt the exact forwarded status request"
         );
-        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            0
+        );
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert_eq!(
+            state.sequence.client_sequence_shifts,
+            vec![SequenceShift { base: 78, delta: 3 }],
+            "adoption must not add another sequence shift"
+        );
+        let first_view = MFrameView::parse(&first_packet).expect("first client frame");
+        assert_eq!(first_view.sequence, 81);
+        let tracked_status = state
+            .inventory_equipment
+            .last_queued_client_gui_status_output
+            .expect("forwarded status request should be tracked");
+        assert_eq!(tracked_status.trigger_client_sequence, 81);
+        assert_eq!(tracked_status.synthetic_sequence, 81);
+        assert_eq!(tracked_status.ack_sequence, 31);
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_decision
+                .expect("forwarded status decision")
+                .kind,
+            state::InventoryEquipmentBridgeOutputDecisionKind::ForwardedClientGuiStatusRequest
+        );
 
         let mut retransmit = client_reliable_m_frame(78, 32, &payload);
         retransmit[7] |= 0x40;
@@ -10421,7 +10494,6 @@ mod tests {
             other => panic!("expected replayed verified client packet, got {other:?}"),
         };
         let replay_view = MFrameView::parse(&replay_packet).expect("replayed client frame");
-        let first_view = MFrameView::parse(&first_packet).expect("first client frame");
         assert_eq!(replay_view.sequence, first_view.sequence);
         assert_eq!(replay_view.ack_sequence, 32);
         assert_eq!(replay_view.flags & 0x40, 0x40);
@@ -10434,10 +10506,18 @@ mod tests {
         );
         assert_eq!(state.semantic.ui.inventory_equipment_handoff_events, 1);
         assert_eq!(
-            state.inventory_equipment.queued_client_gui_status_outputs, 1,
-            "retransmission must not queue another synthetic status request"
+            state
+                .inventory_equipment
+                .forwarded_client_gui_status_requests,
+            1,
+            "retransmission must not adopt the same request twice"
         );
-        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            0
+        );
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
         assert_eq!(state.client_reliable_replays.exact_replays, 1);
         assert_eq!(state.client_reliable_replays.slots.len(), 1);
         assert!(state.client_reliable_replays.slots[0].replay.is_some());
@@ -10455,10 +10535,17 @@ mod tests {
         assert_eq!(state.semantic.ui.inventory_packets, 1);
         assert_eq!(state.semantic.ui.inventory_equipment_handoff_events, 1);
         assert_eq!(
-            state.inventory_equipment.queued_client_gui_status_outputs,
+            state
+                .inventory_equipment
+                .forwarded_client_gui_status_requests,
             1
         );
-        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(
+            state.inventory_equipment.queued_client_gui_status_outputs,
+            0
+        );
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
         assert_eq!(state.client_reliable_replays.slots.len(), 1);
     }
 
@@ -12442,6 +12529,7 @@ mod tests {
             server_sequence: 58,
             server_peer_ack_sequence: 80,
             ack_sequence: 80,
+            inventory_records: 0,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: 0,
@@ -12458,6 +12546,7 @@ mod tests {
             server_sequence: 58,
             server_peer_ack_sequence: 81,
             ack_sequence: 81,
+            inventory_records: 0,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: 0,
@@ -12575,6 +12664,7 @@ mod tests {
                 server_sequence: 48,
                 server_peer_ack_sequence: 82,
                 ack_sequence: 82,
+                inventory_records: 0,
                 live_gui_records: 51,
                 live_gui_fragment_bits: 348,
                 materialized_item_object_ids: 51,

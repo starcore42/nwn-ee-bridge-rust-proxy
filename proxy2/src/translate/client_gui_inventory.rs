@@ -106,12 +106,13 @@ pub fn build_select_panel_payload(panel: u8, player_inventory_gui: bool) -> Vec<
 
 fn claim_status_payload_if_verified(payload: &[u8]) -> Option<ClientGuiInventoryClaimSummary> {
     let object_id = read_status_object_id_if_verified(payload)?;
+    let player_inventory_gui = decode_single_bool_fragment(*payload.last()?)?;
     Some(ClientGuiInventoryClaimSummary {
         packet_name: "GuiInventory_Status",
         kind: ClientGuiInventoryKind::Status,
         object_id: Some(object_id),
         panel: None,
-        player_inventory_gui: None,
+        player_inventory_gui: Some(player_inventory_gui),
         rewritten_self_object_id: false,
     })
 }
@@ -120,6 +121,7 @@ fn claim_or_rewrite_status_payload_if_verified(
     payload: &mut [u8],
 ) -> Option<ClientGuiInventoryClaimSummary> {
     let object_id = read_status_object_id_if_verified(payload)?;
+    let player_inventory_gui = decode_single_bool_fragment(*payload.last()?)?;
     let rewritten_self_object_id = object_id == EE_SELF_OBJECT_ID;
     if rewritten_self_object_id {
         payload[STATUS_OBJECT_ID_OFFSET..STATUS_OBJECT_ID_OFFSET + 4]
@@ -135,7 +137,7 @@ fn claim_or_rewrite_status_payload_if_verified(
             object_id
         }),
         panel: None,
-        player_inventory_gui: None,
+        player_inventory_gui: Some(player_inventory_gui),
         rewritten_self_object_id,
     })
 }
@@ -216,6 +218,7 @@ mod tests {
         assert_eq!(summary.packet_name, "GuiInventory_Status");
         assert_eq!(summary.kind, ClientGuiInventoryKind::Status);
         assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
+        assert_eq!(summary.player_inventory_gui, Some(true));
         assert!(summary.rewritten_self_object_id);
         assert_eq!(
             &payload[STATUS_OBJECT_ID_OFFSET..STATUS_OBJECT_ID_OFFSET + 4],
@@ -234,6 +237,7 @@ mod tests {
             .expect("Diamond current-player GuiInventory_Status should be claimed");
 
         assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
+        assert_eq!(summary.player_inventory_gui, Some(true));
         assert!(!summary.rewritten_self_object_id);
     }
 
@@ -250,6 +254,7 @@ mod tests {
         let summary = claim_payload_if_verified(&payload).expect("built payload should claim");
         assert_eq!(summary.kind, ClientGuiInventoryKind::Status);
         assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
+        assert_eq!(summary.player_inventory_gui, Some(true));
         assert!(!summary.rewritten_self_object_id);
     }
 
@@ -260,6 +265,7 @@ mod tests {
         assert_eq!(payload[11], 0x80);
         let summary = claim_payload_if_verified(&payload).expect("built payload should claim");
         assert_eq!(summary.kind, ClientGuiInventoryKind::Status);
+        assert_eq!(summary.player_inventory_gui, Some(false));
     }
 
     #[test]
@@ -272,6 +278,7 @@ mod tests {
             .expect("single-BOOL cursor with residual low bits should be claimed");
 
         assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
+        assert_eq!(summary.player_inventory_gui, Some(true));
         assert!(!summary.rewritten_self_object_id);
         assert_eq!(
             payload[11], 0x98,

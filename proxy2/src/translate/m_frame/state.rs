@@ -397,6 +397,7 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
     /// sequence intervals are hidden from EE.
     pub(super) server_peer_ack_sequence: u16,
     pub(super) ack_sequence: u16,
+    pub(super) inventory_records: u32,
     pub(super) live_gui_records: u32,
     pub(super) live_gui_fragment_bits: u32,
     pub(super) materialized_item_object_ids: usize,
@@ -413,8 +414,10 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
 impl InventoryEquipmentBridgeClientGuiStatusResponse {
     fn strength(self) -> u8 {
         if self.materialized_item_object_ids != 0 {
-            3
+            4
         } else if self.live_gui_records != 0 {
+            3
+        } else if self.inventory_records != 0 {
             2
         } else {
             1
@@ -431,6 +434,7 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
         let self_evidence = (
             self.materialized_item_object_ids,
             self.materialized_item_object_ids_contain_queued_candidate,
+            self.inventory_records,
             self.live_gui_records,
             self.live_gui_fragment_bits,
             self.queued_update_index,
@@ -439,6 +443,7 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
         let other_evidence = (
             other.materialized_item_object_ids,
             other.materialized_item_object_ids_contain_queued_candidate,
+            other.inventory_records,
             other.live_gui_records,
             other.live_gui_fragment_bits,
             other.queued_update_index,
@@ -469,6 +474,7 @@ pub(super) enum InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
     None,
     AwaitingResponse,
     LiveObjectOnly,
+    InventoryRecords,
     LiveGuiRecords,
     MaterializedItems,
 }
@@ -479,6 +485,7 @@ impl InventoryEquipmentBridgeClientGuiStatusResponseOutcome {
             Self::None => "none",
             Self::AwaitingResponse => "awaiting_response",
             Self::LiveObjectOnly => "live_object_only",
+            Self::InventoryRecords => "inventory_records",
             Self::LiveGuiRecords => "live_gui_records",
             Self::MaterializedItems => "materialized_items",
         }
@@ -496,6 +503,7 @@ pub(super) enum InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
     NonCurrentPlayerRequest,
     ClosedInventoryRequest,
     AwaitingMaterializedItems,
+    ObservedInventoryRecord,
     MaterializedCurrentPlayerInventory,
 }
 
@@ -510,6 +518,7 @@ impl InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
             Self::NonCurrentPlayerRequest => "non_current_player_request",
             Self::ClosedInventoryRequest => "closed_inventory_request",
             Self::AwaitingMaterializedItems => "awaiting_materialized_items",
+            Self::ObservedInventoryRecord => "observed_inventory_record",
             Self::MaterializedCurrentPlayerInventory => "materialized_current_player_inventory",
         }
     }
@@ -547,6 +556,7 @@ pub(super) enum InventoryEquipmentBridgeOutputDecisionKind {
     None,
     QueuedInventoryOutput,
     NativeInventoryOutcomeSufficient,
+    ForwardedClientGuiStatusRequest,
     QueuedClientGuiStatusOutput,
     QueuedConfirmedInventoryReplay,
     DeferredClientGui,
@@ -560,6 +570,7 @@ impl InventoryEquipmentBridgeOutputDecisionKind {
             Self::None => "none",
             Self::QueuedInventoryOutput => "queued_inventory_output",
             Self::NativeInventoryOutcomeSufficient => "native_inventory_outcome_sufficient",
+            Self::ForwardedClientGuiStatusRequest => "forwarded_client_gui_status_request",
             Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::QueuedConfirmedInventoryReplay => "queued_confirmed_inventory_replay",
             Self::DeferredClientGui => "deferred_client_gui",
@@ -575,6 +586,7 @@ pub(super) enum InventoryEquipmentBridgeOutputStatus {
     AwaitingBridgeStateUpdate,
     QueuedInventoryOutput,
     NativeInventoryOutcomeSufficient,
+    ForwardedClientGuiStatusRequest,
     QueuedClientGuiStatusOutput,
     ClientGuiStatusRefreshConfirmed,
     ClientGuiStatusInventoryReplayQueued,
@@ -591,6 +603,7 @@ impl InventoryEquipmentBridgeOutputStatus {
             Self::AwaitingBridgeStateUpdate => "awaiting_bridge_state_update",
             Self::QueuedInventoryOutput => "queued_inventory_output",
             Self::NativeInventoryOutcomeSufficient => "native_inventory_outcome_sufficient",
+            Self::ForwardedClientGuiStatusRequest => "forwarded_client_gui_status_request",
             Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::ClientGuiStatusRefreshConfirmed => "client_gui_status_refresh_confirmed",
             Self::ClientGuiStatusInventoryReplayQueued => {
@@ -633,11 +646,15 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) last_queued_client_gui_status_update_index: Option<u64>,
     pub(super) queued_outputs: u64,
     pub(super) queued_client_gui_status_outputs: u64,
+    pub(super) forwarded_client_gui_status_requests: u64,
+    pub(super) last_forwarded_client_gui_status_update_index: Option<u64>,
     pub(super) client_gui_status_request_acknowledgements: u64,
     pub(super) client_gui_status_pre_ack_live_object_packets_ignored: u64,
+    pub(super) client_gui_status_non_inventory_live_object_packets_ignored: u64,
     pub(super) confirmed_inventory_replay_outputs: u64,
     pub(super) confirmed_inventory_replay_dispatches: u64,
     pub(super) client_gui_status_response_live_object_packets: u64,
+    pub(super) client_gui_status_response_inventory_record_packets: u64,
     pub(super) client_gui_status_response_live_gui_record_packets: u64,
     pub(super) client_gui_status_response_materialized_item_packets: u64,
     pub(super) deferred_client_gui_updates: u64,
@@ -675,6 +692,11 @@ impl InventoryEquipmentBridgeState {
                 == InventoryEquipmentBridgeOutputDecisionKind::NativeInventoryOutcomeSufficient
         }) {
             InventoryEquipmentBridgeOutputStatus::NativeInventoryOutcomeSufficient
+        } else if self.last_decision.is_some_and(|decision| {
+            decision.kind
+                == InventoryEquipmentBridgeOutputDecisionKind::ForwardedClientGuiStatusRequest
+        }) {
+            InventoryEquipmentBridgeOutputStatus::ForwardedClientGuiStatusRequest
         } else if self.confirmed_inventory_replay_dispatches > 0 {
             InventoryEquipmentBridgeOutputStatus::ClientGuiStatusInventoryReplayDispatched
         } else if self.queued_outputs > 0 {
@@ -716,6 +738,30 @@ impl InventoryEquipmentBridgeState {
                 == self.last_queued_client_gui_status_update_index
     }
 
+    pub(super) fn client_gui_status_request_is_forwarded(&self) -> bool {
+        self.last_queued_client_gui_status_update_index.is_some()
+            && self.last_forwarded_client_gui_status_update_index
+                == self.last_queued_client_gui_status_update_index
+    }
+
+    pub(super) fn begin_client_gui_status_request_window(&mut self) {
+        self.last_forwarded_client_gui_status_update_index = None;
+        self.last_acknowledged_client_gui_status_update_index = None;
+        self.last_acknowledged_client_gui_status_server_ack_sequence = None;
+        self.last_observed_client_gui_status_server_peer_ack_sequence = None;
+        self.last_pre_ack_client_gui_status_live_object_server_sequence = None;
+        self.last_pre_ack_client_gui_status_live_object_server_ack_sequence = None;
+        self.last_completed_client_gui_status_response_update_index = None;
+        self.last_client_gui_status_response = None;
+        self.best_client_gui_status_response = None;
+        self.client_gui_status_pre_ack_live_object_packets_ignored = 0;
+        self.client_gui_status_non_inventory_live_object_packets_ignored = 0;
+        self.client_gui_status_response_live_object_packets = 0;
+        self.client_gui_status_response_inventory_record_packets = 0;
+        self.client_gui_status_response_live_gui_record_packets = 0;
+        self.client_gui_status_response_materialized_item_packets = 0;
+    }
+
     pub(super) fn record_confirmed_inventory_replay_dispatch(&mut self) {
         self.confirmed_inventory_replay_dispatches =
             self.confirmed_inventory_replay_dispatches.saturating_add(1);
@@ -728,10 +774,18 @@ impl InventoryEquipmentBridgeState {
             == InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
     }
 
+    pub(super) fn client_gui_status_response_window_satisfied(&self) -> bool {
+        matches!(
+            self.client_gui_status_request_completion(),
+            InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ObservedInventoryRecord
+                | InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
+        )
+    }
+
     pub(super) fn client_gui_status_request_completion(
         &self,
     ) -> InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
-        if self.queued_client_gui_status_outputs == 0 {
+        if self.last_queued_client_gui_status_output.is_none() {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::None;
         }
         let Some(queued_status) = self.last_queued_client_gui_status_output else {
@@ -751,6 +805,17 @@ impl InventoryEquipmentBridgeState {
         };
         if response.queued_update_index != queued_status.update_index {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::QueuedUpdateMismatch;
+        }
+        if self.client_gui_status_request_is_forwarded() {
+            return if response.inventory_records != 0 {
+                // An exact inventory record is causally relevant after this
+                // forwarded request's raw server ACK and is enough to bound
+                // the response window. It is not, by itself, proof that the
+                // record owner is the current player.
+                InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ObservedInventoryRecord
+            } else {
+                InventoryEquipmentBridgeClientGuiStatusRequestCompletion::AwaitingResponse
+            };
         }
         if response.materialized_item_object_ids == 0 {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::AwaitingMaterializedItems;
@@ -774,9 +839,11 @@ impl InventoryEquipmentBridgeState {
             InventoryEquipmentBridgeClientGuiStatusResponseOutcome::MaterializedItems
         } else if self.client_gui_status_response_live_gui_record_packets > 0 {
             InventoryEquipmentBridgeClientGuiStatusResponseOutcome::LiveGuiRecords
+        } else if self.client_gui_status_response_inventory_record_packets > 0 {
+            InventoryEquipmentBridgeClientGuiStatusResponseOutcome::InventoryRecords
         } else if self.client_gui_status_response_live_object_packets > 0 {
             InventoryEquipmentBridgeClientGuiStatusResponseOutcome::LiveObjectOnly
-        } else if self.queued_client_gui_status_outputs > 0 {
+        } else if self.last_queued_client_gui_status_output.is_some() {
             InventoryEquipmentBridgeClientGuiStatusResponseOutcome::AwaitingResponse
         } else {
             InventoryEquipmentBridgeClientGuiStatusResponseOutcome::None
@@ -786,7 +853,7 @@ impl InventoryEquipmentBridgeState {
     pub(super) fn best_client_gui_status_response_association(
         &self,
     ) -> InventoryEquipmentBridgeClientGuiStatusResponseAssociation {
-        if self.queued_client_gui_status_outputs == 0 {
+        if self.last_queued_client_gui_status_output.is_none() {
             return InventoryEquipmentBridgeClientGuiStatusResponseAssociation::None;
         }
         let Some(response) = self.best_client_gui_status_response else {

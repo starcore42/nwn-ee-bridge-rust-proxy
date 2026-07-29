@@ -727,6 +727,7 @@ pub(crate) struct InventoryItemContextSummary {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LiveObjectInventoryMaterializationSummary {
+    pub(crate) inventory_records: u32,
     pub(crate) live_gui_records: u32,
     pub(crate) live_gui_fragment_bits: u32,
     pub(crate) materialized_item_object_ids: Vec<u32>,

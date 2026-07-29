@@ -334,6 +334,7 @@ fn observe_family_payload(
             ProtocolEvent::LiveObject(LiveObjectEvent {
                 observed,
                 mentions: live_object.mentions,
+                inventory_records: live_object.inventory_records,
                 live_gui_records: live_object.live_gui_records,
                 live_gui_fragment_bits: live_object.live_gui_fragment_bits,
                 materialized_item_object_ids: live_object.materialized_item_object_ids,
@@ -509,6 +510,7 @@ fn apply_event(
                 .live_object_inventory_materialization_observations
                 .saturating_add(1);
             let summary = LiveObjectInventoryMaterializationSummary {
+                inventory_records: event.inventory_records,
                 live_gui_records: event.live_gui_records,
                 live_gui_fragment_bits: event.live_gui_fragment_bits,
                 materialized_item_object_ids: event.materialized_item_object_ids.clone(),
@@ -2599,6 +2601,7 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 
 struct LiveObjectObservationFacts {
     mentions: Vec<LiveObjectMention>,
+    inventory_records: u32,
     live_gui_records: u32,
     live_gui_fragment_bits: u32,
     materialized_item_object_ids: Vec<u32>,
@@ -2612,6 +2615,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
     let Some(claim) = live_object_update::claim_payload_if_verified(payload) else {
         return LiveObjectObservationFacts {
             mentions: Vec::new(),
+            inventory_records: 0,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
@@ -2621,6 +2625,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
             quickbar_item_use_count_updates: Vec::new(),
         };
     };
+    let inventory_records = claim.inventory_records;
     let live_gui_records = claim
         .live_gui_read_buffer_records
         .saturating_add(claim.live_gui_item_create_records);
@@ -2702,6 +2707,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
         .collect();
     LiveObjectObservationFacts {
         mentions,
+        inventory_records,
         live_gui_records,
         live_gui_fragment_bits,
         materialized_item_object_ids,
@@ -6013,6 +6019,7 @@ mod fixture_free_tests {
                 &[],
             ),
             mentions: Vec::new(),
+            inventory_records: 0,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
@@ -6085,6 +6092,7 @@ mod fixture_free_tests {
                 placeable_appearance: None,
                 placeable_state: None,
             }],
+            inventory_records: 0,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
