@@ -3168,15 +3168,23 @@ pub(super) fn apply_verified_server_semantic_side_effects(
     frame: ServerSemanticFrameContext,
 ) {
     for observation in &frame.live_object_inventory_materializations {
-        inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
-            state,
-            proof,
-            frame.sequence,
-            frame.server_peer_ack_sequence,
-            frame.client_unshifted_ack_sequence,
-            Some(&observation.summary),
-            observation.current_controlled_object_id,
-        );
+        let recorded =
+            inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
+                state,
+                proof,
+                frame.sequence,
+                frame.server_peer_ack_sequence,
+                frame.client_unshifted_ack_sequence,
+                Some(&observation.summary),
+                observation.current_controlled_object_id,
+            );
+        if recorded {
+            inventory_equipment::maybe_bind_current_player_status_response_authority(
+                state,
+                frame.sequence,
+                observation,
+            );
+        }
     }
     if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
         state,
@@ -3308,6 +3316,14 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         &state.inventory_equipment,
         &state.semantic.objects,
         &mut state.semantic.ui.inventory_equipment_protocol,
+        InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: state
+                .semantic
+                .player_control
+                .current_controlled_object_id,
+            current_control_epoch: state.semantic.player_control.control_epoch,
+            area_client_area_packets: state.semantic.area.client_area_packets,
+        },
     );
 
     if state.quickbar_item_refresh_hint_last_body.as_deref() == Some(body.as_str()) {
@@ -3360,12 +3376,29 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     object_registry: &semantic::ObjectRegistry,
 ) -> String {
     let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+    let binding = bridge.current_player_status_binding;
     augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         body,
         bridge,
         object_registry,
         &mut protocol,
+        InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: binding.map(|binding| binding.owner_object_id),
+            current_control_epoch: binding
+                .map(|binding| binding.control_epoch)
+                .unwrap_or_default(),
+            area_client_area_packets: binding
+                .map(|binding| binding.area_client_area_packets)
+                .unwrap_or_default(),
+        },
     )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct InventoryEquipToggleAuthorizationContext {
+    current_controlled_object_id: Option<u32>,
+    current_control_epoch: u64,
+    area_client_area_packets: u64,
 }
 
 fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
@@ -3373,6 +3406,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     bridge: &state::InventoryEquipmentBridgeState,
     object_registry: &semantic::ObjectRegistry,
     protocol: &mut semantic::InventoryEquipmentProtocolState,
+    authorization_context: InventoryEquipToggleAuthorizationContext,
 ) -> String {
     let last = bridge.last_queued_output.unwrap_or_default();
     let last_known = bridge.last_queued_output.is_some();
@@ -3478,6 +3512,22 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     });
     let recommended_client_inventory_equip_toggle_authorization_response =
         recommended_client_inventory_equip_toggle_authorization_response.flatten();
+    let current_player_status_binding = bridge.current_player_status_binding;
+    // The Status request is normally emitted after the server Inventory claim
+    // it fences, so its semantic update can be newer than the claim. Both
+    // counters are monotonic u64 session coordinates: freshness requires the
+    // exact Status proof to cover this claim, not to share its update number.
+    let current_player_status_binding_covers_update = current_player_status_binding
+        .is_some_and(|binding| binding.queued_update_index >= last.update_index);
+    let current_player_status_binding_area_matches =
+        current_player_status_binding.is_some_and(|binding| {
+            binding.area_client_area_packets == authorization_context.area_client_area_packets
+        });
+    let current_player_status_binding_owner_matches =
+        current_player_status_binding.is_some_and(|binding| {
+            Some(binding.owner_object_id) == authorization_context.current_controlled_object_id
+                && binding.control_epoch == authorization_context.current_control_epoch
+        });
     let recommended_client_inventory_equip_toggle_authorization_kind =
         if protocol.last_client_equip_toggle.is_none() {
             "initial_confirmed_claim"
@@ -3508,6 +3558,14 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         semantic::InventoryItemObjectStatus::Proven(_)
     ) {
         "server_inventory_claim_object_not_currently_proven"
+    } else if current_player_status_binding.is_none() {
+        "current_player_inventory_status_unconfirmed"
+    } else if !current_player_status_binding_covers_update
+        || !current_player_status_binding_area_matches
+    {
+        "current_player_inventory_status_stale"
+    } else if !current_player_status_binding_owner_matches {
+        "current_player_inventory_status_owner_mismatch"
     } else if protocol.last_client_equip_toggle.is_some()
         && recommended_client_inventory_equip_toggle_authorization_response.is_none()
     {
@@ -3554,6 +3612,28 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         recommended_client_inventory_equip_toggle_authorization_response
             .map(|response| response.response_ordinal)
             .unwrap_or(0);
+    let current_player_status_binding_known = current_player_status_binding.is_some();
+    let current_player_status_binding_update_index = current_player_status_binding
+        .map(|binding| binding.queued_update_index)
+        .unwrap_or(0);
+    let current_player_status_binding_area_client_area_packets = current_player_status_binding
+        .map(|binding| binding.area_client_area_packets)
+        .unwrap_or(0);
+    let current_player_status_binding_control_epoch = current_player_status_binding
+        .map(|binding| binding.control_epoch)
+        .unwrap_or(0);
+    let current_player_status_binding_server_sequence = current_player_status_binding
+        .map(|binding| binding.server_sequence)
+        .unwrap_or(0);
+    let current_player_status_binding_owner_object_id = current_player_status_binding
+        .map(|binding| binding.owner_object_id)
+        .unwrap_or(0);
+    let current_player_status_binding_owner_record_count = current_player_status_binding
+        .map(|binding| binding.owner_record_count)
+        .unwrap_or(0);
+    let current_player_status_binding_owner_mask_union = current_player_status_binding
+        .map(|binding| binding.owner_mask_union)
+        .unwrap_or(0);
     let recommended_client_inventory_equip_toggle_authorization_response_operation =
         recommended_client_inventory_equip_toggle_authorization_response
             .map(|response| response.operation.as_str())
@@ -3878,7 +3958,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"recommended_client_inventory_equip_toggle_authorization_response_equip_slot\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_authorization_response_alternate_inventory_context\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_authorization_response_matches_client_primary\": {},\n",
-            "  \"recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary\": {}\n"
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_known\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_update_index\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_area_client_area_packets\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_control_epoch\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_server_sequence\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_owner_object_id\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_owner_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_owner_record_count\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_owner_mask_union\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_current_player_status_binding_owner_mask_union_hex\": \"0x{:04X}\"\n"
         ),
         output_status.as_str(),
         requires_client_gui_writer,
@@ -4109,7 +4199,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         recommended_client_inventory_equip_toggle_authorization_response_equip_slot,
         recommended_client_inventory_equip_toggle_authorization_response_alternate_inventory_context,
         recommended_client_inventory_equip_toggle_authorization_response_matches_client_primary,
-        recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary
+        recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary,
+        current_player_status_binding_known,
+        current_player_status_binding_update_index,
+        current_player_status_binding_area_client_area_packets,
+        current_player_status_binding_control_epoch,
+        current_player_status_binding_server_sequence,
+        current_player_status_binding_owner_object_id,
+        current_player_status_binding_owner_object_id,
+        current_player_status_binding_owner_record_count,
+        current_player_status_binding_owner_mask_union,
+        current_player_status_binding_owner_mask_union
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -11953,6 +12053,16 @@ mod tests {
             trigger_sequence: 20,
             synthetic_sequence: 21,
         });
+        bridge.current_player_status_binding =
+            Some(state::InventoryEquipmentCurrentPlayerStatusBinding {
+                queued_update_index: 13,
+                area_client_area_packets: 1,
+                control_epoch: 1,
+                server_sequence: 44,
+                owner_object_id: 0xFFFF_FFEF,
+                owner_record_count: 1,
+                owner_mask_union: 0x2000,
+            });
 
         let mut object_registry = semantic::ObjectRegistry::default();
         object_registry.observe_materialized_item_object_ids(&[0x8000_5678]);
@@ -12073,6 +12183,7 @@ mod tests {
     #[test]
     fn inventory_equip_toggle_rearm_requires_fresh_matching_response_epoch() {
         let object_id = 0x8000_5678;
+        let controlled_object_id = 0xFFFF_FFEF;
         let mut bridge = state::InventoryEquipmentBridgeState::default();
         bridge.queued_outputs = 1;
         bridge.confirmed_inventory_replay_outputs = 1;
@@ -12089,16 +12200,68 @@ mod tests {
             synthetic_sequence: 21,
         });
         bridge.record_confirmed_inventory_replay_dispatch();
+        bridge.current_player_status_binding =
+            Some(state::InventoryEquipmentCurrentPlayerStatusBinding {
+                queued_update_index: 13,
+                area_client_area_packets: 1,
+                control_epoch: 1,
+                server_sequence: 44,
+                owner_object_id: controlled_object_id,
+                owner_record_count: 1,
+                owner_mask_union: 0x2000,
+            });
 
         let mut object_registry = semantic::ObjectRegistry::default();
         object_registry.observe_materialized_item_object_ids(&[object_id, object_id + 1]);
         let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        let mut authorization_context = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(controlled_object_id),
+            current_control_epoch: 1,
+            area_client_area_packets: 1,
+        };
+
+        authorization_context.current_control_epoch = 2;
+        let stale_control =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+                authorization_context,
+            );
+        assert!(stale_control.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"current_player_inventory_status_owner_mismatch\""
+        ));
+        authorization_context.current_control_epoch = 1;
+
+        bridge
+            .current_player_status_binding
+            .as_mut()
+            .expect("seeded Status binding")
+            .queued_update_index = 11;
+        let stale_status_update =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+                authorization_context,
+            );
+        assert!(stale_status_update.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"current_player_inventory_status_stale\""
+        ));
+        bridge
+            .current_player_status_binding
+            .as_mut()
+            .expect("seeded Status binding")
+            .queued_update_index = 13;
 
         let initial = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
             &bridge,
             &object_registry,
             &mut protocol,
+            authorization_context,
         );
         assert!(
             initial
@@ -12122,6 +12285,7 @@ mod tests {
             &bridge,
             &object_registry,
             &mut protocol,
+            authorization_context,
         );
         assert!(
             awaiting
@@ -12146,6 +12310,7 @@ mod tests {
             &bridge,
             &object_registry,
             &mut protocol,
+            authorization_context,
         );
         assert!(
             wrong_slot
@@ -12164,6 +12329,7 @@ mod tests {
             &bridge,
             &object_registry,
             &mut protocol,
+            authorization_context,
         );
         assert!(
             unrelated
@@ -12182,6 +12348,7 @@ mod tests {
                 &bridge,
                 &object_registry,
                 &mut protocol,
+                authorization_context,
             );
         assert!(matched_before_noise.contains(
             "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"matched_typed_server_response\""
@@ -12203,6 +12370,7 @@ mod tests {
             &bridge,
             &object_registry,
             &mut protocol,
+            authorization_context,
         );
         assert!(
             rearmed
@@ -12239,6 +12407,7 @@ mod tests {
             &bridge,
             &object_registry,
             &mut protocol,
+            authorization_context,
         );
         assert!(
             consumed
@@ -12253,11 +12422,13 @@ mod tests {
 
         protocol.reset_equip_toggle_authorization_for_area();
         object_registry.reset_for_area();
+        authorization_context.area_client_area_packets = 2;
         let area_reset = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
             &bridge,
             &object_registry,
             &mut protocol,
+            authorization_context,
         );
         assert!(
             area_reset
@@ -12274,16 +12445,14 @@ mod tests {
                 &bridge,
                 &object_registry,
                 &mut protocol,
+                authorization_context,
             );
         assert!(
             new_area_bootstrap
-                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
         );
         assert!(new_area_bootstrap.contains(
-            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"initial_confirmed_claim\""
-        ));
-        assert!(new_area_bootstrap.contains(
-            "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 2"
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"current_player_inventory_status_stale\""
         ));
     }
 
@@ -15119,15 +15288,23 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         .map(|frame| frame.server_peer_ack_sequence)
         .unwrap_or(response_ack_sequence);
     for observation in &live_object_inventory_materializations {
-        inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
-            state,
-            &verified_proof,
-            reassembly.first_sequence,
-            response_server_peer_ack_sequence,
-            response_ack_sequence,
-            Some(&observation.summary),
-            observation.current_controlled_object_id,
-        );
+        let recorded =
+            inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
+                state,
+                &verified_proof,
+                reassembly.first_sequence,
+                response_server_peer_ack_sequence,
+                response_ack_sequence,
+                Some(&observation.summary),
+                observation.current_controlled_object_id,
+            );
+        if recorded {
+            inventory_equipment::maybe_bind_current_player_status_response_authority(
+                state,
+                reassembly.first_sequence,
+                observation,
+            );
+        }
     }
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
         if let (Some(first_frame), Some(last_frame)) =

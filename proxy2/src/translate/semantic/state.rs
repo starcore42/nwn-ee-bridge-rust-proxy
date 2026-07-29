@@ -537,6 +537,7 @@ pub(crate) struct AreaState {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlayerControlState {
     pub(crate) object_control_packets: u64,
+    pub(crate) control_epoch: u64,
     pub(crate) current_player_id: Option<u32>,
     pub(crate) current_controlled_object_id: Option<u32>,
 }
@@ -544,13 +545,19 @@ pub(crate) struct PlayerControlState {
 impl PlayerControlState {
     pub(crate) fn observe_object_control(&mut self, player_id: u32, object_id: u32) {
         self.object_control_packets = self.object_control_packets.saturating_add(1);
+        let next_controlled_object_id = (object_id
+            != client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID)
+            .then_some(object_id);
+        if self.current_player_id != Some(player_id)
+            || self.current_controlled_object_id != next_controlled_object_id
+        {
+            self.control_epoch = self.control_epoch.saturating_add(1);
+        }
         self.current_player_id = Some(player_id);
         // EE's sender supplies the shared invalid OBJECTID when its
         // GetControlledObject lookup is absent; Diamond's reader preserves
         // that value. No sentinel may become inventory ownership authority.
-        self.current_controlled_object_id = (object_id
-            != client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID)
-            .then_some(object_id);
+        self.current_controlled_object_id = next_controlled_object_id;
     }
 }
 

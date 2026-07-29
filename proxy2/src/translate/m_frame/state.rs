@@ -415,6 +415,24 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
         Option<semantic::InventoryItemContextCandidate>,
 }
 
+/// Exact current-player owner association recovered from one completed,
+/// ACK-covered ClientGuiInventory_Status response window.
+///
+/// Live-object inventory masks are deliberately retained as diagnostics only:
+/// Diamond `sub_455940` and EE `sub_1407B4F70` assign distinct meanings and
+/// slot widths to their individual branches, so a mask is not itself an
+/// equipment-state value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct InventoryEquipmentCurrentPlayerStatusBinding {
+    pub(super) queued_update_index: u64,
+    pub(super) area_client_area_packets: u64,
+    pub(super) control_epoch: u64,
+    pub(super) server_sequence: u16,
+    pub(super) owner_object_id: u32,
+    pub(super) owner_record_count: u32,
+    pub(super) owner_mask_union: u16,
+}
+
 impl InventoryEquipmentBridgeClientGuiStatusResponse {
     fn strength(self) -> u8 {
         if self.current_player_inventory_records != 0 {
@@ -695,6 +713,7 @@ pub(super) struct InventoryEquipmentBridgeState {
         Option<InventoryEquipmentBridgeClientGuiStatusResponse>,
     pub(super) best_client_gui_status_response:
         Option<InventoryEquipmentBridgeClientGuiStatusResponse>,
+    pub(super) current_player_status_binding: Option<InventoryEquipmentCurrentPlayerStatusBinding>,
 }
 
 impl InventoryEquipmentBridgeState {
@@ -768,6 +787,7 @@ impl InventoryEquipmentBridgeState {
         self.last_completed_client_gui_status_response_update_index = None;
         self.last_client_gui_status_response = None;
         self.best_client_gui_status_response = None;
+        self.current_player_status_binding = None;
         self.client_gui_status_pre_ack_live_object_packets_ignored = 0;
         self.client_gui_status_non_inventory_live_object_packets_ignored = 0;
         self.client_gui_status_response_live_object_packets = 0;

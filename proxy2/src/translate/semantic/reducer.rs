@@ -55,6 +55,10 @@ pub(crate) struct LiveObjectInventoryMaterializationObservation {
     /// must travel with the summary because a later unit in the same gameplay
     /// stream may change control before frame-level bridge effects run.
     pub(crate) current_controlled_object_id: Option<u32>,
+    /// Area and control epochs at this exact unit, before a later coalesced
+    /// record can change either authority.
+    pub(crate) area_client_area_packets: u64,
+    pub(crate) control_epoch: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -466,6 +470,8 @@ fn observe_family_payload(
             LiveObjectInventoryMaterializationObservation {
                 summary,
                 current_controlled_object_id: state.player_control.current_controlled_object_id,
+                area_client_area_packets: state.area.client_area_packets,
+                control_epoch: state.player_control.control_epoch,
             }
         });
     FamilyPayloadSemanticObservations {
@@ -2992,10 +2998,16 @@ mod fixture_free_tests {
             Some(CREATURE_A),
             "a later ObjControl observation must not flow backward into an earlier inventory row"
         );
+        assert_eq!(observation.area_client_area_packets, 0);
+        assert_eq!(
+            observation.control_epoch, 1,
+            "the observation must retain the control epoch at its exact wire position"
+        );
         assert_eq!(
             state.player_control.current_controlled_object_id,
             Some(CREATURE_B)
         );
+        assert_eq!(state.player_control.control_epoch, 2);
 
         let mut state = SemanticSessionState::default();
         state.player_control.observe_object_control(0, CREATURE_A);
@@ -3017,6 +3029,14 @@ mod fixture_free_tests {
             observations.live_object_inventory_materializations[0].current_controlled_object_id,
             Some(CREATURE_B),
             "a preceding ObjControl unit must govern the following inventory row"
+        );
+        assert_eq!(
+            observations.live_object_inventory_materializations[0].control_epoch,
+            2
+        );
+        assert_eq!(
+            observations.live_object_inventory_materializations[0].area_client_area_packets,
+            0
         );
 
         assert_eq!(
