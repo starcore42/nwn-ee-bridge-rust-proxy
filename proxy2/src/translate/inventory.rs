@@ -7,12 +7,19 @@
 //! Decompile evidence:
 //! - EE `CNWSMessage::SendServerToPlayerInventory_Equip` creates family
 //!   `0x0C`, minor `0x01`, then writes `WriteOBJECTIDServer(object_id)`,
-//!   `WriteBOOL(result)`, and `WriteDWORD(equip_slot, 0x20)`.
+//!   `WriteBOOL(alternate_inventory_context)`, and
+//!   `WriteDWORD(equip_slot, 0x20)`.
 //! - EE `CNWCMessage::HandleServerToPlayerInventory` mirrors that reader shape:
 //!   `sub_1409737C0` for the object id, `ReadBOOL`, and for cases 1/2
 //!   `ReadDWORD(0x20)`. The bool is owned by CNW's MSB fragment stream, so the
 //!   exact proof is the final-bit cursor (`3` header bits + `1` semantic bool),
 //!   not zero-filled padding in the unused low bits of the final fragment byte.
+//! - The BOOL is a context selector, not success. EE `RunEquip` initializes it
+//!   false for the ordinary current-creature path and sets it only for an
+//!   explicit controller (`0x14039F998..0x14039F9AE`); after the actual
+//!   `EquipItem` call it passes that value unchanged to the writer
+//!   (`0x14039FEC1..0x14039FEC6`). Diamond's server and client perform the same
+//!   selection (`0x49211D..0x492155`, `0x450822..0x45086E`).
 //! - EE `SendServerToPlayerInventory_EquipCancel` uses the same body shape and
 //!   sends minor `0x02`.
 //! - The previous driver-side compatibility hook documented HG/1.69 packets
@@ -45,7 +52,7 @@ pub struct InventoryClaimSummary {
     pub new_declared: usize,
     pub legacy_prefix_removed: bool,
     pub object_id: u32,
-    pub result: bool,
+    pub alternate_inventory_context: bool,
     pub equip_slot: u32,
     pub fragment_bytes: usize,
 }
@@ -53,7 +60,7 @@ pub struct InventoryClaimSummary {
 pub fn build_ee_inventory_payload(
     minor: u8,
     object_id: u32,
-    result: bool,
+    alternate_inventory_context: bool,
     equip_slot: u32,
 ) -> Option<Vec<u8>> {
     if !matches!(minor, EQUIP_MINOR | EQUIP_CANCEL_MINOR)
@@ -69,7 +76,7 @@ pub fn build_ee_inventory_payload(
     payload.extend_from_slice(&(declared as u32).to_le_bytes());
     payload.extend_from_slice(&object_id.to_le_bytes());
     payload.extend_from_slice(&equip_slot.to_le_bytes());
-    payload.push(single_bool_fragment_byte(result));
+    payload.push(single_bool_fragment_byte(alternate_inventory_context));
 
     claim_payload_if_verified(&payload)
         .is_some()
@@ -154,7 +161,7 @@ fn claim_ee_equip_shape(
         new_declared: declared,
         legacy_prefix_removed: false,
         object_id,
-        result: decode_single_bool_fragment(payload[declared]),
+        alternate_inventory_context: decode_single_bool_fragment(payload[declared]),
         equip_slot,
         fragment_bytes: SINGLE_BOOL_FRAGMENT_BYTES,
     })
@@ -187,7 +194,7 @@ fn rewrite_legacy_prefixed_equip_shape(
         new_declared,
         legacy_prefix_removed: true,
         object_id,
-        result: decode_single_bool_fragment(payload[new_declared]),
+        alternate_inventory_context: decode_single_bool_fragment(payload[new_declared]),
         equip_slot,
         fragment_bytes: SINGLE_BOOL_FRAGMENT_BYTES,
     })
@@ -251,7 +258,7 @@ mod tests {
         let claim = claim_payload_if_verified(&payload).expect("exact EE inventory equip claim");
         assert_eq!(claim.minor, EQUIP_MINOR);
         assert_eq!(claim.object_id, 0x8000_1234);
-        assert!(claim.result);
+        assert!(claim.alternate_inventory_context);
         assert_eq!(claim.equip_slot, 4);
         assert_eq!(claim.fragment_bytes, 1);
         assert!(!claim.legacy_prefix_removed);
@@ -287,7 +294,7 @@ mod tests {
         assert!(rewrite.legacy_prefix_removed);
         assert_eq!(rewrite.old_declared, 0x13);
         assert_eq!(rewrite.new_declared, 0x0F);
-        assert!(!rewrite.result);
+        assert!(!rewrite.alternate_inventory_context);
         assert_eq!(&payload[3..7], &0x0Fu32.to_le_bytes());
         assert!(claim_payload_if_verified(&payload).is_some());
     }
@@ -320,7 +327,7 @@ mod tests {
         );
         let claim = claim_payload_if_verified(&payload).expect("built payload should validate");
         assert_eq!(claim.object_id, 0x8000_1234);
-        assert!(claim.result);
+        assert!(claim.alternate_inventory_context);
         assert_eq!(claim.equip_slot, 4);
     }
 

@@ -194,7 +194,7 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
     let payload = inventory::build_ee_inventory_payload(
         claim.minor,
         claim.object_id,
-        claim.result,
+        claim.alternate_inventory_context,
         claim.equip_slot,
     )
     .ok_or_else(|| {
@@ -250,7 +250,7 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         event_index: update.event_index,
         minor: claim.minor,
         object_id: claim.object_id,
-        result: claim.result,
+        alternate_inventory_context: claim.alternate_inventory_context,
         equip_slot: claim.equip_slot,
         trigger_sequence,
         synthetic_sequence,
@@ -262,7 +262,7 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         event_index = update.event_index,
         object_id = %format_args!("0x{:08X}", claim.object_id),
         equip_slot = claim.equip_slot,
-        result = claim.result,
+        alternate_inventory_context = claim.alternate_inventory_context,
         trigger_sequence,
         synthetic_sequence,
         future_shift_base,
@@ -598,9 +598,9 @@ fn maybe_stage_confirmed_inventory_replay(
         queued_candidate_object_id = %format_args!("0x{:08X}", queued_candidate.object_id),
         claim_object_id = %format_args!("0x{:08X}", claim.object_id),
         claim_minor = claim.minor,
-        claim_result = claim.result,
+        claim_alternate_inventory_context = claim.alternate_inventory_context,
         claim_equip_slot = claim.equip_slot,
-        "inventory/equipment bridge staged original Inventory result after associated ClientGui status materialized its claim object"
+        "inventory/equipment bridge staged original Inventory context after associated ClientGui status materialized its claim object"
     );
 }
 
@@ -626,14 +626,14 @@ pub(super) fn maybe_queue_confirmed_inventory_replay(
 
     // `inventory::build_ee_inventory_payload` owns the decompile-backed EE
     // writer order: OBJECTIDServer and DWORD equip slot in the CNW read
-    // buffer, followed by the single MSB-owned result BOOL in the fragment
+    // buffer, followed by the single MSB-owned inventory-context BOOL in the fragment
     // stream. Reusing its exact validator here prevents a materialization
     // timing repair from becoming a second, weaker packet writer.
     let claim = pending.claim;
     let payload = inventory::build_ee_inventory_payload(
         claim.minor,
         claim.object_id,
-        claim.result,
+        claim.alternate_inventory_context,
         claim.equip_slot,
     )
     .ok_or_else(|| {
@@ -706,7 +706,7 @@ pub(super) fn maybe_queue_confirmed_inventory_replay(
         event_index: pending.event_index,
         minor: claim.minor,
         object_id: claim.object_id,
-        result: claim.result,
+        alternate_inventory_context: claim.alternate_inventory_context,
         equip_slot: claim.equip_slot,
         trigger_sequence: response_last_sequence,
         synthetic_sequence,
@@ -716,7 +716,7 @@ pub(super) fn maybe_queue_confirmed_inventory_replay(
         update_index = pending.update_index,
         object_id = %format_args!("0x{:08X}", claim.object_id),
         equip_slot = claim.equip_slot,
-        result = claim.result,
+        alternate_inventory_context = claim.alternate_inventory_context,
         response_last_sequence,
         synthetic_sequence,
         future_shift_base,
@@ -1092,7 +1092,7 @@ mod tests {
                 event_index: 1,
                 minor: 0x01,
                 object_id: 0x8000_1234,
-                result: true,
+                alternate_inventory_context: true,
                 equip_slot: 4,
                 trigger_sequence: 10,
                 synthetic_sequence: 11,
@@ -1114,7 +1114,7 @@ mod tests {
         let claim = inventory::claim_payload_if_verified(payload)
             .expect("queued Inventory payload should be exact EE shape");
         assert_eq!(claim.object_id, 0x8000_1234);
-        assert!(claim.result);
+        assert!(claim.alternate_inventory_context);
         assert_eq!(claim.equip_slot, 4);
     }
 
@@ -2037,7 +2037,7 @@ mod tests {
                 event_index: update.event_index,
                 minor: claim.minor,
                 object_id: claim.object_id,
-                result: claim.result,
+                alternate_inventory_context: claim.alternate_inventory_context,
                 equip_slot: claim.equip_slot,
                 trigger_sequence: 61,
                 synthetic_sequence: 62,
@@ -2058,7 +2058,10 @@ mod tests {
         let replay_claim = inventory::claim_payload_if_verified(payload)
             .expect("replayed Inventory payload should pass the exact EE validator");
         assert_eq!(replay_claim.object_id, claim.object_id);
-        assert_eq!(replay_claim.result, claim.result);
+        assert_eq!(
+            replay_claim.alternate_inventory_context,
+            claim.alternate_inventory_context
+        );
         assert_eq!(replay_claim.equip_slot, claim.equip_slot);
 
         assert!(
@@ -2575,7 +2578,7 @@ mod tests {
         let claim = inventory::claim_payload_if_verified(payload)
             .expect("queued Inventory payload should be exact EE shape");
         assert_eq!(claim.object_id, 0x8000_5678);
-        assert!(!claim.result);
+        assert!(!claim.alternate_inventory_context);
         assert_eq!(claim.equip_slot, 0x0002_0000);
     }
 }

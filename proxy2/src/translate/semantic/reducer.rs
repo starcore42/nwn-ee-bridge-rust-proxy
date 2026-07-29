@@ -1104,7 +1104,7 @@ fn apply_event(
                 InventoryEquipmentServerInventoryClaim::new(
                     claim.minor,
                     claim.object_id,
-                    claim.result,
+                    claim.alternate_inventory_context,
                     claim.equip_slot,
                 )
             });

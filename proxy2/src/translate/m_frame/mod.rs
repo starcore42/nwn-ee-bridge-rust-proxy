@@ -22,7 +22,7 @@ use crate::{
     packet::m::{HighLevel, MFrameType, MFrameView},
     translate::{
         ContinuationOwner, Emit, VerifiedFamily, VerifiedPacket, VerifiedProof, area,
-        client_gui_inventory, semantic,
+        client_gui_inventory, client_inventory, semantic,
     },
 };
 
@@ -1422,6 +1422,38 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
             );
             return Ok(Emit::Drop);
         }
+        server_replay::PreparedServerReliableSource::OutputReplay(key) => {
+            if let Some((first_sequence, member_index, expected_frames)) =
+                reassembly::completed_server_stream_noninitial_member(
+                    state,
+                    key.sequence,
+                    key.origin_generation,
+                    bytes,
+                )
+            {
+                // A completed multi-frame message is replayable only from its
+                // leading member, which can reconstruct and match the whole
+                // immutable cached window. Diamond `sub_5F3940` lines
+                // 751482-751549 and EE FrameReceive lines 878891-878952 ignore
+                // a duplicate occupied receive member instead of dispatching
+                // it into UnpacketizeFullMessages by itself. Re-entering a
+                // lone persistent-zlib continuation after the inflater has
+                // advanced can otherwise manufacture a stale destination
+                // sequence. Preserve only the independently valid ACK lanes.
+                observe_validated_server_source_ack(state, source_ack_sequence);
+                tracing::info!(
+                    sequence = key.sequence,
+                    origin_generation = key.origin_generation,
+                    ack_sequence = source_ack_sequence,
+                    first_sequence,
+                    member_index,
+                    expected_frames,
+                    receive_start = state.server_reliable_slots.receive_start,
+                    "exact output-owned non-leading stream member collapsed before repeated semantic dispatch"
+                );
+                return Ok(Emit::Consumed);
+            }
+        }
         server_replay::PreparedServerReliableSource::RetiredReplay(key) => {
             observe_validated_server_source_ack(state, source_ack_sequence);
             tracing::info!(
@@ -2663,6 +2695,31 @@ fn translate_server_to_client_inner(
             );
             return Ok(Emit::Drop);
         }
+        server_replay::PreparedServerReliableSource::OutputReplay(key) => {
+            if let Some((first_sequence, member_index, expected_frames)) =
+                reassembly::completed_server_stream_noninitial_member(
+                    state,
+                    key.sequence,
+                    key.origin_generation,
+                    bytes,
+                )
+            {
+                // The public receive boundary normally handles this case.
+                // Keep the core dispatcher equally strict for focused callers.
+                observe_validated_server_source_ack(state, view.ack_sequence);
+                tracing::info!(
+                    sequence = key.sequence,
+                    origin_generation = key.origin_generation,
+                    ack_sequence = view.ack_sequence,
+                    first_sequence,
+                    member_index,
+                    expected_frames,
+                    receive_start = state.server_reliable_slots.receive_start,
+                    "exact output-owned non-leading stream member collapsed before route selection"
+                );
+                return Ok(Emit::Consumed);
+            }
+        }
         server_replay::PreparedServerReliableSource::RetiredReplay(key) => {
             observe_validated_server_source_ack(state, view.ack_sequence);
             tracing::info!(
@@ -3224,8 +3281,11 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         Some(hint) => hint.to_json(),
         None => state.semantic.quickbar_item_refresh_harness_idle_json(),
     };
-    let body =
-        augment_quickbar_item_refresh_hint_with_bridge_output(body, &state.inventory_equipment);
+    let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+        body,
+        &state.inventory_equipment,
+        &state.semantic.objects,
+    );
 
     if state.quickbar_item_refresh_hint_last_body.as_deref() == Some(body.as_str()) {
         return;
@@ -3274,6 +3334,7 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
 fn augment_quickbar_item_refresh_hint_with_bridge_output(
     body: String,
     bridge: &state::InventoryEquipmentBridgeState,
+    object_registry: &semantic::ObjectRegistry,
 ) -> String {
     let last = bridge.last_queued_output.unwrap_or_default();
     let last_known = bridge.last_queued_output.is_some();
@@ -3347,6 +3408,73 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             == state::InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate;
     let best_client_gui_status_response_candidate_delta =
         bridge.best_client_gui_status_response_candidate_delta_from_queued_status();
+    // This recommendation is intentionally sourced from the exact server
+    // Inventory_Equip claim that survived the frame-local, current-player
+    // materialization proof and was dispatched back to the client. The
+    // cumulative "best response candidate" is unsuitable here: it can remain
+    // populated after a later empty response. Re-check the live semantic
+    // registry as well so D/06 and Area_ClientArea resets revoke stale actions.
+    let recommended_client_inventory_equip_toggle_object_status = last_known
+        .then(|| object_registry.inventory_item_object_status(last.object_id))
+        .unwrap_or(semantic::InventoryItemObjectStatus::Unknown);
+    let recommended_client_inventory_equip_toggle_blocked_reason = if !last_known {
+        "no_confirmed_server_inventory_output"
+    } else if bridge.last_confirmed_inventory_replay_update_index != Some(last.update_index) {
+        "confirmed_replay_update_mismatch"
+    } else if bridge.last_confirmed_inventory_replay_dispatch_update_index
+        != Some(last.update_index)
+    {
+        "confirmed_replay_not_dispatched"
+    } else if last.minor != 1 || last.equip_slot == 0 {
+        // This BOOL is not an equip-success flag. EE RunEquip initializes the
+        // value to false for the ordinary current-creature sentinel path and
+        // only sets it when an explicit player object is supplied
+        // (0x14039F998..0x14039F9AE); SendServerToPlayerInventory_Equip writes
+        // that value unchanged (0x1404DA5ED..0x1404DA5F4). Preserve it as
+        // protocol evidence, but do not reinterpret the normal false value as
+        // a failed equip.
+        "server_inventory_claim_not_equip"
+    } else if !matches!(
+        recommended_client_inventory_equip_toggle_object_status,
+        semantic::InventoryItemObjectStatus::Proven(_)
+    ) {
+        "server_inventory_claim_object_not_currently_proven"
+    } else {
+        "none"
+    };
+    let recommended_client_inventory_equip_toggle_output =
+        (recommended_client_inventory_equip_toggle_blocked_reason == "none").then_some(last);
+    let recommended_client_inventory_equip_toggle_payload =
+        recommended_client_inventory_equip_toggle_output.and_then(|output| {
+            client_inventory::build_equip_toggle_payload(output.object_id, None)
+        });
+    let recommended_client_inventory_equip_toggle_payload_available =
+        recommended_client_inventory_equip_toggle_payload.is_some();
+    let recommended_client_inventory_equip_toggle_payload_hex =
+        recommended_client_inventory_equip_toggle_payload
+            .as_deref()
+            .map(hex_encode_upper)
+            .unwrap_or_default();
+    let recommended_client_inventory_equip_toggle_object_id =
+        recommended_client_inventory_equip_toggle_output
+            .map(|output| output.object_id)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_update_index =
+        recommended_client_inventory_equip_toggle_output
+            .map(|output| output.update_index)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_minor =
+        recommended_client_inventory_equip_toggle_output
+            .map(|output| output.minor)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_alternate_inventory_context =
+        recommended_client_inventory_equip_toggle_output
+            .map(|output| output.alternate_inventory_context)
+            .unwrap_or(false);
+    let recommended_client_inventory_equip_toggle_equip_slot =
+        recommended_client_inventory_equip_toggle_output
+            .map(|output| output.equip_slot)
+            .unwrap_or(0);
     let last_decision_known = last_decision.is_some();
     let last_decision_kind = last_decision
         .map(|decision| decision.kind)
@@ -3393,8 +3521,8 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let last_decision_claim_object_id = last_decision_claim
         .map(|claim| claim.object_id)
         .unwrap_or(0);
-    let last_decision_claim_result = last_decision_claim
-        .map(|claim| claim.result)
+    let last_decision_claim_alternate_inventory_context = last_decision_claim
+        .map(|claim| claim.alternate_inventory_context)
         .unwrap_or(false);
     let last_decision_claim_equip_slot = last_decision_claim
         .map(|claim| claim.equip_slot)
@@ -3499,7 +3627,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_object_id\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_distance\": {},\n",
-            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_alternate_inventory_context\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_known\": {},\n",
             "  \"inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_kind\": \"{}\",\n",
@@ -3529,7 +3657,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_last_queued_minor\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_object_id\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_object_id_hex\": \"0x{:08X}\",\n",
-            "  \"inventory_equipment_bridge_output_last_queued_result\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_alternate_inventory_context\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_equip_slot\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_trigger_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_synthetic_sequence\": {},\n",
@@ -3604,7 +3732,20 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_source\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_association\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_matches_queued_status_candidate\": {},\n",
-            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_delta_from_queued_status_candidate\": {}\n"
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_delta_from_queued_status_candidate\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_payload_available\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_payload_kind\": \"Inventory_EquipToggle\",\n",
+            "  \"recommended_client_inventory_equip_toggle_payload_hex\": \"{}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_blocked_reason\": \"{}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_object_id\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_object_status\": \"{}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_update_index\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_server_inventory_minor\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_server_inventory_alternate_context\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_server_inventory_equip_slot\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_has_secondary_object\": false,\n",
+            "  \"recommended_client_inventory_equip_toggle_source\": \"confirmed_current_player_inventory_server_equip_claim\"\n"
         ),
         output_status.as_str(),
         requires_client_gui_writer,
@@ -3668,7 +3809,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last_decision_claim_higher_proven_neighbor.object_id,
         last_decision_claim_higher_proven_neighbor.object_id,
         last_decision_claim_higher_proven_neighbor.distance,
-        last_decision_claim_result,
+        last_decision_claim_alternate_inventory_context,
         last_decision_claim_equip_slot,
         last_decision_client_gui_claim_known,
         last_decision_client_gui_claim_kind,
@@ -3700,7 +3841,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         last.minor,
         last.object_id,
         last.object_id,
-        last.result,
+        last.alternate_inventory_context,
         last.equip_slot,
         last.trigger_sequence,
         last.synthetic_sequence,
@@ -3775,7 +3916,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         best_client_gui_status_response_candidate_source,
         best_client_gui_status_response_association.as_str(),
         best_client_gui_status_response_matches_queued_status_candidate,
-        best_client_gui_status_response_candidate_delta
+        best_client_gui_status_response_candidate_delta,
+        recommended_client_inventory_equip_toggle_payload_available,
+        recommended_client_inventory_equip_toggle_payload_hex,
+        recommended_client_inventory_equip_toggle_blocked_reason,
+        recommended_client_inventory_equip_toggle_object_id,
+        recommended_client_inventory_equip_toggle_object_id,
+        recommended_client_inventory_equip_toggle_object_status.as_str(),
+        recommended_client_inventory_equip_toggle_update_index,
+        recommended_client_inventory_equip_toggle_minor,
+        recommended_client_inventory_equip_toggle_alternate_inventory_context,
+        recommended_client_inventory_equip_toggle_equip_slot
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -5699,6 +5850,73 @@ mod tests {
         );
         assert!(state.deflate.server_reassembly.is_none());
         assert!(state.coalesced_replay.completed_deflated_records.is_empty());
+    }
+
+    #[test]
+    fn completed_multiframe_nonleading_replay_does_not_reenter_persistent_inflater() {
+        let inflated = crate::translate::loadbar::start_payload(2);
+        let (first, continuation) = two_frame_deflated_window(140, 73, &inflated);
+        let mut state = SessionState::default();
+        state.synthetic_area.synthesize_loadbar = false;
+
+        assert!(matches!(
+            translate_server_to_client(&first, &mut state)
+                .expect("leading source member should start reassembly"),
+            Emit::Consumed
+        ));
+        let completed = translate_server_to_client(&continuation, &mut state)
+            .expect("terminal source member should complete reassembly");
+        assert!(
+            proof_packets(completed.clone())
+                .iter()
+                .any(|(proof, _)| proof.contains_family(VerifiedFamily::LoadBar))
+        );
+        finish_server_to_client_emit_validation(&mut state, true);
+        assert_eq!(state.deflate.completed_server_stream_windows.len(), 1);
+        assert_eq!(state.server_reliable_slots.output_sources.len(), 2);
+
+        let inflater_totals = state
+            .deflate
+            .server_zlib_inflater
+            .as_ref()
+            .map(|inflater| (inflater.total_in(), inflater.total_out()));
+        let stream_epoch = state.deflate.server_zlib_stream_epoch;
+        let semantic_events = state.semantic.recent_events.len();
+        let held_packets = state.synthetic_area.held_server_to_client_packets.len();
+
+        let mut replay = continuation;
+        assert!(write_be_u16(&mut replay, 5, 74));
+        replay[7] |= transport_identity::SEND_WINDOW_BIT6_MASK;
+        assert!(encode_legacy_m_crc(&mut replay));
+        assert!(matches!(
+            translate_server_to_client(&replay, &mut state)
+                .expect("exact terminal-member replay should be ACK-only"),
+            Emit::Consumed
+        ));
+
+        assert_eq!(
+            state
+                .deflate
+                .server_zlib_inflater
+                .as_ref()
+                .map(|inflater| (inflater.total_in(), inflater.total_out())),
+            inflater_totals,
+            "a lone non-leading replay cannot consume the persistent stream twice"
+        );
+        assert_eq!(state.deflate.server_zlib_stream_epoch, stream_epoch);
+        assert_eq!(state.semantic.recent_events.len(), semantic_events);
+        assert_eq!(
+            state.synthetic_area.held_server_to_client_packets.len(),
+            held_packets,
+            "the replay must not manufacture a stale held progress shell"
+        );
+        assert_eq!(
+            state
+                .server_outside_window_ack_pending_validation
+                .map(|token| token.ack_sequence),
+            Some(141),
+            "the independent HG receive ACK must remain pending final validation"
+        );
     }
 
     #[test]
@@ -11424,7 +11642,7 @@ mod tests {
             event_index: 7,
             minor: 1,
             object_id: 0x8000_1234,
-            result: true,
+            alternate_inventory_context: true,
             equip_slot: 0x0002_0000,
             trigger_sequence: 10,
             synthetic_sequence: 11,
@@ -11433,6 +11651,7 @@ mod tests {
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &semantic::ObjectRegistry::default(),
         );
 
         assert!(body.ends_with("\n}\n"));
@@ -11471,7 +11690,9 @@ mod tests {
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_queued_object_id_hex\": \"0x80001234\""
         ));
-        assert!(body.contains("\"inventory_equipment_bridge_output_last_queued_result\": true"));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_queued_alternate_inventory_context\": true"
+        ));
         assert!(
             body.contains("\"inventory_equipment_bridge_output_last_queued_equip_slot\": 131072")
         );
@@ -11483,10 +11704,24 @@ mod tests {
         bridge.queued_outputs = 1;
         bridge.confirmed_inventory_replay_outputs = 1;
         bridge.last_confirmed_inventory_replay_update_index = Some(12);
+        bridge.last_queued_output = Some(state::InventoryEquipmentBridgeQueuedOutput {
+            update_index: 12,
+            emission_index: 13,
+            event_index: 14,
+            minor: 1,
+            object_id: 0x8000_5678,
+            alternate_inventory_context: false,
+            equip_slot: 0x0002_0000,
+            trigger_sequence: 20,
+            synthetic_sequence: 21,
+        });
 
+        let mut object_registry = semantic::ObjectRegistry::default();
+        object_registry.observe_materialized_item_object_ids(&[0x8000_5678]);
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &object_registry,
         );
 
         assert!(body.contains(
@@ -11507,12 +11742,21 @@ mod tests {
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_confirmed_inventory_replay_queued_for_dispatch\": true"
         ));
+        assert!(
+            body.contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(body.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"confirmed_replay_not_dispatched\""
+        ));
 
         bridge.record_confirmed_inventory_replay_dispatch();
         let dispatched_body = augment_quickbar_item_refresh_hint_with_bridge_output(
-            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\",\n  \"pending_item_refresh\": false\n}\n"
+                .to_string(),
             &bridge,
+            &object_registry,
         );
+        assert!(dispatched_body.contains("\"pending_item_refresh\": false"));
         assert!(dispatched_body.contains(
             "\"inventory_equipment_bridge_output_status\": \"client_gui_status_inventory_replay_dispatched\""
         ));
@@ -11524,6 +11768,67 @@ mod tests {
         ));
         assert!(dispatched_body.contains(
             "\"inventory_equipment_bridge_output_last_confirmed_inventory_replay_dispatch_update_index\": 12"
+        ));
+        assert!(
+            dispatched_body
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
+        assert!(dispatched_body.contains(
+            "\"recommended_client_inventory_equip_toggle_payload_hex\": \"700C0B0B0000007856008080\""
+        ));
+        assert!(dispatched_body.contains(
+            "\"recommended_client_inventory_equip_toggle_object_id_hex\": \"0x80005678\""
+        ));
+        assert!(dispatched_body.contains(
+            "\"recommended_client_inventory_equip_toggle_server_inventory_alternate_context\": false"
+        ));
+        assert!(
+            dispatched_body.contains(
+                "\"recommended_client_inventory_equip_toggle_object_status\": \"proven\""
+            )
+        );
+        assert!(dispatched_body.contains(
+            "\"recommended_client_inventory_equip_toggle_source\": \"confirmed_current_player_inventory_server_equip_claim\""
+        ));
+
+        bridge
+            .last_queued_output
+            .as_mut()
+            .expect("queued output")
+            .update_index = 13;
+        let stale_update_body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+        );
+        assert!(
+            stale_update_body
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(stale_update_body.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"confirmed_replay_update_mismatch\""
+        ));
+
+        bridge
+            .last_queued_output
+            .as_mut()
+            .expect("queued output")
+            .update_index = 12;
+        object_registry.reset_for_area();
+        let area_reset_body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+        );
+        assert!(
+            area_reset_body
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(area_reset_body.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"server_inventory_claim_object_not_currently_proven\""
+        ));
+        assert!(area_reset_body.contains(
+            "\"recommended_client_inventory_equip_toggle_object_status\": \"cleared_by_area_reset\""
         ));
     }
 
@@ -11579,6 +11884,7 @@ mod tests {
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &semantic::ObjectRegistry::default(),
         );
 
         assert!(body.contains("\"inventory_equipment_bridge_output_last_decision_known\": true"));
@@ -11649,7 +11955,7 @@ mod tests {
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_distance\": 4369"
         ));
         assert!(body.contains(
-            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_result\": true"
+            "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_alternate_inventory_context\": true"
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot\": 4"
@@ -11697,6 +12003,7 @@ mod tests {
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &semantic::ObjectRegistry::default(),
         );
 
         assert!(body.contains(
@@ -11784,6 +12091,7 @@ mod tests {
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &semantic::ObjectRegistry::default(),
         );
 
         assert!(body.contains(
@@ -12012,6 +12320,7 @@ mod tests {
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &semantic::ObjectRegistry::default(),
         );
 
         assert!(body.contains(
@@ -12144,6 +12453,7 @@ mod tests {
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &semantic::ObjectRegistry::default(),
         );
 
         assert!(body.contains(
@@ -12167,6 +12477,7 @@ mod tests {
         let body = augment_quickbar_item_refresh_hint_with_bridge_output(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
+            &semantic::ObjectRegistry::default(),
         );
 
         assert!(body.contains(

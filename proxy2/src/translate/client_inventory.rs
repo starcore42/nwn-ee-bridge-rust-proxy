@@ -93,6 +93,46 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientInventoryClaimS
     })
 }
 
+/// Build the exact EE/Diamond client writer shape for `Inventory_EquipToggle`.
+///
+/// Both original writers encode an absent secondary object as one false BOOL.
+/// A present secondary object is encoded as one true BOOL followed by the raw
+/// OBJECTID. The final fragment byte is canonicalized to zero residual bits;
+/// captured client packets may retain unrelated low scratch bits, which the
+/// exact reader intentionally ignores.
+pub fn build_equip_toggle_payload(
+    primary_object_id: u32,
+    secondary_object_id: Option<u32>,
+) -> Option<Vec<u8>> {
+    if primary_object_id == INVALID_OBJECT_ID || secondary_object_id == Some(INVALID_OBJECT_ID) {
+        return None;
+    }
+
+    let declared = if secondary_object_id.is_some() {
+        TRUE_BRANCH_DECLARED_BYTES
+    } else {
+        FALSE_BRANCH_DECLARED_BYTES
+    };
+    let mut payload = Vec::with_capacity(declared.checked_add(FRAGMENT_BYTES)?);
+    payload.extend_from_slice(&[0x70, INVENTORY_MAJOR, EQUIP_TOGGLE_MINOR]);
+    payload.extend_from_slice(&(u32::try_from(declared).ok()?).to_le_bytes());
+    payload.extend_from_slice(&primary_object_id.to_le_bytes());
+    if let Some(secondary_object_id) = secondary_object_id {
+        payload.extend_from_slice(&secondary_object_id.to_le_bytes());
+    }
+    payload.push(
+        SINGLE_BOOL_FINAL_CURSOR
+            | if secondary_object_id.is_some() {
+                SINGLE_BOOL_DATA_BIT
+            } else {
+                0
+            },
+    );
+
+    claim_payload_if_verified(&payload)?;
+    Some(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +183,46 @@ mod tests {
         assert_eq!(claim.primary_object_id, 0x8000_1234);
         assert_eq!(claim.secondary_object_id, Some(0x8000_5678));
         assert_eq!(claim.declared, TRUE_BRANCH_DECLARED_BYTES);
+    }
+
+    #[test]
+    fn builder_emits_canonical_false_and_true_writer_shapes() {
+        let false_branch =
+            build_equip_toggle_payload(0x8000_1234, None).expect("false branch should build");
+        let true_branch = build_equip_toggle_payload(0x8000_1234, Some(0x8000_5678))
+            .expect("true branch should build");
+
+        assert_eq!(
+            false_branch,
+            [
+                0x70, 0x0C, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x80,
+            ]
+        );
+        assert_eq!(
+            true_branch,
+            [
+                0x70, 0x0C, 0x0B, 0x0F, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x78, 0x56, 0x00,
+                0x80, 0x90,
+            ]
+        );
+        assert_eq!(
+            claim_payload_if_verified(&false_branch)
+                .expect("built false branch should self-validate")
+                .secondary_object_id,
+            None
+        );
+        assert_eq!(
+            claim_payload_if_verified(&true_branch)
+                .expect("built true branch should self-validate")
+                .secondary_object_id,
+            Some(0x8000_5678)
+        );
+    }
+
+    #[test]
+    fn builder_rejects_invalid_writer_object_ids() {
+        assert!(build_equip_toggle_payload(INVALID_OBJECT_ID, None).is_none());
+        assert!(build_equip_toggle_payload(0x8000_1234, Some(INVALID_OBJECT_ID)).is_none());
     }
 
     #[test]

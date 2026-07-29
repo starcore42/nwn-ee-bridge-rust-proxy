@@ -80,10 +80,12 @@ pub(super) struct ServerReliableSlotState {
     pub(super) pending_dispatch_key: Option<ServerReliableSlotKey>,
     /// Strict-committed source identities whose translated EE-facing output
     /// has not yet been cumulatively acknowledged. The independent
-    /// `EeServerSendWindowState` owns exact output bytes and enforces its own
-    /// 16-slot limit; these full sources permit exact HG retransmissions to
-    /// revisit cached output while the source-coordinate order supports mapped
-    /// ACK retirement and ordered-epoch compaction.
+    /// `EeServerSendWindowState` owns exact output bytes, retransmission
+    /// timing, and its own 16-slot limit. These full sources classify exact HG
+    /// retransmissions so whole-window cache replays remain possible while a
+    /// lone non-leading stream member can be acknowledged without repeating
+    /// CNW dispatch. Their source-coordinate order also supports mapped ACK
+    /// retirement and ordered-epoch compaction.
     pub(super) output_sources: VecDeque<ServerReliableSlot>,
     /// Exact first source identity not yet retired by a mapped, strict-accepted
     /// EE ACK. Keep the next identity after the queue empties so sequence-wrap

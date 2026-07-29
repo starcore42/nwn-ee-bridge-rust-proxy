@@ -904,16 +904,21 @@ impl InventoryEquipmentHandoffConsumer {
 pub(crate) struct InventoryEquipmentServerInventoryClaim {
     pub(crate) minor: u8,
     pub(crate) object_id: u32,
-    pub(crate) result: bool,
+    pub(crate) alternate_inventory_context: bool,
     pub(crate) equip_slot: u32,
 }
 
 impl InventoryEquipmentServerInventoryClaim {
-    pub(crate) fn new(minor: u8, object_id: u32, result: bool, equip_slot: u32) -> Self {
+    pub(crate) fn new(
+        minor: u8,
+        object_id: u32,
+        alternate_inventory_context: bool,
+        equip_slot: u32,
+    ) -> Self {
         Self {
             minor,
             object_id,
-            result,
+            alternate_inventory_context,
             equip_slot,
         }
     }

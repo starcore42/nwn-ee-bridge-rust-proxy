@@ -360,7 +360,7 @@ pub(super) struct InventoryEquipmentBridgeQueuedOutput {
     pub(super) event_index: u64,
     pub(super) minor: u8,
     pub(super) object_id: u32,
-    pub(super) result: bool,
+    pub(super) alternate_inventory_context: bool,
     pub(super) equip_slot: u32,
     pub(super) trigger_sequence: u16,
     pub(super) synthetic_sequence: u16,

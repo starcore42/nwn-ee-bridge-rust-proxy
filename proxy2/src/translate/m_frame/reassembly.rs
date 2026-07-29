@@ -1673,6 +1673,53 @@ pub(super) fn completed_server_stream_window(
     }
 }
 
+/// Prove that one exact reliable source is a non-leading member of a completed
+/// multi-frame deflated window.
+///
+/// A leading member can rebuild the complete source window and use its cached
+/// disposition. A later member cannot be routed as a standalone deflated
+/// message after the persistent inflater has advanced. The reliable receive
+/// paths in Diamond (`sub_5F3940`, lines 751482-751549) and EE
+/// (`CNetLayerWindow::FrameReceive`, lines 878891-878952) ignore an occupied
+/// duplicate member; this exact identity check lets proxy2 do the same after
+/// HG receive ownership has moved to downstream output retention.
+pub(super) fn completed_server_stream_noninitial_member(
+    state: &SessionState,
+    sequence: u16,
+    server_origin_generation: u64,
+    packet: &[u8],
+) -> Option<(u16, usize, usize)> {
+    let view = MFrameView::parse(packet)?;
+    let transport_identity =
+        transport_identity::server_reliable_data_transport_identity(packet, &view)?;
+
+    state
+        .deflate
+        .completed_server_stream_windows
+        .iter()
+        .find_map(|window| {
+            if window.expected_frames <= 1 {
+                return None;
+            }
+            let member_index = sequence.wrapping_sub(window.first_sequence) as usize;
+            if member_index == 0 || member_index >= window.expected_frames {
+                return None;
+            }
+            let wrapped = usize::from(window.first_sequence)
+                .checked_add(member_index)?
+                .checked_div(usize::from(u16::MAX) + 1)?;
+            let expected_generation = window
+                .server_origin_generation
+                .checked_add(u64::try_from(wrapped).ok()?)?;
+            if server_origin_generation != expected_generation
+                || window.frame_transport_identities.get(member_index)? != &transport_identity
+            {
+                return None;
+            }
+            Some((window.first_sequence, member_index, window.expected_frames))
+        })
+}
+
 pub(super) fn completed_server_reliable_stream_slot(
     state: &SessionState,
     sequence: u16,
