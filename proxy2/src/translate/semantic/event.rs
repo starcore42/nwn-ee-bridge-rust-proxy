@@ -35,6 +35,7 @@ pub(crate) enum ProtocolEvent {
     ModuleInfo(ModuleInfoEvent),
     ServerStatus(ServerStatusEvent),
     Area(AreaEvent),
+    ObjectControl(ObjectControlEvent),
     LiveObject(LiveObjectEvent),
     PlayerList(PlayerListEvent),
     Quickbar(QuickbarEvent),
@@ -60,6 +61,7 @@ impl ProtocolEvent {
             ProtocolEvent::Area(AreaEvent::ClientArea { observed, .. })
             | ProtocolEvent::Area(AreaEvent::AreaLoaded { observed })
             | ProtocolEvent::Area(AreaEvent::LoadBar { observed }) => observed,
+            ProtocolEvent::ObjectControl(event) => &event.observed,
             ProtocolEvent::LiveObject(event) => &event.observed,
             ProtocolEvent::PlayerList(event) => &event.observed,
             ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed, .. })
@@ -103,10 +105,18 @@ pub(crate) enum AreaEvent {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ObjectControlEvent {
+    pub(crate) observed: ObservedHighLevel,
+    pub(crate) player_id: u32,
+    pub(crate) object_id: u32,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct LiveObjectEvent {
     pub(crate) observed: ObservedHighLevel,
     pub(crate) mentions: Vec<LiveObjectMention>,
     pub(crate) inventory_records: u32,
+    pub(crate) inventory_owner_claims: Vec<LiveObjectInventoryOwner>,
     pub(crate) live_gui_records: u32,
     pub(crate) live_gui_fragment_bits: u32,
     pub(crate) materialized_item_object_ids: Vec<u32>,
@@ -114,6 +124,12 @@ pub(crate) struct LiveObjectEvent {
     pub(crate) quickbar_item_use_count_records: u32,
     pub(crate) quickbar_item_use_count_rows: u32,
     pub(crate) quickbar_item_use_count_updates: Vec<LiveObjectQuickbarItemUseCountUpdate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LiveObjectInventoryOwner {
+    pub(crate) owner_id: u32,
+    pub(crate) mask: u16,
 }
 
 #[derive(Debug, Clone)]

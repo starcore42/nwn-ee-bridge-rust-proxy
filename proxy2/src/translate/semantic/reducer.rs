@@ -9,8 +9,8 @@ use crate::{
     packet::{Direction, m::HighLevel},
     translate::{
         VerifiedFamily, VerifiedProof, area, client_gui_event, client_gui_inventory, client_input,
-        client_inventory, client_quickbar, gameplay_stream, inventory, item_update_active_props,
-        live_object_update, player_list, quickbar,
+        client_inventory, client_quickbar, game_obj_update, gameplay_stream, inventory,
+        item_update_active_props, live_object_update, player_list, quickbar,
     },
 };
 
@@ -27,11 +27,12 @@ use super::state::{
 use super::{
     ActiveItemPropertiesEvent, AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent,
     ClientInventoryEvent, ClientQuickbarEvent, InventoryEvent, InventoryItemContextSummary,
-    LiveObjectEvent, LiveObjectInventoryFeature25Reference, LiveObjectMention,
-    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectOrientationVector,
-    LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
-    PlayerListEvent, ProtocolEvent, QuickbarEvent, QuickbarItemContextSource,
-    QuickbarItemRefreshOutcome, SemanticSessionState, ServerStatusEvent,
+    LiveObjectEvent, LiveObjectInventoryFeature25Reference, LiveObjectInventoryOwner,
+    LiveObjectMention, LiveObjectOrientation, LiveObjectOrientationSource,
+    LiveObjectOrientationVector, LiveObjectPlaceableState, LiveObjectPosition, LoginEvent,
+    ModuleInfoEvent, ObjectControlEvent, ObservedHighLevel, PlayerListEvent, ProtocolEvent,
+    QuickbarEvent, QuickbarItemContextSource, QuickbarItemRefreshOutcome, SemanticSessionState,
+    ServerStatusEvent,
 };
 
 #[cfg(test)]
@@ -43,13 +44,22 @@ use super::state::QuickbarStreamProbeSummary;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct VerifiedPayloadSemanticObservations {
-    pub(crate) live_object_inventory_materialization:
-        Option<LiveObjectInventoryMaterializationSummary>,
+    pub(crate) live_object_inventory_materializations:
+        Vec<LiveObjectInventoryMaterializationObservation>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LiveObjectInventoryMaterializationObservation {
+    pub(crate) summary: LiveObjectInventoryMaterializationSummary,
+    /// ObjControl authority at this exact wire-ordered LiveObject unit. This
+    /// must travel with the summary because a later unit in the same gameplay
+    /// stream may change control before frame-level bridge effects run.
+    pub(crate) current_controlled_object_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FamilyPayloadSemanticObservations {
-    live_object_inventory_materialization: Option<LiveObjectInventoryMaterializationSummary>,
+    live_object_inventory_materialization: Option<LiveObjectInventoryMaterializationObservation>,
     quickbar_materialized_item_objects: bool,
 }
 
@@ -149,8 +159,10 @@ pub(crate) fn observe_verified_payload_with_area_context_report_and_committed_qu
                 family_observations.quickbar_materialized_item_objects,
             );
             VerifiedPayloadSemanticObservations {
-                live_object_inventory_materialization: family_observations
-                    .live_object_inventory_materialization,
+                live_object_inventory_materializations: family_observations
+                    .live_object_inventory_materialization
+                    .into_iter()
+                    .collect(),
             }
         }
         VerifiedProof::GameplayStream(families) => observe_gameplay_stream_payload(
@@ -253,9 +265,10 @@ fn observe_gameplay_stream_payload(
                 family_quickbar_probe,
                 family_observations.quickbar_materialized_item_objects,
             );
-            if observations.live_object_inventory_materialization.is_none() {
-                observations.live_object_inventory_materialization =
-                    family_observations.live_object_inventory_materialization;
+            if let Some(observation) = family_observations.live_object_inventory_materialization {
+                observations
+                    .live_object_inventory_materializations
+                    .push(observation);
             }
         }
     }
@@ -325,6 +338,24 @@ fn observe_family_payload(
         }),
         VerifiedFamily::ClientArea => ProtocolEvent::Area(AreaEvent::AreaLoaded { observed }),
         VerifiedFamily::LoadBar => ProtocolEvent::Area(AreaEvent::LoadBar { observed }),
+        VerifiedFamily::GameObjUpdateObjectControl => {
+            match game_obj_update::claim_payload_if_verified(payload)
+                .and_then(|claim| claim.object_control)
+            {
+                Some(control) => ProtocolEvent::ObjectControl(ObjectControlEvent {
+                    observed,
+                    player_id: control.player_id,
+                    object_id: control.object_id,
+                }),
+                None => {
+                    tracing::warn!(
+                        payload_len = payload.len(),
+                        "verified GameObjUpdate_ObjControl payload did not expose exact player/object ids"
+                    );
+                    ProtocolEvent::Other(observed)
+                }
+            }
+        }
         VerifiedFamily::GameObjUpdateLiveObject => {
             // Populate object lifecycle facts only from the exact
             // `GameObjUpdate_LiveObject` parser. This preserves the strict
@@ -335,6 +366,7 @@ fn observe_family_payload(
                 observed,
                 mentions: live_object.mentions,
                 inventory_records: live_object.inventory_records,
+                inventory_owner_claims: live_object.inventory_owner_claims,
                 live_gui_records: live_object.live_gui_records,
                 live_gui_fragment_bits: live_object.live_gui_fragment_bits,
                 materialized_item_object_ids: live_object.materialized_item_object_ids,
@@ -429,8 +461,15 @@ fn observe_family_payload(
         | VerifiedFamily::SemanticDeflated => ProtocolEvent::Other(observed),
         _ => ProtocolEvent::Other(observed),
     };
+    let live_object_inventory_materialization =
+        apply_event(state, event, area_context).map(|summary| {
+            LiveObjectInventoryMaterializationObservation {
+                summary,
+                current_controlled_object_id: state.player_control.current_controlled_object_id,
+            }
+        });
     FamilyPayloadSemanticObservations {
-        live_object_inventory_materialization: apply_event(state, event, area_context),
+        live_object_inventory_materialization,
         quickbar_materialized_item_objects,
     }
 }
@@ -488,6 +527,25 @@ fn apply_event(
         ProtocolEvent::Area(AreaEvent::LoadBar { .. }) => {
             state.area.loadbar_packets = state.area.loadbar_packets.saturating_add(1);
         }
+        ProtocolEvent::ObjectControl(event) => {
+            // EE's ObjControl writer and Diamond's reader own a DWORD player
+            // id followed by the controlled OBJECTID. The packet has no
+            // semantic fragment fields beyond the shared three-bit CNW cursor,
+            // so these values are exact authority rather than a byte scan.
+            state
+                .player_control
+                .observe_object_control(event.player_id, event.object_id);
+            tracing::debug!(
+                player_id = event.player_id,
+                object_id = format_args!("0x{:08X}", event.object_id),
+                current_controlled_object_id = state
+                    .player_control
+                    .current_controlled_object_id
+                    .map(|object_id| format!("0x{object_id:08X}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                "semantic state observed exact GameObjUpdate_ObjControl authority"
+            );
+        }
         ProtocolEvent::LiveObject(event) => {
             state.objects.observe_mentions(&event.mentions);
             if let Some(area_context) = area_context {
@@ -511,6 +569,7 @@ fn apply_event(
                 .saturating_add(1);
             let summary = LiveObjectInventoryMaterializationSummary {
                 inventory_records: event.inventory_records,
+                inventory_owner_claims: event.inventory_owner_claims.clone(),
                 live_gui_records: event.live_gui_records,
                 live_gui_fragment_bits: event.live_gui_fragment_bits,
                 materialized_item_object_ids: event.materialized_item_object_ids.clone(),
@@ -2320,6 +2379,7 @@ fn record_quickbar_item_refresh_event_breakdown(
         }
         ProtocolEvent::ModuleInfo(_)
         | ProtocolEvent::ServerStatus(_)
+        | ProtocolEvent::ObjectControl(_)
         | ProtocolEvent::PlayerList(_)
         | ProtocolEvent::Login(_)
         | ProtocolEvent::Other(_) => {
@@ -2571,6 +2631,7 @@ fn quickbar_item_refresh_event_kind(event: &ProtocolEvent) -> QuickbarItemRefres
         ProtocolEvent::Chat(_) => QuickbarItemRefreshEventKind::Chat,
         ProtocolEvent::ModuleInfo(_)
         | ProtocolEvent::ServerStatus(_)
+        | ProtocolEvent::ObjectControl(_)
         | ProtocolEvent::PlayerList(_)
         | ProtocolEvent::Login(_)
         | ProtocolEvent::Other(_) => QuickbarItemRefreshEventKind::Other,
@@ -2602,6 +2663,7 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 struct LiveObjectObservationFacts {
     mentions: Vec<LiveObjectMention>,
     inventory_records: u32,
+    inventory_owner_claims: Vec<LiveObjectInventoryOwner>,
     live_gui_records: u32,
     live_gui_fragment_bits: u32,
     materialized_item_object_ids: Vec<u32>,
@@ -2616,6 +2678,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
         return LiveObjectObservationFacts {
             mentions: Vec::new(),
             inventory_records: 0,
+            inventory_owner_claims: Vec::new(),
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
@@ -2635,11 +2698,16 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
     let quickbar_item_use_count_rows = claim.quickbar_item_use_count_rows;
     let quickbar_item_use_count_updates = claim.quickbar_item_use_count_updates;
     let mut inventory_feature25_references = Vec::new();
+    let mut inventory_owner_claims = Vec::new();
     let mentions = claim
         .mentions
         .into_iter()
         .map(|mention| {
             if let Some(inventory) = mention.inventory_owner.as_ref() {
+                inventory_owner_claims.push(LiveObjectInventoryOwner {
+                    owner_id: inventory.owner_id,
+                    mask: inventory.mask,
+                });
                 if let Some(feature25) = inventory.feature25.as_ref() {
                     inventory_feature25_references.push(LiveObjectInventoryFeature25Reference {
                         owner_id: inventory.owner_id,
@@ -2708,6 +2776,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
     LiveObjectObservationFacts {
         mentions,
         inventory_records,
+        inventory_owner_claims,
         live_gui_records,
         live_gui_fragment_bits,
         materialized_item_object_ids,
@@ -2836,6 +2905,130 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn obj_control_event_tracks_and_clears_exact_controlled_object_authority() {
+        const PLAYER_ID: u32 = 0x0102_0304;
+        const CREATURE_ID: u32 = 0xFFFF_FFEF;
+        let mut payload = [
+            0x50, 0x05, 0x02, 0x0F, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x73,
+        ];
+        payload[7..11].copy_from_slice(&PLAYER_ID.to_le_bytes());
+        payload[11..15].copy_from_slice(&CREATURE_ID.to_le_bytes());
+
+        let mut state = SemanticSessionState::default();
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateObjectControl),
+            &payload,
+        );
+
+        assert_eq!(state.player_control.object_control_packets, 1);
+        assert_eq!(state.player_control.current_player_id, Some(PLAYER_ID));
+        assert_eq!(
+            state.player_control.current_controlled_object_id,
+            Some(CREATURE_ID)
+        );
+
+        payload[11..15]
+            .copy_from_slice(&client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID.to_le_bytes());
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateObjectControl),
+            &payload,
+        );
+
+        assert_eq!(state.player_control.object_control_packets, 2);
+        assert_eq!(state.player_control.current_player_id, Some(PLAYER_ID));
+        assert_eq!(state.player_control.current_controlled_object_id, None);
+    }
+
+    #[test]
+    fn live_object_observations_bind_wire_ordered_control_authority() {
+        const CREATURE_A: u32 = 0xFFFF_FFEF;
+        const CREATURE_B: u32 = 0xFFFF_FFEE;
+
+        let inventory_payload = |owner_id: u32| {
+            let mut live = vec![b'I'];
+            live.extend_from_slice(&owner_id.to_le_bytes());
+            live.extend_from_slice(&0x2000u16.to_le_bytes());
+            live.extend_from_slice(&1u32.to_le_bytes());
+            live.extend_from_slice(&0x8000_0100u32.to_le_bytes());
+            live.extend_from_slice(&1u32.to_le_bytes());
+            live.extend_from_slice(&0x8000_0101u32.to_le_bytes());
+            live_object_payload_with_bits(&live, &[false, true, false])
+        };
+        let obj_control_payload = |object_id: u32| {
+            let mut payload = vec![
+                0x50, 0x05, 0x02, 0x0F, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x73,
+            ];
+            payload[11..15].copy_from_slice(&object_id.to_le_bytes());
+            payload
+        };
+
+        let mut state = SemanticSessionState::default();
+        state.player_control.observe_object_control(0, CREATURE_A);
+        let live_observations = observe_family_payload(
+            &mut state,
+            Direction::ServerToClient,
+            VerifiedFamily::GameObjUpdateLiveObject,
+            &inventory_payload(CREATURE_A),
+            None,
+            false,
+        );
+        let observation = live_observations
+            .live_object_inventory_materialization
+            .expect("exact live-object inventory should retain its authority snapshot");
+        let _ = observe_family_payload(
+            &mut state,
+            Direction::ServerToClient,
+            VerifiedFamily::GameObjUpdateObjectControl,
+            &obj_control_payload(CREATURE_B),
+            None,
+            false,
+        );
+        assert_eq!(
+            observation.current_controlled_object_id,
+            Some(CREATURE_A),
+            "a later ObjControl observation must not flow backward into an earlier inventory row"
+        );
+        assert_eq!(
+            state.player_control.current_controlled_object_id,
+            Some(CREATURE_B)
+        );
+
+        let mut state = SemanticSessionState::default();
+        state.player_control.observe_object_control(0, CREATURE_A);
+        let mut control_then_inventory = obj_control_payload(CREATURE_B);
+        control_then_inventory.extend_from_slice(&inventory_payload(CREATURE_B));
+        let observations =
+            observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
+                &mut state,
+                Direction::ServerToClient,
+                &VerifiedProof::GameplayStream(vec![
+                    VerifiedFamily::GameObjUpdateObjectControl,
+                    VerifiedFamily::GameObjUpdateLiveObject,
+                ]),
+                &control_then_inventory,
+                None,
+                &[],
+            );
+        assert_eq!(
+            observations.live_object_inventory_materializations[0].current_controlled_object_id,
+            Some(CREATURE_B),
+            "a preceding ObjControl unit must govern the following inventory row"
+        );
+
+        assert_eq!(
+            observations.live_object_inventory_materializations[0]
+                .summary
+                .inventory_owner_claims[0]
+                .owner_id,
+            CREATURE_B
+        );
+    }
+
+    #[test]
     fn live_object_feature25_references_remain_unproven_visibility_state() {
         let owner_id = 0x8000_0010u32;
         let first_item_id = 0x8000_0100u32;
@@ -2897,6 +3090,18 @@ mod fixture_free_tests {
         assert_eq!(summary.compact_item_emission_proof_objects, 0);
         assert_eq!(summary.compact_item_emission_candidate, None);
         assert_eq!(summary.compact_item_emission_ready_candidate, None);
+        assert_eq!(
+            state
+                .ui
+                .last_live_object_inventory_materialization
+                .as_ref()
+                .expect("exact inventory record should produce a typed summary")
+                .inventory_owner_claims,
+            vec![LiveObjectInventoryOwner {
+                owner_id,
+                mask: 0x2000,
+            }]
+        );
         assert!(
             !summary.has_quickbar_item_context_evidence(),
             "visibility-only refs must remain outside quickbar item evidence"
@@ -6020,6 +6225,7 @@ mod fixture_free_tests {
             ),
             mentions: Vec::new(),
             inventory_records: 0,
+            inventory_owner_claims: Vec::new(),
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
@@ -6093,6 +6299,7 @@ mod fixture_free_tests {
                 placeable_state: None,
             }],
             inventory_records: 0,
+            inventory_owner_claims: Vec::new(),
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),

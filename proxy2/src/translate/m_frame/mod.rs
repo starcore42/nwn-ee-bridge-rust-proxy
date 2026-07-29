@@ -84,8 +84,8 @@ pub(super) struct ServerSemanticFrameContext {
     pub(super) sequence: u16,
     pub(super) server_peer_ack_sequence: u16,
     pub(super) client_unshifted_ack_sequence: u16,
-    pub(super) live_object_inventory_materialization:
-        Option<semantic::LiveObjectInventoryMaterializationSummary>,
+    pub(super) live_object_inventory_materializations:
+        Vec<semantic::LiveObjectInventoryMaterializationObservation>,
 }
 
 pub use state::SessionState;
@@ -3113,7 +3113,7 @@ fn observe_verified_server_m_packet(
     let Some(payload) = parse_window::primary_payload(packet, &view) else {
         return;
     };
-    let live_object_inventory_materialization =
+    let live_object_inventory_materializations =
         observe_verified_server_payload_semantics_with_committed_quickbar_probes(
             state,
             proof,
@@ -3127,7 +3127,7 @@ fn observe_verified_server_m_packet(
             sequence: view.sequence,
             server_peer_ack_sequence,
             client_unshifted_ack_sequence: view.ack_sequence,
-            live_object_inventory_materialization,
+            live_object_inventory_materializations,
         },
     );
 }
@@ -3136,7 +3136,7 @@ pub(super) fn observe_verified_server_payload_semantics(
     state: &mut SessionState,
     proof: &VerifiedProof,
     payload: &[u8],
-) -> Option<semantic::LiveObjectInventoryMaterializationSummary> {
+) -> Vec<semantic::LiveObjectInventoryMaterializationObservation> {
     observe_verified_server_payload_semantics_with_committed_quickbar_probes(
         state,
         proof,
@@ -3150,7 +3150,7 @@ pub(super) fn observe_verified_server_payload_semantics_with_committed_quickbar_
     proof: &VerifiedProof,
     payload: &[u8],
     committed_quickbar_probes: &[semantic::CommittedQuickbarUnitProbe],
-) -> Option<semantic::LiveObjectInventoryMaterializationSummary> {
+) -> Vec<semantic::LiveObjectInventoryMaterializationObservation> {
     crate::translate::semantic::observe_verified_payload_with_area_context_report_and_committed_quickbar_probes(
         &mut state.semantic,
         crate::packet::Direction::ServerToClient,
@@ -3159,7 +3159,7 @@ pub(super) fn observe_verified_server_payload_semantics_with_committed_quickbar_
         Some(&state.area_context.latest_area_placeables),
         committed_quickbar_probes,
     )
-    .live_object_inventory_materialization
+    .live_object_inventory_materializations
 }
 
 pub(super) fn apply_verified_server_semantic_side_effects(
@@ -3167,14 +3167,17 @@ pub(super) fn apply_verified_server_semantic_side_effects(
     proof: &VerifiedProof,
     frame: ServerSemanticFrameContext,
 ) {
-    inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
-        state,
-        proof,
-        frame.sequence,
-        frame.server_peer_ack_sequence,
-        frame.client_unshifted_ack_sequence,
-        frame.live_object_inventory_materialization.as_ref(),
-    );
+    for observation in &frame.live_object_inventory_materializations {
+        inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
+            state,
+            proof,
+            frame.sequence,
+            frame.server_peer_ack_sequence,
+            frame.client_unshifted_ack_sequence,
+            Some(&observation.summary),
+            observation.current_controlled_object_id,
+        );
+    }
     if let Err(err) = inventory_equipment::maybe_queue_confirmed_inventory_replay(
         state,
         frame.sequence,
@@ -3666,7 +3669,10 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         .unwrap_or(false);
     let last_decision_client_gui_claim_rewritten_self_object_id =
         last_decision_client_gui_claim.is_some_and(|claim| claim.rewritten_self_object_id);
-    let client_gui_writer_plan = client_gui_writer_plan_for_decision(last_decision);
+    let client_gui_writer_plan = client_gui_writer_plan_for_decision(
+        last_decision,
+        bridge.last_queued_client_gui_status_output,
+    );
     let output_status = bridge.output_status();
     let requires_client_gui_writer = bridge.requires_client_gui_writer();
     let fields = format!(
@@ -3768,6 +3774,9 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_event_index\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_object_id\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_resolved_current_player_object_id_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_resolved_current_player_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_resolved_current_player_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_player_inventory_gui\": {},\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_payload_hex\": \"{}\",\n",
             "  \"inventory_equipment_bridge_output_last_queued_client_gui_status_trigger_client_sequence\": {},\n",
@@ -3791,6 +3800,11 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_server_peer_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_inventory_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_inventory_owner_claims\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_current_player_inventory_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_first_current_player_inventory_mask_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_first_current_player_inventory_mask\": {},\n",
+            "  \"inventory_equipment_bridge_output_last_client_gui_status_response_first_current_player_inventory_mask_hex\": \"0x{:04X}\",\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": {},\n",
             "  \"inventory_equipment_bridge_output_last_client_gui_status_response_materialized_item_object_ids\": {},\n",
@@ -3816,6 +3830,11 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_server_peer_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_inventory_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_inventory_owner_claims\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_current_player_inventory_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_first_current_player_inventory_mask_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_first_current_player_inventory_mask\": {},\n",
+            "  \"inventory_equipment_bridge_output_best_client_gui_status_response_first_current_player_inventory_mask_hex\": \"0x{:04X}\",\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_fragment_bits\": {},\n",
             "  \"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_ids\": {},\n",
@@ -3971,6 +3990,15 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         last_client_gui_status.event_index,
         last_client_gui_status.object_id,
         last_client_gui_status.object_id,
+        last_client_gui_status
+            .resolved_current_player_object_id
+            .is_some(),
+        last_client_gui_status
+            .resolved_current_player_object_id
+            .unwrap_or(0),
+        last_client_gui_status
+            .resolved_current_player_object_id
+            .unwrap_or(0),
         last_client_gui_status.player_inventory_gui,
         last_client_gui_status_payload_hex,
         last_client_gui_status.trigger_client_sequence,
@@ -3994,6 +4022,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         last_client_gui_status_response.server_peer_ack_sequence,
         last_client_gui_status_response.ack_sequence,
         last_client_gui_status_response.inventory_records,
+        last_client_gui_status_response.inventory_owner_claims,
+        last_client_gui_status_response.current_player_inventory_records,
+        last_client_gui_status_response
+            .first_current_player_inventory_mask
+            .is_some(),
+        last_client_gui_status_response
+            .first_current_player_inventory_mask
+            .unwrap_or(0),
+        last_client_gui_status_response
+            .first_current_player_inventory_mask
+            .unwrap_or(0),
         last_client_gui_status_response.live_gui_records,
         last_client_gui_status_response.live_gui_fragment_bits,
         last_client_gui_status_response.materialized_item_object_ids,
@@ -4019,6 +4058,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         best_client_gui_status_response.server_peer_ack_sequence,
         best_client_gui_status_response.ack_sequence,
         best_client_gui_status_response.inventory_records,
+        best_client_gui_status_response.inventory_owner_claims,
+        best_client_gui_status_response.current_player_inventory_records,
+        best_client_gui_status_response
+            .first_current_player_inventory_mask
+            .is_some(),
+        best_client_gui_status_response
+            .first_current_player_inventory_mask
+            .unwrap_or(0),
+        best_client_gui_status_response
+            .first_current_player_inventory_mask
+            .unwrap_or(0),
         best_client_gui_status_response.live_gui_records,
         best_client_gui_status_response.live_gui_fragment_bits,
         best_client_gui_status_response.materialized_item_object_ids,
@@ -4102,6 +4152,7 @@ impl Default for ClientGuiWriterPlan {
 
 fn client_gui_writer_plan_for_decision(
     decision: Option<state::InventoryEquipmentBridgeOutputDecision>,
+    queued_status: Option<state::InventoryEquipmentBridgeQueuedClientGuiStatusOutput>,
 ) -> ClientGuiWriterPlan {
     let claim = decision.and_then(|decision| decision.client_gui_inventory_claim);
     let Some(claim) = claim else {
@@ -4123,8 +4174,15 @@ fn client_gui_writer_plan_for_decision(
             let player_inventory_gui = claim.player_inventory_gui.unwrap_or(true);
             let payload =
                 client_gui_inventory::build_status_payload(object_id, player_inventory_gui);
-            let status_object_is_current_player =
-                object_id == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID;
+            let status_object_is_current_player = object_id
+                == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID
+                || decision
+                    .zip(queued_status)
+                    .is_some_and(|(decision, queued)| {
+                        queued.update_index == decision.update_index
+                            && queued.object_id == object_id
+                            && queued.resolved_current_player_object_id == Some(object_id)
+                    });
             let emission_enabled = status_object_is_current_player
                 && decision_kind
                     == state::InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput;
@@ -12530,6 +12588,9 @@ mod tests {
             server_peer_ack_sequence: 80,
             ack_sequence: 80,
             inventory_records: 0,
+            inventory_owner_claims: 0,
+            current_player_inventory_records: 0,
+            first_current_player_inventory_mask: None,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: 0,
@@ -12547,6 +12608,9 @@ mod tests {
             server_peer_ack_sequence: 81,
             ack_sequence: 81,
             inventory_records: 0,
+            inventory_owner_claims: 0,
+            current_player_inventory_records: 0,
+            first_current_player_inventory_mask: None,
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: 0,
@@ -12598,6 +12662,7 @@ mod tests {
                     ready_objects: 65,
                     deferred_feature25_only_objects: 0,
                     object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                    resolved_current_player_object_id: None,
                     player_inventory_gui: true,
                     trigger_client_sequence: 83,
                     synthetic_sequence: 99,
@@ -12644,6 +12709,7 @@ mod tests {
                 ready_objects: 51,
                 deferred_feature25_only_objects: 0,
                 object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                resolved_current_player_object_id: Some(0xFFFF_FFEF),
                 player_inventory_gui: true,
                 trigger_client_sequence: 80,
                 synthetic_sequence: 81,
@@ -12664,7 +12730,10 @@ mod tests {
                 server_sequence: 48,
                 server_peer_ack_sequence: 82,
                 ack_sequence: 82,
-                inventory_records: 0,
+                inventory_records: 1,
+                inventory_owner_claims: 1,
+                current_player_inventory_records: 1,
+                first_current_player_inventory_mask: Some(0x2000),
                 live_gui_records: 51,
                 live_gui_fragment_bits: 348,
                 materialized_item_object_ids: 51,
@@ -12762,6 +12831,9 @@ mod tests {
             "\"inventory_equipment_bridge_output_last_queued_client_gui_status_object_id_hex\": \"0x7F000000\""
         ));
         assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_queued_client_gui_status_resolved_current_player_object_id_hex\": \"0xFFFFFFEF\""
+        ));
+        assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_queued_client_gui_status_payload_hex\": \"700D010B0000000000007F90\""
         ));
         assert!(body.contains(
@@ -12798,6 +12870,15 @@ mod tests {
             "\"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": 51"
         ));
         assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_inventory_owner_claims\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_current_player_inventory_records\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_last_client_gui_status_response_first_current_player_inventory_mask_hex\": \"0x2000\""
+        ));
+        assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_fragment_bits\": 348"
         ));
         assert!(body.contains(
@@ -12822,6 +12903,9 @@ mod tests {
             "\"inventory_equipment_bridge_output_best_client_gui_status_response_live_gui_records\": 51"
         ));
         assert!(body.contains(
+            "\"inventory_equipment_bridge_output_best_client_gui_status_response_current_player_inventory_records\": 1"
+        ));
+        assert!(body.contains(
             "\"inventory_equipment_bridge_output_best_client_gui_status_response_materialized_item_object_id_first_hex\": \"0x80001200\""
         ));
         assert!(body.contains(
@@ -12842,6 +12926,24 @@ mod tests {
         assert!(body.contains(
             "\"inventory_equipment_bridge_output_best_client_gui_status_response_candidate_delta_from_queued_status_candidate\": 0"
         ));
+
+        let mut concrete_decision = bridge.last_decision.expect("seeded decision");
+        concrete_decision
+            .client_gui_inventory_claim
+            .as_mut()
+            .expect("seeded client GUI claim")
+            .object_id = Some(0xFFFF_FFEF);
+        let mut concrete_queued = bridge
+            .last_queued_client_gui_status_output
+            .expect("seeded queued Status");
+        concrete_queued.object_id = 0xFFFF_FFEF;
+        concrete_queued.resolved_current_player_object_id = Some(0xFFFF_FFEF);
+        let plan =
+            client_gui_writer_plan_for_decision(Some(concrete_decision), Some(concrete_queued));
+        assert!(plan.status_object_is_current_player);
+        assert!(plan.emission_enabled);
+        assert_eq!(plan.action, "status_current_player_inventory");
+        assert_eq!(plan.blocked_reason, "none");
     }
 
     #[test]
@@ -14999,7 +15101,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         &reassembly,
         &verified_proof,
     );
-    let live_object_inventory_materialization =
+    let live_object_inventory_materializations =
         observe_verified_server_payload_semantics_with_committed_quickbar_probes(
             state,
             &verified_proof,
@@ -15016,14 +15118,17 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         .last()
         .map(|frame| frame.server_peer_ack_sequence)
         .unwrap_or(response_ack_sequence);
-    inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
-        state,
-        &verified_proof,
-        reassembly.first_sequence,
-        response_server_peer_ack_sequence,
-        response_ack_sequence,
-        live_object_inventory_materialization.as_ref(),
-    );
+    for observation in &live_object_inventory_materializations {
+        inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
+            state,
+            &verified_proof,
+            reassembly.first_sequence,
+            response_server_peer_ack_sequence,
+            response_ack_sequence,
+            Some(&observation.summary),
+            observation.current_controlled_object_id,
+        );
+    }
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
         if let (Some(first_frame), Some(last_frame)) =
             (reassembly.frames.first(), reassembly.frames.last())

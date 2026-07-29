@@ -2,11 +2,16 @@
 //!
 //! Decompile anchors:
 //!
-//! - EE `CNWSMessage::SendPlayerToServerGuiInventory_Status` writes one
+//! - EE `CNWSMessage::SendPlayerToServerGuiInventory_Status`
+//!   (`nwn ee decompile.txt:1830046..1830108`, `0x1404CCD90`) writes one
 //!   `BOOL` and then `WriteOBJECTIDServer`.
 //! - EE `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` reads minor
 //!   `0x01` as the same `BOOL + OBJECTIDServer` shape and treats either the
 //!   current creature id or `0x7F000000` as the self-inventory owner.
+//! - Diamond's server handler (`nwserver diamond decompile.txt:408937..409000`,
+//!   `0x53CD20..0x53CDD4`) likewise reads `BOOL` then `OBJECTIDServer`, checks
+//!   overflow and underflow, and takes its self-inventory path when the owner
+//!   equals either `CNWSPlayer::GetGameObject()->id` or `0x7F000000`.
 //! - EE `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` reads minor
 //!   `0x02` as `ReadBYTE(8, 1)` followed by one `ReadBOOL`, checks both
 //!   overflow and underflow, then calls `CNWSPlayerInventoryGUI::SetPanel`
@@ -17,11 +22,12 @@
 //!   `0x7F000000` before the 1.69 server returns the GUI inventory stream.
 //!
 //! The BOOL lives in the single CNW fragment byte after the declared read
-//! buffer. EE `CNWMessage::GetWriteMessage` stores the final fragment cursor in
-//! the high three bits and may preserve low residual bits below that cursor, so
+//! buffer even though both engine call orders process it before the OBJECTID.
+//! EE `CNWMessage::GetWriteMessage` stores the final fragment cursor in the
+//! high three bits and may preserve low residual bits below that cursor, so
 //! this translator validates the exact cursor plus owned data bit rather than
-//! treating the entire trailing byte as meaningful. It rewrites only the EE self
-//! sentinel for `Status`, and otherwise leaves validated bytes untouched.
+//! treating the entire trailing byte as meaningful. It rewrites only the EE
+//! self sentinel for `Status`, and otherwise leaves validated bytes untouched.
 //! `SelectPanel` is an identity translation, but still must be claimed here
 //! before the router may emit it.
 

@@ -1273,7 +1273,7 @@ fn rewrite_coalesced_record_for_ee_with_payload_limit(
             transport.sequence,
             transport.client_unshifted_ack_sequence,
         )?;
-        let live_object_inventory_materialization =
+        let live_object_inventory_materializations =
             super::observe_verified_server_payload_semantics_with_committed_quickbar_probes(
                 state,
                 &verified_proof,
@@ -1287,7 +1287,7 @@ fn rewrite_coalesced_record_for_ee_with_payload_limit(
                 sequence: transport.sequence,
                 server_peer_ack_sequence: transport.server_peer_ack_sequence,
                 client_unshifted_ack_sequence: transport.client_unshifted_ack_sequence,
-                live_object_inventory_materialization,
+                live_object_inventory_materializations,
             },
         );
         queue_module_resources_after_coalesced_module_info_if_ready(
@@ -1582,7 +1582,7 @@ fn rewrite_coalesced_record_for_ee_with_payload_limit(
             summary,
         )?;
     }
-    let live_object_inventory_materialization =
+    let live_object_inventory_materializations =
         super::observe_verified_server_payload_semantics_with_committed_quickbar_probes(
             state,
             &verified_proof,
@@ -1596,7 +1596,7 @@ fn rewrite_coalesced_record_for_ee_with_payload_limit(
             sequence: transport.sequence,
             server_peer_ack_sequence: transport.server_peer_ack_sequence,
             client_unshifted_ack_sequence: transport.client_unshifted_ack_sequence,
-            live_object_inventory_materialization,
+            live_object_inventory_materializations,
         },
     );
     queue_module_resources_after_coalesced_module_info_if_ready(

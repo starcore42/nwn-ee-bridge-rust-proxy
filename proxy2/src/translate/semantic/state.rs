@@ -35,9 +35,9 @@ use crate::translate::{
 };
 
 use super::event::{
-    LiveObjectBounds, LiveObjectInventoryFeature25Reference, LiveObjectMention,
-    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectPlaceableAppearance,
-    LiveObjectPlaceableState, LiveObjectPosition, ProtocolEvent,
+    LiveObjectBounds, LiveObjectInventoryFeature25Reference, LiveObjectInventoryOwner,
+    LiveObjectMention, LiveObjectOrientation, LiveObjectOrientationSource,
+    LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition, ProtocolEvent,
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
@@ -52,6 +52,7 @@ pub(crate) struct SemanticSessionState {
     pub(crate) resources: ResourceState,
     pub(crate) module: ModuleState,
     pub(crate) area: AreaState,
+    pub(crate) player_control: PlayerControlState,
     pub(crate) objects: ObjectRegistry,
     pub(crate) ui: UiState,
     pub(crate) synthetic: SyntheticState,
@@ -534,6 +535,26 @@ pub(crate) struct AreaState {
 }
 
 #[derive(Debug, Clone, Default)]
+pub(crate) struct PlayerControlState {
+    pub(crate) object_control_packets: u64,
+    pub(crate) current_player_id: Option<u32>,
+    pub(crate) current_controlled_object_id: Option<u32>,
+}
+
+impl PlayerControlState {
+    pub(crate) fn observe_object_control(&mut self, player_id: u32, object_id: u32) {
+        self.object_control_packets = self.object_control_packets.saturating_add(1);
+        self.current_player_id = Some(player_id);
+        // EE's sender supplies the shared invalid OBJECTID when its
+        // GetControlledObject lookup is absent; Diamond's reader preserves
+        // that value. No sentinel may become inventory ownership authority.
+        self.current_controlled_object_id = (object_id
+            != client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID)
+            .then_some(object_id);
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ClientInputState {
     pub(crate) recent_open_door_id: Option<u32>,
     pub(crate) recent_open_at: Option<Instant>,
@@ -728,6 +749,7 @@ pub(crate) struct InventoryItemContextSummary {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LiveObjectInventoryMaterializationSummary {
     pub(crate) inventory_records: u32,
+    pub(crate) inventory_owner_claims: Vec<LiveObjectInventoryOwner>,
     pub(crate) live_gui_records: u32,
     pub(crate) live_gui_fragment_bits: u32,
     pub(crate) materialized_item_object_ids: Vec<u32>,

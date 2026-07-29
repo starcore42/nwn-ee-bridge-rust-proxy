@@ -9,13 +9,14 @@
 //! - EE's message-name table identifies `0x05/0x02` as
 //!   `GameObjUpdate_ObjControl` (`nwn ee decompile.txt:1099736`).
 //! - EE sender `CNWSMessage::SendServerToPlayerGameObjUpdate_ObjControl`
-//!   (`nwn ee decompile.txt:1848042`) creates an 8-byte CNW write buffer,
-//!   writes a DWORD player id and `WriteOBJECTIDServer` object id, then sends
-//!   family `0x05`, minor `0x02`.
-//! - The observed Diamond-compatible packet is the same compact two-DWORD
-//!   read-buffer shape wrapped as `declared = 15` plus one CNW fragment byte,
-//!   so the translator is an explicit verified no-op rather than an implicit
-//!   allow.
+//!   (`nwn ee decompile.txt:1848042..1848105`, `0x1404D9B90`) creates an
+//!   8-byte CNW write buffer, writes a DWORD player id followed by
+//!   `WriteOBJECTIDServer` object id, then sends family `0x05`, minor `0x02`.
+//! - Diamond's client reader branch (`nwn diamond decompile.txt:112165..112193`,
+//!   `0x44F031..0x44F06B`) reads the same DWORD-then-OBJECTID order and checks
+//!   both overflow and underflow before dispatch. Neither endpoint owns a
+//!   semantic BOOL here: the trailing CNW byte carries only the shared
+//!   three-bit final fragment cursor (with lower residual bits preserved).
 //! - EE's message-name table identifies `0x05/0x03` as
 //!   `GameObjUpdate_VisEffect` (`nwn ee decompile.txt:1099740`).
 //! - EE sender `CNWSMessage::SendServerToPlayerGameObjUpdateVisEffect`
@@ -63,6 +64,13 @@ pub struct GameObjUpdateClaimSummary {
     pub declared: usize,
     pub read_bytes: usize,
     pub fragment_bytes: usize,
+    pub object_control: Option<GameObjUpdateObjectControlClaim>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameObjUpdateObjectControlClaim {
+    pub player_id: u32,
+    pub object_id: u32,
 }
 
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<GameObjUpdateClaimSummary> {
@@ -135,6 +143,8 @@ fn parse_game_obj_update_message(payload: &[u8], minor: u8) -> Option<GameObjUpd
 fn parse_obj_control_payload(payload: &[u8]) -> Option<GameObjUpdateMessage> {
     let declared = exact_declared(payload, OBJ_CONTROL_DECLARED_BYTES)?;
     let fragment_tail = exact_single_empty_fragment_tail(payload, declared)?;
+    // EE writes and Diamond reads this exact read-buffer order. There is no
+    // following semantic fragment BOOL to advance after the shared cursor.
     Some(GameObjUpdateMessage::ObjControl {
         player_id: read_le_u32(payload, READ_START)?,
         object_id: read_le_u32(payload, READ_START + 4)?,
@@ -234,6 +244,17 @@ impl GameObjUpdateMessage {
             declared: self.declared(),
             read_bytes: self.read_bytes(),
             fragment_bytes: SINGLE_FRAGMENT_BYTE,
+            object_control: match self {
+                Self::ObjControl {
+                    player_id,
+                    object_id,
+                    ..
+                } => Some(GameObjUpdateObjectControlClaim {
+                    player_id,
+                    object_id,
+                }),
+                Self::VisEffectSimple { .. } | Self::DestroyItem { .. } => None,
+            },
         }
     }
 
@@ -300,6 +321,31 @@ mod tests {
         assert_eq!(summary.declared, OBJ_CONTROL_DECLARED_BYTES);
         assert_eq!(summary.read_bytes, OBJ_CONTROL_READ_BYTES);
         assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+        assert_eq!(
+            summary.object_control,
+            Some(GameObjUpdateObjectControlClaim {
+                player_id: 0,
+                object_id: 0xFFFF_FFFE,
+            })
+        );
+    }
+
+    #[test]
+    fn obj_control_claim_preserves_no_control_sentinel() {
+        let mut payload = LOCAL_OBJ_CONTROL_PAYLOAD;
+        payload[READ_START..READ_START + 4].copy_from_slice(&0x0102_0304u32.to_le_bytes());
+        payload[READ_START + 4..READ_START + 8].copy_from_slice(&0x7F00_0000u32.to_le_bytes());
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("ObjControl sentinel should retain the exact typed claim");
+
+        assert_eq!(
+            summary.object_control,
+            Some(GameObjUpdateObjectControlClaim {
+                player_id: 0x0102_0304,
+                object_id: 0x7F00_0000,
+            })
+        );
     }
 
     #[test]
@@ -328,6 +374,7 @@ mod tests {
             assert_eq!(summary.declared, DESTROY_ITEM_DECLARED_BYTES);
             assert_eq!(summary.read_bytes, DESTROY_ITEM_READ_BYTES);
             assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+            assert_eq!(summary.object_control, None);
         }
     }
 

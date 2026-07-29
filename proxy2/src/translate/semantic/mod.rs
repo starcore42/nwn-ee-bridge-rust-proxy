@@ -13,14 +13,15 @@ mod state;
 pub(crate) use event::{
     ActiveItemPropertiesEvent, AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent,
     ClientInventoryEvent, ClientQuickbarEvent, InventoryEvent, LiveObjectBounds, LiveObjectEvent,
-    LiveObjectInventoryFeature25Reference, LiveObjectMention, LiveObjectOrientation,
-    LiveObjectOrientationSource, LiveObjectOrientationVector, LiveObjectPlaceableAppearance,
-    LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
-    PlayerListEvent, ProtocolEvent, QuickbarEvent, ServerStatusEvent,
+    LiveObjectInventoryFeature25Reference, LiveObjectInventoryOwner, LiveObjectMention,
+    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectOrientationVector,
+    LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition, LoginEvent,
+    ModuleInfoEvent, ObjectControlEvent, ObservedHighLevel, PlayerListEvent, ProtocolEvent,
+    QuickbarEvent, ServerStatusEvent,
 };
 pub(crate) use reducer::{
-    CommittedQuickbarUnitProbe, observe_verified_payload,
-    observe_verified_payload_with_area_context,
+    CommittedQuickbarUnitProbe, LiveObjectInventoryMaterializationObservation,
+    observe_verified_payload, observe_verified_payload_with_area_context,
     observe_verified_payload_with_area_context_report_and_committed_quickbar_probes,
 };
 pub(crate) use state::{

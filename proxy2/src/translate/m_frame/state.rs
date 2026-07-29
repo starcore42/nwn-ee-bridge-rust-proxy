@@ -375,6 +375,7 @@ pub(super) struct InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
     pub(super) ready_objects: usize,
     pub(super) deferred_feature25_only_objects: usize,
     pub(super) object_id: u32,
+    pub(super) resolved_current_player_object_id: Option<u32>,
     pub(super) player_inventory_gui: bool,
     pub(super) trigger_client_sequence: u16,
     pub(super) synthetic_sequence: u16,
@@ -398,6 +399,9 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
     pub(super) server_peer_ack_sequence: u16,
     pub(super) ack_sequence: u16,
     pub(super) inventory_records: u32,
+    pub(super) inventory_owner_claims: u32,
+    pub(super) current_player_inventory_records: u32,
+    pub(super) first_current_player_inventory_mask: Option<u16>,
     pub(super) live_gui_records: u32,
     pub(super) live_gui_fragment_bits: u32,
     pub(super) materialized_item_object_ids: usize,
@@ -413,7 +417,9 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
 
 impl InventoryEquipmentBridgeClientGuiStatusResponse {
     fn strength(self) -> u8 {
-        if self.materialized_item_object_ids != 0 {
+        if self.current_player_inventory_records != 0 {
+            5
+        } else if self.materialized_item_object_ids != 0 {
             4
         } else if self.live_gui_records != 0 {
             3
@@ -434,6 +440,8 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
         let self_evidence = (
             self.materialized_item_object_ids,
             self.materialized_item_object_ids_contain_queued_candidate,
+            self.current_player_inventory_records,
+            self.inventory_owner_claims,
             self.inventory_records,
             self.live_gui_records,
             self.live_gui_fragment_bits,
@@ -443,6 +451,8 @@ impl InventoryEquipmentBridgeClientGuiStatusResponse {
         let other_evidence = (
             other.materialized_item_object_ids,
             other.materialized_item_object_ids_contain_queued_candidate,
+            other.current_player_inventory_records,
+            other.inventory_owner_claims,
             other.inventory_records,
             other.live_gui_records,
             other.live_gui_fragment_bits,
@@ -504,6 +514,7 @@ pub(super) enum InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
     ClosedInventoryRequest,
     AwaitingMaterializedItems,
     ObservedInventoryRecord,
+    ConfirmedCurrentPlayerInventoryRecord,
     MaterializedCurrentPlayerInventory,
 }
 
@@ -519,6 +530,9 @@ impl InventoryEquipmentBridgeClientGuiStatusRequestCompletion {
             Self::ClosedInventoryRequest => "closed_inventory_request",
             Self::AwaitingMaterializedItems => "awaiting_materialized_items",
             Self::ObservedInventoryRecord => "observed_inventory_record",
+            Self::ConfirmedCurrentPlayerInventoryRecord => {
+                "confirmed_current_player_inventory_record"
+            }
             Self::MaterializedCurrentPlayerInventory => "materialized_current_player_inventory",
         }
     }
@@ -770,14 +784,17 @@ impl InventoryEquipmentBridgeState {
     }
 
     pub(super) fn client_gui_status_refresh_confirmed(&self) -> bool {
-        self.client_gui_status_request_completion()
-            == InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
+        matches!(
+            self.client_gui_status_request_completion(),
+            InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ConfirmedCurrentPlayerInventoryRecord
+                | InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
+        )
     }
 
     pub(super) fn client_gui_status_response_window_satisfied(&self) -> bool {
         matches!(
             self.client_gui_status_request_completion(),
-            InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ObservedInventoryRecord
+            InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ConfirmedCurrentPlayerInventoryRecord
                 | InventoryEquipmentBridgeClientGuiStatusRequestCompletion::MaterializedCurrentPlayerInventory
         )
     }
@@ -791,7 +808,10 @@ impl InventoryEquipmentBridgeState {
         let Some(queued_status) = self.last_queued_client_gui_status_output else {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::QueuedStatusUnavailable;
         };
-        if queued_status.object_id != client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID {
+        let queued_status_is_current_player = queued_status.object_id
+            == client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID
+            || queued_status.resolved_current_player_object_id == Some(queued_status.object_id);
+        if !queued_status_is_current_player {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::NonCurrentPlayerRequest;
         }
         if !queued_status.player_inventory_gui {
@@ -807,11 +827,14 @@ impl InventoryEquipmentBridgeState {
             return InventoryEquipmentBridgeClientGuiStatusRequestCompletion::QueuedUpdateMismatch;
         }
         if self.client_gui_status_request_is_forwarded() {
-            return if response.inventory_records != 0 {
-                // An exact inventory record is causally relevant after this
-                // forwarded request's raw server ACK and is enough to bound
-                // the response window. It is not, by itself, proof that the
-                // record owner is the current player.
+            return if response.current_player_inventory_records != 0 {
+                // The response is ACK-covered and the exact live-object
+                // parser proved `I + owner OBJECTID + mask WORD` before its
+                // complete branch/cursor walk. Only an owner equal to the
+                // ObjControl-derived current creature can confirm this
+                // forwarded current-player request.
+                InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ConfirmedCurrentPlayerInventoryRecord
+            } else if response.inventory_records != 0 {
                 InventoryEquipmentBridgeClientGuiStatusRequestCompletion::ObservedInventoryRecord
             } else {
                 InventoryEquipmentBridgeClientGuiStatusRequestCompletion::AwaitingResponse
