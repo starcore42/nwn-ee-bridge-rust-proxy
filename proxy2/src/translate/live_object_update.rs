@@ -20118,6 +20118,58 @@ pub struct LiveObjectQuickbarItemUseCountUpdate {
     pub use_count: u16,
 }
 
+/// Exact client-facing operation carried by one creature `P/5`
+/// visible-equipment row.
+///
+/// Diamond `sub_448E30` and EE `sub_14077FE10` both read the mask-`0x0200`
+/// count, then `CHAR opcode + OBJECTIDServer + DWORD visible slot` in this
+/// order. `Add` owns the nested item body, `Delete` owns no tail, and `Update`
+/// owns one status byte before EE's object-visual-transform map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectVisibleEquipmentOperation {
+    Add,
+    Delete,
+    Update,
+    /// A compact source-compatibility row accepted by the byte-shape parser.
+    /// Neither Diamond nor EE dispatches opcode zero as A/D/U, so it must
+    /// remain a semantic no-op.
+    IgnoredLegacyZero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectVisibleEquipmentRow {
+    pub operation: LiveObjectVisibleEquipmentOperation,
+    /// Fixed EE-facing item id. Compact Diamond ids are normalized by the
+    /// existing appearance writer before this exact emitted-payload claim is
+    /// produced. Delete rows may carry the legacy dummy id `0x7F000000`.
+    pub object_id: u32,
+    /// Visible-appearance slot namespace (`0`, `1`, `2`, `0x10`, `0x20`,
+    /// `0x40`). This is deliberately not an Inventory response equip-slot
+    /// DWORD.
+    pub visible_slot: u32,
+    /// Present only for `Update`; Diamond and EE both consume the same byte
+    /// before EE additionally reads its visual-transform identity map.
+    pub update_status: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveObjectCreatureVisibleEquipmentClaim {
+    pub owner_id: u32,
+    pub appearance_mask: u16,
+    /// True for the all-fields `0xFFFF` appearance branch. This describes the
+    /// reader shape only; it does not imply that omitted visible slots clear
+    /// without explicit D rows.
+    pub all_fields_appearance: bool,
+    pub record_offset: usize,
+    pub record_end: usize,
+    /// Incoming shared fragment cursor. When the exact appearance parser
+    /// proves a preceding fence, that fence is included in this diagnostic
+    /// span; consumers must not interpret the span as row-owned BOOLs alone.
+    pub fragment_bit_start: usize,
+    pub fragment_bit_end: usize,
+    pub rows: Vec<LiveObjectVisibleEquipmentRow>,
+}
+
 const MAX_LIVE_OBJECT_RECORD_PROFILES: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20175,6 +20227,7 @@ pub struct LiveObjectUpdateClaimSummary {
     pub last_live_gui_item_record_end: Option<usize>,
     pub last_live_gui_item_fragment_bit_end: Option<usize>,
     pub materialized_item_object_ids: Vec<u32>,
+    pub creature_visible_equipment_claims: Vec<LiveObjectCreatureVisibleEquipmentClaim>,
     pub quickbar_item_use_count_records: u32,
     pub quickbar_item_use_count_rows: u32,
     pub quickbar_item_use_count_updates: Vec<LiveObjectQuickbarItemUseCountUpdate>,
@@ -20855,6 +20908,17 @@ fn claim_payload_if_verified_with_reject(
         summary.records_examined = summary.records_examined.saturating_add(1);
         let record_bit_cursor = bit_cursor;
         if let Some(next_bit_cursor) = verified_creature_appearance_next_bit_cursor {
+            if let Some(equipment_claim) = appearance::claim_verified_ee_creature_visible_equipment(
+                live_bytes,
+                offset,
+                record_end,
+                &fragment_bits,
+                record_bit_cursor,
+            ) {
+                summary
+                    .creature_visible_equipment_claims
+                    .push(equipment_claim);
+            }
             bit_cursor = next_bit_cursor;
             summary.creature_appearance_records =
                 summary.creature_appearance_records.saturating_add(1);
@@ -21061,6 +21125,17 @@ fn claim_payload_if_verified_with_reject(
             &fragment_bits,
             &mut bit_cursor,
         ) {
+            if let Some(equipment_claim) = appearance::claim_verified_ee_creature_visible_equipment(
+                live_bytes,
+                offset,
+                record_end,
+                &fragment_bits,
+                record_bit_cursor,
+            ) {
+                summary
+                    .creature_visible_equipment_claims
+                    .push(equipment_claim);
+            }
             summary.creature_appearance_records =
                 summary.creature_appearance_records.saturating_add(1);
             push_verified_record_mention(

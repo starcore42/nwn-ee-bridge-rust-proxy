@@ -25,7 +25,8 @@ use crate::translate::{
     client_quickbar::{self, ClientQuickbarSetButtonKind},
     inventory,
     live_object_update::{
-        LiveObjectQuickbarItemUseCountUpdate, area_static_row_scalar_orientation, object_ids,
+        LiveObjectCreatureVisibleEquipmentClaim, LiveObjectQuickbarItemUseCountUpdate,
+        LiveObjectVisibleEquipmentOperation, area_static_row_scalar_orientation, object_ids,
     },
     player_list::PlayerListObjectIds,
     quickbar::{
@@ -1018,6 +1019,19 @@ pub(crate) struct InventoryEquipmentProtocolState {
     pub(crate) committed_equipment_slots: BTreeMap<(bool, u32), u32>,
     pub(crate) committed_equipment_state_updates: u64,
     pub(crate) last_unequip_removed_slots: usize,
+    /// Creature `P/5` visible-appearance slots are owner-scoped and use a
+    /// different namespace from server Inventory response slot DWORDs.
+    pub(crate) visible_equipment_slots_by_owner: BTreeMap<(u32, u32), u32>,
+    pub(crate) visible_equipment_claims: u64,
+    pub(crate) visible_equipment_all_fields_claims: u64,
+    pub(crate) visible_equipment_add_rows: u64,
+    pub(crate) visible_equipment_delete_rows: u64,
+    pub(crate) visible_equipment_update_rows: u64,
+    pub(crate) visible_equipment_ignored_zero_rows: u64,
+    pub(crate) visible_equipment_state_updates: u64,
+    pub(crate) visible_equipment_update_matches: u64,
+    pub(crate) visible_equipment_update_without_mapping: u64,
+    pub(crate) last_visible_equipment_removed_slots: usize,
 }
 
 impl InventoryEquipmentProtocolState {
@@ -1100,6 +1114,111 @@ impl InventoryEquipmentProtocolState {
         self.last_server_response_matches_client_secondary = false;
         self.response_records_since_last_client_equip_toggle.clear();
         self.retained_matching_primary_response_for_current_equip_toggle = None;
+        // This cache has no owner or area epoch. Keeping it across
+        // Area_ClientArea could make a prior creature's Inventory response
+        // look current before the new area's exact P/5/Inventory state arrives.
+        self.committed_equipment_slots.clear();
+        self.last_unequip_removed_slots = 0;
+        self.visible_equipment_slots_by_owner.clear();
+        self.last_visible_equipment_removed_slots = 0;
+    }
+
+    pub(crate) fn observe_creature_visible_equipment_claims(
+        &mut self,
+        claims: &[LiveObjectCreatureVisibleEquipmentClaim],
+    ) {
+        for claim in claims {
+            self.visible_equipment_claims = self.visible_equipment_claims.saturating_add(1);
+            if claim.all_fields_appearance {
+                // `0xFFFF` proves a full appearance reader shape, but the
+                // decompiles prove only the explicit counted A/D/U rows as
+                // equipment mutations. Do not infer that an omitted slot was
+                // cleared; only a D row owns that transition.
+                self.visible_equipment_all_fields_claims =
+                    self.visible_equipment_all_fields_claims.saturating_add(1);
+            }
+
+            self.last_visible_equipment_removed_slots = 0;
+            let state_updates_before = self.visible_equipment_state_updates;
+            for row in &claim.rows {
+                let key = (claim.owner_id, row.visible_slot);
+                match row.operation {
+                    LiveObjectVisibleEquipmentOperation::Add => {
+                        self.visible_equipment_add_rows =
+                            self.visible_equipment_add_rows.saturating_add(1);
+                        let previous = self
+                            .visible_equipment_slots_by_owner
+                            .insert(key, row.object_id);
+                        if previous != Some(row.object_id) {
+                            self.visible_equipment_state_updates =
+                                self.visible_equipment_state_updates.saturating_add(1);
+                        }
+                    }
+                    LiveObjectVisibleEquipmentOperation::Delete => {
+                        self.visible_equipment_delete_rows =
+                            self.visible_equipment_delete_rows.saturating_add(1);
+                        // Both clients clear visible equipment by owner/slot;
+                        // the row OBJECTID is ignored and may be the legacy
+                        // dummy `0x7F000000`.
+                        if self.visible_equipment_slots_by_owner.remove(&key).is_some() {
+                            self.last_visible_equipment_removed_slots =
+                                self.last_visible_equipment_removed_slots.saturating_add(1);
+                            self.visible_equipment_state_updates =
+                                self.visible_equipment_state_updates.saturating_add(1);
+                        }
+                    }
+                    LiveObjectVisibleEquipmentOperation::Update => {
+                        self.visible_equipment_update_rows =
+                            self.visible_equipment_update_rows.saturating_add(1);
+                        // Diamond and EE resolve U strictly by OBJECTID, then
+                        // apply status/visual-transform state. The slot field
+                        // is not mapping authority, so a cache miss cannot
+                        // create or remap a visible item.
+                        if self.visible_equipment_slots_by_owner.iter().any(
+                            |((owner_id, _), object_id)| {
+                                *owner_id == claim.owner_id
+                                    && object_ids::equivalent_legacy_external_object_ids(
+                                        *object_id,
+                                        row.object_id,
+                                    )
+                            },
+                        ) {
+                            self.visible_equipment_update_matches =
+                                self.visible_equipment_update_matches.saturating_add(1);
+                        } else {
+                            self.visible_equipment_update_without_mapping = self
+                                .visible_equipment_update_without_mapping
+                                .saturating_add(1);
+                        }
+                    }
+                    LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero => {
+                        self.visible_equipment_ignored_zero_rows =
+                            self.visible_equipment_ignored_zero_rows.saturating_add(1);
+                    }
+                }
+            }
+
+            tracing::debug!(
+                owner_id = format_args!("0x{:08X}", claim.owner_id),
+                appearance_mask = format_args!("0x{:04X}", claim.appearance_mask),
+                all_fields_appearance = claim.all_fields_appearance,
+                record_offset = claim.record_offset,
+                record_end = claim.record_end,
+                fragment_bit_start = claim.fragment_bit_start,
+                fragment_bit_end = claim.fragment_bit_end,
+                rows = claim.rows.len(),
+                visible_slots_for_owner = self
+                    .visible_equipment_slots_by_owner
+                    .keys()
+                    .filter(|(owner_id, _)| *owner_id == claim.owner_id)
+                    .count(),
+                state_updates = self
+                    .visible_equipment_state_updates
+                    .saturating_sub(state_updates_before),
+                removed_slots = self.last_visible_equipment_removed_slots,
+                "semantic equipment cache applied exact creature visible-equipment rows"
+            );
+        }
     }
 
     pub(crate) fn observe_server_inventory_response(
@@ -7647,7 +7766,10 @@ mod tests {
     use crate::translate::client_gui_event;
     use crate::translate::client_input;
     use crate::translate::client_quickbar::{self, ClientQuickbarSetButtonKind};
-    use crate::translate::live_object_update::LiveObjectQuickbarItemUseCountUpdate;
+    use crate::translate::live_object_update::{
+        LiveObjectCreatureVisibleEquipmentClaim, LiveObjectQuickbarItemUseCountUpdate,
+        LiveObjectVisibleEquipmentOperation, LiveObjectVisibleEquipmentRow,
+    };
     use crate::translate::semantic::{
         LiveObjectInventoryFeature25Reference, LiveObjectOrientationSource,
         LiveObjectOrientationVector,
@@ -7657,18 +7779,168 @@ mod tests {
         AreaStaticPlaceableConflictRecordObservation,
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
         ITEM_OBJECT_TYPE, InventoryEquipmentHandoffBridgeAction, InventoryEquipmentHandoffConsumer,
-        InventoryItemContextCandidate, InventoryItemContextCandidateSource,
-        InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectProvenNeighbor,
-        InventoryItemObjectStatus, LiveObjectBounds, LiveObjectMention, LiveObjectOrientation,
-        LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition,
-        ObjectRegistry, PlayerListObjectIds, QuickbarActiveItemSignature,
-        QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
-        QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind,
-        QuickbarItemRefreshHarnessHint, QuickbarItemRefreshProfileScoutingOutcome,
-        QuickbarItemRefreshProofClass, QuickbarItemRefreshUseCountRow,
-        QuickbarPreservedActiveItemSignatures, QuickbarPreservedActiveItemUseCountCoverage,
-        QuickbarRewriteSummary, QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
+        InventoryEquipmentProtocolState, InventoryItemContextCandidate,
+        InventoryItemContextCandidateSource, InventoryItemContextSummary, InventoryItemObjectProof,
+        InventoryItemObjectProvenNeighbor, InventoryItemObjectStatus, LiveObjectBounds,
+        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
+        QuickbarActiveItemSignature, QuickbarItemRefreshActionOutcome,
+        QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshEventBreakdown,
+        QuickbarItemRefreshEventKind, QuickbarItemRefreshHarnessHint,
+        QuickbarItemRefreshProfileScoutingOutcome, QuickbarItemRefreshProofClass,
+        QuickbarItemRefreshUseCountRow, QuickbarPreservedActiveItemSignatures,
+        QuickbarPreservedActiveItemUseCountCoverage, QuickbarRewriteSummary,
+        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
     };
+
+    fn visible_equipment_claim(
+        owner_id: u32,
+        all_fields_appearance: bool,
+        rows: Vec<LiveObjectVisibleEquipmentRow>,
+    ) -> LiveObjectCreatureVisibleEquipmentClaim {
+        LiveObjectCreatureVisibleEquipmentClaim {
+            owner_id,
+            appearance_mask: if all_fields_appearance {
+                0xFFFF
+            } else {
+                0x0200
+            },
+            all_fields_appearance,
+            record_offset: 7,
+            record_end: 23,
+            fragment_bit_start: 3,
+            fragment_bit_end: 3,
+            rows,
+        }
+    }
+
+    #[test]
+    fn creature_visible_equipment_state_is_owner_scoped_and_operation_exact() {
+        const OWNER_A: u32 = 0x8000_0010;
+        const OWNER_B: u32 = 0x8000_0011;
+        const ITEM_A: u32 = 0x8000_0044;
+        const ITEM_B: u32 = 0x8000_0055;
+
+        let mut state = InventoryEquipmentProtocolState::default();
+        state.observe_creature_visible_equipment_claims(&[
+            visible_equipment_claim(
+                OWNER_A,
+                false,
+                vec![
+                    LiveObjectVisibleEquipmentRow {
+                        operation: LiveObjectVisibleEquipmentOperation::Add,
+                        object_id: ITEM_A,
+                        visible_slot: 2,
+                        update_status: None,
+                    },
+                    LiveObjectVisibleEquipmentRow {
+                        operation: LiveObjectVisibleEquipmentOperation::Add,
+                        object_id: 0x8000_0066,
+                        visible_slot: 0x20,
+                        update_status: None,
+                    },
+                ],
+            ),
+            visible_equipment_claim(
+                OWNER_B,
+                false,
+                vec![LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Add,
+                    object_id: ITEM_B,
+                    visible_slot: 2,
+                    update_status: None,
+                }],
+            ),
+        ]);
+        assert_eq!(
+            state.visible_equipment_slots_by_owner.get(&(OWNER_A, 2)),
+            Some(&ITEM_A)
+        );
+        assert_eq!(
+            state.visible_equipment_slots_by_owner.get(&(OWNER_B, 2)),
+            Some(&ITEM_B),
+            "the same visible slot on another owner is independent"
+        );
+
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_A,
+            false,
+            vec![
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x0000_0044,
+                    visible_slot: 0x40,
+                    update_status: Some(0x7F),
+                },
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_0777,
+                    visible_slot: 2,
+                    update_status: Some(0),
+                },
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero,
+                    object_id: 0,
+                    visible_slot: 1,
+                    update_status: None,
+                },
+            ],
+        )]);
+        assert_eq!(state.visible_equipment_update_matches, 1);
+        assert_eq!(state.visible_equipment_update_without_mapping, 1);
+        assert_eq!(state.visible_equipment_ignored_zero_rows, 1);
+        assert_eq!(
+            state.visible_equipment_slots_by_owner.get(&(OWNER_A, 2)),
+            Some(&ITEM_A),
+            "U resolves by object id and must not remap from its ignored slot field"
+        );
+
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_A,
+            true,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::Add,
+                object_id: 0x8000_0088,
+                visible_slot: 0x10,
+                update_status: None,
+            }],
+        )]);
+        assert_eq!(state.visible_equipment_all_fields_claims, 1);
+        assert_eq!(
+            state.visible_equipment_slots_by_owner.get(&(OWNER_A, 0x20)),
+            Some(&0x8000_0066),
+            "0xFFFF reader shape does not imply omitted-slot deletion"
+        );
+
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_A,
+            false,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::Delete,
+                object_id: 0x7F00_0000,
+                visible_slot: 2,
+                update_status: None,
+            }],
+        )]);
+        assert!(
+            !state
+                .visible_equipment_slots_by_owner
+                .contains_key(&(OWNER_A, 2))
+        );
+        assert_eq!(
+            state.visible_equipment_slots_by_owner.get(&(OWNER_B, 2)),
+            Some(&ITEM_B),
+            "D clears only its owner/slot and ignores its row object id"
+        );
+        assert_eq!(state.last_visible_equipment_removed_slots, 1);
+
+        state
+            .committed_equipment_slots
+            .insert((false, 0x0002_0000), ITEM_A);
+        state.reset_equip_toggle_authorization_for_area();
+        assert!(state.committed_equipment_slots.is_empty());
+        assert!(state.visible_equipment_slots_by_owner.is_empty());
+    }
 
     #[test]
     fn quickbar_profile_scouting_outcome_classifies_generalized_coverage_state() {

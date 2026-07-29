@@ -7,12 +7,18 @@
 use crate::{
     packet::Direction,
     translate::{
-        VerifiedFamily, client_gui_event::ClientGuiEventClaimSummary,
+        VerifiedFamily,
+        client_gui_event::ClientGuiEventClaimSummary,
         client_gui_inventory::ClientGuiInventoryClaimSummary,
-        client_input::ClientInputClaimSummary, client_inventory::ClientInventoryClaimSummary,
-        client_quickbar::ClientQuickbarClaimSummary, inventory::InventoryClaimSummary,
+        client_input::ClientInputClaimSummary,
+        client_inventory::ClientInventoryClaimSummary,
+        client_quickbar::ClientQuickbarClaimSummary,
+        inventory::InventoryClaimSummary,
         item_update_active_props::ActiveItemPropertiesClaimSummary,
-        live_object_update::LiveObjectQuickbarItemUseCountUpdate, player_list::PlayerListObjectIds,
+        live_object_update::{
+            LiveObjectCreatureVisibleEquipmentClaim, LiveObjectQuickbarItemUseCountUpdate,
+        },
+        player_list::PlayerListObjectIds,
         quickbar::QuickbarValidatedSlotProfile,
     },
 };
@@ -120,6 +126,7 @@ pub(crate) struct LiveObjectEvent {
     pub(crate) live_gui_records: u32,
     pub(crate) live_gui_fragment_bits: u32,
     pub(crate) materialized_item_object_ids: Vec<u32>,
+    pub(crate) creature_visible_equipment_claims: Vec<LiveObjectCreatureVisibleEquipmentClaim>,
     pub(crate) inventory_feature25_references: Vec<LiveObjectInventoryFeature25Reference>,
     pub(crate) quickbar_item_use_count_records: u32,
     pub(crate) quickbar_item_use_count_rows: u32,

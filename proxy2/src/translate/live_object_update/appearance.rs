@@ -22,8 +22,9 @@
 
 use super::{
     CNW_FRAGMENT_HEADER_BITS, DOOR_OBJECT_TYPE, ITEM_OBJECT_TYPE,
-    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LiveObjectGuiItemFragmentCandidateProfile,
-    MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MAX_LIVE_OBJECT_NAME_BYTES,
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LiveObjectCreatureVisibleEquipmentClaim,
+    LiveObjectGuiItemFragmentCandidateProfile, LiveObjectVisibleEquipmentOperation,
+    LiveObjectVisibleEquipmentRow, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MAX_LIVE_OBJECT_NAME_BYTES,
     MAX_REASONABLE_LIVE_PAYLOAD_BYTES, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE,
     TRIGGER_OBJECT_TYPE, bits, boundary, fragment_spans, read_u16_le, read_u32_le,
 };
@@ -167,6 +168,8 @@ impl AppearanceNameShape {
 
 #[derive(Debug, Clone)]
 struct LegacyAppearanceRecord {
+    owner_id: u32,
+    mask: u16,
     record_end: usize,
     fragment_bits_consumed: usize,
     ee_fragment_bits_consumed: usize,
@@ -175,6 +178,7 @@ struct LegacyAppearanceRecord {
     ee_extra_byte_inserts: Vec<CreatureAppearanceByteInsert>,
     appearance_name_bits: Option<Vec<bool>>,
     equipment_records: u8,
+    equipment_rows: Vec<LiveObjectVisibleEquipmentRow>,
     preferred_zero_padding_relative_start: Option<usize>,
     token_selector_padding_repair_relative_start: Option<usize>,
     inline_active_name_fence_repair_relative_start: Option<usize>,
@@ -353,6 +357,7 @@ struct LegacyVisibleEquipmentParse {
     first_positive_name_selector_relative_start: Option<usize>,
     token_selector_padding_repair_relative_start: Option<usize>,
     inline_active_name_fence_repair_relative_start: Option<usize>,
+    rows: Vec<LiveObjectVisibleEquipmentRow>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -369,6 +374,8 @@ struct FragmentNameBitRewriteDelta {
 
 #[derive(Debug, Clone)]
 struct LegacyAppearanceItemAddRecord {
+    object_id: Option<u32>,
+    slot: Option<u32>,
     fragment_bits_consumed: usize,
     ee_extra_fragment_bits: usize,
     ee_extra_insert_offsets: Vec<usize>,
@@ -378,6 +385,7 @@ struct LegacyAppearanceItemAddRecord {
 
 #[derive(Debug, Clone)]
 struct LegacyVisibleEquipmentItemAddHeader {
+    object_id: u32,
     slot: u32,
     body_start: usize,
     ee_extra_byte_inserts: Vec<CreatureAppearanceByteInsert>,
@@ -1130,6 +1138,58 @@ pub(super) fn advance_verified_ee_creature_appearance_record(
         .proof_cursor
         .saturating_add(verified.record.ee_fragment_bits_consumed);
     true
+}
+
+pub(super) fn claim_verified_ee_creature_visible_equipment(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<LiveObjectCreatureVisibleEquipmentClaim> {
+    let verified = parse_verified_creature_appearance_with_optional_preceding_fence(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        Some(record_end),
+        true,
+        false,
+    )?;
+    if verified.record.record_end != record_end
+        || verified.record.mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK == 0
+        || !verified.record.ee_extra_byte_inserts.is_empty()
+        || verified.record.equipment_rows.len() != usize::from(verified.record.equipment_records)
+    {
+        return None;
+    }
+
+    // Reuse the exact emitted-EE validator as the authority boundary. This
+    // rejects shifted nested item/name/active-property cursors before any row
+    // reaches semantic state; D/U own no fragment BOOLs, while A owns the
+    // decompile-backed nested selectors and EE's appended fifth property BOOL.
+    let mut exact_cursor = bit_cursor;
+    if !advance_verified_ee_creature_appearance_record(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut exact_cursor,
+    ) {
+        return None;
+    }
+
+    Some(LiveObjectCreatureVisibleEquipmentClaim {
+        owner_id: verified.record.owner_id,
+        appearance_mask: verified.record.mask,
+        all_fields_appearance: verified.record.mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK,
+        record_offset: offset,
+        record_end,
+        fragment_bit_start: bit_cursor,
+        fragment_bit_end: exact_cursor,
+        rows: verified.record.equipment_rows,
+    })
 }
 
 pub(super) fn try_get_verified_ee_creature_appearance_record_end(
@@ -6192,7 +6252,7 @@ fn parse_creature_appearance_record(
         }
     }
 
-    let equipment_records = if mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK {
+    let (equipment_records, equipment_rows) = if mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK {
         let count = *bytes.get(cursor)?;
         // The decompiled all-fields writer emits a bounded visible-
         // equipment count followed by that many `A`/`D` item records. Zero
@@ -6238,12 +6298,12 @@ fn parse_creature_appearance_record(
             fragment_bits_consumed.checked_add(equipment.fragment_bits_consumed)?;
         ee_extra_fragment_bits =
             ee_extra_fragment_bits.checked_add(equipment.ee_extra_fragment_bits)?;
-        count
+        (count, equipment.rows)
     } else if (mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK) != 0 {
         let count = *bytes.get(cursor)?;
         cursor = cursor.checked_add(1)?;
         if count == 0 {
-            0
+            (0, Vec::new())
         } else {
             // Diamond `sub_448E30` and EE `sub_14077FE10` share the non-full
             // equipment-delta row shape after the count byte: each entry owns a
@@ -6285,10 +6345,10 @@ fn parse_creature_appearance_record(
                 fragment_bits_consumed.checked_add(equipment.fragment_bits_consumed)?;
             ee_extra_fragment_bits =
                 ee_extra_fragment_bits.checked_add(equipment.ee_extra_fragment_bits)?;
-            count
+            (count, equipment.rows)
         }
     } else {
-        0
+        (0, Vec::new())
     };
 
     let may_probe_following_creature_update_fence = cursor < limit
@@ -6351,6 +6411,8 @@ fn parse_creature_appearance_record(
     );
 
     Some(LegacyAppearanceRecord {
+        owner_id: object_id,
+        mask,
         record_end: cursor,
         fragment_bits_consumed,
         ee_fragment_bits_consumed: fragment_bits_consumed.checked_add(ee_extra_fragment_bits)?,
@@ -6359,6 +6421,7 @@ fn parse_creature_appearance_record(
         ee_extra_byte_inserts,
         appearance_name_bits,
         equipment_records,
+        equipment_rows,
         preferred_zero_padding_relative_start,
         token_selector_padding_repair_relative_start,
         inline_active_name_fence_repair_relative_start,
@@ -7282,6 +7345,22 @@ fn advance_creature_appearance_scalar_fields(
     Some(cursor)
 }
 
+fn prepend_visible_equipment_row(
+    mut parse: LegacyVisibleEquipmentParse,
+    row: LiveObjectVisibleEquipmentRow,
+) -> LegacyVisibleEquipmentParse {
+    parse.rows.insert(0, row);
+    parse
+}
+
+fn prepend_visible_equipment_row_values(
+    mut rows: Vec<LiveObjectVisibleEquipmentRow>,
+    row: LiveObjectVisibleEquipmentRow,
+) -> Vec<LiveObjectVisibleEquipmentRow> {
+    rows.insert(0, row);
+    rows
+}
+
 fn parse_legacy_visible_equipment_records(
     bytes: &[u8],
     cursor: usize,
@@ -7303,6 +7382,7 @@ fn parse_legacy_visible_equipment_records(
             first_positive_name_selector_relative_start: None,
             token_selector_padding_repair_relative_start: None,
             inline_active_name_fence_repair_relative_start: None,
+            rows: Vec::new(),
         });
     }
     if cursor >= limit {
@@ -7325,16 +7405,15 @@ fn parse_legacy_visible_equipment_records(
     match *bytes.get(cursor)? {
         b'D' => {
             let next = cursor.checked_add(1 + 4 + 4)?;
-            if next > limit
-                || read_u32_le(bytes, cursor + 1)? != LEGACY_APPEARANCE_DUMMY_ITEM_OBJECT_ID
-            {
+            let object_id = read_u32_le(bytes, cursor + 1)?;
+            if next > limit || object_id != LEGACY_APPEARANCE_DUMMY_ITEM_OBJECT_ID {
                 return None;
             }
             let slot = read_u32_le(bytes, cursor + 5)?;
             if !is_legacy_visible_equipment_slot(slot) {
                 return None;
             }
-            parse_legacy_visible_equipment_records(
+            let rest = parse_legacy_visible_equipment_records(
                 bytes,
                 next,
                 limit,
@@ -7343,7 +7422,16 @@ fn parse_legacy_visible_equipment_records(
                 bit_proof,
                 legacy_bits_before,
                 ee_extra_bits_before,
-            )
+            )?;
+            Some(prepend_visible_equipment_row(
+                rest,
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Delete,
+                    object_id,
+                    visible_slot: slot,
+                    update_status: None,
+                },
+            ))
         }
         b'U' => {
             let Some(parse) = parse_legacy_visible_equipment_update_record(
@@ -7446,6 +7534,12 @@ fn parse_legacy_visible_equipment_records(
                             first_positive_name_selector_relative_start,
                             token_selector_padding_repair_relative_start,
                             inline_active_name_fence_repair_relative_start,
+                            rows: vec![LiveObjectVisibleEquipmentRow {
+                                operation: LiveObjectVisibleEquipmentOperation::Add,
+                                object_id: item.object_id?,
+                                visible_slot: item.slot?,
+                                update_status: None,
+                            }],
                         };
                         if accepted
                             .as_ref()
@@ -7579,6 +7673,15 @@ fn parse_legacy_visible_equipment_records(
                             first_positive_name_selector_relative_start,
                             token_selector_padding_repair_relative_start,
                             inline_active_name_fence_repair_relative_start,
+                            rows: prepend_visible_equipment_row_values(
+                                rest.rows,
+                                LiveObjectVisibleEquipmentRow {
+                                    operation: LiveObjectVisibleEquipmentOperation::Add,
+                                    object_id: item.object_id?,
+                                    visible_slot: item.slot?,
+                                    update_status: None,
+                                },
+                            ),
                         };
                         // The decompiled all-fields appearance record carries
                         // an explicit visible-equipment count. When more than
@@ -7632,6 +7735,7 @@ fn parse_legacy_visible_equipment_update_record(
     if status_end > limit || status_end > bytes.len() {
         return None;
     }
+    let update_status = *bytes.get(header_end)?;
 
     let (next, mut prefix_inserts) =
         if has_ee_object_visual_transform_identity_at(bytes, status_end, limit) {
@@ -7666,7 +7770,15 @@ fn parse_legacy_visible_equipment_update_record(
     )?;
     prefix_inserts.extend(rest.ee_extra_byte_inserts);
     rest.ee_extra_byte_inserts = prefix_inserts;
-    Some(rest)
+    Some(prepend_visible_equipment_row(
+        rest,
+        LiveObjectVisibleEquipmentRow {
+            operation: LiveObjectVisibleEquipmentOperation::Update,
+            object_id,
+            visible_slot: slot,
+            update_status: Some(update_status),
+        },
+    ))
 }
 
 fn visible_equipment_translated_end_is_bounded(bytes: &[u8], end: usize, limit: usize) -> bool {
@@ -7718,7 +7830,7 @@ fn parse_legacy_compact_visible_equipment_records(
             if object_id != 0 && !looks_like_creature_or_legacy_sentinel_id(object_id) {
                 return None;
             }
-            parse_legacy_visible_equipment_records(
+            let rest = parse_legacy_visible_equipment_records(
                 bytes,
                 header_end,
                 limit,
@@ -7727,7 +7839,20 @@ fn parse_legacy_compact_visible_equipment_records(
                 bit_proof,
                 legacy_bits_before,
                 ee_extra_bits_before,
-            )
+            )?;
+            Some(prepend_visible_equipment_row(
+                rest,
+                LiveObjectVisibleEquipmentRow {
+                    operation: if opcode == b'D' {
+                        LiveObjectVisibleEquipmentOperation::Delete
+                    } else {
+                        LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero
+                    },
+                    object_id,
+                    visible_slot: slot,
+                    update_status: None,
+                },
+            ))
         }
         b'U' => {
             if !looks_like_creature_or_legacy_sentinel_id(object_id) {
@@ -7737,6 +7862,7 @@ fn parse_legacy_compact_visible_equipment_records(
             if next > limit || next > bytes.len() {
                 return None;
             }
+            let update_status = *bytes.get(header_end)?;
             let (next, mut prefix_inserts) =
                 if has_ee_object_visual_transform_identity_at(bytes, next, limit) {
                     (
@@ -7769,7 +7895,15 @@ fn parse_legacy_compact_visible_equipment_records(
             )?;
             prefix_inserts.extend(rest.ee_extra_byte_inserts);
             rest.ee_extra_byte_inserts = prefix_inserts;
-            Some(rest)
+            Some(prepend_visible_equipment_row(
+                rest,
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id,
+                    visible_slot: slot,
+                    update_status: Some(update_status),
+                },
+            ))
         }
         b'A' => {
             if remaining == 1 {
@@ -7857,6 +7991,12 @@ fn parse_legacy_compact_visible_equipment_records(
                             first_positive_name_selector_relative_start,
                             token_selector_padding_repair_relative_start,
                             inline_active_name_fence_repair_relative_start,
+                            rows: vec![LiveObjectVisibleEquipmentRow {
+                                operation: LiveObjectVisibleEquipmentOperation::Add,
+                                object_id: item.object_id?,
+                                visible_slot: item.slot?,
+                                update_status: None,
+                            }],
                         };
                         if accepted
                             .as_ref()
@@ -7987,6 +8127,15 @@ fn parse_legacy_compact_visible_equipment_records(
                             first_positive_name_selector_relative_start,
                             token_selector_padding_repair_relative_start,
                             inline_active_name_fence_repair_relative_start,
+                            rows: prepend_visible_equipment_row_values(
+                                rest.rows,
+                                LiveObjectVisibleEquipmentRow {
+                                    operation: LiveObjectVisibleEquipmentOperation::Add,
+                                    object_id: item.object_id?,
+                                    visible_slot: item.slot?,
+                                    update_status: None,
+                                },
+                            ),
                         };
                         if accepted
                             .as_ref()
@@ -8481,6 +8630,8 @@ fn parse_legacy_item_add_record_candidates(
             record_end,
             header.slot,
         ) {
+            item.object_id = Some(header.object_id);
+            item.slot = Some(header.slot);
             if !header.ee_extra_byte_inserts.is_empty() {
                 let mut inserts = header.ee_extra_byte_inserts.clone();
                 inserts.extend(item.ee_extra_byte_inserts);
@@ -8519,7 +8670,14 @@ fn legacy_visible_equipment_item_add_header_candidates(
             if looks_like_fixed_visible_equipment_object_id(object_id)
                 && is_legacy_visible_equipment_slot(slot)
             {
+                let normalized_object_id =
+                    if looks_like_fixed_width_compact_visible_equipment_object_id(object_id) {
+                        object_id | 0x8000_0000
+                    } else {
+                        object_id
+                    };
                 candidates.push(LegacyVisibleEquipmentItemAddHeader {
+                    object_id: normalized_object_id,
                     slot,
                     body_start: fixed_header_end,
                     ee_extra_byte_inserts: Vec::new(),
@@ -8574,6 +8732,7 @@ fn legacy_visible_equipment_item_add_header_candidates(
         let fixed_object_id = object_id | 0x8000_0000;
         let fixed_bytes = fixed_object_id.to_le_bytes();
         candidates.push(LegacyVisibleEquipmentItemAddHeader {
+            object_id: fixed_object_id,
             slot,
             body_start,
             ee_extra_byte_inserts: vec![
@@ -8975,6 +9134,8 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
         // equipment record is therefore EE's final active-property BOOL.
         ee_extra_insert_offsets.extend(active_tail.ee_extra_insert_offsets);
         candidates.push(LegacyAppearanceItemAddRecord {
+            object_id: None,
+            slot: None,
             fragment_bits_consumed: active_tail.fragment_bits_consumed,
             ee_extra_fragment_bits: EE_APPEARANCE_ACTIVE_PROPERTY_EXTRA_BOOL_BITS,
             ee_extra_insert_offsets,
@@ -11123,6 +11284,105 @@ mod public_tests {
             &mut ee_cursor,
         ));
         assert_eq!(ee_cursor, 0);
+    }
+
+    #[test]
+    fn exact_ee_equipment_delta_claims_preserve_typed_rows_and_cursors() {
+        let cases = [
+            (
+                partial_legacy_creature_nonzero_equipment_delta_with_add(),
+                vec![true, false, true, false],
+                0x8000_0042,
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Add,
+                    object_id: 0x8000_0042,
+                    visible_slot: 2,
+                    update_status: None,
+                },
+                5,
+            ),
+            (
+                partial_legacy_creature_nonzero_equipment_delta_with_delete(),
+                Vec::new(),
+                0x8000_0043,
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Delete,
+                    object_id: 0x8000_0044,
+                    visible_slot: 2,
+                    update_status: None,
+                },
+                0,
+            ),
+            (
+                partial_legacy_creature_nonzero_equipment_delta_with_update(),
+                Vec::new(),
+                0x8000_0043,
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_0044,
+                    visible_slot: 2,
+                    update_status: Some(0x7F),
+                },
+                0,
+            ),
+        ];
+
+        for (mut bytes, mut fragment_bits, owner_id, expected_row, expected_bit_end) in cases {
+            let mut record_end = bytes.len();
+            insert_ee_creature_appearance_extras_for_ee(
+                &mut bytes,
+                0,
+                &mut record_end,
+                &mut fragment_bits,
+                0,
+            )
+            .expect("the decompile-backed Diamond row should rewrite to exact EE shape");
+
+            let claim = claim_verified_ee_creature_visible_equipment(
+                &bytes,
+                0,
+                record_end,
+                &fragment_bits,
+                0,
+            )
+            .expect("the exact emitted EE record should expose typed equipment semantics");
+            assert_eq!(claim.owner_id, owner_id);
+            assert_eq!(
+                claim.appearance_mask,
+                LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK
+            );
+            assert!(!claim.all_fields_appearance);
+            assert_eq!(claim.record_offset, 0);
+            assert_eq!(claim.record_end, bytes.len());
+            assert_eq!(claim.fragment_bit_start, 0);
+            assert_eq!(claim.fragment_bit_end, expected_bit_end);
+            assert_eq!(claim.rows, vec![expected_row]);
+        }
+    }
+
+    #[test]
+    fn exact_ee_compact_zero_equipment_row_is_semantic_noop() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0043);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
+        bytes.push(1);
+        bytes.push(0);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 2);
+
+        let claim = claim_verified_ee_creature_visible_equipment(&bytes, 0, bytes.len(), &[], 0)
+            .expect("the compatibility byte-shape parser should type opcode zero safely");
+        assert_eq!(
+            claim.rows,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero,
+                object_id: 0,
+                visible_slot: 2,
+                update_status: None,
+            }]
+        );
+        assert_eq!(claim.fragment_bit_end, 0);
     }
 
     #[test]

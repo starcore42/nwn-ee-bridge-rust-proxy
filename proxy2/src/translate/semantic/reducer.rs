@@ -374,6 +374,7 @@ fn observe_family_payload(
                 live_gui_records: live_object.live_gui_records,
                 live_gui_fragment_bits: live_object.live_gui_fragment_bits,
                 materialized_item_object_ids: live_object.materialized_item_object_ids,
+                creature_visible_equipment_claims: live_object.creature_visible_equipment_claims,
                 inventory_feature25_references: live_object.inventory_feature25_references,
                 quickbar_item_use_count_records: live_object.quickbar_item_use_count_records,
                 quickbar_item_use_count_rows: live_object.quickbar_item_use_count_rows,
@@ -562,6 +563,12 @@ fn apply_event(
             state
                 .objects
                 .observe_materialized_item_object_ids(&event.materialized_item_object_ids);
+            state
+                .ui
+                .inventory_equipment_protocol
+                .observe_creature_visible_equipment_claims(
+                    &event.creature_visible_equipment_claims,
+                );
             state
                 .objects
                 .observe_inventory_feature25_references(&event.inventory_feature25_references);
@@ -2673,6 +2680,8 @@ struct LiveObjectObservationFacts {
     live_gui_records: u32,
     live_gui_fragment_bits: u32,
     materialized_item_object_ids: Vec<u32>,
+    creature_visible_equipment_claims:
+        Vec<live_object_update::LiveObjectCreatureVisibleEquipmentClaim>,
     inventory_feature25_references: Vec<LiveObjectInventoryFeature25Reference>,
     quickbar_item_use_count_records: u32,
     quickbar_item_use_count_rows: u32,
@@ -2688,6 +2697,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
+            creature_visible_equipment_claims: Vec::new(),
             inventory_feature25_references: Vec::new(),
             quickbar_item_use_count_records: 0,
             quickbar_item_use_count_rows: 0,
@@ -2700,6 +2710,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
         .saturating_add(claim.live_gui_item_create_records);
     let live_gui_fragment_bits = claim.live_gui_fragment_bits;
     let materialized_item_object_ids = claim.materialized_item_object_ids;
+    let creature_visible_equipment_claims = claim.creature_visible_equipment_claims;
     let quickbar_item_use_count_records = claim.quickbar_item_use_count_records;
     let quickbar_item_use_count_rows = claim.quickbar_item_use_count_rows;
     let quickbar_item_use_count_updates = claim.quickbar_item_use_count_updates;
@@ -2786,6 +2797,7 @@ fn live_object_observations_from_payload(payload: &[u8]) -> LiveObjectObservatio
         live_gui_records,
         live_gui_fragment_bits,
         materialized_item_object_ids,
+        creature_visible_equipment_claims,
         inventory_feature25_references,
         quickbar_item_use_count_records,
         quickbar_item_use_count_rows,
@@ -2835,6 +2847,45 @@ mod fixture_free_tests {
         fragment_bits.extend_from_slice(owned_bits);
         payload.extend_from_slice(&pack_msb_valid_bits(fragment_bits, 3));
         payload
+    }
+
+    #[test]
+    fn exact_live_object_visible_equipment_delete_reaches_shared_protocol_state() {
+        const OWNER_ID: u32 = 0x8000_0043;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+
+        let mut live = vec![b'P', 5];
+        live.extend_from_slice(&OWNER_ID.to_le_bytes());
+        live.extend_from_slice(&0x0200u16.to_le_bytes());
+        live.push(1);
+        live.push(b'D');
+        live.extend_from_slice(&ITEM_ID.to_le_bytes());
+        live.extend_from_slice(&VISIBLE_SLOT.to_le_bytes());
+        let payload = live_object_payload_with_bits(&live, &[]);
+
+        let mut state = SemanticSessionState::default();
+        state
+            .ui
+            .inventory_equipment_protocol
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID);
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &payload,
+        );
+
+        let equipment = &state.ui.inventory_equipment_protocol;
+        assert_eq!(equipment.visible_equipment_claims, 1);
+        assert_eq!(equipment.visible_equipment_delete_rows, 1);
+        assert_eq!(equipment.last_visible_equipment_removed_slots, 1);
+        assert!(
+            !equipment
+                .visible_equipment_slots_by_owner
+                .contains_key(&(OWNER_ID, VISIBLE_SLOT))
+        );
     }
 
     #[test]
@@ -6249,6 +6300,7 @@ mod fixture_free_tests {
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
+            creature_visible_equipment_claims: Vec::new(),
             inventory_feature25_references: Vec::new(),
             quickbar_item_use_count_records: 1,
             quickbar_item_use_count_rows: u32::try_from(updates.len()).unwrap_or(u32::MAX),
@@ -6323,6 +6375,7 @@ mod fixture_free_tests {
             live_gui_records: 0,
             live_gui_fragment_bits: 0,
             materialized_item_object_ids: Vec::new(),
+            creature_visible_equipment_claims: Vec::new(),
             inventory_feature25_references: Vec::new(),
             quickbar_item_use_count_records: 0,
             quickbar_item_use_count_rows: 0,
