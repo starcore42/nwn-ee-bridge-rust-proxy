@@ -9,8 +9,8 @@ use crate::{
     translate::{
         VerifiedFamily, client_gui_event::ClientGuiEventClaimSummary,
         client_gui_inventory::ClientGuiInventoryClaimSummary,
-        client_input::ClientInputClaimSummary, client_quickbar::ClientQuickbarClaimSummary,
-        inventory::InventoryClaimSummary,
+        client_input::ClientInputClaimSummary, client_inventory::ClientInventoryClaimSummary,
+        client_quickbar::ClientQuickbarClaimSummary, inventory::InventoryClaimSummary,
         item_update_active_props::ActiveItemPropertiesClaimSummary,
         live_object_update::LiveObjectQuickbarItemUseCountUpdate, player_list::PlayerListObjectIds,
         quickbar::QuickbarValidatedSlotProfile,
@@ -40,6 +40,7 @@ pub(crate) enum ProtocolEvent {
     Quickbar(QuickbarEvent),
     ActiveItemProperties(ActiveItemPropertiesEvent),
     Inventory(InventoryEvent),
+    ClientInventory(ClientInventoryEvent),
     ClientGuiEvent(ClientGuiEventEvent),
     ClientInput(ClientInputEvent),
     ClientQuickbar(ClientQuickbarEvent),
@@ -65,6 +66,7 @@ impl ProtocolEvent {
             | ProtocolEvent::Quickbar(QuickbarEvent::Placeholder { observed }) => observed,
             ProtocolEvent::ActiveItemProperties(event) => &event.observed,
             ProtocolEvent::Inventory(event) => &event.observed,
+            ProtocolEvent::ClientInventory(event) => &event.observed,
             ProtocolEvent::ClientGuiEvent(event) => &event.observed,
             ProtocolEvent::ClientInput(event) => &event.observed,
             ProtocolEvent::ClientQuickbar(event) => &event.observed,
@@ -216,6 +218,12 @@ pub(crate) struct InventoryEvent {
     pub(crate) observed: ObservedHighLevel,
     pub(crate) inventory_claim: Option<InventoryClaimSummary>,
     pub(crate) client_gui_inventory_claim: Option<ClientGuiInventoryClaimSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientInventoryEvent {
+    pub(crate) observed: ObservedHighLevel,
+    pub(crate) claim: Option<ClientInventoryClaimSummary>,
 }
 
 #[derive(Debug, Clone)]

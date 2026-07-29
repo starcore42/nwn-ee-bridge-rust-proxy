@@ -132,6 +132,36 @@ pub(super) fn maybe_queue_inventory_equipment_bridge_output(
         .semantic
         .objects
         .inventory_item_object_status(claim.object_id);
+    if claim.native_object_was_proven {
+        // The exact native packet is emitted before any AfterCurrentEmit
+        // insertion. If its item object was already materialized when the
+        // reducer observed it, the EE client can consume that original outcome
+        // directly and a synthetic copy would repeat the state transition.
+        // Claims proven only later deliberately remain on the materialize and
+        // replay path because their first native outcome may have been ignored.
+        record_output_decision(
+            state,
+            update,
+            InventoryEquipmentBridgeOutputDecisionKind::NativeInventoryOutcomeSufficient,
+        );
+        tracing::info!(
+            update_index = update.update_index,
+            emission_index = update.emission_index,
+            event_index = update.event_index,
+            claim_object_id = %format_args!("0x{:08X}", claim.object_id),
+            claim_object_status = claim_object_status.as_str(),
+            claim_object_proof = claim_object_status
+                .proof()
+                .map(|proof| proof.as_str())
+                .unwrap_or("none"),
+            candidate_object_id = %format_args!("0x{:08X}", update.candidate.object_id),
+            minor = claim.minor,
+            equip_slot = claim.equip_slot,
+            alternate_inventory_context = claim.alternate_inventory_context,
+            "inventory/equipment bridge retained sufficient native Inventory outcome without a synthetic duplicate"
+        );
+        return Ok(());
+    }
     if claim.object_id != update.candidate.object_id
         && !matches!(
             claim_object_status,
@@ -1056,6 +1086,62 @@ mod tests {
     }
 
     #[test]
+    fn retains_native_inventory_outcome_when_object_was_already_proven() {
+        for minor in [0x01, 0x02] {
+            let mut update = ready_server_inventory_update();
+            update.server_inventory_claim = Some(
+                InventoryEquipmentServerInventoryClaim::new(minor, 0x8000_1234, true, 4)
+                    .with_native_object_was_proven(true),
+            );
+            let mut state = session_state_with_server_source(10);
+            state
+                .semantic
+                .objects
+                .observe_materialized_item_object_ids(&[0x8000_1234]);
+            state
+                .semantic
+                .ui
+                .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+
+            maybe_queue_inventory_equipment_bridge_output(&mut state, 10, 77)
+                .expect("the exact native Inventory outcome should be sufficient");
+
+            assert!(
+                state
+                    .synthetic_area
+                    .pending_server_to_client_packets
+                    .is_empty()
+            );
+            assert!(state.sequence.pending_server_sequence_insertions.is_empty());
+            assert_eq!(state.inventory_equipment.queued_outputs, 0);
+            assert_eq!(state.inventory_equipment.last_queued_output, None);
+            let decision = state
+                .inventory_equipment
+                .last_decision
+                .expect("native-outcome decision should be recorded");
+            assert_eq!(
+                decision.kind,
+                InventoryEquipmentBridgeOutputDecisionKind::NativeInventoryOutcomeSufficient
+            );
+            assert_eq!(
+                decision
+                    .server_inventory_claim
+                    .expect("decision should preserve the native claim")
+                    .minor,
+                minor
+            );
+            assert_eq!(
+                decision.server_inventory_claim_object_status,
+                InventoryItemObjectStatus::Proven(InventoryItemObjectProof::ActiveObject)
+            );
+            assert_eq!(
+                state.inventory_equipment.output_status(),
+                super::super::state::InventoryEquipmentBridgeOutputStatus::NativeInventoryOutcomeSufficient
+            );
+        }
+    }
+
+    #[test]
     fn queues_exact_inventory_output_after_server_inventory_state_update() {
         let mut state = session_state_with_server_source(10);
         state
@@ -1923,14 +2009,14 @@ mod tests {
     }
 
     #[test]
-    fn replays_original_inventory_result_after_status_materializes_claim_object() {
+    fn replays_original_inventory_cancel_after_status_materializes_claim_object() {
         let candidate = InventoryItemContextCandidate {
             object_id: 0x8001_5322,
             proof: InventoryItemObjectProof::ActiveObject,
             source: InventoryItemContextCandidateSource::DirectOnly,
         };
         let claim =
-            InventoryEquipmentServerInventoryClaim::new(0x01, 0x8001_53D3, false, 0x0002_0000);
+            InventoryEquipmentServerInventoryClaim::new(0x02, 0x8001_53D3, false, 0x0002_0000);
         let mut update = ready_server_inventory_update();
         update.candidate = candidate;
         update.ready_objects = 18;
@@ -2057,6 +2143,10 @@ mod tests {
             .expect("replay packet should expose exact payload");
         let replay_claim = inventory::claim_payload_if_verified(payload)
             .expect("replayed Inventory payload should pass the exact EE validator");
+        assert_eq!(
+            replay_claim.operation,
+            inventory::InventoryOperation::EquipCancel
+        );
         assert_eq!(replay_claim.object_id, claim.object_id);
         assert_eq!(
             replay_claim.alternate_inventory_context,

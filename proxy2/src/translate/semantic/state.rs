@@ -21,8 +21,9 @@ use crate::translate::{
         AreaPlaceableContextStateConflict, AreaPlaceableObservedOrientationSource,
         AreaPlaceableObservedState,
     },
-    client_gui_event, client_gui_inventory, client_input,
+    client_gui_event, client_gui_inventory, client_input, client_inventory,
     client_quickbar::{self, ClientQuickbarSetButtonKind},
+    inventory,
     live_object_update::{
         LiveObjectQuickbarItemUseCountUpdate, area_static_row_scalar_orientation, object_ids,
     },
@@ -906,6 +907,11 @@ pub(crate) struct InventoryEquipmentServerInventoryClaim {
     pub(crate) object_id: u32,
     pub(crate) alternate_inventory_context: bool,
     pub(crate) equip_slot: u32,
+    /// True only when the object already had durable item-materialization
+    /// proof as the native server Inventory packet was observed. A claim that
+    /// becomes proven later still needs the existing materialize-and-replay
+    /// repair path because the EE client may have rejected the first outcome.
+    pub(crate) native_object_was_proven: bool,
 }
 
 impl InventoryEquipmentServerInventoryClaim {
@@ -920,7 +926,198 @@ impl InventoryEquipmentServerInventoryClaim {
             object_id,
             alternate_inventory_context,
             equip_slot,
+            native_object_was_proven: false,
         }
+    }
+
+    pub(crate) fn with_native_object_was_proven(mut self, proven: bool) -> Self {
+        self.native_object_was_proven = proven;
+        self
+    }
+}
+
+const MAX_INVENTORY_RESPONSES_PER_EQUIP_TOGGLE_EPOCH: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InventoryEquipmentResponseRecord {
+    pub(crate) action_epoch: u64,
+    pub(crate) response_ordinal: u64,
+    pub(crate) operation: inventory::InventoryOperation,
+    pub(crate) object_id: u32,
+    pub(crate) alternate_inventory_context: bool,
+    pub(crate) equip_slot: Option<u32>,
+    pub(crate) matches_client_primary: bool,
+    pub(crate) matches_client_secondary: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct InventoryEquipmentProtocolState {
+    pub(crate) client_equip_toggle_events: u64,
+    pub(crate) server_inventory_response_events: u64,
+    pub(crate) server_equip_events: u64,
+    pub(crate) server_equip_cancel_events: u64,
+    pub(crate) server_unequip_events: u64,
+    pub(crate) server_unequip_cancel_events: u64,
+    pub(crate) server_responses_since_last_client_equip_toggle: u64,
+    pub(crate) server_equip_since_last_client_equip_toggle: u64,
+    pub(crate) server_equip_cancel_since_last_client_equip_toggle: u64,
+    pub(crate) server_unequip_since_last_client_equip_toggle: u64,
+    pub(crate) server_unequip_cancel_since_last_client_equip_toggle: u64,
+    pub(crate) last_client_equip_toggle: Option<client_inventory::ClientInventoryClaimSummary>,
+    pub(crate) last_server_inventory_response: Option<inventory::InventoryClaimSummary>,
+    /// The wire protocol exposes no explicit transaction terminator. An epoch
+    /// begins at each exact client EquipToggle and remains chronological until
+    /// the next one; consumers must additionally require an exact participant
+    /// match instead of treating epoch presence as causality.
+    pub(crate) last_server_response_has_client_action_epoch: bool,
+    pub(crate) last_server_response_matches_client_primary: bool,
+    pub(crate) last_server_response_matches_client_secondary: bool,
+    pub(crate) response_records_since_last_client_equip_toggle:
+        Vec<InventoryEquipmentResponseRecord>,
+    /// Observed client-facing equipment state keyed by the exact inventory
+    /// context BOOL and slot DWORD from successful server outcomes. This is a
+    /// protocol coherence cache, not an authority over gameplay state.
+    pub(crate) committed_equipment_slots: BTreeMap<(bool, u32), u32>,
+    pub(crate) committed_equipment_state_updates: u64,
+    pub(crate) last_unequip_removed_slots: usize,
+}
+
+impl InventoryEquipmentProtocolState {
+    pub(crate) fn observe_client_equip_toggle(
+        &mut self,
+        claim: client_inventory::ClientInventoryClaimSummary,
+    ) {
+        self.client_equip_toggle_events = self.client_equip_toggle_events.saturating_add(1);
+        self.last_client_equip_toggle = Some(claim);
+        self.server_responses_since_last_client_equip_toggle = 0;
+        self.server_equip_since_last_client_equip_toggle = 0;
+        self.server_equip_cancel_since_last_client_equip_toggle = 0;
+        self.server_unequip_since_last_client_equip_toggle = 0;
+        self.server_unequip_cancel_since_last_client_equip_toggle = 0;
+        self.last_server_response_has_client_action_epoch = false;
+        self.last_server_response_matches_client_primary = false;
+        self.last_server_response_matches_client_secondary = false;
+        self.response_records_since_last_client_equip_toggle.clear();
+    }
+
+    pub(crate) fn observe_server_inventory_response(
+        &mut self,
+        claim: inventory::InventoryClaimSummary,
+    ) {
+        // EE `HandleServerToPlayerInventory` commits case 1 after the exact
+        // object/BOOL/slot reader at 0x14079F510..0x14079F54D, while case 2
+        // rolls pending state back at 0x14079F473..0x14079F4FF. Cases 7/8
+        // share only object+BOOL and diverge into commit clearing
+        // (0x14079F906..0x14079F99B) versus rollback
+        // (0x14079F8BC..0x14079F8FF). Diamond `sub_450800` mirrors these
+        // branches. Therefore the minor selects the state transition; neither
+        // the context BOOL nor the common body shape encodes success.
+        self.server_inventory_response_events =
+            self.server_inventory_response_events.saturating_add(1);
+        match claim.operation {
+            inventory::InventoryOperation::Equip => {
+                self.server_equip_events = self.server_equip_events.saturating_add(1);
+            }
+            inventory::InventoryOperation::EquipCancel => {
+                self.server_equip_cancel_events = self.server_equip_cancel_events.saturating_add(1);
+            }
+            inventory::InventoryOperation::Unequip => {
+                self.server_unequip_events = self.server_unequip_events.saturating_add(1);
+            }
+            inventory::InventoryOperation::UnequipCancel => {
+                self.server_unequip_cancel_events =
+                    self.server_unequip_cancel_events.saturating_add(1);
+            }
+        }
+
+        let client_toggle = self.last_client_equip_toggle;
+        self.last_server_response_has_client_action_epoch = client_toggle.is_some();
+        self.last_server_response_matches_client_primary =
+            client_toggle.is_some_and(|client| client.primary_object_id == claim.object_id);
+        self.last_server_response_matches_client_secondary = client_toggle
+            .and_then(|client| client.secondary_object_id)
+            .is_some_and(|object_id| object_id == claim.object_id);
+        if client_toggle.is_some() {
+            self.server_responses_since_last_client_equip_toggle = self
+                .server_responses_since_last_client_equip_toggle
+                .saturating_add(1);
+            match claim.operation {
+                inventory::InventoryOperation::Equip => {
+                    self.server_equip_since_last_client_equip_toggle = self
+                        .server_equip_since_last_client_equip_toggle
+                        .saturating_add(1);
+                }
+                inventory::InventoryOperation::EquipCancel => {
+                    self.server_equip_cancel_since_last_client_equip_toggle = self
+                        .server_equip_cancel_since_last_client_equip_toggle
+                        .saturating_add(1);
+                }
+                inventory::InventoryOperation::Unequip => {
+                    self.server_unequip_since_last_client_equip_toggle = self
+                        .server_unequip_since_last_client_equip_toggle
+                        .saturating_add(1);
+                }
+                inventory::InventoryOperation::UnequipCancel => {
+                    self.server_unequip_cancel_since_last_client_equip_toggle = self
+                        .server_unequip_cancel_since_last_client_equip_toggle
+                        .saturating_add(1);
+                }
+            }
+            if self.response_records_since_last_client_equip_toggle.len()
+                >= MAX_INVENTORY_RESPONSES_PER_EQUIP_TOGGLE_EPOCH
+            {
+                self.response_records_since_last_client_equip_toggle
+                    .remove(0);
+            }
+            self.response_records_since_last_client_equip_toggle.push(
+                InventoryEquipmentResponseRecord {
+                    action_epoch: self.client_equip_toggle_events,
+                    response_ordinal: self.server_responses_since_last_client_equip_toggle,
+                    operation: claim.operation,
+                    object_id: claim.object_id,
+                    alternate_inventory_context: claim.alternate_inventory_context,
+                    equip_slot: claim.shape.equip_slot(),
+                    matches_client_primary: self.last_server_response_matches_client_primary,
+                    matches_client_secondary: self.last_server_response_matches_client_secondary,
+                },
+            );
+        }
+
+        self.last_unequip_removed_slots = 0;
+        match claim.operation {
+            inventory::InventoryOperation::Equip => {
+                if let Some(equip_slot) = claim.shape.equip_slot() {
+                    let previous = self.committed_equipment_slots.insert(
+                        (claim.alternate_inventory_context, equip_slot),
+                        claim.object_id,
+                    );
+                    if previous != Some(claim.object_id) {
+                        self.committed_equipment_state_updates =
+                            self.committed_equipment_state_updates.saturating_add(1);
+                    }
+                }
+            }
+            inventory::InventoryOperation::Unequip => {
+                let before = self.committed_equipment_slots.len();
+                self.committed_equipment_slots
+                    .retain(|(context, _), object_id| {
+                        *context != claim.alternate_inventory_context
+                            || *object_id != claim.object_id
+                    });
+                self.last_unequip_removed_slots =
+                    before.saturating_sub(self.committed_equipment_slots.len());
+                if self.last_unequip_removed_slots != 0 {
+                    self.committed_equipment_state_updates =
+                        self.committed_equipment_state_updates.saturating_add(1);
+                }
+            }
+            inventory::InventoryOperation::EquipCancel
+            | inventory::InventoryOperation::UnequipCancel => {
+                // Both client handlers repair/roll back pending GUI state.
+                // Neither cancel commits a new equipment slot mapping.
+            }
+        }
+        self.last_server_inventory_response = Some(claim);
     }
 }
 
@@ -1707,6 +1904,7 @@ pub(crate) enum QuickbarItemRefreshEventKind {
     ServerActiveItemProperties,
     Area,
     Inventory,
+    ClientInventoryEquipToggle,
     ClientGuiEventNotify,
     ClientInputUseItem,
     ClientInputUseObject,
@@ -1727,6 +1925,7 @@ impl QuickbarItemRefreshEventKind {
             Self::ServerActiveItemProperties => "server_active_item_properties",
             Self::Area => "area",
             Self::Inventory => "inventory",
+            Self::ClientInventoryEquipToggle => "client_inventory_equip_toggle",
             Self::ClientGuiEventNotify => "client_gui_event_notify",
             Self::ClientInputUseItem => "client_input_use_item",
             Self::ClientInputUseObject => "client_input_use_object",
@@ -1742,7 +1941,8 @@ impl QuickbarItemRefreshEventKind {
     pub(crate) fn is_client_action(self) -> bool {
         matches!(
             self,
-            Self::ClientInputUseItem
+            Self::ClientInventoryEquipToggle
+                | Self::ClientInputUseItem
                 | Self::ClientInputUseObject
                 | Self::ClientInputChangeDoorState
                 | Self::ClientInputOther
@@ -5534,6 +5734,7 @@ pub(crate) struct UiState {
     pub(crate) client_gui_event_packets: u64,
     pub(crate) client_quickbar_packets: u64,
     pub(crate) inventory_packets: u64,
+    pub(crate) inventory_equipment_protocol: InventoryEquipmentProtocolState,
     pub(crate) inventory_equipment_handoff_events: u64,
     pub(crate) inventory_equipment_handoff_ready_events: u64,
     pub(crate) inventory_equipment_handoff_blocked_without_ready_state_events: u64,

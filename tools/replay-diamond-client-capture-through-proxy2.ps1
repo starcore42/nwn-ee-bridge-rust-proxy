@@ -1804,6 +1804,7 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemKnown = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemObjectId = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemDistance = 0
+    $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContext = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastDeferredClientGuiUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastDeferredMissingClaimUpdateIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastBlockedCandidateMismatchUpdateIndex = 0
@@ -1813,7 +1814,7 @@ try {
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEventIndex = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedMinor = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedObjectId = 0
-    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedResult = $false
+    $quickbarHintInventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContext = $false
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence = 0
     $quickbarHintInventoryEquipmentBridgeOutputLastQueuedSyntheticSequence = 0
@@ -2296,9 +2297,9 @@ try {
         }
         $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemObjectId = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_object_id'
         $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemDistance = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_decision_server_inventory_claim_higher_proven_item_distance'
-        $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimResultProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_decision_server_inventory_claim_result']
-        if ($null -ne $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimResultProp -and $null -ne $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimResultProp.Value) {
-            $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimResult = [bool]$inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimResultProp.Value
+        $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContextProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_decision_server_inventory_claim_alternate_inventory_context']
+        if ($null -ne $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContextProp -and $null -ne $inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContextProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContext = [bool]$inventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContextProp.Value
         }
         $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimEquipSlot = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_decision_server_inventory_claim_equip_slot'
         $inventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimKnownProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_decision_client_gui_inventory_claim_known']
@@ -2365,9 +2366,9 @@ try {
         $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEventIndex = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_event_index'
         $quickbarHintInventoryEquipmentBridgeOutputLastQueuedMinor = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_minor'
         $quickbarHintInventoryEquipmentBridgeOutputLastQueuedObjectId = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_object_id'
-        $inventoryEquipmentBridgeOutputLastQueuedResultProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_queued_result']
-        if ($null -ne $inventoryEquipmentBridgeOutputLastQueuedResultProp -and $null -ne $inventoryEquipmentBridgeOutputLastQueuedResultProp.Value) {
-            $quickbarHintInventoryEquipmentBridgeOutputLastQueuedResult = [bool]$inventoryEquipmentBridgeOutputLastQueuedResultProp.Value
+        $inventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContextProp = $quickbarHintJson.PSObject.Properties['inventory_equipment_bridge_output_last_queued_alternate_inventory_context']
+        if ($null -ne $inventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContextProp -and $null -ne $inventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContextProp.Value) {
+            $quickbarHintInventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContext = [bool]$inventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContextProp.Value
         }
         $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_equip_slot'
         $quickbarHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence = & $getQuickbarHintInt64 'inventory_equipment_bridge_output_last_queued_trigger_sequence'
@@ -2847,7 +2848,7 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemKnown = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemKnown
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemObjectId
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemDistance = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimHigherProvenItemDistance
-        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimResult = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimResult
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContext = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimAlternateInventoryContext
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimEquipSlot = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionServerInventoryClaimEquipSlot
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimKnown = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimKnown
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimKind = $quickbarHintInventoryEquipmentBridgeOutputLastDecisionClientGuiInventoryClaimKind
@@ -2880,7 +2881,7 @@ try {
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedEventIndex = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEventIndex
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedMinor = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedMinor
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedObjectId = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedObjectId
-        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedResult = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedResult
+        QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContext = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedAlternateInventoryContext
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedEquipSlot
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedTriggerSequence
         QuickbarItemRefreshHintInventoryEquipmentBridgeOutputLastQueuedSyntheticSequence = $quickbarHintInventoryEquipmentBridgeOutputLastQueuedSyntheticSequence

@@ -546,6 +546,7 @@ pub(super) enum InventoryEquipmentBridgeOutputDecisionKind {
     #[default]
     None,
     QueuedInventoryOutput,
+    NativeInventoryOutcomeSufficient,
     QueuedClientGuiStatusOutput,
     QueuedConfirmedInventoryReplay,
     DeferredClientGui,
@@ -558,6 +559,7 @@ impl InventoryEquipmentBridgeOutputDecisionKind {
         match self {
             Self::None => "none",
             Self::QueuedInventoryOutput => "queued_inventory_output",
+            Self::NativeInventoryOutcomeSufficient => "native_inventory_outcome_sufficient",
             Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::QueuedConfirmedInventoryReplay => "queued_confirmed_inventory_replay",
             Self::DeferredClientGui => "deferred_client_gui",
@@ -572,6 +574,7 @@ pub(super) enum InventoryEquipmentBridgeOutputStatus {
     #[default]
     AwaitingBridgeStateUpdate,
     QueuedInventoryOutput,
+    NativeInventoryOutcomeSufficient,
     QueuedClientGuiStatusOutput,
     ClientGuiStatusRefreshConfirmed,
     ClientGuiStatusInventoryReplayQueued,
@@ -587,6 +590,7 @@ impl InventoryEquipmentBridgeOutputStatus {
         match self {
             Self::AwaitingBridgeStateUpdate => "awaiting_bridge_state_update",
             Self::QueuedInventoryOutput => "queued_inventory_output",
+            Self::NativeInventoryOutcomeSufficient => "native_inventory_outcome_sufficient",
             Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::ClientGuiStatusRefreshConfirmed => "client_gui_status_refresh_confirmed",
             Self::ClientGuiStatusInventoryReplayQueued => {
@@ -666,6 +670,11 @@ impl InventoryEquipmentBridgeState {
     pub(super) fn output_status(&self) -> InventoryEquipmentBridgeOutputStatus {
         if self.confirmed_inventory_replay_queued_for_dispatch() {
             InventoryEquipmentBridgeOutputStatus::ClientGuiStatusInventoryReplayQueued
+        } else if self.last_decision.is_some_and(|decision| {
+            decision.kind
+                == InventoryEquipmentBridgeOutputDecisionKind::NativeInventoryOutcomeSufficient
+        }) {
+            InventoryEquipmentBridgeOutputStatus::NativeInventoryOutcomeSufficient
         } else if self.confirmed_inventory_replay_dispatches > 0 {
             InventoryEquipmentBridgeOutputStatus::ClientGuiStatusInventoryReplayDispatched
         } else if self.queued_outputs > 0 {

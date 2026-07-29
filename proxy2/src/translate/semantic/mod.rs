@@ -12,7 +12,7 @@ mod state;
 
 pub(crate) use event::{
     ActiveItemPropertiesEvent, AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent,
-    ClientQuickbarEvent, InventoryEvent, LiveObjectBounds, LiveObjectEvent,
+    ClientInventoryEvent, ClientQuickbarEvent, InventoryEvent, LiveObjectBounds, LiveObjectEvent,
     LiveObjectInventoryFeature25Reference, LiveObjectMention, LiveObjectOrientation,
     LiveObjectOrientationSource, LiveObjectOrientationVector, LiveObjectPlaceableAppearance,
     LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,

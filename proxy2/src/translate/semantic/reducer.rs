@@ -9,37 +9,37 @@ use crate::{
     packet::{Direction, m::HighLevel},
     translate::{
         VerifiedFamily, VerifiedProof, area, client_gui_event, client_gui_inventory, client_input,
-        client_quickbar, gameplay_stream, inventory, item_update_active_props, live_object_update,
-        player_list, quickbar,
+        client_inventory, client_quickbar, gameplay_stream, inventory, item_update_active_props,
+        live_object_update, player_list, quickbar,
     },
 };
 
 use super::state::{
     InventoryEquipmentClientGuiInventoryClaim, InventoryEquipmentHandoffConsumer,
     InventoryEquipmentServerInventoryClaim, InventoryItemContextCandidate,
-    LiveObjectInventoryMaterializationSummary, QuickbarItemRefreshActionOutcome,
-    QuickbarItemRefreshClientActionDetail, QuickbarItemRefreshClientActionMatchClass,
-    QuickbarItemRefreshClientActionTiming, QuickbarItemRefreshEventBreakdown,
-    QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
+    InventoryItemObjectStatus, LiveObjectInventoryMaterializationSummary,
+    QuickbarItemRefreshActionOutcome, QuickbarItemRefreshClientActionDetail,
+    QuickbarItemRefreshClientActionMatchClass, QuickbarItemRefreshClientActionTiming,
+    QuickbarItemRefreshEventBreakdown, QuickbarItemRefreshEventKind, QuickbarItemRefreshProofClass,
     QuickbarItemRefreshRecommendedActionOutcome, QuickbarItemRefreshTarget,
     QuickbarItemRefreshUseCountRow,
 };
 use super::{
     ActiveItemPropertiesEvent, AreaEvent, ChatEvent, ClientGuiEventEvent, ClientInputEvent,
-    ClientQuickbarEvent, InventoryEvent, InventoryItemContextSummary, LiveObjectEvent,
-    LiveObjectInventoryFeature25Reference, LiveObjectMention, LiveObjectOrientation,
-    LiveObjectOrientationSource, LiveObjectOrientationVector, LiveObjectPlaceableState,
-    LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel, PlayerListEvent,
-    ProtocolEvent, QuickbarEvent, QuickbarItemContextSource, QuickbarItemRefreshOutcome,
-    SemanticSessionState, ServerStatusEvent,
+    ClientInventoryEvent, ClientQuickbarEvent, InventoryEvent, InventoryItemContextSummary,
+    LiveObjectEvent, LiveObjectInventoryFeature25Reference, LiveObjectMention,
+    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectOrientationVector,
+    LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
+    PlayerListEvent, ProtocolEvent, QuickbarEvent, QuickbarItemContextSource,
+    QuickbarItemRefreshOutcome, SemanticSessionState, ServerStatusEvent,
 };
 
+#[cfg(test)]
+use super::InventoryItemObjectProof;
 #[cfg(test)]
 use super::state::InventoryItemContextCandidateSource;
 #[cfg(test)]
 use super::state::QuickbarStreamProbeSummary;
-#[cfg(test)]
-use super::{InventoryItemObjectProof, InventoryItemObjectStatus};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct VerifiedPayloadSemanticObservations {
@@ -399,6 +399,10 @@ fn observe_family_payload(
             observed,
             inventory_claim: None,
             client_gui_inventory_claim: client_gui_inventory::claim_payload_if_verified(payload),
+        }),
+        VerifiedFamily::ClientInventory => ProtocolEvent::ClientInventory(ClientInventoryEvent {
+            observed,
+            claim: client_inventory::claim_payload_if_verified(payload),
         }),
         VerifiedFamily::ClientGuiEvent => ProtocolEvent::ClientGuiEvent(ClientGuiEventEvent {
             observed,
@@ -1097,9 +1101,33 @@ fn apply_event(
                 );
                 return None;
             }
+            if let Some(claim) = event.inventory_claim {
+                state
+                    .ui
+                    .inventory_equipment_protocol
+                    .observe_server_inventory_response(claim);
+                let protocol = &state.ui.inventory_equipment_protocol;
+                tracing::info!(
+                    operation = claim.operation.as_str(),
+                    minor = claim.minor,
+                    object_id = %format_args!("0x{:08X}", claim.object_id),
+                    alternate_inventory_context = claim.alternate_inventory_context,
+                    equip_slot_known = claim.shape.equip_slot().is_some(),
+                    equip_slot = claim.shape.equip_slot().unwrap_or(0),
+                    client_action_epoch = protocol.client_equip_toggle_events,
+                    response_ordinal = protocol.server_responses_since_last_client_equip_toggle,
+                    matches_client_primary =
+                        protocol.last_server_response_matches_client_primary,
+                    matches_client_secondary =
+                        protocol.last_server_response_matches_client_secondary,
+                    committed_equipment_slots = protocol.committed_equipment_slots.len(),
+                    last_unequip_removed_slots = protocol.last_unequip_removed_slots,
+                    "semantic state observed typed server inventory/equipment response"
+                );
+            }
             let server_unequip = event
                 .inventory_claim
-                .is_some_and(|claim| claim.shape == inventory::InventoryShape::Unequip);
+                .is_some_and(|claim| claim.operation.is_unequip());
             if server_unequip {
                 // Unequip/UnequipCancel is already an exact pass-through state
                 // transition for the EE client. It owns no slot and must not
@@ -1114,6 +1142,10 @@ fn apply_event(
                     InventoryEquipmentHandoffConsumer::from_verified_family(event.observed.family);
                 let item_context = inventory_equipment_handoff_context(state);
                 let server_inventory_claim = event.inventory_claim.and_then(|claim| {
+                    let native_object_was_proven = matches!(
+                        state.objects.inventory_item_object_status(claim.object_id),
+                        InventoryItemObjectStatus::Proven(_)
+                    );
                     claim.shape.equip_slot().map(|equip_slot| {
                         InventoryEquipmentServerInventoryClaim::new(
                             claim.minor,
@@ -1121,6 +1153,7 @@ fn apply_event(
                             claim.alternate_inventory_context,
                             equip_slot,
                         )
+                        .with_native_object_was_proven(native_object_was_proven)
                     })
                 });
                 let client_gui_inventory_claim = event
@@ -1172,6 +1205,33 @@ fn apply_event(
                     inventory_feature25_deferred_item_ref_mentions =
                         item_context.inventory_feature25_deferred_item_ref_mentions(),
                     "semantic state observed inventory/equipment handoff consumer"
+                );
+            }
+        }
+        ProtocolEvent::ClientInventory(event) => {
+            state.ui.inventory_packets = state.ui.inventory_packets.saturating_add(1);
+            if let Some(claim) = event.claim {
+                state
+                    .ui
+                    .inventory_equipment_protocol
+                    .observe_client_equip_toggle(claim);
+                tracing::info!(
+                    client_action_epoch = state
+                        .ui
+                        .inventory_equipment_protocol
+                        .client_equip_toggle_events,
+                    primary_object_id = %format_args!("0x{:08X}", claim.primary_object_id),
+                    secondary_object_known = claim.secondary_object_id.is_some(),
+                    secondary_object_id = claim.secondary_object_id.unwrap_or(0),
+                    declared = claim.declared,
+                    fragment_bytes = claim.fragment_bytes,
+                    "semantic state observed exact client Inventory_EquipToggle transaction"
+                );
+            } else {
+                tracing::warn!(
+                    payload_len = event.observed.payload_len,
+                    declared_len = event.observed.declared_len,
+                    "verified ClientInventory payload did not expose an exact Inventory_EquipToggle claim"
                 );
             }
         }
@@ -2206,7 +2266,7 @@ fn record_quickbar_item_refresh_event_breakdown(
         ProtocolEvent::Area(_) => {
             breakdown.area_events = breakdown.area_events.saturating_add(1);
         }
-        ProtocolEvent::Inventory(_) => {
+        ProtocolEvent::Inventory(_) | ProtocolEvent::ClientInventory(_) => {
             breakdown.inventory_events = breakdown.inventory_events.saturating_add(1);
         }
         ProtocolEvent::ClientGuiEvent(_) => {
@@ -2372,6 +2432,31 @@ fn quickbar_item_refresh_client_action_detail(
                 matches_candidate_object: matches_candidate_object(object_id),
             }
         }
+        ProtocolEvent::ClientInventory(event) => {
+            let object_id = event.claim.map(|claim| claim.primary_object_id);
+            QuickbarItemRefreshClientActionDetail {
+                kind,
+                object_id,
+                slot: None,
+                button_type: None,
+                body_kind: None,
+                gui_event_a: None,
+                gui_event_b: None,
+                gui_event_declared_bytes: None,
+                gui_event_trailing_fragment_bytes: None,
+                gui_event_has_vector: None,
+                gui_event_vector_bits: None,
+                use_item_active_property_subtype: None,
+                use_item_has_optional_byte: None,
+                use_item_has_target_object: None,
+                use_item_target_object_id: None,
+                use_item_has_position: None,
+                use_object_mark_inventory_gui_state: None,
+                use_object_schedule_script_event: None,
+                candidate_object_id,
+                matches_candidate_object: matches_candidate_object(object_id),
+            }
+        }
         _ => QuickbarItemRefreshClientActionDetail {
             kind,
             object_id: None,
@@ -2455,6 +2540,9 @@ fn quickbar_item_refresh_event_kind(event: &ProtocolEvent) -> QuickbarItemRefres
         }
         ProtocolEvent::Area(_) => QuickbarItemRefreshEventKind::Area,
         ProtocolEvent::Inventory(_) => QuickbarItemRefreshEventKind::Inventory,
+        ProtocolEvent::ClientInventory(_) => {
+            QuickbarItemRefreshEventKind::ClientInventoryEquipToggle
+        }
         ProtocolEvent::ClientGuiEvent(_) => QuickbarItemRefreshEventKind::ClientGuiEventNotify,
         ProtocolEvent::ClientInput(event) => match event.claim.map(|claim| claim.kind) {
             Some(client_input::ClientInputKind::UseItem) => {
@@ -2882,6 +2970,223 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn tracks_ordered_inventory_transaction_outcomes_without_committing_cancels() {
+        let primary_object_id = 0x8001_5219;
+        let secondary_object_id = 0x8001_5220;
+        let mut state = SemanticSessionState::default();
+        let equip_toggle = client_inventory::build_equip_toggle_payload(
+            primary_object_id,
+            Some(secondary_object_id),
+        )
+        .expect("exact client Inventory_EquipToggle");
+        observe_verified_payload(
+            &mut state,
+            Direction::ClientToServer,
+            &VerifiedProof::Family(VerifiedFamily::ClientInventory),
+            &equip_toggle,
+        );
+
+        let equip = inventory::build_ee_inventory_payload(0x01, primary_object_id, false, 4)
+            .expect("exact server Inventory_Equip");
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Inventory),
+            &equip,
+        );
+        assert_eq!(
+            state
+                .ui
+                .inventory_equipment_protocol
+                .committed_equipment_slots
+                .get(&(false, 4)),
+            Some(&primary_object_id)
+        );
+
+        let equip_cancel =
+            inventory::build_ee_inventory_payload(0x02, secondary_object_id, true, 8)
+                .expect("exact server Inventory_EquipCancel");
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Inventory),
+            &equip_cancel,
+        );
+        assert_eq!(
+            state
+                .ui
+                .inventory_equipment_protocol
+                .committed_equipment_slots
+                .len(),
+            1,
+            "EquipCancel must roll back pending GUI state without committing its slot"
+        );
+
+        let unequip_cancel =
+            inventory::build_ee_inventory_unequip_payload(0x08, primary_object_id, false)
+                .expect("exact server Inventory_UnequipCancel");
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Inventory),
+            &unequip_cancel,
+        );
+        assert_eq!(
+            state
+                .ui
+                .inventory_equipment_protocol
+                .committed_equipment_slots
+                .get(&(false, 4)),
+            Some(&primary_object_id),
+            "UnequipCancel must preserve the committed slot mapping"
+        );
+
+        let unequip = inventory::build_ee_inventory_unequip_payload(0x07, primary_object_id, false)
+            .expect("exact server Inventory_Unequip");
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Inventory),
+            &unequip,
+        );
+
+        let protocol = &state.ui.inventory_equipment_protocol;
+        assert_eq!(state.ui.inventory_packets, 5);
+        assert_eq!(protocol.client_equip_toggle_events, 1);
+        assert_eq!(protocol.server_inventory_response_events, 4);
+        assert_eq!(protocol.server_equip_events, 1);
+        assert_eq!(protocol.server_equip_cancel_events, 1);
+        assert_eq!(protocol.server_unequip_events, 1);
+        assert_eq!(protocol.server_unequip_cancel_events, 1);
+        assert_eq!(
+            protocol
+                .response_records_since_last_client_equip_toggle
+                .iter()
+                .map(|record| record.operation)
+                .collect::<Vec<_>>(),
+            vec![
+                inventory::InventoryOperation::Equip,
+                inventory::InventoryOperation::EquipCancel,
+                inventory::InventoryOperation::UnequipCancel,
+                inventory::InventoryOperation::Unequip,
+            ]
+        );
+        assert!(protocol.response_records_since_last_client_equip_toggle[0].matches_client_primary);
+        assert!(
+            protocol.response_records_since_last_client_equip_toggle[1].matches_client_secondary
+        );
+        assert!(protocol.committed_equipment_slots.is_empty());
+        assert_eq!(protocol.last_unequip_removed_slots, 1);
+        assert_eq!(protocol.committed_equipment_state_updates, 2);
+    }
+
+    #[test]
+    fn captures_item_proof_at_native_inventory_arrival_for_output_gating() {
+        let object_id = 0x8001_5219;
+        let payload = inventory::build_ee_inventory_payload(0x01, object_id, false, 4)
+            .expect("exact server Inventory_Equip");
+
+        let mut ready_state = SemanticSessionState::default();
+        ready_state
+            .objects
+            .observe_materialized_item_object_ids(&[object_id]);
+        observe_verified_payload(
+            &mut ready_state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Inventory),
+            &payload,
+        );
+        assert!(
+            ready_state
+                .ui
+                .last_inventory_equipment_bridge_handoff_state_update
+                .and_then(|update| update.server_inventory_claim)
+                .is_some_and(|claim| claim.native_object_was_proven),
+            "a native outcome arriving after item materialization must not need a duplicate"
+        );
+
+        let mut pending_state = SemanticSessionState::default();
+        observe_verified_payload(
+            &mut pending_state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::Inventory),
+            &payload,
+        );
+        let later_ready_context = InventoryItemContextSummary {
+            direct_item_proof_objects: 1,
+            compact_item_emission_proof_objects: 1,
+            compact_item_emission_ready_objects: 1,
+            compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                object_id,
+                proof: InventoryItemObjectProof::ActiveObject,
+                source: InventoryItemContextCandidateSource::DirectOnly,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            pending_state
+                .ui
+                .consume_pending_server_inventory_handoff_if_ready(later_ready_context),
+            "later item materialization should drain the pending native claim"
+        );
+        assert!(
+            pending_state
+                .ui
+                .last_inventory_equipment_bridge_handoff_state_update
+                .and_then(|update| update.server_inventory_claim)
+                .is_some_and(|claim| !claim.native_object_was_proven),
+            "a native outcome arriving before item materialization must retain replay eligibility"
+        );
+    }
+
+    #[test]
+    fn pending_quickbar_refresh_records_equip_toggle_as_the_first_client_action() {
+        let object_id = 0x8001_5219;
+        let quickbar_payload = quickbar::build_blank_set_all_buttons_payload(b'P')
+            .expect("exact blank quickbar payload");
+        let equip_toggle = client_inventory::build_equip_toggle_payload(object_id, None)
+            .expect("exact Inventory_EquipToggle payload");
+        let mut state = SemanticSessionState::default();
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GuiQuickbar),
+            &quickbar_payload,
+        );
+        seed_committed_quickbar_item_target(&mut state, 3, object_id);
+        apply_event(&mut state, direct_item_live_event(object_id), None);
+        observe_verified_payload(
+            &mut state,
+            Direction::ClientToServer,
+            &VerifiedProof::Family(VerifiedFamily::ClientInventory),
+            &equip_toggle,
+        );
+
+        let unresolved = state
+            .ui
+            .unresolved_pending_item_refresh()
+            .expect("EquipToggle should leave the quickbar refresh awaiting a server response");
+        assert_eq!(
+            unresolved.first_client_action,
+            Some(QuickbarItemRefreshEventKind::ClientInventoryEquipToggle)
+        );
+        let detail = unresolved
+            .first_client_action_detail
+            .expect("EquipToggle should expose its exact primary object");
+        assert_eq!(detail.object_id, Some(object_id));
+        assert_eq!(detail.candidate_object_id, Some(object_id));
+        assert_eq!(detail.matches_candidate_object, Some(true));
+        assert_eq!(unresolved.followup_events_before_first_client_action, 0);
+        assert_eq!(unresolved.event_breakdown.inventory_events, 1);
+        assert_eq!(unresolved.event_breakdown.client_to_server_events, 1);
+        assert_eq!(
+            unresolved.action_outcome,
+            QuickbarItemRefreshActionOutcome::CandidateClientActionNoServerQuickbar
+        );
+    }
+
+    #[test]
     fn unequip_does_not_clear_pending_or_replace_ready_equip_handoff() {
         let object_id = 0x8001_5219;
         let equip_slot = 4;
@@ -2894,6 +3199,13 @@ mod fixture_free_tests {
                 ),
                 inventory_claim: Some(inventory::InventoryClaimSummary {
                     minor,
+                    operation: match minor {
+                        0x01 => inventory::InventoryOperation::Equip,
+                        0x02 => inventory::InventoryOperation::EquipCancel,
+                        0x07 => inventory::InventoryOperation::Unequip,
+                        0x08 => inventory::InventoryOperation::UnequipCancel,
+                        _ => panic!("test inventory event must use a claimed minor"),
+                    },
                     old_declared: declared,
                     new_declared: declared,
                     legacy_prefix_removed: false,

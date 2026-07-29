@@ -60,6 +60,39 @@ const SERVER_OBJECT_ID_NAMESPACE_MASK: u32 = 0xFF00_0000;
 const SERVER_ITEM_OBJECT_ID_NAMESPACE: u32 = 0x8000_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryOperation {
+    Equip,
+    EquipCancel,
+    Unequip,
+    UnequipCancel,
+}
+
+impl InventoryOperation {
+    fn from_minor(minor: u8) -> Option<Self> {
+        match minor {
+            EQUIP_MINOR => Some(Self::Equip),
+            EQUIP_CANCEL_MINOR => Some(Self::EquipCancel),
+            UNEQUIP_MINOR => Some(Self::Unequip),
+            UNEQUIP_CANCEL_MINOR => Some(Self::UnequipCancel),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Equip => "equip",
+            Self::EquipCancel => "equip_cancel",
+            Self::Unequip => "unequip",
+            Self::UnequipCancel => "unequip_cancel",
+        }
+    }
+
+    pub fn is_unequip(self) -> bool {
+        matches!(self, Self::Unequip | Self::UnequipCancel)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InventoryShape {
     Equip { equip_slot: u32 },
     Unequip,
@@ -77,6 +110,7 @@ impl InventoryShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InventoryClaimSummary {
     pub minor: u8,
+    pub operation: InventoryOperation,
     pub old_declared: usize,
     pub new_declared: usize,
     pub legacy_prefix_removed: bool,
@@ -223,6 +257,7 @@ fn claim_ee_equip_shape(
 
     Some(InventoryClaimSummary {
         minor,
+        operation: InventoryOperation::from_minor(minor)?,
         old_declared: declared,
         new_declared: declared,
         legacy_prefix_removed: false,
@@ -250,6 +285,7 @@ fn claim_unequip_shape(payload: &[u8], minor: u8) -> Option<InventoryClaimSummar
 
     Some(InventoryClaimSummary {
         minor,
+        operation: InventoryOperation::from_minor(minor)?,
         old_declared: declared,
         new_declared: declared,
         legacy_prefix_removed: false,
@@ -283,6 +319,7 @@ fn rewrite_legacy_prefixed_equip_shape(
 
     Some(InventoryClaimSummary {
         minor,
+        operation: InventoryOperation::from_minor(minor)?,
         old_declared,
         new_declared,
         legacy_prefix_removed: true,
@@ -350,6 +387,7 @@ mod tests {
 
         let claim = claim_payload_if_verified(&payload).expect("exact EE inventory equip claim");
         assert_eq!(claim.minor, EQUIP_MINOR);
+        assert_eq!(claim.operation, InventoryOperation::Equip);
         assert_eq!(claim.object_id, 0x8000_1234);
         assert!(claim.alternate_inventory_context);
         assert_eq!(claim.shape.equip_slot(), Some(4));
@@ -385,6 +423,7 @@ mod tests {
         let rewrite = claim_or_rewrite_payload_if_verified(&mut payload)
             .expect("legacy prefixed inventory equip should rewrite");
         assert!(rewrite.legacy_prefix_removed);
+        assert_eq!(rewrite.operation, InventoryOperation::Equip);
         assert_eq!(rewrite.old_declared, 0x13);
         assert_eq!(rewrite.new_declared, 0x0F);
         assert!(!rewrite.alternate_inventory_context);
@@ -420,6 +459,7 @@ mod tests {
         );
         let claim = claim_payload_if_verified(&payload).expect("built payload should validate");
         assert_eq!(claim.object_id, 0x8000_1234);
+        assert_eq!(claim.operation, InventoryOperation::Equip);
         assert!(claim.alternate_inventory_context);
         assert_eq!(claim.shape.equip_slot(), Some(4));
     }
@@ -498,6 +538,7 @@ mod tests {
             .expect("live HG Inventory_Unequip should prove object plus bool");
 
         assert_eq!(claim.minor, UNEQUIP_MINOR);
+        assert_eq!(claim.operation, InventoryOperation::Unequip);
         assert_eq!(claim.object_id, 0x8001_59F9);
         assert!(!claim.alternate_inventory_context);
         assert_eq!(claim.shape, InventoryShape::Unequip);
@@ -533,6 +574,14 @@ mod tests {
             );
             let claim =
                 claim_payload_if_verified(&payload).expect("built unequip payload should claim");
+            assert_eq!(
+                claim.operation,
+                match minor {
+                    UNEQUIP_MINOR => InventoryOperation::Unequip,
+                    UNEQUIP_CANCEL_MINOR => InventoryOperation::UnequipCancel,
+                    _ => unreachable!("test only covers claimed unequip minors"),
+                }
+            );
             assert_eq!(claim.alternate_inventory_context, alternate);
             assert_eq!(claim.shape, InventoryShape::Unequip);
         }
