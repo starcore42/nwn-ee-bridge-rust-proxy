@@ -710,6 +710,63 @@ pub(super) fn try_get_legacy_live_inventory_prefix_claim(
     })
 }
 
+pub(super) fn try_get_verified_inventory_prefix_record_end(
+    bytes: &[u8],
+    record_offset: usize,
+    search_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    if let Some(prefix) =
+        try_get_legacy_live_inventory_prefix_claim(bytes, record_offset, search_end)
+            .filter(|prefix| !prefix.interleaved_fragment_tail_allowed)
+    {
+        // Deterministic inventory masks have a decompile-owned byte cursor even
+        // when the following record cannot yet expose its own endpoint.
+        let mut probe_bit_cursor = bit_cursor;
+        if advance_verified_inventory_record(
+            bytes,
+            record_offset,
+            prefix.read_end,
+            fragment_bits,
+            &mut probe_bit_cursor,
+        )
+        .is_some()
+        {
+            return Some(prefix.read_end);
+        }
+    }
+
+    // Masks such as 0x0401 can have fragment-selected byte branches, so their
+    // proofless prefix parser deliberately refuses to guess a read end. When a
+    // focused GUI row follows, enumerate only those prefix positions and run
+    // the complete inventory reader from the inherited bit cursor. One unique
+    // exact candidate is a semantic handoff; multiple candidates remain
+    // fail-closed instead of choosing an opcode-looking byte inside the body.
+    let mut matched_end = None;
+    for candidate_end in record_offset.saturating_add(7)..search_end.min(bytes.len()) {
+        if !super::gui::looks_like_legacy_live_gui_rewrite_boundary(bytes, candidate_end) {
+            continue;
+        }
+        let mut probe_bit_cursor = bit_cursor;
+        if advance_verified_inventory_record(
+            bytes,
+            record_offset,
+            candidate_end,
+            fragment_bits,
+            &mut probe_bit_cursor,
+        )
+        .is_none()
+        {
+            continue;
+        }
+        if matched_end.replace(candidate_end).is_some() {
+            return None;
+        }
+    }
+    matched_end
+}
+
 pub(super) fn try_get_missing_current_player_2a00_record_end(
     bytes: &[u8],
     record_offset: usize,

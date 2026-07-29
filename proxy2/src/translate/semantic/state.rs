@@ -974,6 +974,14 @@ pub(crate) struct InventoryEquipmentProtocolState {
     pub(crate) last_server_response_matches_client_secondary: bool,
     pub(crate) response_records_since_last_client_equip_toggle:
         Vec<InventoryEquipmentResponseRecord>,
+    /// Retain the latest response that an exact consumer matched to its
+    /// primary object/context/slot independently of the bounded chronology
+    /// above. A noisy server may append more than
+    /// `MAX_INVENTORY_RESPONSES_PER_EQUIP_TOGGLE_EPOCH` unrelated or
+    /// differently shaped primary records after answering the action;
+    /// eviction must not revoke the already-matched proof.
+    pub(crate) retained_matching_primary_response_for_current_equip_toggle:
+        Option<InventoryEquipmentResponseRecord>,
     /// Observed client-facing equipment state keyed by the exact inventory
     /// context BOOL and slot DWORD from successful server outcomes. This is a
     /// protocol coherence cache, not an authority over gameplay state.
@@ -983,6 +991,54 @@ pub(crate) struct InventoryEquipmentProtocolState {
 }
 
 impl InventoryEquipmentProtocolState {
+    pub(crate) fn latest_matching_response_for_current_equip_toggle(
+        &mut self,
+        object_id: u32,
+        alternate_inventory_context: bool,
+        equip_slot: u32,
+    ) -> Option<InventoryEquipmentResponseRecord> {
+        if self.client_equip_toggle_events == 0 {
+            return None;
+        }
+        let client_action = self.last_client_equip_toggle?;
+        if client_action.primary_object_id != object_id
+            || client_action.secondary_object_id.is_some()
+        {
+            return None;
+        }
+        let response_matches = |response: &InventoryEquipmentResponseRecord| {
+            response.action_epoch == self.client_equip_toggle_events
+                && response.object_id == object_id
+                && response.alternate_inventory_context == alternate_inventory_context
+                && response.matches_client_primary
+                && !response.matches_client_secondary
+                && match response.operation {
+                    inventory::InventoryOperation::Equip
+                    | inventory::InventoryOperation::EquipCancel => {
+                        response.equip_slot == Some(equip_slot)
+                    }
+                    inventory::InventoryOperation::Unequip
+                    | inventory::InventoryOperation::UnequipCancel => response.equip_slot.is_none(),
+                }
+        };
+        let latest_chronology_match = self
+            .response_records_since_last_client_equip_toggle
+            .iter()
+            .rev()
+            .copied()
+            .find(|response| response_matches(response));
+        if let Some(response) = latest_chronology_match {
+            // Cache only the exact shape requested by the consumer. Merely
+            // observing a same-object response is insufficient because a
+            // later wrong-slot/context response must not overwrite an earlier
+            // authorization after the bounded chronology evicts it.
+            self.retained_matching_primary_response_for_current_equip_toggle = Some(response);
+            return Some(response);
+        }
+        self.retained_matching_primary_response_for_current_equip_toggle
+            .filter(response_matches)
+    }
+
     pub(crate) fn observe_client_equip_toggle(
         &mut self,
         claim: client_inventory::ClientInventoryClaimSummary,
@@ -998,6 +1054,22 @@ impl InventoryEquipmentProtocolState {
         self.last_server_response_matches_client_primary = false;
         self.last_server_response_matches_client_secondary = false;
         self.response_records_since_last_client_equip_toggle.clear();
+        self.retained_matching_primary_response_for_current_equip_toggle = None;
+    }
+
+    pub(crate) fn reset_equip_toggle_authorization_for_area(&mut self) {
+        self.server_responses_since_last_client_equip_toggle = 0;
+        self.server_equip_since_last_client_equip_toggle = 0;
+        self.server_equip_cancel_since_last_client_equip_toggle = 0;
+        self.server_unequip_since_last_client_equip_toggle = 0;
+        self.server_unequip_cancel_since_last_client_equip_toggle = 0;
+        self.last_client_equip_toggle = None;
+        self.last_server_inventory_response = None;
+        self.last_server_response_has_client_action_epoch = false;
+        self.last_server_response_matches_client_primary = false;
+        self.last_server_response_matches_client_secondary = false;
+        self.response_records_since_last_client_equip_toggle.clear();
+        self.retained_matching_primary_response_for_current_equip_toggle = None;
     }
 
     pub(crate) fn observe_server_inventory_response(
@@ -1069,18 +1141,18 @@ impl InventoryEquipmentProtocolState {
                 self.response_records_since_last_client_equip_toggle
                     .remove(0);
             }
-            self.response_records_since_last_client_equip_toggle.push(
-                InventoryEquipmentResponseRecord {
-                    action_epoch: self.client_equip_toggle_events,
-                    response_ordinal: self.server_responses_since_last_client_equip_toggle,
-                    operation: claim.operation,
-                    object_id: claim.object_id,
-                    alternate_inventory_context: claim.alternate_inventory_context,
-                    equip_slot: claim.shape.equip_slot(),
-                    matches_client_primary: self.last_server_response_matches_client_primary,
-                    matches_client_secondary: self.last_server_response_matches_client_secondary,
-                },
-            );
+            let response = InventoryEquipmentResponseRecord {
+                action_epoch: self.client_equip_toggle_events,
+                response_ordinal: self.server_responses_since_last_client_equip_toggle,
+                operation: claim.operation,
+                object_id: claim.object_id,
+                alternate_inventory_context: claim.alternate_inventory_context,
+                equip_slot: claim.shape.equip_slot(),
+                matches_client_primary: self.last_server_response_matches_client_primary,
+                matches_client_secondary: self.last_server_response_matches_client_secondary,
+            };
+            self.response_records_since_last_client_equip_toggle
+                .push(response);
         }
 
         self.last_unequip_removed_slots = 0;

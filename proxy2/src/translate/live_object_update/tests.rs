@@ -1444,6 +1444,125 @@ fn inventory_delta_followed_by_gui_item_add_rewrites_and_claims_exactly() {
 }
 
 #[test]
+fn gui_item_add_hands_exact_cursor_to_terminal_creature_visibility_update() {
+    let source = include_bytes!("../../../fixtures/live_object/player_hide_inventory_gui_span.bin");
+    let old_declared = super::read_u32_le(source, super::HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+    let mut source_bits = super::bits::decode_msb_valid_bits(
+        &source[old_declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("source item fragment should decode");
+
+    // EE `sub_1407B3F30` / Diamond `sub_4589A0` return after the nested GIA
+    // item reader, and the outer live-object dispatcher can immediately enter
+    // a top-level U/5. Mask 0x8000 owns no read-buffer body after the ten-byte
+    // header and consumes exactly three visibility BOOLs in both clients.
+    let mut payload = source[..old_declared].to_vec();
+    payload.extend_from_slice(&[b'U', 0x05]);
+    payload.extend_from_slice(&0x8000_0042u32.to_le_bytes());
+    payload.extend_from_slice(&0x0000_8000u32.to_le_bytes());
+    let new_declared = payload.len();
+    payload
+        [super::HIGH_LEVEL_HEADER_BYTES..super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES]
+        .copy_from_slice(&(new_declared as u32).to_le_bytes());
+    source_bits.extend_from_slice(&[true, true, false]);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        source_bits,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the source GIA row still needs EE's active-property BOOL"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("GIA followed by terminal U/5 should rewrite transactionally");
+    assert_eq!(rewrite.bits_inserted, 1);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten GIA must hand the exact cursor to terminal U/5");
+    assert_eq!(claim.records_examined, 3);
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.live_gui_item_create_records, 1);
+    assert_eq!(claim.creature_update_records, 1);
+
+    let rewritten_declared =
+        super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+    let mut truncated_bits = super::bits::decode_msb_valid_bits(
+        &payload[rewritten_declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("rewritten fragment should decode");
+    truncated_bits.pop();
+    payload.truncate(rewritten_declared);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        truncated_bits,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the terminal U/5 successor must prove all three visibility BOOLs"
+    );
+}
+
+#[test]
+fn gui_item_add_hands_off_to_exact_gui_read_buffer_sibling() {
+    let source = include_bytes!("../../../fixtures/live_object/player_hide_inventory_gui_span.bin");
+    let old_declared = super::read_u32_le(source, super::HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+
+    // The nested inventory item reader returns to the GUI dispatcher, whose
+    // next sibling can be a byte-only repository delete rather than another
+    // item add. Diamond `sub_458A70` and EE `sub_1407B4620` both consume GRD
+    // as the three-byte prefix plus one raw OBJECTID and no fragment BOOLs.
+    let mut payload = source[..old_declared].to_vec();
+    payload.extend_from_slice(b"GRD");
+    payload.extend_from_slice(&0x8000_0042u32.to_le_bytes());
+    let new_declared = payload.len();
+    payload
+        [super::HIGH_LEVEL_HEADER_BYTES..super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES]
+        .copy_from_slice(&(new_declared as u32).to_le_bytes());
+    payload.extend_from_slice(&source[old_declared..]);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the source GIA row still needs EE's active-property BOOL"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("GIA followed by GRD should rewrite transactionally");
+    assert_eq!(rewrite.bits_inserted, 1);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten GIA must hand off to the exact GRD sibling");
+    assert_eq!(claim.records_examined, 3);
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.live_gui_item_create_records, 1);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+}
+
+#[test]
+fn deterministic_inventory_prefix_hands_off_before_lengthless_gui_item() {
+    let payload =
+        include_bytes!("../../../fixtures/live_object/player_hide_inventory_gui_span.bin");
+    let declared = super::read_u32_le(payload, super::HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+    let live = &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("source fragment should decode");
+
+    assert_eq!(
+        super::inventory::try_get_verified_inventory_prefix_record_end(
+            live,
+            0,
+            live.len(),
+            &fragment_bits,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        ),
+        Some(41),
+        "the exact I/0x0401 cursor must stop at GIA even before GIA is rewritten"
+    );
+}
+
+#[test]
 fn inventory_0400_delta_requires_exact_fragment_cursor_consumption() {
     let live = [
         b'I', 0xDC, 0xFF, 0xFF, 0xFF, // live inventory owner id

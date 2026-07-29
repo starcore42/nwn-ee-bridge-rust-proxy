@@ -475,6 +475,10 @@ fn apply_event(
             state.area.last_client_area_declared_len = observed.declared_len;
             state.area.current_area_object_id = *area_object_id;
             state.objects.reset_for_area();
+            state
+                .ui
+                .inventory_equipment_protocol
+                .reset_equip_toggle_authorization_for_area();
             remember_quickbar_item_context_if_relevant(state, "area-reset");
         }
         ProtocolEvent::Area(AreaEvent::AreaLoaded { .. }) => {

@@ -20744,6 +20744,17 @@ fn claim_payload_if_verified_with_reject(
             .min(live_bytes.len())
         });
         let mut verified_creature_appearance_next_bit_cursor = None;
+        if live_bytes.get(offset).copied() == Some(b'I')
+            && let Some(verified_end) = inventory::try_get_verified_inventory_prefix_record_end(
+                live_bytes,
+                offset,
+                live_bytes.len(),
+                &fragment_bits,
+                bit_cursor,
+            )
+        {
+            record_end = verified_end;
+        }
         if live_bytes.get(offset).copied() == Some(b'P')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
         {
@@ -24907,6 +24918,18 @@ fn rewrite_update_records_payload_with_area_context_inner(
             )
             .min(live_bytes.len())
         };
+        if opcode == b'I'
+            && bit_cursor_reliable
+            && let Some(verified_end) = inventory::try_get_verified_inventory_prefix_record_end(
+                &live_bytes,
+                offset,
+                live_bytes.len(),
+                &fragment_bits,
+                bit_cursor,
+            )
+        {
+            record_end = verified_end;
+        }
         let mut creature_appearance_already_ee_shaped = false;
         let mut creature_appearance_verified_ee_shaped = false;
         let mut creature_appearance_legacy_end: Option<usize> = None;

@@ -55,6 +55,8 @@ mod synthetic_area;
 mod transport_identity;
 mod zlib_zero_fill;
 
+#[cfg(test)]
+use crate::translate::inventory;
 use deflate::deflate_zlib;
 #[cfg(test)]
 use deflate::looks_like_zlib_wrapped_deflate;
@@ -3281,10 +3283,11 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         Some(hint) => hint.to_json(),
         None => state.semantic.quickbar_item_refresh_harness_idle_json(),
     };
-    let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+    let body = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         body,
         &state.inventory_equipment,
         &state.semantic.objects,
+        &mut state.semantic.ui.inventory_equipment_protocol,
     );
 
     if state.quickbar_item_refresh_hint_last_body.as_deref() == Some(body.as_str()) {
@@ -3335,6 +3338,21 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     body: String,
     bridge: &state::InventoryEquipmentBridgeState,
     object_registry: &semantic::ObjectRegistry,
+) -> String {
+    let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+    augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+        body,
+        bridge,
+        object_registry,
+        &mut protocol,
+    )
+}
+
+fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+    body: String,
+    bridge: &state::InventoryEquipmentBridgeState,
+    object_registry: &semantic::ObjectRegistry,
+    protocol: &mut semantic::InventoryEquipmentProtocolState,
 ) -> String {
     let last = bridge.last_queued_output.unwrap_or_default();
     let last_known = bridge.last_queued_output.is_some();
@@ -3417,6 +3435,30 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
     let recommended_client_inventory_equip_toggle_object_status = last_known
         .then(|| object_registry.inventory_item_object_status(last.object_id))
         .unwrap_or(semantic::InventoryItemObjectStatus::Unknown);
+    // The first opt-in action is authorized by the exact, dispatched
+    // current-player Inventory_Equip claim. Every later action needs a fresh
+    // protocol epoch: observing the client EquipToggle clears the response
+    // records, and only an exact typed server response for the same participant
+    // and inventory context can make the recommendation available again.
+    // This prevents a driver from replaying a still-readable cached hint on a
+    // timer while preserving all four decompile-backed Inventory outcomes.
+    let recommended_client_inventory_equip_toggle_authorization_response = last_known.then(|| {
+        protocol.latest_matching_response_for_current_equip_toggle(
+            last.object_id,
+            last.alternate_inventory_context,
+            last.equip_slot,
+        )
+    });
+    let recommended_client_inventory_equip_toggle_authorization_response =
+        recommended_client_inventory_equip_toggle_authorization_response.flatten();
+    let recommended_client_inventory_equip_toggle_authorization_kind =
+        if protocol.last_client_equip_toggle.is_none() {
+            "initial_confirmed_claim"
+        } else if recommended_client_inventory_equip_toggle_authorization_response.is_some() {
+            "matched_typed_server_response"
+        } else {
+            "awaiting_matching_typed_server_response"
+        };
     let recommended_client_inventory_equip_toggle_blocked_reason = if !last_known {
         "no_confirmed_server_inventory_output"
     } else if bridge.last_confirmed_inventory_replay_update_index != Some(last.update_index) {
@@ -3439,6 +3481,10 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         semantic::InventoryItemObjectStatus::Proven(_)
     ) {
         "server_inventory_claim_object_not_currently_proven"
+    } else if protocol.last_client_equip_toggle.is_some()
+        && recommended_client_inventory_equip_toggle_authorization_response.is_none()
+    {
+        "awaiting_matching_typed_server_response"
     } else {
         "none"
     };
@@ -3475,6 +3521,33 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         recommended_client_inventory_equip_toggle_output
             .map(|output| output.equip_slot)
             .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_authorization_action_epoch =
+        protocol.client_equip_toggle_events;
+    let recommended_client_inventory_equip_toggle_authorization_response_ordinal =
+        recommended_client_inventory_equip_toggle_authorization_response
+            .map(|response| response.response_ordinal)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_authorization_response_operation =
+        recommended_client_inventory_equip_toggle_authorization_response
+            .map(|response| response.operation.as_str())
+            .unwrap_or("none");
+    let recommended_client_inventory_equip_toggle_authorization_response_object_id =
+        recommended_client_inventory_equip_toggle_authorization_response
+            .map(|response| response.object_id)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_authorization_response_equip_slot =
+        recommended_client_inventory_equip_toggle_authorization_response
+            .and_then(|response| response.equip_slot)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_authorization_response_alternate_inventory_context =
+        recommended_client_inventory_equip_toggle_authorization_response
+            .is_some_and(|response| response.alternate_inventory_context);
+    let recommended_client_inventory_equip_toggle_authorization_response_matches_client_primary =
+        recommended_client_inventory_equip_toggle_authorization_response
+            .is_some_and(|response| response.matches_client_primary);
+    let recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary =
+        recommended_client_inventory_equip_toggle_authorization_response
+            .is_some_and(|response| response.matches_client_secondary);
     let last_decision_known = last_decision.is_some();
     let last_decision_kind = last_decision
         .map(|decision| decision.kind)
@@ -3745,7 +3818,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
             "  \"recommended_client_inventory_equip_toggle_server_inventory_alternate_context\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_server_inventory_equip_slot\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_has_secondary_object\": false,\n",
-            "  \"recommended_client_inventory_equip_toggle_source\": \"confirmed_current_player_inventory_server_equip_claim\"\n"
+            "  \"recommended_client_inventory_equip_toggle_source\": \"confirmed_current_player_inventory_server_equip_claim\",\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_kind\": \"{}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_action_epoch\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_ordinal\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_operation\": \"{}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_object_id\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_equip_slot\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_alternate_inventory_context\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_matches_client_primary\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary\": {}\n"
         ),
         output_status.as_str(),
         requires_client_gui_writer,
@@ -3926,7 +4009,17 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output(
         recommended_client_inventory_equip_toggle_update_index,
         recommended_client_inventory_equip_toggle_minor,
         recommended_client_inventory_equip_toggle_alternate_inventory_context,
-        recommended_client_inventory_equip_toggle_equip_slot
+        recommended_client_inventory_equip_toggle_equip_slot,
+        recommended_client_inventory_equip_toggle_authorization_kind,
+        recommended_client_inventory_equip_toggle_authorization_action_epoch,
+        recommended_client_inventory_equip_toggle_authorization_response_ordinal,
+        recommended_client_inventory_equip_toggle_authorization_response_operation,
+        recommended_client_inventory_equip_toggle_authorization_response_object_id,
+        recommended_client_inventory_equip_toggle_authorization_response_object_id,
+        recommended_client_inventory_equip_toggle_authorization_response_equip_slot,
+        recommended_client_inventory_equip_toggle_authorization_response_alternate_inventory_context,
+        recommended_client_inventory_equip_toggle_authorization_response_matches_client_primary,
+        recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -11829,6 +11922,223 @@ mod tests {
         ));
         assert!(area_reset_body.contains(
             "\"recommended_client_inventory_equip_toggle_object_status\": \"cleared_by_area_reset\""
+        ));
+    }
+
+    #[test]
+    fn inventory_equip_toggle_rearm_requires_fresh_matching_response_epoch() {
+        let object_id = 0x8000_5678;
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.queued_outputs = 1;
+        bridge.confirmed_inventory_replay_outputs = 1;
+        bridge.last_confirmed_inventory_replay_update_index = Some(12);
+        bridge.last_queued_output = Some(state::InventoryEquipmentBridgeQueuedOutput {
+            update_index: 12,
+            emission_index: 13,
+            event_index: 14,
+            minor: 1,
+            object_id,
+            alternate_inventory_context: false,
+            equip_slot: 0x0002_0000,
+            trigger_sequence: 20,
+            synthetic_sequence: 21,
+        });
+        bridge.record_confirmed_inventory_replay_dispatch();
+
+        let mut object_registry = semantic::ObjectRegistry::default();
+        object_registry.observe_materialized_item_object_ids(&[object_id, object_id + 1]);
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+
+        let initial = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+        );
+        assert!(
+            initial
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"initial_confirmed_claim\""
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 0"
+        ));
+
+        let client_payload =
+            client_inventory::build_equip_toggle_payload(object_id, None).expect("client payload");
+        protocol.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&client_payload)
+                .expect("exact client EquipToggle"),
+        );
+        let awaiting = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+        );
+        assert!(
+            awaiting
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(awaiting.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"awaiting_matching_typed_server_response\""
+        ));
+        assert!(awaiting.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"awaiting_matching_typed_server_response\""
+        ));
+
+        let wrong_slot_payload =
+            inventory::build_ee_inventory_payload(1, object_id, false, 0x0004_0000)
+                .expect("same-object exact server Equip with wrong slot");
+        protocol.observe_server_inventory_response(
+            inventory::claim_payload_if_verified(&wrong_slot_payload)
+                .expect("same-object typed response with wrong slot"),
+        );
+        let wrong_slot = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+        );
+        assert!(
+            wrong_slot
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+
+        let unrelated_payload =
+            inventory::build_ee_inventory_payload(1, object_id + 1, false, 0x0002_0000)
+                .expect("unrelated exact server Equip");
+        protocol.observe_server_inventory_response(
+            inventory::claim_payload_if_verified(&unrelated_payload)
+                .expect("unrelated typed server response"),
+        );
+        let unrelated = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+        );
+        assert!(
+            unrelated
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+
+        let matching_payload = inventory::build_ee_inventory_unequip_payload(7, object_id, false)
+            .expect("matching exact server Unequip");
+        protocol.observe_server_inventory_response(
+            inventory::claim_payload_if_verified(&matching_payload)
+                .expect("matching typed server response"),
+        );
+        let matched_before_noise =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+            );
+        assert!(matched_before_noise.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"matched_typed_server_response\""
+        ));
+        for _ in 0..16 {
+            protocol.observe_server_inventory_response(
+                inventory::claim_payload_if_verified(&wrong_slot_payload)
+                    .expect("noisy same-object typed response with another slot"),
+            );
+        }
+        assert!(
+            protocol
+                .response_records_since_last_client_equip_toggle
+                .iter()
+                .all(|response| response.response_ordinal > 3)
+        );
+        let rearmed = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+        );
+        assert!(
+            rearmed
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
+        assert!(rearmed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"matched_typed_server_response\""
+        ));
+        assert!(rearmed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 1"
+        ));
+        assert!(rearmed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_response_ordinal\": 3"
+        ));
+        assert!(rearmed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_response_operation\": \"unequip\""
+        ));
+        assert!(rearmed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_response_object_id_hex\": \"0x80005678\""
+        ));
+        assert!(rearmed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_response_equip_slot\": 0"
+        ));
+        assert!(rearmed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_response_matches_client_primary\": true"
+        ));
+
+        protocol.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&client_payload)
+                .expect("second exact client EquipToggle"),
+        );
+        let consumed = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+        );
+        assert!(
+            consumed
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(consumed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 2"
+        ));
+        assert!(consumed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_response_ordinal\": 0"
+        ));
+
+        protocol.reset_equip_toggle_authorization_for_area();
+        object_registry.reset_for_area();
+        let area_reset = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+        );
+        assert!(
+            area_reset
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(area_reset.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"server_inventory_claim_object_not_currently_proven\""
+        ));
+
+        object_registry.observe_materialized_item_object_ids(&[object_id]);
+        let new_area_bootstrap =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+            );
+        assert!(
+            new_area_bootstrap
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
+        assert!(new_area_bootstrap.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"initial_confirmed_claim\""
+        ));
+        assert!(new_area_bootstrap.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 2"
         ));
     }
 

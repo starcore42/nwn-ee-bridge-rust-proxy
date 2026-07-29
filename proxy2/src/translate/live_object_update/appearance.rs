@@ -2281,24 +2281,49 @@ pub(super) fn try_get_verified_ee_gui_item_create_record_end(
         return None;
     }
 
+    let mut terminal_creature_successor_end = None;
     for record_end in min_end..=scan_end {
-        if !gui_item_create_record_end_lands_on_stream_boundary(
+        let ordinary_boundary = gui_item_create_record_end_lands_on_stream_boundary(
             bytes, record_end, search_end, false,
-        ) {
+        );
+        let terminal_creature_update_candidate = record_end < search_end.min(bytes.len())
+            && bytes.get(record_end).copied() == Some(b'U')
+            && bytes.get(record_end + 1).copied() == Some(LEGACY_CREATURE_TYPE);
+        if !ordinary_boundary && !terminal_creature_update_candidate {
             continue;
         }
         let mut probe_cursor = bit_cursor;
-        if advance_verified_ee_item_create_record(
+        if !advance_verified_ee_item_create_record(
             bytes,
             item_object_offset,
             record_end,
             fragment_bits,
             &mut probe_cursor,
         ) {
+            continue;
+        }
+        if ordinary_boundary {
             return Some(record_end);
         }
+        if verified_terminal_creature_update_successor_after_gui_item(
+            bytes,
+            record_end,
+            search_end,
+            fragment_bits,
+            probe_cursor,
+        ) {
+            if terminal_creature_successor_end
+                .replace(record_end)
+                .is_some()
+            {
+                // Item bodies are lengthless and may contain bytes that resemble
+                // a top-level U/5. More than one complete typed suffix proof is
+                // therefore ambiguity, not permission to choose the first.
+                return None;
+            }
+        }
     }
-    None
+    terminal_creature_successor_end
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2341,19 +2366,36 @@ pub(super) fn verified_ee_gui_item_create_record_end_candidates(
 
     let mut record_ends = Vec::new();
     for record_end in min_end..=scan_end {
-        if !gui_item_create_record_end_lands_on_stream_boundary(
+        let ordinary_boundary = gui_item_create_record_end_lands_on_stream_boundary(
             bytes, record_end, search_end, false,
-        ) {
+        );
+        let terminal_creature_update_candidate = record_end < search_end.min(bytes.len())
+            && bytes.get(record_end).copied() == Some(b'U')
+            && bytes.get(record_end + 1).copied() == Some(LEGACY_CREATURE_TYPE);
+        if !ordinary_boundary && !terminal_creature_update_candidate {
             continue;
         }
-        if verified_ee_item_create_fragment_claim(
+        let Some(fragment_claim) = verified_ee_item_create_fragment_claim(
             bytes,
             item_object_offset,
             record_end,
             fragment_bits,
             bit_cursor,
-        )
-        .is_none()
+        ) else {
+            continue;
+        };
+        let Some(next_bit_cursor) = bit_cursor.checked_add(fragment_claim.selected_fragment_bits)
+        else {
+            continue;
+        };
+        if !ordinary_boundary
+            && !verified_terminal_creature_update_successor_after_gui_item(
+                bytes,
+                record_end,
+                search_end,
+                fragment_bits,
+                next_bit_cursor,
+            )
         {
             continue;
         }
@@ -2542,6 +2584,9 @@ fn gui_item_create_record_end_lands_on_stream_boundary(
                 record_end,
                 allow_missing_inventory_add_opcode,
             ))
+        || super::gui::looks_like_legacy_live_gui_read_buffer_record_boundary(
+            bytes, record_end, scan_end,
+        )
         || looks_like_work_remaining_boundary_at(bytes, record_end, scan_end)
         || (allow_missing_inventory_add_opcode
             && looks_like_zero_fragment_storage_before_gui_item_boundary_at(
@@ -2550,6 +2595,35 @@ fn gui_item_create_record_end_lands_on_stream_boundary(
                 scan_end,
                 allow_missing_inventory_add_opcode,
             ))
+}
+
+fn verified_terminal_creature_update_successor_after_gui_item(
+    bytes: &[u8],
+    record_end: usize,
+    search_end: usize,
+    fragment_bits: &[bool],
+    next_bit_cursor: usize,
+) -> bool {
+    let scan_end = search_end.min(bytes.len());
+    if record_end >= scan_end {
+        return false;
+    }
+
+    // Both clients return from the nested GUI item-create reader to the outer
+    // live-object dispatch loop. Live HG therefore legitimately emits a GIA
+    // item row followed by a terminal top-level U/5 record, rather than only a
+    // sibling GUI row. A generic opcode-looking boundary inside the lengthless
+    // item body is unsafe, so accept this handoff only when the typed creature
+    // reader consumes every remaining read-buffer byte and every remaining
+    // MSB-first CNW fragment bit from the item reader's exact next cursor.
+    let mut successor_bit_cursor = next_bit_cursor;
+    super::creature::advance_verified_noop_creature_update_record_exact_cursor(
+        bytes,
+        record_end,
+        scan_end,
+        fragment_bits,
+        &mut successor_bit_cursor,
+    ) && successor_bit_cursor == fragment_bits.len()
 }
 
 fn looks_like_work_remaining_boundary_at(bytes: &[u8], offset: usize, scan_end: usize) -> bool {

@@ -719,6 +719,14 @@ pub(super) fn looks_like_legacy_live_gui_sub_message_boundary(bytes: &[u8], offs
     try_get_legacy_live_gui_record_end(bytes, offset, bytes.len()).is_some()
 }
 
+pub(super) fn looks_like_legacy_live_gui_read_buffer_record_boundary(
+    bytes: &[u8],
+    offset: usize,
+    search_end: usize,
+) -> bool {
+    try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, search_end).is_some()
+}
+
 pub(super) fn looks_like_legacy_live_gui_rewrite_boundary(bytes: &[u8], offset: usize) -> bool {
     try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, bytes.len()).is_some()
         || legacy_live_gui_item_create_prefix(bytes, offset, bytes.len()).is_some()
