@@ -3556,6 +3556,12 @@ fn refresh_status_authorized_visible_equipment_probe_plan(
         authorization_context.current_control_epoch,
         authorization_context.current_controlled_object_id,
     );
+    protocol.reconcile_status_authorized_visible_equipment_probe_participant(|object_id| {
+        matches!(
+            object_registry.inventory_item_object_status(object_id),
+            semantic::InventoryItemObjectStatus::Proven(_)
+        )
+    });
 
     let current_player_known_visible_equipment =
         current_player_known_visible_equipment(bridge, protocol, authorization_context);
@@ -13245,6 +13251,85 @@ mod tests {
         assert!(revoked_offer.contains(
             "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"status_authorized_visible_equipment_probe_offer_unavailable\""
         ));
+    }
+
+    #[test]
+    fn inventory_equip_toggle_initial_probe_revokes_lost_object_proof() {
+        const OWNER: u32 = 0xFFFF_FFEF;
+        const ITEM: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.current_player_status_binding =
+            Some(state::InventoryEquipmentCurrentPlayerStatusBinding {
+                queued_update_index: 7,
+                area_client_area_packets: 1,
+                control_epoch: 1,
+                server_sequence: 44,
+                owner_object_id: OWNER,
+                owner_record_count: 1,
+                owner_mask_union: 0x2000,
+            });
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((OWNER, VISIBLE_SLOT), ITEM);
+        let mut object_registry = semantic::ObjectRegistry::default();
+        object_registry.observe_materialized_item_object_ids(&[ITEM]);
+        let authority = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(OWNER),
+            current_control_epoch: 1,
+            area_client_area_packets: 1,
+        };
+
+        let offered = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+            authority,
+        );
+        assert!(
+            offered
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
+        assert!(
+            protocol
+                .offered_status_authorized_visible_equipment_probe
+                .is_some()
+        );
+
+        object_registry.reset_for_area();
+        let revoked = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+            authority,
+        );
+        assert!(
+            revoked
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(
+            protocol
+                .offered_status_authorized_visible_equipment_probe
+                .is_none(),
+            "planner reconciliation must revoke an offered participant whose item proof was cleared"
+        );
+        assert!(protocol.status_authorized_visible_equipment_probe_issued_for_area);
+
+        let delayed =
+            client_inventory::build_equip_toggle_payload(ITEM, None).expect("old EquipToggle");
+        protocol.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&delayed).expect("exact old EquipToggle"),
+        );
+        assert!(
+            protocol
+                .active_status_authorized_visible_equipment_probe
+                .is_none(),
+            "a delayed action cannot reactivate object proof that the planner revoked"
+        );
     }
 
     #[test]

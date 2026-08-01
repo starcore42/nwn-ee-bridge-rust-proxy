@@ -574,6 +574,11 @@ fn apply_event(
             state
                 .objects
                 .observe_materialized_item_object_ids(&event.materialized_item_object_ids);
+            // `mentions` and nested P/5 claims are flattened summaries rather
+            // than one merged wire-ordered subevent stream. Do not revoke from
+            // an intermediate aggregate here: the planner reconciles against
+            // the unit's final object registry and the exact later client
+            // action boundary checks durable proof again.
             state
                 .ui
                 .inventory_equipment_protocol
@@ -1300,6 +1305,19 @@ fn apply_event(
         ProtocolEvent::ClientInventory(event) => {
             state.ui.inventory_packets = state.ui.inventory_packets.saturating_add(1);
             if let Some(claim) = event.claim {
+                // The offer may have been read by the harness before a later
+                // item tombstone. Recheck durable object proof at the exact
+                // client-action boundary; `observe_client_equip_toggle` also
+                // verifies the current owner/slot mapping before activation.
+                state
+                    .ui
+                    .inventory_equipment_protocol
+                    .reconcile_status_authorized_visible_equipment_probe_participant(|object_id| {
+                        matches!(
+                            state.objects.inventory_item_object_status(object_id),
+                            InventoryItemObjectStatus::Proven(_)
+                        )
+                    });
                 state
                     .ui
                     .inventory_equipment_protocol

@@ -261,6 +261,13 @@ mod tests {
     fn active_transaction_serializes_action_and_matching_response() {
         let active_authorization = authorization(8, 0xffff_ffee, 0x8000_0055, 0x10);
         let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol.visible_equipment_slots_by_owner.insert(
+            (
+                active_authorization.owner_object_id,
+                active_authorization.visible_slot,
+            ),
+            active_authorization.object_id,
+        );
         protocol.client_equip_toggle_events = 2;
         protocol.offer_status_authorized_visible_equipment_probe(active_authorization);
         protocol.observe_client_equip_toggle(action(active_authorization.object_id));
@@ -303,6 +310,13 @@ mod tests {
         let active_authorization = authorization(2, 0x2222_2222, 0x8000_0022, 2);
         let completed_authorization = authorization(9, 0xffff_ffef, 0x8000_0099, 0x40);
         let mut active_protocol = semantic::InventoryEquipmentProtocolState::default();
+        active_protocol.visible_equipment_slots_by_owner.insert(
+            (
+                active_authorization.owner_object_id,
+                active_authorization.visible_slot,
+            ),
+            active_authorization.object_id,
+        );
         active_protocol.client_equip_toggle_events = 4;
         active_protocol.offer_status_authorized_visible_equipment_probe(active_authorization);
         active_protocol.observe_client_equip_toggle(action(active_authorization.object_id));

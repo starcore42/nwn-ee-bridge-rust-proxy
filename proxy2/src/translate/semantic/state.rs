@@ -1177,6 +1177,65 @@ impl InventoryEquipmentProtocolState {
         self.offered_status_authorized_visible_equipment_probe = None;
     }
 
+    fn status_authorized_visible_equipment_probe_participant_mapping_is_current(
+        &self,
+        authorization: StatusAuthorizedVisibleEquipmentProbeAuthorization,
+    ) -> bool {
+        self.visible_equipment_slots_by_owner
+            .get(&(authorization.owner_object_id, authorization.visible_slot))
+            // The authorization is minted from the exact EE object id emitted
+            // to the client. Compact/external aliases are useful while
+            // resolving legacy lifecycle rows, but they cannot preserve or
+            // activate engine-facing authority for a different wire id.
+            .is_some_and(|object_id| *object_id == authorization.object_id)
+    }
+
+    /// Revoke in-flight Status/P/5 authority when its exact participant no
+    /// longer has both visible-equipment membership and durable item proof.
+    ///
+    /// The issued latch deliberately remains set: the native harness may have
+    /// already read the old JSON, so a later candidate must not inherit that
+    /// action. Callers supply the proof predicate because the object registry
+    /// and this protocol cache are reduced independently.
+    pub(crate) fn reconcile_status_authorized_visible_equipment_probe_participant(
+        &mut self,
+        object_id_is_proven: impl Fn(u32) -> bool,
+    ) {
+        let offered_is_stale = self
+            .offered_status_authorized_visible_equipment_probe
+            .is_some_and(|authorization| {
+                !self.status_authorized_visible_equipment_probe_participant_mapping_is_current(
+                    authorization,
+                ) || !object_id_is_proven(authorization.object_id)
+            });
+        let active_is_stale = self
+            .active_status_authorized_visible_equipment_probe
+            .is_some_and(|active| {
+                !self.status_authorized_visible_equipment_probe_participant_mapping_is_current(
+                    active.authorization,
+                ) || !object_id_is_proven(active.authorization.object_id)
+            });
+
+        if offered_is_stale || active_is_stale {
+            tracing::info!(
+                offered_revoked = offered_is_stale,
+                active_revoked = active_is_stale,
+                issued_for_area = self.status_authorized_visible_equipment_probe_issued_for_area,
+                "semantic state revoked stale Status-authorized visible-equipment probe participant"
+            );
+        }
+        if offered_is_stale {
+            self.offered_status_authorized_visible_equipment_probe = None;
+        }
+        if active_is_stale {
+            self.active_status_authorized_visible_equipment_probe = None;
+        }
+    }
+
+    fn reconcile_status_authorized_visible_equipment_probe_mapping(&mut self) {
+        self.reconcile_status_authorized_visible_equipment_probe_participant(|_| true);
+    }
+
     pub(crate) fn invalidate_status_authorized_visible_equipment_probe_for_control_change(
         &mut self,
     ) {
@@ -1313,7 +1372,9 @@ impl InventoryEquipmentProtocolState {
             .take();
         self.active_status_authorized_visible_equipment_probe = offered
             .filter(|authorization| {
-                claim.primary_object_id == authorization.object_id
+                self.status_authorized_visible_equipment_probe_participant_mapping_is_current(
+                    *authorization,
+                ) && claim.primary_object_id == authorization.object_id
                     && claim.secondary_object_id.is_none()
             })
             .map(
@@ -1488,6 +1549,17 @@ impl InventoryEquipmentProtocolState {
                         self.visible_equipment_ignored_zero_rows =
                             self.visible_equipment_ignored_zero_rows.saturating_add(1);
                     }
+                }
+                if matches!(
+                    row.operation,
+                    LiveObjectVisibleEquipmentOperation::Add
+                        | LiveObjectVisibleEquipmentOperation::Delete
+                ) {
+                    // A/D are the only decompile-backed mapping mutations.
+                    // Reconcile after each exact row so a later response or D
+                    // in the same ordered claim cannot activate or complete
+                    // authority that an earlier row already removed.
+                    self.reconcile_status_authorized_visible_equipment_probe_mapping();
                 }
             }
 
@@ -8315,6 +8387,204 @@ mod tests {
     }
 
     #[test]
+    fn status_authorized_visible_equipment_probe_revokes_overwritten_participant() {
+        const OWNER_ID: u32 = 0xFFFF_FFEF;
+        const ITEM_A: u32 = 0x8000_0044;
+        const ITEM_B: u32 = 0x8000_0055;
+        const VISIBLE_SLOT: u32 = 2;
+
+        let mut state = InventoryEquipmentProtocolState::default();
+        state
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, VISIBLE_SLOT), ITEM_A);
+        state.offer_status_authorized_visible_equipment_probe(
+            StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                status_update_index: 7,
+                status_server_sequence: 44,
+                area_client_area_packets: 1,
+                control_epoch: 2,
+                owner_object_id: OWNER_ID,
+                visible_slot: VISIBLE_SLOT,
+                object_id: ITEM_A,
+            },
+        );
+
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_ID,
+            false,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::Add,
+                object_id: ITEM_B,
+                visible_slot: VISIBLE_SLOT,
+                update_status: None,
+            }],
+        )]);
+
+        assert!(
+            state
+                .offered_status_authorized_visible_equipment_probe
+                .is_none(),
+            "an exact A overwrite must revoke the old owner/slot/object participant"
+        );
+        assert!(state.status_authorized_visible_equipment_probe_issued_for_area);
+
+        let delayed = client_inventory::build_equip_toggle_payload(ITEM_A, None)
+            .expect("delayed old EquipToggle");
+        state.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&delayed)
+                .expect("exact delayed old EquipToggle"),
+        );
+        assert!(
+            state
+                .active_status_authorized_visible_equipment_probe
+                .is_none(),
+            "a delayed action cannot reactivate authority revoked by the A overwrite"
+        );
+    }
+
+    #[test]
+    fn status_authorized_visible_equipment_probe_rechecks_mapping_and_object_proof() {
+        const OWNER_ID: u32 = 0xFFFF_FFEF;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+        let authorization = StatusAuthorizedVisibleEquipmentProbeAuthorization {
+            status_update_index: 7,
+            status_server_sequence: 44,
+            area_client_area_packets: 1,
+            control_epoch: 2,
+            owner_object_id: OWNER_ID,
+            visible_slot: VISIBLE_SLOT,
+            object_id: ITEM_ID,
+        };
+
+        let mut stale_mapping = InventoryEquipmentProtocolState::default();
+        stale_mapping.offer_status_authorized_visible_equipment_probe(authorization);
+        let delayed = client_inventory::build_equip_toggle_payload(ITEM_ID, None)
+            .expect("delayed stale EquipToggle");
+        stale_mapping.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&delayed)
+                .expect("exact delayed stale EquipToggle"),
+        );
+        assert!(
+            stale_mapping
+                .active_status_authorized_visible_equipment_probe
+                .is_none(),
+            "action consumption must independently reject a missing participant mapping"
+        );
+
+        let mut compact_alias_mapping = InventoryEquipmentProtocolState::default();
+        compact_alias_mapping
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID & !0x8000_0000);
+        compact_alias_mapping.offer_status_authorized_visible_equipment_probe(authorization);
+        compact_alias_mapping.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&delayed)
+                .expect("exact delayed external-id EquipToggle"),
+        );
+        assert!(
+            compact_alias_mapping
+                .active_status_authorized_visible_equipment_probe
+                .is_none(),
+            "a compact alias cannot activate authority minted for the exact emitted EE id"
+        );
+
+        let mut stale_object_proof = InventoryEquipmentProtocolState::default();
+        stale_object_proof
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID);
+        stale_object_proof.offer_status_authorized_visible_equipment_probe(authorization);
+        stale_object_proof
+            .reconcile_status_authorized_visible_equipment_probe_participant(|_| false);
+        assert!(
+            stale_object_proof
+                .offered_status_authorized_visible_equipment_probe
+                .is_none(),
+            "loss of durable item proof must revoke an otherwise mapped offer"
+        );
+        assert!(
+            stale_object_proof.status_authorized_visible_equipment_probe_issued_for_area,
+            "revocation cannot rearm a later candidate in the same area"
+        );
+
+        let mut active_object_proof = InventoryEquipmentProtocolState::default();
+        active_object_proof
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID);
+        active_object_proof.offer_status_authorized_visible_equipment_probe(authorization);
+        active_object_proof.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&delayed)
+                .expect("exact active EquipToggle"),
+        );
+        assert!(
+            active_object_proof
+                .active_status_authorized_visible_equipment_probe
+                .is_some()
+        );
+        active_object_proof
+            .reconcile_status_authorized_visible_equipment_probe_participant(|_| false);
+        assert!(
+            active_object_proof
+                .active_status_authorized_visible_equipment_probe
+                .is_none(),
+            "loss of item proof must also revoke an already-observed action"
+        );
+    }
+
+    #[test]
+    fn status_authorized_visible_equipment_probe_revokes_deleted_participant() {
+        const OWNER_ID: u32 = 0xFFFF_FFEF;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+
+        let mut state = InventoryEquipmentProtocolState::default();
+        state
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID);
+        state.offer_status_authorized_visible_equipment_probe(
+            StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                status_update_index: 7,
+                status_server_sequence: 44,
+                area_client_area_packets: 1,
+                control_epoch: 2,
+                owner_object_id: OWNER_ID,
+                visible_slot: VISIBLE_SLOT,
+                object_id: ITEM_ID,
+            },
+        );
+
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_ID,
+            false,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::Delete,
+                object_id: 0x7F00_0000,
+                visible_slot: VISIBLE_SLOT,
+                update_status: None,
+            }],
+        )]);
+
+        assert!(
+            state
+                .offered_status_authorized_visible_equipment_probe
+                .is_none(),
+            "an exact D row must revoke the old owner/slot/object participant"
+        );
+        let delayed = client_inventory::build_equip_toggle_payload(ITEM_ID, None)
+            .expect("delayed deleted-item EquipToggle");
+        state.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&delayed)
+                .expect("exact delayed deleted-item EquipToggle"),
+        );
+        assert!(
+            state
+                .active_status_authorized_visible_equipment_probe
+                .is_none(),
+            "a delayed action cannot reactivate authority revoked by the D row"
+        );
+        assert!(state.status_authorized_visible_equipment_probe_issued_for_area);
+    }
+
+    #[test]
     fn status_authorized_visible_equipment_probe_rejects_true_context_unequip() {
         const OWNER_ID: u32 = 0xFFFF_FFEF;
         const ITEM_ID: u32 = 0x8000_0044;
@@ -8386,7 +8656,8 @@ mod tests {
         assert!(
             state
                 .active_status_authorized_visible_equipment_probe
-                .is_some()
+                .is_none(),
+            "the explicit D removes the participant mapping, so the rejected transaction must be revoked rather than left active"
         );
     }
 
