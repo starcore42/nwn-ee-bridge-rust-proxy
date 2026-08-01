@@ -1035,6 +1035,20 @@ pub(crate) struct InventoryEquipmentProtocolState {
 }
 
 impl InventoryEquipmentProtocolState {
+    /// Return the exact visible-equipment mappings currently known for one
+    /// owner, ordered by the visible-appearance slot DWORD.
+    ///
+    /// This is deliberately a partial protocol-coherence view: an absent slot
+    /// is not proof that the creature is unequipped. Only an explicit `D` row
+    /// removes a previously observed mapping, and an all-fields `0xFFFF`
+    /// appearance does not synthesize deletion for omitted slots.
+    pub(crate) fn known_visible_equipment_for_owner(&self, owner_id: u32) -> Vec<(u32, u32)> {
+        self.visible_equipment_slots_by_owner
+            .range((owner_id, u32::MIN)..=(owner_id, u32::MAX))
+            .map(|((_, visible_slot), object_id)| (*visible_slot, *object_id))
+            .collect()
+    }
+
     pub(crate) fn latest_matching_response_for_current_equip_toggle(
         &mut self,
         object_id: u32,
@@ -7933,6 +7947,17 @@ mod tests {
             "D clears only its owner/slot and ignores its row object id"
         );
         assert_eq!(state.last_visible_equipment_removed_slots, 1);
+
+        assert_eq!(
+            state.known_visible_equipment_for_owner(OWNER_A),
+            vec![(0x10, 0x8000_0088), (0x20, 0x8000_0066)],
+            "the owner view is exact, partial, and sorted by visible slot"
+        );
+        assert_eq!(
+            state.known_visible_equipment_for_owner(OWNER_B),
+            vec![(2, ITEM_B)],
+            "foreign-owner mappings remain independent"
+        );
 
         state
             .committed_equipment_slots

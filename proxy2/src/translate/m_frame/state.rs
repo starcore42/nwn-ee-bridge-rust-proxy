@@ -433,6 +433,23 @@ pub(super) struct InventoryEquipmentCurrentPlayerStatusBinding {
     pub(super) owner_mask_union: u16,
 }
 
+impl InventoryEquipmentCurrentPlayerStatusBinding {
+    /// Whether this exact, ACK-covered Status response still names the current
+    /// semantic player authority. The owner comparison is intentionally exact:
+    /// emitted-EE P/5 claims and ObjControl already carry fixed wire ids, so an
+    /// alias match here would broaden authority rather than normalize data.
+    pub(super) fn matches_current_authority(
+        self,
+        current_controlled_object_id: Option<u32>,
+        area_client_area_packets: u64,
+        control_epoch: u64,
+    ) -> bool {
+        Some(self.owner_object_id) == current_controlled_object_id
+            && self.area_client_area_packets == area_client_area_packets
+            && self.control_epoch == control_epoch
+    }
+}
+
 impl InventoryEquipmentBridgeClientGuiStatusResponse {
     fn strength(self) -> u8 {
         if self.current_player_inventory_records != 0 {

@@ -3401,6 +3401,62 @@ struct InventoryEquipToggleAuthorizationContext {
     area_client_area_packets: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CurrentPlayerKnownVisibleEquipment {
+    owner_object_id: u32,
+    /// Exact mappings observed through emitted-EE P/5 `0x0200` rows, ordered
+    /// by visible slot. This is a partial coherence view: absence is never an
+    /// instruction to unequip because only an explicit `D` row clears a slot.
+    slots: Vec<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentPlayerKnownVisibleEquipmentBlockedReason {
+    MissingStatusBinding,
+    AreaMismatch,
+    ControlEpochMismatch,
+    OwnerMismatch,
+}
+
+impl CurrentPlayerKnownVisibleEquipmentBlockedReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingStatusBinding => "current_player_status_unconfirmed",
+            Self::AreaMismatch => "current_player_status_area_mismatch",
+            Self::ControlEpochMismatch => "current_player_status_control_epoch_mismatch",
+            Self::OwnerMismatch => "current_player_status_owner_mismatch",
+        }
+    }
+}
+
+fn current_player_known_visible_equipment(
+    bridge: &state::InventoryEquipmentBridgeState,
+    protocol: &semantic::InventoryEquipmentProtocolState,
+    authority: InventoryEquipToggleAuthorizationContext,
+) -> Result<CurrentPlayerKnownVisibleEquipment, CurrentPlayerKnownVisibleEquipmentBlockedReason> {
+    let Some(binding) = bridge.current_player_status_binding else {
+        return Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::MissingStatusBinding);
+    };
+    if binding.area_client_area_packets != authority.area_client_area_packets {
+        return Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::AreaMismatch);
+    }
+    if binding.control_epoch != authority.current_control_epoch {
+        return Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::ControlEpochMismatch);
+    }
+    if !binding.matches_current_authority(
+        authority.current_controlled_object_id,
+        authority.area_client_area_packets,
+        authority.current_control_epoch,
+    ) {
+        return Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::OwnerMismatch);
+    }
+
+    Ok(CurrentPlayerKnownVisibleEquipment {
+        owner_object_id: binding.owner_object_id,
+        slots: protocol.known_visible_equipment_for_owner(binding.owner_object_id),
+    })
+}
+
 fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     body: String,
     bridge: &state::InventoryEquipmentBridgeState,
@@ -3513,6 +3569,38 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     let recommended_client_inventory_equip_toggle_authorization_response =
         recommended_client_inventory_equip_toggle_authorization_response.flatten();
     let current_player_status_binding = bridge.current_player_status_binding;
+    let current_player_known_visible_equipment =
+        current_player_known_visible_equipment(bridge, protocol, authorization_context);
+    let current_player_known_visible_equipment_available =
+        current_player_known_visible_equipment.is_ok();
+    let current_player_known_visible_equipment_blocked_reason =
+        match &current_player_known_visible_equipment {
+            Ok(_) => "none",
+            Err(reason) => reason.as_str(),
+        };
+    let current_player_known_visible_equipment_owner_object_id =
+        current_player_known_visible_equipment
+            .as_ref()
+            .map(|view| view.owner_object_id)
+            .unwrap_or(0);
+    let current_player_known_visible_equipment_slot_count = current_player_known_visible_equipment
+        .as_ref()
+        .map(|view| view.slots.len())
+        .unwrap_or(0);
+    let current_player_known_visible_equipment_slots_json =
+        match &current_player_known_visible_equipment {
+            Ok(view) => format!(
+                "[{}]",
+                view.slots
+                    .iter()
+                    .map(|(visible_slot, object_id)| format!(
+                        "{{\"visible_slot\":{visible_slot},\"object_id\":{object_id},\"object_id_hex\":\"0x{object_id:08X}\"}}"
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Err(_) => "[]".to_string(),
+        };
     // The Status request is normally emitted after the server Inventory claim
     // it fences, so its semantic update can be newer than the claim. Both
     // counters are monotonic u64 session coordinates: freshness requires the
@@ -4210,6 +4298,27 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         current_player_status_binding_owner_record_count,
         current_player_status_binding_owner_mask_union,
         current_player_status_binding_owner_mask_union
+    );
+    let fields = format!(
+        concat!(
+            "{}",
+            ",\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_available\": {},\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_blocked_reason\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_partial\": true,\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_absence_means_unequipped\": false,\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_owner_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_owner_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_slot_count\": {},\n",
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_slots\": {}"
+        ),
+        fields,
+        current_player_known_visible_equipment_available,
+        current_player_known_visible_equipment_blocked_reason,
+        current_player_known_visible_equipment_owner_object_id,
+        current_player_known_visible_equipment_owner_object_id,
+        current_player_known_visible_equipment_slot_count,
+        current_player_known_visible_equipment_slots_json
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -12178,6 +12287,194 @@ mod tests {
         assert!(area_reset_body.contains(
             "\"recommended_client_inventory_equip_toggle_object_status\": \"cleared_by_area_reset\""
         ));
+    }
+
+    #[test]
+    fn current_player_known_visible_equipment_requires_exact_live_authority() {
+        use crate::translate::live_object_update::{
+            LiveObjectCreatureVisibleEquipmentClaim, LiveObjectVisibleEquipmentOperation,
+            LiveObjectVisibleEquipmentRow,
+        };
+
+        const OWNER_A: u32 = 0xFFFF_FFEF;
+        const OWNER_B: u32 = 0xFFFF_FFEE;
+        const ITEM_A: u32 = 0x8000_0044;
+        const ITEM_A_LATER: u32 = 0x8000_0066;
+        const ITEM_B: u32 = 0x8000_0055;
+
+        let claim = |owner_id, operation, object_id, visible_slot| {
+            LiveObjectCreatureVisibleEquipmentClaim {
+                owner_id,
+                appearance_mask: 0x0200,
+                all_fields_appearance: false,
+                record_offset: 7,
+                record_end: 23,
+                fragment_bit_start: 3,
+                fragment_bit_end: 3,
+                rows: vec![LiveObjectVisibleEquipmentRow {
+                    operation,
+                    object_id,
+                    visible_slot,
+                    update_status: None,
+                }],
+            }
+        };
+        let binding = |area_client_area_packets, control_epoch, owner_object_id| {
+            state::InventoryEquipmentCurrentPlayerStatusBinding {
+                queued_update_index: 7,
+                area_client_area_packets,
+                control_epoch,
+                server_sequence: 44,
+                owner_object_id,
+                owner_record_count: 1,
+                // Inventory masks are diagnostics only and are deliberately
+                // not required to contain the P/5 equipment bit.
+                owner_mask_union: 0,
+            }
+        };
+
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol.observe_creature_visible_equipment_claims(&[
+            claim(OWNER_A, LiveObjectVisibleEquipmentOperation::Add, ITEM_A, 2),
+            claim(OWNER_B, LiveObjectVisibleEquipmentOperation::Add, ITEM_B, 1),
+        ]);
+        let authority = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(OWNER_A),
+            current_control_epoch: 1,
+            area_client_area_packets: 1,
+        };
+
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, authority),
+            Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::MissingStatusBinding),
+            "exact rows observed before Status remain hidden"
+        );
+
+        bridge.current_player_status_binding = Some(binding(1, 1, OWNER_A));
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, authority),
+            Ok(CurrentPlayerKnownVisibleEquipment {
+                owner_object_id: OWNER_A,
+                slots: vec![(2, ITEM_A)],
+            }),
+            "matching Status authority exposes only the exact owner's known partial cache"
+        );
+
+        let area_mismatch = InventoryEquipToggleAuthorizationContext {
+            area_client_area_packets: 2,
+            ..authority
+        };
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, area_mismatch),
+            Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::AreaMismatch)
+        );
+        let control_mismatch = InventoryEquipToggleAuthorizationContext {
+            current_control_epoch: 2,
+            ..authority
+        };
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, control_mismatch),
+            Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::ControlEpochMismatch)
+        );
+        let owner_mismatch = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(OWNER_B),
+            ..authority
+        };
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, owner_mismatch),
+            Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::OwnerMismatch)
+        );
+
+        protocol.observe_creature_visible_equipment_claims(&[claim(
+            OWNER_A,
+            LiveObjectVisibleEquipmentOperation::Add,
+            ITEM_A_LATER,
+            0x10,
+        )]);
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, authority)
+                .expect("same-authority post-binding row")
+                .slots,
+            vec![(2, ITEM_A), (0x10, ITEM_A_LATER)]
+        );
+        protocol.observe_creature_visible_equipment_claims(&[claim(
+            OWNER_A,
+            LiveObjectVisibleEquipmentOperation::Delete,
+            0x7F00_0000,
+            2,
+        )]);
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, authority)
+                .expect("explicit delete updates the partial view")
+                .slots,
+            vec![(0x10, ITEM_A_LATER)]
+        );
+
+        bridge.begin_client_gui_status_request_window();
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, authority),
+            Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::MissingStatusBinding)
+        );
+        assert_eq!(
+            protocol.known_visible_equipment_for_owner(OWNER_A),
+            vec![(0x10, ITEM_A_LATER)],
+            "opening a new Status window revokes authority without corrupting world cache"
+        );
+
+        bridge.current_player_status_binding = Some(binding(1, 1, OWNER_A));
+        let controlled_b = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(OWNER_B),
+            current_control_epoch: 2,
+            ..authority
+        };
+        assert!(current_player_known_visible_equipment(&bridge, &protocol, controlled_b).is_err());
+        let controlled_a_again = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(OWNER_A),
+            current_control_epoch: 3,
+            ..authority
+        };
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, controlled_a_again),
+            Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::ControlEpochMismatch),
+            "A-to-B-to-A still requires fresh Status authority for the new control epoch"
+        );
+        bridge.current_player_status_binding = Some(binding(1, 3, OWNER_A));
+        assert!(
+            current_player_known_visible_equipment(&bridge, &protocol, controlled_a_again).is_ok(),
+            "fresh Status may re-authorize the still-exact owner cache"
+        );
+        let hint = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &semantic::ObjectRegistry::default(),
+            &mut protocol,
+            controlled_a_again,
+        );
+        assert!(hint.contains(
+            "\"inventory_equipment_bridge_current_player_known_visible_equipment_available\": true"
+        ));
+        assert!(hint.contains(
+            "\"inventory_equipment_bridge_current_player_known_visible_equipment_partial\": true"
+        ));
+        assert!(hint.contains(
+            "\"inventory_equipment_bridge_current_player_known_visible_equipment_absence_means_unequipped\": false"
+        ));
+        assert!(hint.contains(
+            "\"inventory_equipment_bridge_current_player_known_visible_equipment_slots\": [{\"visible_slot\":16,\"object_id\":2147483750,\"object_id_hex\":\"0x80000066\"}]"
+        ));
+
+        protocol.reset_equip_toggle_authorization_for_area();
+        assert!(
+            protocol
+                .known_visible_equipment_for_owner(OWNER_A)
+                .is_empty()
+        );
+        assert_eq!(
+            current_player_known_visible_equipment(&bridge, &protocol, area_mismatch),
+            Err(CurrentPlayerKnownVisibleEquipmentBlockedReason::AreaMismatch),
+            "Area_ClientArea clears mappings and leaves old Status authority hidden"
+        );
     }
 
     #[test]
