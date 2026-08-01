@@ -12,9 +12,9 @@ use crate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, ambient, area, area_change_day_night,
         area_visual_effect, camera, char_list, chat, client_side_message, cnw_message,
         custom_token, cutscene, dialog, game_obj_update, gameplay_stream, gui_inventory,
-        gui_timing_event, inventory, item_update_active_props, journal, live_object, loadbar,
-        login, module, module_resources, module_time, party, play_module_character_list,
-        player_list, quickbar, safe_projectile, semantic, sound,
+        gui_timing_event, inventory, item_update_active_props, journal, live_object,
+        live_object_update, loadbar, login, module, module_resources, module_time, party,
+        play_module_character_list, player_list, quickbar, safe_projectile, semantic, sound,
     },
 };
 
@@ -130,6 +130,9 @@ const LIVE_OBJECT_ITEM_TYPE: u8 = 0x06;
 const LIVE_OBJECT_TRIGGER_TYPE: u8 = 0x07;
 const LIVE_OBJECT_PLACEABLE_TYPE: u8 = 0x09;
 const LIVE_OBJECT_DOOR_TYPE: u8 = 0x0A;
+const LIVE_OBJECT_VISIBLE_EQUIPMENT_MASK: u16 = 0x0200;
+const MAX_LIVE_OBJECT_VISIBLE_EQUIPMENT_PROFILE_CLAIMS: usize = 64;
+const MAX_LIVE_OBJECT_VISIBLE_EQUIPMENT_PROFILE_ROWS: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 struct LiveObjectExactClaimTraceSummary {
@@ -679,6 +682,108 @@ impl LiveObjectExactClaimTraceSummary {
         }
 
         trace
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+struct LiveObjectVisibleEquipmentTraceSummary {
+    claims: usize,
+    explicit_mask_0200_claims: usize,
+    all_fields_claims: usize,
+    rows: usize,
+    add_rows: usize,
+    delete_rows: usize,
+    update_rows: usize,
+    ignored_legacy_zero_rows: usize,
+}
+
+impl LiveObjectVisibleEquipmentTraceSummary {
+    // Diagnostics consume only the exact emitted-EE claim. The appearance
+    // validator already proved the P/5 MSB-first cursor, count/row widths,
+    // A nested-item BOOL insertion, and the D/U handoff; never walk payload
+    // bytes or infer another boundary in this dispatch layer.
+    fn from_claim(claim: &live_update::ClaimSummary) -> Self {
+        Self::from_exact_claims(&claim.creature_visible_equipment_claims)
+    }
+
+    fn from_exact_claims(
+        claims: &[live_object_update::LiveObjectCreatureVisibleEquipmentClaim],
+    ) -> Self {
+        let mut summary = Self {
+            claims: claims.len(),
+            ..Self::default()
+        };
+        for claim in claims {
+            if claim.appearance_mask == LIVE_OBJECT_VISIBLE_EQUIPMENT_MASK {
+                summary.explicit_mask_0200_claims =
+                    summary.explicit_mask_0200_claims.saturating_add(1);
+            }
+            if claim.all_fields_appearance {
+                summary.all_fields_claims = summary.all_fields_claims.saturating_add(1);
+            }
+            summary.rows = summary.rows.saturating_add(claim.rows.len());
+            for row in &claim.rows {
+                match row.operation {
+                    live_object_update::LiveObjectVisibleEquipmentOperation::Add => {
+                        summary.add_rows = summary.add_rows.saturating_add(1);
+                    }
+                    live_object_update::LiveObjectVisibleEquipmentOperation::Delete => {
+                        summary.delete_rows = summary.delete_rows.saturating_add(1);
+                    }
+                    live_object_update::LiveObjectVisibleEquipmentOperation::Update => {
+                        summary.update_rows = summary.update_rows.saturating_add(1);
+                    }
+                    live_object_update::LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero => {
+                        summary.ignored_legacy_zero_rows =
+                            summary.ignored_legacy_zero_rows.saturating_add(1);
+                    }
+                }
+            }
+        }
+        summary
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+struct LiveObjectVisibleEquipmentProfileBounds {
+    claim_headers_emitted: usize,
+    claim_headers_truncated: usize,
+    rows_emitted: usize,
+    rows_truncated: usize,
+}
+
+fn live_object_visible_equipment_profile_bounds(
+    claims: &[live_object_update::LiveObjectCreatureVisibleEquipmentClaim],
+    max_claim_headers: usize,
+    max_rows: usize,
+) -> LiveObjectVisibleEquipmentProfileBounds {
+    let claim_headers_emitted = claims.len().min(max_claim_headers);
+    let eligible_rows = claims
+        .iter()
+        .take(claim_headers_emitted)
+        .fold(0usize, |rows, claim| rows.saturating_add(claim.rows.len()));
+    let total_rows = claims
+        .iter()
+        .fold(0usize, |rows, claim| rows.saturating_add(claim.rows.len()));
+    let rows_emitted = eligible_rows.min(max_rows);
+    LiveObjectVisibleEquipmentProfileBounds {
+        claim_headers_emitted,
+        claim_headers_truncated: claims.len().saturating_sub(claim_headers_emitted),
+        rows_emitted,
+        rows_truncated: total_rows.saturating_sub(rows_emitted),
+    }
+}
+
+fn live_object_visible_equipment_operation_label(
+    operation: live_object_update::LiveObjectVisibleEquipmentOperation,
+) -> &'static str {
+    match operation {
+        live_object_update::LiveObjectVisibleEquipmentOperation::Add => "add",
+        live_object_update::LiveObjectVisibleEquipmentOperation::Delete => "delete",
+        live_object_update::LiveObjectVisibleEquipmentOperation::Update => "update",
+        live_object_update::LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero => {
+            "ignored-legacy-zero"
+        }
     }
 }
 
@@ -1700,6 +1805,85 @@ fn claim_live_object_payload_with_lifecycle(
     })
 }
 
+fn trace_live_object_visible_equipment_profiles(
+    family_name: &'static str,
+    claim: &live_update::ClaimSummary,
+) -> LiveObjectVisibleEquipmentProfileBounds {
+    let claims = &claim.creature_visible_equipment_claims;
+    let bounds = live_object_visible_equipment_profile_bounds(
+        claims,
+        MAX_LIVE_OBJECT_VISIBLE_EQUIPMENT_PROFILE_CLAIMS,
+        MAX_LIVE_OBJECT_VISIBLE_EQUIPMENT_PROFILE_ROWS,
+    );
+    let mut rows_emitted = 0usize;
+
+    for (claim_index, equipment_claim) in
+        claims.iter().take(bounds.claim_headers_emitted).enumerate()
+    {
+        let claim_rows_emitted = equipment_claim
+            .rows
+            .len()
+            .min(bounds.rows_emitted.saturating_sub(rows_emitted));
+        tracing::debug!(
+            family = family_name,
+            claim_index,
+            owner_id = format_args!("0x{:08X}", equipment_claim.owner_id),
+            appearance_mask = format_args!("0x{:04X}", equipment_claim.appearance_mask),
+            all_fields_appearance = equipment_claim.all_fields_appearance,
+            record_offset = equipment_claim.record_offset,
+            record_end = equipment_claim.record_end,
+            fragment_bit_start = equipment_claim.fragment_bit_start,
+            fragment_bit_end = equipment_claim.fragment_bit_end,
+            rows = equipment_claim.rows.len(),
+            rows_emitted = claim_rows_emitted,
+            rows_truncated = equipment_claim
+                .rows
+                .len()
+                .saturating_sub(claim_rows_emitted),
+            "server live-object exact creature visible-equipment claim profile"
+        );
+
+        for (row_index, row) in equipment_claim
+            .rows
+            .iter()
+            .take(claim_rows_emitted)
+            .enumerate()
+        {
+            tracing::debug!(
+                family = family_name,
+                claim_index,
+                row_index,
+                owner_id = format_args!("0x{:08X}", equipment_claim.owner_id),
+                appearance_mask = format_args!("0x{:04X}", equipment_claim.appearance_mask),
+                all_fields_appearance = equipment_claim.all_fields_appearance,
+                record_offset = equipment_claim.record_offset,
+                record_end = equipment_claim.record_end,
+                fragment_bit_start = equipment_claim.fragment_bit_start,
+                fragment_bit_end = equipment_claim.fragment_bit_end,
+                operation = live_object_visible_equipment_operation_label(row.operation),
+                object_id = format_args!("0x{:08X}", row.object_id),
+                visible_slot = format_args!("0x{:08X}", row.visible_slot),
+                update_status = row.update_status.unwrap_or_default(),
+                update_status_present = row.update_status.is_some(),
+                "server live-object exact creature visible-equipment row profile"
+            );
+            rows_emitted = rows_emitted.saturating_add(1);
+        }
+    }
+
+    debug_assert_eq!(rows_emitted, bounds.rows_emitted);
+    tracing::debug!(
+        family = family_name,
+        claims = claims.len(),
+        claim_headers_emitted = bounds.claim_headers_emitted,
+        claim_headers_truncated = bounds.claim_headers_truncated,
+        rows_emitted = bounds.rows_emitted,
+        rows_truncated = bounds.rows_truncated,
+        "server live-object exact creature visible-equipment profile bounded"
+    );
+    bounds
+}
+
 fn trace_live_object_exact_claim_summary(
     family_name: &'static str,
     claim: &live_update::ClaimSummary,
@@ -1775,6 +1959,14 @@ fn trace_live_object_exact_claim_summary(
         }
     }
 
+    let visible_equipment = LiveObjectVisibleEquipmentTraceSummary::from_claim(claim);
+    let emit_visible_equipment_profile =
+        crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_VISIBLE_EQUIPMENT_PROFILE",
+        );
+    if emit_visible_equipment_profile {
+        trace_live_object_visible_equipment_profiles(family_name, claim);
+    }
     let trace = LiveObjectExactClaimTraceSummary::from_claim_with_materialization(
         claim,
         |object_type, object_id| {
@@ -1893,6 +2085,17 @@ fn trace_live_object_exact_claim_summary(
         live_gui_records = trace.live_gui_records,
         live_gui_fragment_bits = trace.live_gui_fragment_bits,
         creature_appearance_records = trace.creature_appearance_records,
+        visible_equipment = format_args!(
+            "claims={} explicit_mask_0200_claims={} all_fields_claims={} rows={} add_rows={} delete_rows={} update_rows={} ignored_legacy_zero_rows={}",
+            visible_equipment.claims,
+            visible_equipment.explicit_mask_0200_claims,
+            visible_equipment.all_fields_claims,
+            visible_equipment.rows,
+            visible_equipment.add_rows,
+            visible_equipment.delete_rows,
+            visible_equipment.update_rows,
+            visible_equipment.ignored_legacy_zero_rows,
+        ),
         creature_update_records = trace.creature_update_records,
         world_status_records = trace.world_status_records,
         read_buffer_only_records = trace.read_buffer_only_records,
@@ -6127,12 +6330,13 @@ mod live_object_dispatch_tests {
 mod exact_claim_trace_tests {
     use super::*;
     use crate::translate::live_object_update::{
-        LiveObjectCreatureUpdateClaim, LiveObjectInventoryFeature25Claim,
-        LiveObjectInventoryMaskBranches, LiveObjectInventoryOwnerClaim,
-        LiveObjectPlaceableAppearance, LiveObjectPlaceableAppearanceClaim,
-        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordOrientation,
-        LiveObjectRecordOrientationSource, LiveObjectRecordOrientationVector,
-        LiveObjectRecordPosition,
+        LiveObjectCreatureUpdateClaim, LiveObjectCreatureVisibleEquipmentClaim,
+        LiveObjectInventoryFeature25Claim, LiveObjectInventoryMaskBranches,
+        LiveObjectInventoryOwnerClaim, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableAppearanceClaim, LiveObjectPlaceableState, LiveObjectRecordMention,
+        LiveObjectRecordOrientation, LiveObjectRecordOrientationSource,
+        LiveObjectRecordOrientationVector, LiveObjectRecordPosition,
+        LiveObjectVisibleEquipmentOperation, LiveObjectVisibleEquipmentRow,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -6508,6 +6712,169 @@ mod exact_claim_trace_tests {
         assert_eq!(
             trace.inventory_owner_feature25_legacy_tail_active_without_item_proof_object_refs,
             1
+        );
+    }
+
+    fn visible_equipment_claim(
+        appearance_mask: u16,
+        all_fields_appearance: bool,
+        rows: Vec<LiveObjectVisibleEquipmentRow>,
+    ) -> LiveObjectCreatureVisibleEquipmentClaim {
+        LiveObjectCreatureVisibleEquipmentClaim {
+            owner_id: 0x8000_1000 + u32::from(appearance_mask),
+            appearance_mask,
+            all_fields_appearance,
+            record_offset: 10,
+            record_end: 20,
+            fragment_bit_start: 3,
+            fragment_bit_end: 7,
+            rows,
+        }
+    }
+
+    fn visible_equipment_row(
+        operation: LiveObjectVisibleEquipmentOperation,
+        object_id: u32,
+    ) -> LiveObjectVisibleEquipmentRow {
+        LiveObjectVisibleEquipmentRow {
+            operation,
+            object_id,
+            visible_slot: object_id & 0xFF,
+            update_status: (operation == LiveObjectVisibleEquipmentOperation::Update).then_some(7),
+        }
+    }
+
+    #[test]
+    fn visible_equipment_trace_summary_counts_exact_claim_rows_and_mask_branches() {
+        let claim = live_update::ClaimSummary {
+            creature_visible_equipment_claims: vec![
+                visible_equipment_claim(
+                    0x0200,
+                    false,
+                    vec![
+                        visible_equipment_row(
+                            LiveObjectVisibleEquipmentOperation::Add,
+                            0x8000_2001,
+                        ),
+                        visible_equipment_row(
+                            LiveObjectVisibleEquipmentOperation::Delete,
+                            0x8000_2002,
+                        ),
+                    ],
+                ),
+                visible_equipment_claim(
+                    0xFFFF,
+                    true,
+                    vec![
+                        visible_equipment_row(
+                            LiveObjectVisibleEquipmentOperation::Update,
+                            0x8000_2003,
+                        ),
+                        visible_equipment_row(
+                            LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero,
+                            0,
+                        ),
+                    ],
+                ),
+                visible_equipment_claim(
+                    0x0201,
+                    false,
+                    vec![visible_equipment_row(
+                        LiveObjectVisibleEquipmentOperation::Add,
+                        0x8000_2004,
+                    )],
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let summary = LiveObjectVisibleEquipmentTraceSummary::from_claim(&claim);
+
+        assert_eq!(summary.claims, 3);
+        assert_eq!(summary.explicit_mask_0200_claims, 1);
+        assert_eq!(summary.all_fields_claims, 1);
+        assert_eq!(summary.rows, 5);
+        assert_eq!(summary.add_rows, 2);
+        assert_eq!(summary.delete_rows, 1);
+        assert_eq!(summary.update_rows, 1);
+        assert_eq!(summary.ignored_legacy_zero_rows, 1);
+    }
+
+    #[test]
+    fn visible_equipment_profile_bounds_claim_headers_and_rows_globally() {
+        let claims = vec![
+            visible_equipment_claim(
+                0x0200,
+                false,
+                vec![
+                    visible_equipment_row(LiveObjectVisibleEquipmentOperation::Add, 1),
+                    visible_equipment_row(LiveObjectVisibleEquipmentOperation::Delete, 2),
+                ],
+            ),
+            visible_equipment_claim(
+                0xFFFF,
+                true,
+                vec![
+                    visible_equipment_row(LiveObjectVisibleEquipmentOperation::Update, 3),
+                    visible_equipment_row(
+                        LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero,
+                        4,
+                    ),
+                ],
+            ),
+            visible_equipment_claim(
+                0x0201,
+                false,
+                vec![visible_equipment_row(
+                    LiveObjectVisibleEquipmentOperation::Add,
+                    5,
+                )],
+            ),
+        ];
+
+        assert_eq!(
+            live_object_visible_equipment_profile_bounds(&claims, 2, 3),
+            LiveObjectVisibleEquipmentProfileBounds {
+                claim_headers_emitted: 2,
+                claim_headers_truncated: 1,
+                rows_emitted: 3,
+                rows_truncated: 2,
+            }
+        );
+        assert_eq!(
+            live_object_visible_equipment_profile_bounds(&claims, 0, 0),
+            LiveObjectVisibleEquipmentProfileBounds {
+                claim_headers_emitted: 0,
+                claim_headers_truncated: 3,
+                rows_emitted: 0,
+                rows_truncated: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn visible_equipment_operation_labels_are_exact() {
+        assert_eq!(
+            live_object_visible_equipment_operation_label(LiveObjectVisibleEquipmentOperation::Add),
+            "add"
+        );
+        assert_eq!(
+            live_object_visible_equipment_operation_label(
+                LiveObjectVisibleEquipmentOperation::Delete
+            ),
+            "delete"
+        );
+        assert_eq!(
+            live_object_visible_equipment_operation_label(
+                LiveObjectVisibleEquipmentOperation::Update
+            ),
+            "update"
+        );
+        assert_eq!(
+            live_object_visible_equipment_operation_label(
+                LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero
+            ),
+            "ignored-legacy-zero"
         );
     }
 }
