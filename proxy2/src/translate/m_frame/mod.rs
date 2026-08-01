@@ -3410,6 +3410,19 @@ struct CurrentPlayerKnownVisibleEquipment {
     slots: Vec<(u32, u32)>,
 }
 
+impl CurrentPlayerKnownVisibleEquipment {
+    /// Return only an exact emitted-EE object-id membership. The shared
+    /// visible-equipment cache uses compact/external equivalence when applying
+    /// decompile-backed U rows, but an engine-facing client action must name
+    /// the exact object id that the EE object array and payload writer know.
+    /// A missing row is unknown partial state, never proof of unequip.
+    fn exact_visible_slot_for_object(&self, object_id: u32) -> Option<u32> {
+        self.slots.iter().find_map(|(visible_slot, row_object_id)| {
+            (*row_object_id == object_id).then_some(*visible_slot)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CurrentPlayerKnownVisibleEquipmentBlockedReason {
     MissingStatusBinding,
@@ -3587,6 +3600,32 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         .as_ref()
         .map(|view| view.slots.len())
         .unwrap_or(0);
+    // This is a positive-membership gate for the existing opt-in client
+    // EquipToggle consumer. P/5 visible slots and Inventory response slots are
+    // different namespaces, so retain the P/5 slot only as provenance and do
+    // not compare or translate it to `last.equip_slot`.
+    let recommended_client_inventory_equip_toggle_visible_equipment_match =
+        current_player_known_visible_equipment
+            .as_ref()
+            .ok()
+            .and_then(|view| {
+                view.exact_visible_slot_for_object(last.object_id)
+                    .map(|visible_slot| (view.owner_object_id, visible_slot, last.object_id))
+            });
+    let recommended_client_inventory_equip_toggle_visible_equipment_positive_match =
+        recommended_client_inventory_equip_toggle_visible_equipment_match.is_some();
+    let recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id =
+        recommended_client_inventory_equip_toggle_visible_equipment_match
+            .map(|(owner_object_id, _, _)| owner_object_id)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_visible_equipment_visible_slot =
+        recommended_client_inventory_equip_toggle_visible_equipment_match
+            .map(|(_, visible_slot, _)| visible_slot)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_visible_equipment_object_id =
+        recommended_client_inventory_equip_toggle_visible_equipment_match
+            .map(|(_, _, object_id)| object_id)
+            .unwrap_or(0);
     let current_player_known_visible_equipment_slots_json =
         match &current_player_known_visible_equipment {
             Ok(view) => format!(
@@ -3654,6 +3693,11 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         "current_player_inventory_status_stale"
     } else if !current_player_status_binding_owner_matches {
         "current_player_inventory_status_owner_mismatch"
+    } else if !recommended_client_inventory_equip_toggle_visible_equipment_positive_match {
+        // The projection is explicitly partial. Lack of a matching P/5 row
+        // cannot be interpreted as an unequipped item or used to clear state;
+        // it only withholds this optional engine-facing probe.
+        "current_player_visible_equipment_positive_match_unavailable"
     } else if protocol.last_client_equip_toggle.is_some()
         && recommended_client_inventory_equip_toggle_authorization_response.is_none()
     {
@@ -4310,7 +4354,15 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_current_player_known_visible_equipment_owner_object_id\": {},\n",
             "  \"inventory_equipment_bridge_current_player_known_visible_equipment_owner_object_id_hex\": \"0x{:08X}\",\n",
             "  \"inventory_equipment_bridge_current_player_known_visible_equipment_slot_count\": {},\n",
-            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_slots\": {}"
+            "  \"inventory_equipment_bridge_current_player_known_visible_equipment_slots\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_positive_match\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_partial\": true,\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_absence_means_unequipped\": false,\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_object_id\": {},\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": {}"
         ),
         fields,
         current_player_known_visible_equipment_available,
@@ -4318,7 +4370,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         current_player_known_visible_equipment_owner_object_id,
         current_player_known_visible_equipment_owner_object_id,
         current_player_known_visible_equipment_slot_count,
-        current_player_known_visible_equipment_slots_json
+        current_player_known_visible_equipment_slots_json,
+        recommended_client_inventory_equip_toggle_visible_equipment_positive_match,
+        recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id,
+        recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id,
+        recommended_client_inventory_equip_toggle_visible_equipment_object_id,
+        recommended_client_inventory_equip_toggle_visible_equipment_object_id,
+        recommended_client_inventory_equip_toggle_visible_equipment_visible_slot
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -12175,10 +12233,21 @@ mod tests {
 
         let mut object_registry = semantic::ObjectRegistry::default();
         object_registry.observe_materialized_item_object_ids(&[0x8000_5678]);
-        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((0xFFFF_FFEF, 2), 0x8000_5678);
+        let authorization_context = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(0xFFFF_FFEF),
+            current_control_epoch: 1,
+            area_client_area_packets: 1,
+        };
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
             &bridge,
             &object_registry,
+            &mut protocol,
+            authorization_context,
         );
 
         assert!(body.contains(
@@ -12207,11 +12276,14 @@ mod tests {
         ));
 
         bridge.record_confirmed_inventory_replay_dispatch();
-        let dispatched_body = augment_quickbar_item_refresh_hint_with_bridge_output(
+        let dispatched_body =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "{\n  \"kind\": \"quickbar_item_refresh_idle\",\n  \"pending_item_refresh\": false\n}\n"
                 .to_string(),
             &bridge,
             &object_registry,
+            &mut protocol,
+            authorization_context,
         );
         assert!(dispatched_body.contains("\"pending_item_refresh\": false"));
         assert!(dispatched_body.contains(
@@ -12253,11 +12325,14 @@ mod tests {
             .as_mut()
             .expect("queued output")
             .update_index = 13;
-        let stale_update_body = augment_quickbar_item_refresh_hint_with_bridge_output(
-            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
-            &bridge,
-            &object_registry,
-        );
+        let stale_update_body =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+                authorization_context,
+            );
         assert!(
             stale_update_body
                 .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
@@ -12272,11 +12347,14 @@ mod tests {
             .expect("queued output")
             .update_index = 12;
         object_registry.reset_for_area();
-        let area_reset_body = augment_quickbar_item_refresh_hint_with_bridge_output(
-            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
-            &bridge,
-            &object_registry,
-        );
+        let area_reset_body =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+                authorization_context,
+            );
         assert!(
             area_reset_body
                 .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
@@ -12511,6 +12589,9 @@ mod tests {
         let mut object_registry = semantic::ObjectRegistry::default();
         object_registry.observe_materialized_item_object_ids(&[object_id, object_id + 1]);
         let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((controlled_object_id, 2), object_id);
         let mut authorization_context = InventoryEquipToggleAuthorizationContext {
             current_controlled_object_id: Some(controlled_object_id),
             current_control_epoch: 1,
@@ -12570,6 +12651,49 @@ mod tests {
         assert!(initial.contains(
             "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 0"
         ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_positive_match\": true"
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_partial\": true"
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_absence_means_unequipped\": false"
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id_hex\": \"0xFFFFFFEF\""
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_object_id_hex\": \"0x80005678\""
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": 2"
+        ));
+
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((controlled_object_id, 2), object_id & 0x7FFF_FFFF);
+        let compact_alias_only =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+                authorization_context,
+            );
+        assert!(
+            compact_alias_only
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(compact_alias_only.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"current_player_visible_equipment_positive_match_unavailable\""
+        ));
+        assert!(compact_alias_only.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_positive_match\": false"
+        ));
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((controlled_object_id, 2), object_id);
 
         let client_payload =
             client_inventory::build_equip_toggle_payload(object_id, None).expect("client payload");
@@ -12694,6 +12818,66 @@ mod tests {
         assert!(rearmed.contains(
             "\"recommended_client_inventory_equip_toggle_authorization_response_matches_client_primary\": true"
         ));
+
+        protocol.observe_creature_visible_equipment_claims(&[
+            crate::translate::live_object_update::LiveObjectCreatureVisibleEquipmentClaim {
+                owner_id: controlled_object_id,
+                appearance_mask: 0x0200,
+                all_fields_appearance: false,
+                record_offset: 7,
+                record_end: 19,
+                fragment_bit_start: 3,
+                fragment_bit_end: 3,
+                rows: vec![
+                    crate::translate::live_object_update::LiveObjectVisibleEquipmentRow {
+                        operation: crate::translate::live_object_update::LiveObjectVisibleEquipmentOperation::Delete,
+                        object_id: 0x7F00_0000,
+                        visible_slot: 2,
+                        update_status: None,
+                    },
+                ],
+            },
+        ]);
+        let explicit_visible_delete =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+                authorization_context,
+            );
+        assert!(
+            explicit_visible_delete
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(explicit_visible_delete.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"current_player_visible_equipment_positive_match_unavailable\""
+        ));
+        assert!(explicit_visible_delete.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_positive_match\": false"
+        ));
+        assert!(explicit_visible_delete.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_absence_means_unequipped\": false"
+        ));
+        protocol.observe_creature_visible_equipment_claims(&[
+            crate::translate::live_object_update::LiveObjectCreatureVisibleEquipmentClaim {
+                owner_id: controlled_object_id,
+                appearance_mask: 0x0200,
+                all_fields_appearance: false,
+                record_offset: 7,
+                record_end: 23,
+                fragment_bit_start: 3,
+                fragment_bit_end: 7,
+                rows: vec![
+                    crate::translate::live_object_update::LiveObjectVisibleEquipmentRow {
+                        operation: crate::translate::live_object_update::LiveObjectVisibleEquipmentOperation::Add,
+                        object_id,
+                        visible_slot: 2,
+                        update_status: None,
+                    },
+                ],
+            },
+        ]);
 
         protocol.observe_client_equip_toggle(
             client_inventory::claim_payload_if_verified(&client_payload)
