@@ -35,5 +35,5 @@ pub(crate) use state::{
     InventoryItemObjectProvenNeighborhood, InventoryItemObjectStatus, KnownObjectState,
     LiveObjectInventoryMaterializationSummary, ModuleState, ObjectRegistry,
     QuickbarItemContextSource, QuickbarItemRefreshOutcome, ResourceState, SemanticSessionState,
-    SyntheticState, UiState,
+    StatusAuthorizedVisibleEquipmentProbeAuthorization, SyntheticState, UiState,
 };

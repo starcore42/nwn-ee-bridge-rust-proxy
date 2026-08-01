@@ -539,9 +539,20 @@ fn apply_event(
             // id followed by the controlled OBJECTID. The packet has no
             // semantic fragment fields beyond the shared three-bit CNW cursor,
             // so these values are exact authority rather than a byte scan.
+            let prior_control_epoch = state.player_control.control_epoch;
             state
                 .player_control
                 .observe_object_control(event.player_id, event.object_id);
+            if state.player_control.control_epoch != prior_control_epoch {
+                // Gameplay streams are reduced in wire order before M-frame
+                // side effects render the harness hint. Invalidate here so a
+                // later P/5 D unit in the same accepted stream cannot close an
+                // action authorized for the previously controlled creature.
+                state
+                    .ui
+                    .inventory_equipment_protocol
+                    .invalidate_status_authorized_visible_equipment_probe_for_control_change();
+            }
             tracing::debug!(
                 player_id = event.player_id,
                 object_id = format_args!("0x{:08X}", event.object_id),
@@ -2817,7 +2828,10 @@ mod fixture_free_tests {
         packet::Direction,
         translate::{
             VerifiedFamily, VerifiedProof,
-            semantic::state::{Feature25ReferenceSources, InventoryEquipmentHandoffOutcome},
+            semantic::state::{
+                Feature25ReferenceSources, InventoryEquipmentHandoffOutcome,
+                StatusAuthorizedVisibleEquipmentProbeAuthorization,
+            },
         },
     };
 
@@ -2846,6 +2860,15 @@ mod fixture_free_tests {
         let mut fragment_bits = vec![false; 3];
         fragment_bits.extend_from_slice(owned_bits);
         payload.extend_from_slice(&pack_msb_valid_bits(fragment_bits, 3));
+        payload
+    }
+
+    fn object_control_payload(player_id: u32, object_id: u32) -> Vec<u8> {
+        let mut payload = vec![
+            0x50, 0x05, 0x02, 0x0F, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x73,
+        ];
+        payload[7..11].copy_from_slice(&player_id.to_le_bytes());
+        payload[11..15].copy_from_slice(&object_id.to_le_bytes());
         payload
     }
 
@@ -2885,6 +2908,132 @@ mod fixture_free_tests {
             !equipment
                 .visible_equipment_slots_by_owner
                 .contains_key(&(OWNER_ID, VISIBLE_SLOT))
+        );
+    }
+
+    #[test]
+    fn obj_control_epoch_change_invalidates_direct_probe_before_following_delete() {
+        const PLAYER_ID: u32 = 0x0102_0304;
+        const OWNER_A: u32 = 0xFFFF_FFEF;
+        const OWNER_B: u32 = 0xFFFF_FFEE;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+
+        let delete_payload = {
+            let mut live = vec![b'P', 5];
+            live.extend_from_slice(&OWNER_A.to_le_bytes());
+            live.extend_from_slice(&0x0200u16.to_le_bytes());
+            live.push(1);
+            live.push(b'D');
+            live.extend_from_slice(&0x7F00_0000u32.to_le_bytes());
+            live.extend_from_slice(&VISIBLE_SLOT.to_le_bytes());
+            live_object_payload_with_bits(&live, &[])
+        };
+        let armed_state = || {
+            let mut state = SemanticSessionState::default();
+            state
+                .player_control
+                .observe_object_control(PLAYER_ID, OWNER_A);
+            let control_epoch = state.player_control.control_epoch;
+            let equipment = &mut state.ui.inventory_equipment_protocol;
+            equipment
+                .visible_equipment_slots_by_owner
+                .insert((OWNER_A, VISIBLE_SLOT), ITEM_ID);
+            equipment.offer_status_authorized_visible_equipment_probe(
+                StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                    status_update_index: 7,
+                    status_server_sequence: 44,
+                    area_client_area_packets: 0,
+                    control_epoch,
+                    owner_object_id: OWNER_A,
+                    visible_slot: VISIBLE_SLOT,
+                    object_id: ITEM_ID,
+                },
+            );
+            let action =
+                client_inventory::build_equip_toggle_payload(ITEM_ID, None).expect("EquipToggle");
+            equipment.observe_client_equip_toggle(
+                client_inventory::claim_payload_if_verified(&action).expect("exact EquipToggle"),
+            );
+            let response = inventory::build_ee_inventory_unequip_payload(7, ITEM_ID, false)
+                .expect("false-context Unequip");
+            equipment.observe_server_inventory_response(
+                inventory::claim_payload_if_verified(&response)
+                    .expect("exact false-context Unequip"),
+            );
+            assert!(
+                equipment
+                    .active_status_authorized_visible_equipment_probe
+                    .is_some_and(|active| active.matching_response.is_some())
+            );
+            state
+        };
+
+        let mut unchanged = armed_state();
+        let mut same_control_then_delete = object_control_payload(PLAYER_ID, OWNER_A);
+        same_control_then_delete.extend_from_slice(&delete_payload);
+        observe_verified_payload(
+            &mut unchanged,
+            Direction::ServerToClient,
+            &VerifiedProof::GameplayStream(vec![
+                VerifiedFamily::GameObjUpdateObjectControl,
+                VerifiedFamily::GameObjUpdateLiveObject,
+            ]),
+            &same_control_then_delete,
+        );
+        let completed = unchanged
+            .ui
+            .inventory_equipment_protocol
+            .last_completed_status_authorized_visible_equipment_probe
+            .expect("unchanged ObjControl authority permits the exact D closure");
+        assert_eq!(unchanged.player_control.control_epoch, 1);
+
+        observe_verified_payload(
+            &mut unchanged,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateObjectControl),
+            &object_control_payload(PLAYER_ID, OWNER_B),
+        );
+        assert_eq!(
+            unchanged
+                .ui
+                .inventory_equipment_protocol
+                .last_completed_status_authorized_visible_equipment_probe,
+            Some(completed),
+            "a later authority change retains already-completed historical evidence"
+        );
+
+        let mut changed = armed_state();
+        let mut changed_control_then_delete = object_control_payload(PLAYER_ID, OWNER_B);
+        changed_control_then_delete.extend_from_slice(&delete_payload);
+        observe_verified_payload(
+            &mut changed,
+            Direction::ServerToClient,
+            &VerifiedProof::GameplayStream(vec![
+                VerifiedFamily::GameObjUpdateObjectControl,
+                VerifiedFamily::GameObjUpdateLiveObject,
+            ]),
+            &changed_control_then_delete,
+        );
+        let equipment = &changed.ui.inventory_equipment_protocol;
+        assert_eq!(changed.player_control.control_epoch, 2);
+        assert!(
+            equipment
+                .active_status_authorized_visible_equipment_probe
+                .is_none()
+        );
+        assert!(
+            equipment
+                .last_completed_status_authorized_visible_equipment_probe
+                .is_none(),
+            "wire-ordered ObjControl invalidation must precede the following exact D row"
+        );
+        assert!(equipment.status_authorized_visible_equipment_probe_issued_for_area);
+        assert!(
+            !equipment
+                .visible_equipment_slots_by_owner
+                .contains_key(&(OWNER_A, VISIBLE_SLOT)),
+            "the D row still updates shared world state after transaction invalidation"
         );
     }
 

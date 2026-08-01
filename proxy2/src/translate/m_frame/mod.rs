@@ -50,6 +50,7 @@ mod sequence;
 mod server_dispatch;
 mod server_replay;
 mod state;
+mod status_visible_equipment_probe;
 mod stream_continuation;
 mod synthetic_area;
 mod transport_identity;
@@ -3298,7 +3299,22 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         tracing::trace!("quickbar item-refresh hint deferred behind M emit strict validation");
         return;
     }
+    let authorization_context = InventoryEquipToggleAuthorizationContext {
+        current_controlled_object_id: state.semantic.player_control.current_controlled_object_id,
+        current_control_epoch: state.semantic.player_control.control_epoch,
+        area_client_area_packets: state.semantic.area.client_area_packets,
+    };
     let Some(path) = state.quickbar_item_refresh_hint_path.clone() else {
+        // The bounded transaction is production protocol state rather than a
+        // JSON-file side effect. Keep its small planner active without paying
+        // the diagnostic hint/formatting cost on every ordinary gameplay
+        // event when no harness artifact was requested.
+        refresh_status_authorized_visible_equipment_probe_plan(
+            &state.inventory_equipment,
+            &state.semantic.objects,
+            &mut state.semantic.ui.inventory_equipment_protocol,
+            authorization_context,
+        );
         return;
     };
     let hint = state.semantic.quickbar_item_refresh_harness_hint();
@@ -3316,14 +3332,7 @@ fn update_quickbar_item_refresh_hint(state: &mut SessionState) {
         &state.inventory_equipment,
         &state.semantic.objects,
         &mut state.semantic.ui.inventory_equipment_protocol,
-        InventoryEquipToggleAuthorizationContext {
-            current_controlled_object_id: state
-                .semantic
-                .player_control
-                .current_controlled_object_id,
-            current_control_epoch: state.semantic.player_control.control_epoch,
-            area_client_area_packets: state.semantic.area.client_area_packets,
-        },
+        authorization_context,
     );
 
     if state.quickbar_item_refresh_hint_last_body.as_deref() == Some(body.as_str()) {
@@ -3519,6 +3528,99 @@ fn current_player_known_visible_equipment(
     })
 }
 
+/// Maintain the one-shot Status/P/5 transaction offer without depending on
+/// the optional harness JSON artifact.
+///
+/// This mirrors only the source-selection facts that decide whether the
+/// direct recommendation is the final usable source. The full renderer below
+/// remains the diagnostic authority for its descriptive fields and is covered
+/// together with this planner by the focused recommendation regressions.
+fn refresh_status_authorized_visible_equipment_probe_plan(
+    bridge: &state::InventoryEquipmentBridgeState,
+    object_registry: &semantic::ObjectRegistry,
+    protocol: &mut semantic::InventoryEquipmentProtocolState,
+    authorization_context: InventoryEquipToggleAuthorizationContext,
+) {
+    let current_player_status_binding = bridge.current_player_status_binding;
+    protocol.reconcile_status_authorized_visible_equipment_probe_authority(
+        current_player_status_binding.map(|binding| {
+            (
+                binding.queued_update_index,
+                binding.server_sequence as u64,
+                binding.area_client_area_packets,
+                binding.control_epoch,
+                binding.owner_object_id,
+            )
+        }),
+        authorization_context.area_client_area_packets,
+        authorization_context.current_control_epoch,
+        authorization_context.current_controlled_object_id,
+    );
+
+    let current_player_known_visible_equipment =
+        current_player_known_visible_equipment(bridge, protocol, authorization_context);
+    let status_authorized_candidate = current_player_known_visible_equipment
+        .as_ref()
+        .ok()
+        .and_then(|view| {
+            view.first_exact_proven_item(object_registry)
+                .map(|(visible_slot, object_id)| (view.owner_object_id, visible_slot, object_id))
+        });
+    let last = bridge.last_queued_output.unwrap_or_default();
+    let last_known = bridge.last_queued_output.is_some();
+    let confirmed_claim_visible_equipment_match = last_known
+        && current_player_known_visible_equipment
+            .as_ref()
+            .ok()
+            .is_some_and(|view| view.exact_visible_slot_for_object(last.object_id).is_some());
+    let confirmed_claim_has_matching_client_action = last_known
+        && protocol.last_client_equip_toggle.is_some_and(|client| {
+            client.primary_object_id == last.object_id && client.secondary_object_id.is_none()
+        });
+    let confirmed_claim_is_eligible = last_known
+        && bridge.last_confirmed_inventory_replay_update_index == Some(last.update_index)
+        && bridge.last_confirmed_inventory_replay_dispatch_update_index == Some(last.update_index)
+        && last.minor == 1
+        && last.equip_slot != 0
+        && matches!(
+            object_registry.inventory_item_object_status(last.object_id),
+            semantic::InventoryItemObjectStatus::Proven(_)
+        )
+        && current_player_status_binding
+            .is_some_and(|binding| binding.queued_update_index >= last.update_index)
+        && confirmed_claim_visible_equipment_match
+        && (protocol.last_client_equip_toggle.is_none()
+            || confirmed_claim_has_matching_client_action);
+    let recommendation_uses_confirmed_server_claim =
+        confirmed_claim_is_eligible || (last_known && status_authorized_candidate.is_none());
+
+    let offered_authorization = (!recommendation_uses_confirmed_server_claim
+        && protocol.last_client_equip_toggle.is_none())
+    .then_some((current_player_status_binding, status_authorized_candidate))
+    .and_then(|(binding, candidate)| binding.zip(candidate))
+    .and_then(|(binding, (owner_object_id, visible_slot, object_id))| {
+        client_inventory::build_equip_toggle_payload(object_id, None).map(|_| {
+            semantic::StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                status_update_index: binding.queued_update_index,
+                status_server_sequence: binding.server_sequence as u64,
+                area_client_area_packets: binding.area_client_area_packets,
+                control_epoch: binding.control_epoch,
+                owner_object_id,
+                visible_slot,
+                object_id,
+            }
+        })
+    });
+    if let Some(authorization) = offered_authorization {
+        protocol.offer_status_authorized_visible_equipment_probe(authorization);
+    } else if protocol
+        .active_status_authorized_visible_equipment_probe
+        .is_none()
+    {
+        protocol.clear_unconsumed_status_authorized_visible_equipment_probe_offer();
+    }
+}
+
 fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     body: String,
     bridge: &state::InventoryEquipmentBridgeState,
@@ -3526,6 +3628,12 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     protocol: &mut semantic::InventoryEquipmentProtocolState,
     authorization_context: InventoryEquipToggleAuthorizationContext,
 ) -> String {
+    refresh_status_authorized_visible_equipment_probe_plan(
+        bridge,
+        object_registry,
+        protocol,
+        authorization_context,
+    );
     let last = bridge.last_queued_output.unwrap_or_default();
     let last_known = bridge.last_queued_output.is_some();
     let last_client_gui_status = bridge
@@ -3753,6 +3861,23 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         recommended_client_inventory_equip_toggle_visible_equipment_match
             .map(|(_, _, object_id)| object_id)
             .unwrap_or(0);
+    let status_authorized_visible_equipment_probe_offer_matches_recommendation =
+        current_player_status_binding
+            .zip(recommended_client_inventory_equip_toggle_visible_equipment_match)
+            .is_some_and(|(binding, (owner_object_id, visible_slot, object_id))| {
+                protocol.offered_status_authorized_visible_equipment_probe
+                    == Some(
+                        semantic::StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                            status_update_index: binding.queued_update_index,
+                            status_server_sequence: binding.server_sequence as u64,
+                            area_client_area_packets: binding.area_client_area_packets,
+                            control_epoch: binding.control_epoch,
+                            owner_object_id,
+                            visible_slot,
+                            object_id,
+                        },
+                    )
+            });
     let current_player_known_visible_equipment_slots_json =
         match &current_player_known_visible_equipment {
             Ok(view) => format!(
@@ -3866,6 +3991,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "current_player_visible_equipment_positive_match_unavailable"
         } else if protocol.last_client_equip_toggle.is_some() {
             "status_authorized_visible_equipment_probe_consumed"
+        } else if !status_authorized_visible_equipment_probe_offer_matches_recommendation {
+            // An unconsumed action has no token on the native wire. Once an
+            // emitted offer is revoked, silently binding a later same-object
+            // recommendation to newer Status/P/5 provenance would be
+            // ambiguous, so the direct source remains fail-closed until the
+            // area-scoped offer lifecycle resets.
+            "status_authorized_visible_equipment_probe_offer_unavailable"
         } else {
             "none"
         };
@@ -3953,6 +4085,8 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     let recommended_client_inventory_equip_toggle_authorization_response_matches_client_secondary =
         recommended_client_inventory_equip_toggle_authorization_response
             .is_some_and(|response| response.matches_client_secondary);
+    let status_authorized_visible_equipment_probe_transaction_fields =
+        status_visible_equipment_probe::json_fields(protocol);
     let last_decision_known = last_decision.is_some();
     let last_decision_kind = last_decision
         .map(|decision| decision.kind)
@@ -4529,7 +4663,8 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id_hex\": \"0x{:08X}\",\n",
             "  \"recommended_client_inventory_equip_toggle_visible_equipment_object_id\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_visible_equipment_object_id_hex\": \"0x{:08X}\",\n",
-            "  \"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": {}"
+            "  \"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": {}",
+            "{}"
         ),
         fields,
         current_player_known_visible_equipment_available,
@@ -4543,7 +4678,8 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         recommended_client_inventory_equip_toggle_visible_equipment_owner_object_id,
         recommended_client_inventory_equip_toggle_visible_equipment_object_id,
         recommended_client_inventory_equip_toggle_visible_equipment_object_id,
-        recommended_client_inventory_equip_toggle_visible_equipment_visible_slot
+        recommended_client_inventory_equip_toggle_visible_equipment_visible_slot,
+        status_authorized_visible_equipment_probe_transaction_fields
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
@@ -12731,6 +12867,11 @@ mod tests {
 
     #[test]
     fn inventory_equip_toggle_initial_probe_uses_lowest_proven_status_authorized_p5_member() {
+        use crate::translate::live_object_update::{
+            LiveObjectCreatureVisibleEquipmentClaim, LiveObjectVisibleEquipmentOperation,
+            LiveObjectVisibleEquipmentRow,
+        };
+
         const OWNER: u32 = 0xFFFF_FFEF;
         const UNPROVEN_ITEM: u32 = 0x8000_0033;
         const ITEM_A: u32 = 0x8000_0044;
@@ -12800,7 +12941,6 @@ mod tests {
         assert!(initial.contains(
             "\"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": 2"
         ));
-
         let client_payload =
             client_inventory::build_equip_toggle_payload(ITEM_A, None).expect("client payload");
         protocol.observe_client_equip_toggle(
@@ -12821,6 +12961,209 @@ mod tests {
         assert!(consumed.contains(
             "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"status_authorized_visible_equipment_probe_consumed\""
         ));
+        assert_eq!(
+            protocol
+                .status_authorized_visible_equipment_probe_stage()
+                .as_str(),
+            "client_action_observed"
+        );
+
+        let canceled_payload = inventory::build_ee_inventory_unequip_payload(8, ITEM_A, true)
+            .expect("same-primary typed UnequipCancel");
+        protocol.observe_server_inventory_response(
+            inventory::claim_payload_if_verified(&canceled_payload)
+                .expect("exact same-primary cancel"),
+        );
+        assert_eq!(
+            protocol
+                .status_authorized_visible_equipment_probe_stage()
+                .as_str(),
+            "client_action_observed",
+            "a cancel is not the successful response that can own a later P/5 delete"
+        );
+
+        let unequip_payload = inventory::build_ee_inventory_unequip_payload(7, ITEM_A, false)
+            .expect("same-primary typed Unequip");
+        protocol.observe_server_inventory_response(
+            inventory::claim_payload_if_verified(&unequip_payload)
+                .expect("exact same-primary Unequip"),
+        );
+        assert_eq!(
+            protocol
+                .status_authorized_visible_equipment_probe_stage()
+                .as_str(),
+            "typed_response_observed"
+        );
+
+        protocol.observe_creature_visible_equipment_claims(&[
+            LiveObjectCreatureVisibleEquipmentClaim {
+                owner_id: OWNER - 1,
+                appearance_mask: 0x0200,
+                all_fields_appearance: false,
+                record_offset: 41,
+                record_end: 58,
+                fragment_bit_start: 3,
+                fragment_bit_end: 3,
+                rows: vec![LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Delete,
+                    object_id: 0x7F00_0000,
+                    visible_slot: 2,
+                    update_status: None,
+                }],
+            },
+            LiveObjectCreatureVisibleEquipmentClaim {
+                owner_id: OWNER,
+                appearance_mask: 0x0200,
+                all_fields_appearance: false,
+                record_offset: 59,
+                record_end: 76,
+                fragment_bit_start: 3,
+                fragment_bit_end: 3,
+                rows: vec![LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Delete,
+                    object_id: 0x7F00_0000,
+                    visible_slot: 0x20,
+                    update_status: None,
+                }],
+            },
+        ]);
+        assert_eq!(
+            protocol
+                .status_authorized_visible_equipment_probe_stage()
+                .as_str(),
+            "typed_response_observed",
+            "foreign-owner and wrong-slot deletes cannot close the transaction"
+        );
+
+        protocol.observe_creature_visible_equipment_claims(&[
+            LiveObjectCreatureVisibleEquipmentClaim {
+                owner_id: OWNER,
+                appearance_mask: 0x0200,
+                all_fields_appearance: false,
+                record_offset: 77,
+                record_end: 94,
+                fragment_bit_start: 11,
+                fragment_bit_end: 11,
+                rows: vec![LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Delete,
+                    object_id: 0x7F00_0000,
+                    visible_slot: 2,
+                    update_status: None,
+                }],
+            },
+        ]);
+        let completed = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+            authority,
+        );
+        assert!(completed.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"status_authorized_visible_equipment_probe_consumed\""
+        ));
+        assert!(completed.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_object_id_hex\": \"0x80000055\""
+        ));
+        assert!(completed.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": 16"
+        ));
+        assert!(completed.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_response_operation\": \"none\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_stage\": \"completed_visible_equipment_delta\""
+        ));
+        assert!(
+            completed.contains(
+                "\"status_authorized_visible_equipment_probe_transaction_completed\": true"
+            )
+        );
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_status_update_index\": 7"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_status_server_sequence\": 44"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_owner_object_id_hex\": \"0xFFFFFFEF\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_object_id_hex\": \"0x80000044\""
+        ));
+        assert!(
+            completed.contains(
+                "\"status_authorized_visible_equipment_probe_transaction_visible_slot\": 2"
+            )
+        );
+        assert!(
+            completed.contains(
+                "\"status_authorized_visible_equipment_probe_transaction_action_epoch\": 1"
+            )
+        );
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_action_primary_object_id_hex\": \"0x80000044\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_action_secondary_object_known\": false"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_action_declared\": 11"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_ordinal\": 2"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_operation\": \"unequip\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_object_id_hex\": \"0x80000044\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_alternate_inventory_context\": false"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_equip_slot_known\": false"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_matches_client_primary\": true"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_matches_client_secondary\": false"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_appearance_mask_hex\": \"0x0200\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_all_fields_appearance\": false"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_operation\": \"delete\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_row_object_id_hex\": \"0x7F000000\""
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_visible_slot\": 2"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_update_status_known\": false"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_record_offset\": 77"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_record_end\": 94"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_fragment_bit_start\": 11"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_fragment_bit_end\": 11"
+        ));
+        assert!(completed.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_row_ordinal\": 0"
+        ));
 
         let stale_area = InventoryEquipToggleAuthorizationContext {
             area_client_area_packets: 2,
@@ -12838,6 +13181,12 @@ mod tests {
         ));
 
         protocol.reset_equip_toggle_authorization_for_area();
+        assert!(
+            protocol
+                .last_completed_status_authorized_visible_equipment_probe
+                .is_none(),
+            "area reset clears the completed transaction before new authority arrives"
+        );
         object_registry.reset_for_area();
         object_registry.observe_materialized_item_object_ids(&[ITEM_B]);
         protocol
@@ -12874,6 +13223,27 @@ mod tests {
         ));
         assert!(fresh_area.contains(
             "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 1"
+        ));
+
+        bridge
+            .current_player_status_binding
+            .as_mut()
+            .expect("fresh area Status binding")
+            .server_sequence = 46;
+        let revoked_offer =
+            augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+                "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+                &bridge,
+                &object_registry,
+                &mut protocol,
+                fresh_area_authority,
+            );
+        assert!(
+            revoked_offer
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(revoked_offer.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"status_authorized_visible_equipment_probe_offer_unavailable\""
         ));
     }
 
@@ -12999,6 +13369,12 @@ mod tests {
         assert!(initial.contains(
             "\"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": 2"
         ));
+        assert!(
+            protocol
+                .offered_status_authorized_visible_equipment_probe
+                .is_none(),
+            "the confirmed-claim plan clears the older direct P/5 offer"
+        );
 
         protocol
             .visible_equipment_slots_by_owner
@@ -13030,6 +13406,12 @@ mod tests {
         protocol.observe_client_equip_toggle(
             client_inventory::claim_payload_if_verified(&client_payload)
                 .expect("exact client EquipToggle"),
+        );
+        assert!(
+            protocol
+                .active_status_authorized_visible_equipment_probe
+                .is_none(),
+            "a confirmed-claim action must not activate the direct-probe transaction"
         );
         let awaiting = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),

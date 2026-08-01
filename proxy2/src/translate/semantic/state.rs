@@ -981,6 +981,81 @@ pub(crate) struct InventoryEquipmentResponseRecord {
     pub(crate) matches_client_secondary: bool,
 }
 
+/// Exact Status/P/5 authority that permitted one diagnostic EquipToggle.
+///
+/// The visible slot remains P/5 appearance provenance. It is deliberately not
+/// an Inventory response equip-slot DWORD: Diamond `sub_448E30` and EE
+/// `sub_14077FE10` read it only inside the creature visible-equipment row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StatusAuthorizedVisibleEquipmentProbeAuthorization {
+    pub(crate) status_update_index: u64,
+    pub(crate) status_server_sequence: u64,
+    pub(crate) area_client_area_packets: u64,
+    pub(crate) control_epoch: u64,
+    pub(crate) owner_object_id: u32,
+    pub(crate) visible_slot: u32,
+    pub(crate) object_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StatusAuthorizedVisibleEquipmentProbeActiveTransaction {
+    pub(crate) authorization: StatusAuthorizedVisibleEquipmentProbeAuthorization,
+    pub(crate) action_epoch: u64,
+    pub(crate) action: client_inventory::ClientInventoryClaimSummary,
+    pub(crate) matching_response: Option<InventoryEquipmentResponseRecord>,
+}
+
+/// Exact P/5 row that closed a successful Status-authorized unequip probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StatusAuthorizedVisibleEquipmentProbeDelta {
+    pub(crate) claim_ordinal: u64,
+    pub(crate) state_update_index: u64,
+    pub(crate) appearance_mask: u16,
+    pub(crate) all_fields_appearance: bool,
+    pub(crate) operation: LiveObjectVisibleEquipmentOperation,
+    /// Raw row value. Delete readers ignore this object id, so the exact
+    /// transaction identity comes from the pre-delete owner/slot mapping.
+    pub(crate) row_object_id: u32,
+    pub(crate) visible_slot: u32,
+    pub(crate) update_status: Option<u8>,
+    pub(crate) record_offset: usize,
+    pub(crate) record_end: usize,
+    pub(crate) fragment_bit_start: usize,
+    pub(crate) fragment_bit_end: usize,
+    pub(crate) row_ordinal: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StatusAuthorizedVisibleEquipmentProbeCompletedTransaction {
+    pub(crate) authorization: StatusAuthorizedVisibleEquipmentProbeAuthorization,
+    pub(crate) action_epoch: u64,
+    pub(crate) action: client_inventory::ClientInventoryClaimSummary,
+    pub(crate) response: InventoryEquipmentResponseRecord,
+    pub(crate) delta: StatusAuthorizedVisibleEquipmentProbeDelta,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum StatusAuthorizedVisibleEquipmentProbeStage {
+    #[default]
+    None,
+    Offered,
+    ClientActionObserved,
+    TypedResponseObserved,
+    CompletedVisibleEquipmentDelta,
+}
+
+impl StatusAuthorizedVisibleEquipmentProbeStage {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Offered => "offered",
+            Self::ClientActionObserved => "client_action_observed",
+            Self::TypedResponseObserved => "typed_response_observed",
+            Self::CompletedVisibleEquipmentDelta => "completed_visible_equipment_delta",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InventoryEquipmentProtocolState {
     pub(crate) client_equip_toggle_events: u64,
@@ -1013,6 +1088,20 @@ pub(crate) struct InventoryEquipmentProtocolState {
     /// eviction must not revoke the already-matched proof.
     pub(crate) retained_matching_primary_response_for_current_equip_toggle:
         Option<InventoryEquipmentResponseRecord>,
+    /// The direct Status/P/5 recommendation is offered by the harness hint,
+    /// then consumed only by an exact matching client EquipToggle. Keeping the
+    /// offered tuple prevents a later, recomputed partial view from stealing
+    /// the identity of the action that was actually dispatched.
+    pub(crate) status_authorized_visible_equipment_probe_issued_for_area: bool,
+    pub(crate) offered_status_authorized_visible_equipment_probe:
+        Option<StatusAuthorizedVisibleEquipmentProbeAuthorization>,
+    pub(crate) active_status_authorized_visible_equipment_probe:
+        Option<StatusAuthorizedVisibleEquipmentProbeActiveTransaction>,
+    /// Retained independently of the mutable recommendation candidate so the
+    /// final hint preserves the exact response plus following P/5 delta after
+    /// the one-shot source advances to its consumed state.
+    pub(crate) last_completed_status_authorized_visible_equipment_probe:
+        Option<StatusAuthorizedVisibleEquipmentProbeCompletedTransaction>,
     /// Observed client-facing equipment state keyed by the exact inventory
     /// context BOOL and slot DWORD from successful server outcomes. This is a
     /// protocol coherence cache, not an authority over gameplay state.
@@ -1035,6 +1124,112 @@ pub(crate) struct InventoryEquipmentProtocolState {
 }
 
 impl InventoryEquipmentProtocolState {
+    pub(crate) fn status_authorized_visible_equipment_probe_stage(
+        &self,
+    ) -> StatusAuthorizedVisibleEquipmentProbeStage {
+        if self
+            .last_completed_status_authorized_visible_equipment_probe
+            .is_some()
+        {
+            StatusAuthorizedVisibleEquipmentProbeStage::CompletedVisibleEquipmentDelta
+        } else if self
+            .active_status_authorized_visible_equipment_probe
+            .is_some_and(|active| active.matching_response.is_some())
+        {
+            StatusAuthorizedVisibleEquipmentProbeStage::TypedResponseObserved
+        } else if self
+            .active_status_authorized_visible_equipment_probe
+            .is_some()
+        {
+            StatusAuthorizedVisibleEquipmentProbeStage::ClientActionObserved
+        } else if self
+            .offered_status_authorized_visible_equipment_probe
+            .is_some()
+        {
+            StatusAuthorizedVisibleEquipmentProbeStage::Offered
+        } else {
+            StatusAuthorizedVisibleEquipmentProbeStage::None
+        }
+    }
+
+    pub(crate) fn offer_status_authorized_visible_equipment_probe(
+        &mut self,
+        authorization: StatusAuthorizedVisibleEquipmentProbeAuthorization,
+    ) {
+        // Publishing the diagnostic action is a one-shot authority decision
+        // for this area. The external harness can read the prior JSON before a
+        // later planner pass, so replacing an unconsumed tuple would attach an
+        // already-dispatched action to authority it never observed. Any
+        // invalidation therefore fails closed until Area_ClientArea resets the
+        // latch instead of silently reauthorizing a recomputed candidate.
+        if !self.status_authorized_visible_equipment_probe_issued_for_area
+            && self.last_client_equip_toggle.is_none()
+            && self
+                .active_status_authorized_visible_equipment_probe
+                .is_none()
+        {
+            self.status_authorized_visible_equipment_probe_issued_for_area = true;
+            self.offered_status_authorized_visible_equipment_probe = Some(authorization);
+        }
+    }
+
+    pub(crate) fn clear_unconsumed_status_authorized_visible_equipment_probe_offer(&mut self) {
+        self.offered_status_authorized_visible_equipment_probe = None;
+    }
+
+    pub(crate) fn invalidate_status_authorized_visible_equipment_probe_for_control_change(
+        &mut self,
+    ) {
+        // ObjControl is wire-ordered authority. Clear only in-flight state:
+        // completed evidence is historical and remains exact, while the
+        // area-scoped issued latch prevents a delayed old action from being
+        // rebound to the new controlled creature.
+        self.offered_status_authorized_visible_equipment_probe = None;
+        self.active_status_authorized_visible_equipment_probe = None;
+    }
+
+    pub(crate) fn reconcile_status_authorized_visible_equipment_probe_authority(
+        &mut self,
+        status_binding: Option<(u64, u64, u64, u64, u32)>,
+        current_area_client_area_packets: u64,
+        current_control_epoch: u64,
+        current_controlled_object_id: Option<u32>,
+    ) {
+        let authorization_is_current =
+            |authorization: StatusAuthorizedVisibleEquipmentProbeAuthorization| {
+                status_binding.is_some_and(
+                    |(
+                        status_update_index,
+                        status_server_sequence,
+                        area_client_area_packets,
+                        control_epoch,
+                        owner,
+                    )| {
+                        authorization.status_update_index == status_update_index
+                            && authorization.status_server_sequence == status_server_sequence
+                            && authorization.area_client_area_packets == area_client_area_packets
+                            && authorization.control_epoch == control_epoch
+                            && authorization.owner_object_id == owner
+                            && area_client_area_packets == current_area_client_area_packets
+                            && control_epoch == current_control_epoch
+                            && Some(owner) == current_controlled_object_id
+                    },
+                )
+            };
+        if self
+            .offered_status_authorized_visible_equipment_probe
+            .is_some_and(|authorization| !authorization_is_current(authorization))
+        {
+            self.offered_status_authorized_visible_equipment_probe = None;
+        }
+        if self
+            .active_status_authorized_visible_equipment_probe
+            .is_some_and(|active| !authorization_is_current(active.authorization))
+        {
+            self.active_status_authorized_visible_equipment_probe = None;
+        }
+    }
+
     /// Return the exact visible-equipment mappings currently known for one
     /// owner, ordered by the visible-appearance slot DWORD.
     ///
@@ -1113,6 +1308,22 @@ impl InventoryEquipmentProtocolState {
         self.last_server_response_matches_client_secondary = false;
         self.response_records_since_last_client_equip_toggle.clear();
         self.retained_matching_primary_response_for_current_equip_toggle = None;
+        let offered = self
+            .offered_status_authorized_visible_equipment_probe
+            .take();
+        self.active_status_authorized_visible_equipment_probe = offered
+            .filter(|authorization| {
+                claim.primary_object_id == authorization.object_id
+                    && claim.secondary_object_id.is_none()
+            })
+            .map(
+                |authorization| StatusAuthorizedVisibleEquipmentProbeActiveTransaction {
+                    authorization,
+                    action_epoch: self.client_equip_toggle_events,
+                    action: claim,
+                    matching_response: None,
+                },
+            );
     }
 
     pub(crate) fn reset_equip_toggle_authorization_for_area(&mut self) {
@@ -1128,6 +1339,10 @@ impl InventoryEquipmentProtocolState {
         self.last_server_response_matches_client_secondary = false;
         self.response_records_since_last_client_equip_toggle.clear();
         self.retained_matching_primary_response_for_current_equip_toggle = None;
+        self.status_authorized_visible_equipment_probe_issued_for_area = false;
+        self.offered_status_authorized_visible_equipment_probe = None;
+        self.active_status_authorized_visible_equipment_probe = None;
+        self.last_completed_status_authorized_visible_equipment_probe = None;
         // This cache has no owner or area epoch. Keeping it across
         // Area_ClientArea could make a prior creature's Inventory response
         // look current before the new area's exact P/5/Inventory state arrives.
@@ -1154,8 +1369,25 @@ impl InventoryEquipmentProtocolState {
 
             self.last_visible_equipment_removed_slots = 0;
             let state_updates_before = self.visible_equipment_state_updates;
-            for row in &claim.rows {
+            for (row_ordinal, row) in claim.rows.iter().enumerate() {
                 let key = (claim.owner_id, row.visible_slot);
+                let direct_probe_completion = self
+                    .active_status_authorized_visible_equipment_probe
+                    .and_then(|active| {
+                        let response = active.matching_response?;
+                        let mapped_object_id = self.visible_equipment_slots_by_owner.get(&key)?;
+                        (response.operation == inventory::InventoryOperation::Unequip
+                            && response.action_epoch == active.action_epoch
+                            && response.object_id == active.authorization.object_id
+                            && !response.alternate_inventory_context
+                            && response.matches_client_primary
+                            && !response.matches_client_secondary
+                            && claim.owner_id == active.authorization.owner_object_id
+                            && row.operation == LiveObjectVisibleEquipmentOperation::Delete
+                            && row.visible_slot == active.authorization.visible_slot
+                            && *mapped_object_id == active.authorization.object_id)
+                            .then_some((active, response))
+                    });
                 match row.operation {
                     LiveObjectVisibleEquipmentOperation::Add => {
                         self.visible_equipment_add_rows =
@@ -1179,6 +1411,53 @@ impl InventoryEquipmentProtocolState {
                                 self.last_visible_equipment_removed_slots.saturating_add(1);
                             self.visible_equipment_state_updates =
                                 self.visible_equipment_state_updates.saturating_add(1);
+                            if let Some((active, response)) = direct_probe_completion {
+                                self.last_completed_status_authorized_visible_equipment_probe =
+                                    Some(
+                                        StatusAuthorizedVisibleEquipmentProbeCompletedTransaction {
+                                            authorization: active.authorization,
+                                            action_epoch: active.action_epoch,
+                                            action: active.action,
+                                            response,
+                                            delta: StatusAuthorizedVisibleEquipmentProbeDelta {
+                                                claim_ordinal: self.visible_equipment_claims,
+                                                state_update_index: self
+                                                    .visible_equipment_state_updates,
+                                                appearance_mask: claim.appearance_mask,
+                                                all_fields_appearance: claim.all_fields_appearance,
+                                                operation: row.operation,
+                                                row_object_id: row.object_id,
+                                                visible_slot: row.visible_slot,
+                                                update_status: row.update_status,
+                                                record_offset: claim.record_offset,
+                                                record_end: claim.record_end,
+                                                fragment_bit_start: claim.fragment_bit_start,
+                                                fragment_bit_end: claim.fragment_bit_end,
+                                                row_ordinal,
+                                            },
+                                        },
+                                    );
+                                self.active_status_authorized_visible_equipment_probe = None;
+                                tracing::info!(
+                                    action_epoch = active.action_epoch,
+                                    response_ordinal = response.response_ordinal,
+                                    response_operation = response.operation.as_str(),
+                                    owner_object_id = format_args!(
+                                        "0x{:08X}",
+                                        active.authorization.owner_object_id
+                                    ),
+                                    object_id =
+                                        format_args!("0x{:08X}", active.authorization.object_id),
+                                    visible_slot = active.authorization.visible_slot,
+                                    appearance_mask =
+                                        format_args!("0x{:04X}", claim.appearance_mask),
+                                    all_fields_appearance = claim.all_fields_appearance,
+                                    row_object_id = format_args!("0x{:08X}", row.object_id),
+                                    visible_equipment_state_update =
+                                        self.visible_equipment_state_updates,
+                                    "semantic state completed Status-authorized visible-equipment probe transaction"
+                                );
+                            }
                         }
                     }
                     LiveObjectVisibleEquipmentOperation::Update => {
@@ -1316,6 +1595,19 @@ impl InventoryEquipmentProtocolState {
             };
             self.response_records_since_last_client_equip_toggle
                 .push(response);
+            if let Some(active) = self
+                .active_status_authorized_visible_equipment_probe
+                .as_mut()
+                && active.matching_response.is_none()
+                && response.action_epoch == active.action_epoch
+                && response.object_id == active.authorization.object_id
+                && response.operation == inventory::InventoryOperation::Unequip
+                && !response.alternate_inventory_context
+                && response.matches_client_primary
+                && !response.matches_client_secondary
+            {
+                active.matching_response = Some(response);
+            }
         }
 
         self.last_unequip_removed_slots = 0;
@@ -7788,6 +8080,7 @@ mod tests {
         LiveObjectInventoryFeature25Reference, LiveObjectOrientationSource,
         LiveObjectOrientationVector,
     };
+    use crate::translate::{client_inventory, inventory};
 
     use super::{
         AreaStaticPlaceableConflictRecordObservation,
@@ -7804,7 +8097,8 @@ mod tests {
         QuickbarItemRefreshProfileScoutingOutcome, QuickbarItemRefreshProofClass,
         QuickbarItemRefreshUseCountRow, QuickbarPreservedActiveItemSignatures,
         QuickbarPreservedActiveItemUseCountCoverage, QuickbarRewriteSummary,
-        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile, UiState,
+        QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile,
+        StatusAuthorizedVisibleEquipmentProbeAuthorization, UiState,
     };
 
     fn visible_equipment_claim(
@@ -7965,6 +8259,135 @@ mod tests {
         state.reset_equip_toggle_authorization_for_area();
         assert!(state.committed_equipment_slots.is_empty());
         assert!(state.visible_equipment_slots_by_owner.is_empty());
+    }
+
+    #[test]
+    fn status_authorized_visible_equipment_probe_offer_is_issued_once_per_area() {
+        let mut state = InventoryEquipmentProtocolState::default();
+        let first = StatusAuthorizedVisibleEquipmentProbeAuthorization {
+            status_update_index: 7,
+            status_server_sequence: 44,
+            area_client_area_packets: 1,
+            control_epoch: 2,
+            owner_object_id: 0xFFFF_FFEF,
+            visible_slot: 2,
+            object_id: 0x8000_0044,
+        };
+        let replanned = StatusAuthorizedVisibleEquipmentProbeAuthorization {
+            status_update_index: 8,
+            status_server_sequence: 45,
+            visible_slot: 0x10,
+            object_id: 0x8000_0055,
+            ..first
+        };
+
+        state.offer_status_authorized_visible_equipment_probe(first);
+        assert!(state.status_authorized_visible_equipment_probe_issued_for_area);
+        assert_eq!(
+            state.offered_status_authorized_visible_equipment_probe,
+            Some(first)
+        );
+
+        state.offer_status_authorized_visible_equipment_probe(replanned);
+        assert_eq!(
+            state.offered_status_authorized_visible_equipment_probe,
+            Some(first),
+            "replanning cannot replace authority an external consumer may already have read"
+        );
+
+        state.clear_unconsumed_status_authorized_visible_equipment_probe_offer();
+        state.offer_status_authorized_visible_equipment_probe(replanned);
+        assert!(
+            state
+                .offered_status_authorized_visible_equipment_probe
+                .is_none(),
+            "an invalidated one-shot must fail closed for the rest of the area"
+        );
+
+        state.reset_equip_toggle_authorization_for_area();
+        assert!(!state.status_authorized_visible_equipment_probe_issued_for_area);
+        state.offer_status_authorized_visible_equipment_probe(replanned);
+        assert_eq!(
+            state.offered_status_authorized_visible_equipment_probe,
+            Some(replanned),
+            "Area_ClientArea is the explicit boundary that rearms the one-shot"
+        );
+    }
+
+    #[test]
+    fn status_authorized_visible_equipment_probe_rejects_true_context_unequip() {
+        const OWNER_ID: u32 = 0xFFFF_FFEF;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+
+        let mut state = InventoryEquipmentProtocolState::default();
+        state
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID);
+        state.offer_status_authorized_visible_equipment_probe(
+            StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                status_update_index: 7,
+                status_server_sequence: 44,
+                area_client_area_packets: 1,
+                control_epoch: 2,
+                owner_object_id: OWNER_ID,
+                visible_slot: VISIBLE_SLOT,
+                object_id: ITEM_ID,
+            },
+        );
+        let client_payload =
+            client_inventory::build_equip_toggle_payload(ITEM_ID, None).expect("EquipToggle");
+        state.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&client_payload)
+                .expect("exact EquipToggle"),
+        );
+
+        let response_payload = inventory::build_ee_inventory_unequip_payload(7, ITEM_ID, true)
+            .expect("true-context Unequip");
+        state.observe_server_inventory_response(
+            inventory::claim_payload_if_verified(&response_payload)
+                .expect("exact true-context Unequip"),
+        );
+        assert!(
+            state
+                .active_status_authorized_visible_equipment_probe
+                .is_some_and(|active| active.matching_response.is_none()),
+            "the false-context direct probe must not latch a true-context success"
+        );
+
+        // Exercise the independent closure guard as defense in depth. Even if
+        // stale state were restored with this typed response already attached,
+        // an otherwise exact D row cannot complete the false-context probe.
+        let true_context_response = *state
+            .response_records_since_last_client_equip_toggle
+            .last()
+            .expect("typed response record");
+        state
+            .active_status_authorized_visible_equipment_probe
+            .as_mut()
+            .expect("active direct probe")
+            .matching_response = Some(true_context_response);
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_ID,
+            false,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::Delete,
+                object_id: 0x7F00_0000,
+                visible_slot: VISIBLE_SLOT,
+                update_status: None,
+            }],
+        )]);
+        assert!(
+            state
+                .last_completed_status_authorized_visible_equipment_probe
+                .is_none(),
+            "a true-context response cannot own an exact false-context D closure"
+        );
+        assert!(
+            state
+                .active_status_authorized_visible_equipment_probe
+                .is_some()
+        );
     }
 
     #[test]
