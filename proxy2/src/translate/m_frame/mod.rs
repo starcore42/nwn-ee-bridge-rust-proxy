@@ -3421,6 +3421,55 @@ impl CurrentPlayerKnownVisibleEquipment {
             (*row_object_id == object_id).then_some(*visible_slot)
         })
     }
+
+    /// Choose a deterministic exact-object probe participant from the
+    /// Status-authorized partial P/5 view. `known_visible_equipment_for_owner`
+    /// returns BTreeMap order, so the lowest visible selector wins. Diamond
+    /// `sub_448E30`/`sub_4C7A50` and EE `sub_14077FE10`/`sub_1407FFF10`
+    /// establish that this selector belongs to the P/5 appearance namespace;
+    /// it is provenance only and must never be translated into an Inventory
+    /// response slot. Requiring a currently proven exact object keeps compact
+    /// aliases and area-reset tombstones out of the engine-facing payload.
+    fn first_exact_proven_item(
+        &self,
+        object_registry: &semantic::ObjectRegistry,
+    ) -> Option<(u32, u32)> {
+        self.slots.iter().find_map(|(visible_slot, object_id)| {
+            matches!(
+                object_registry.inventory_item_object_status(*object_id),
+                semantic::InventoryItemObjectStatus::Proven(_)
+            )
+            .then_some((*visible_slot, *object_id))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InventoryEquipToggleRecommendationSource {
+    ConfirmedServerInventoryEquipClaim,
+    StatusAuthorizedCurrentPlayerVisibleEquipment,
+}
+
+impl InventoryEquipToggleRecommendationSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfirmedServerInventoryEquipClaim => {
+                "confirmed_current_player_inventory_server_equip_claim"
+            }
+            Self::StatusAuthorizedCurrentPlayerVisibleEquipment => {
+                "status_authorized_current_player_visible_equipment"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InventoryEquipToggleRecommendationCandidate {
+    object_id: u32,
+    update_index: u64,
+    server_inventory_minor: u8,
+    alternate_inventory_context: bool,
+    server_inventory_equip_slot: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3556,31 +3605,6 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             == state::InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate;
     let best_client_gui_status_response_candidate_delta =
         bridge.best_client_gui_status_response_candidate_delta_from_queued_status();
-    // This recommendation is intentionally sourced from the exact server
-    // Inventory_Equip claim that survived the frame-local, current-player
-    // materialization proof and was dispatched back to the client. The
-    // cumulative "best response candidate" is unsuitable here: it can remain
-    // populated after a later empty response. Re-check the live semantic
-    // registry as well so D/06 and Area_ClientArea resets revoke stale actions.
-    let recommended_client_inventory_equip_toggle_object_status = last_known
-        .then(|| object_registry.inventory_item_object_status(last.object_id))
-        .unwrap_or(semantic::InventoryItemObjectStatus::Unknown);
-    // The first opt-in action is authorized by the exact, dispatched
-    // current-player Inventory_Equip claim. Every later action needs a fresh
-    // protocol epoch: observing the client EquipToggle clears the response
-    // records, and only an exact typed server response for the same participant
-    // and inventory context can make the recommendation available again.
-    // This prevents a driver from replaying a still-readable cached hint on a
-    // timer while preserving all four decompile-backed Inventory outcomes.
-    let recommended_client_inventory_equip_toggle_authorization_response = last_known.then(|| {
-        protocol.latest_matching_response_for_current_equip_toggle(
-            last.object_id,
-            last.alternate_inventory_context,
-            last.equip_slot,
-        )
-    });
-    let recommended_client_inventory_equip_toggle_authorization_response =
-        recommended_client_inventory_equip_toggle_authorization_response.flatten();
     let current_player_status_binding = bridge.current_player_status_binding;
     let current_player_known_visible_equipment =
         current_player_known_visible_equipment(bridge, protocol, authorization_context);
@@ -3600,17 +3624,120 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         .as_ref()
         .map(|view| view.slots.len())
         .unwrap_or(0);
-    // This is a positive-membership gate for the existing opt-in client
-    // EquipToggle consumer. P/5 visible slots and Inventory response slots are
-    // different namespaces, so retain the P/5 slot only as provenance and do
-    // not compare or translate it to `last.equip_slot`.
+    // Prefer the exact server Inventory claim when it is also present in the
+    // Status-authorized P/5 view. When HG's latest Inventory claim names a
+    // different item, select a deterministic currently-proven P/5 member for
+    // one initial false-branch probe. This does not infer an Inventory slot:
+    // P/5 visible selectors and Inventory response slots are distinct
+    // decompile-backed namespaces.
+    let confirmed_claim_visible_equipment_match = last_known
+        .then(|| {
+            current_player_known_visible_equipment
+                .as_ref()
+                .ok()
+                .and_then(|view| {
+                    view.exact_visible_slot_for_object(last.object_id)
+                        .map(|visible_slot| (view.owner_object_id, visible_slot, last.object_id))
+                })
+        })
+        .flatten();
+    let status_authorized_visible_equipment_candidate = current_player_known_visible_equipment
+        .as_ref()
+        .ok()
+        .and_then(|view| {
+            view.first_exact_proven_item(object_registry)
+                .map(|(visible_slot, object_id)| (view.owner_object_id, visible_slot, object_id))
+        });
+    // A cached server claim remains the richer source only when its complete
+    // proof chain is currently usable. An old, malformed, undispatched, or
+    // tombstoned claim must not suppress the independent Status/P/5 source.
+    let confirmed_claim_authorization_response = last_known
+        .then(|| {
+            protocol.latest_matching_response_for_current_equip_toggle(
+                last.object_id,
+                last.alternate_inventory_context,
+                last.equip_slot,
+            )
+        })
+        .flatten();
+    let confirmed_claim_has_matching_client_action = last_known
+        && protocol.last_client_equip_toggle.is_some_and(|client| {
+            client.primary_object_id == last.object_id && client.secondary_object_id.is_none()
+        });
+    let confirmed_claim_is_eligible = last_known
+        && bridge.last_confirmed_inventory_replay_update_index == Some(last.update_index)
+        && bridge.last_confirmed_inventory_replay_dispatch_update_index == Some(last.update_index)
+        && last.minor == 1
+        && last.equip_slot != 0
+        && matches!(
+            object_registry.inventory_item_object_status(last.object_id),
+            semantic::InventoryItemObjectStatus::Proven(_)
+        )
+        && current_player_status_binding
+            .is_some_and(|binding| binding.queued_update_index >= last.update_index)
+        && confirmed_claim_visible_equipment_match.is_some()
+        && (protocol.last_client_equip_toggle.is_none()
+            || confirmed_claim_has_matching_client_action);
+    let recommended_client_inventory_equip_toggle_source = if confirmed_claim_is_eligible
+        || (last_known && status_authorized_visible_equipment_candidate.is_none())
+    {
+        InventoryEquipToggleRecommendationSource::ConfirmedServerInventoryEquipClaim
+    } else {
+        InventoryEquipToggleRecommendationSource::StatusAuthorizedCurrentPlayerVisibleEquipment
+    };
+    let recommendation_uses_confirmed_server_claim = matches!(
+        recommended_client_inventory_equip_toggle_source,
+        InventoryEquipToggleRecommendationSource::ConfirmedServerInventoryEquipClaim
+    );
+    let recommended_client_inventory_equip_toggle_candidate =
+        if recommendation_uses_confirmed_server_claim {
+            last_known.then_some(InventoryEquipToggleRecommendationCandidate {
+                object_id: last.object_id,
+                update_index: last.update_index,
+                server_inventory_minor: last.minor,
+                alternate_inventory_context: last.alternate_inventory_context,
+                server_inventory_equip_slot: last.equip_slot,
+            })
+        } else {
+            status_authorized_visible_equipment_candidate.map(|(_, _, object_id)| {
+                InventoryEquipToggleRecommendationCandidate {
+                    object_id,
+                    update_index: current_player_status_binding
+                        .map(|binding| binding.queued_update_index)
+                        .unwrap_or(0),
+                    server_inventory_minor: 0,
+                    alternate_inventory_context: false,
+                    server_inventory_equip_slot: 0,
+                }
+            })
+        };
+    let recommended_client_inventory_equip_toggle_candidate_object_id =
+        recommended_client_inventory_equip_toggle_candidate
+            .map(|candidate| candidate.object_id)
+            .unwrap_or(0);
+    let recommended_client_inventory_equip_toggle_object_status =
+        recommended_client_inventory_equip_toggle_candidate
+            .map(|candidate| object_registry.inventory_item_object_status(candidate.object_id))
+            .unwrap_or(semantic::InventoryItemObjectStatus::Unknown);
+    let recommended_client_inventory_equip_toggle_authorization_response =
+        recommendation_uses_confirmed_server_claim
+            .then_some(confirmed_claim_authorization_response)
+            .flatten();
     let recommended_client_inventory_equip_toggle_visible_equipment_match =
         current_player_known_visible_equipment
             .as_ref()
             .ok()
             .and_then(|view| {
-                view.exact_visible_slot_for_object(last.object_id)
-                    .map(|visible_slot| (view.owner_object_id, visible_slot, last.object_id))
+                view.exact_visible_slot_for_object(
+                    recommended_client_inventory_equip_toggle_candidate_object_id,
+                )
+                .map(|visible_slot| {
+                    (
+                        view.owner_object_id,
+                        visible_slot,
+                        recommended_client_inventory_equip_toggle_candidate_object_id,
+                    )
+                })
             });
     let recommended_client_inventory_equip_toggle_visible_equipment_positive_match =
         recommended_client_inventory_equip_toggle_visible_equipment_match.is_some();
@@ -3644,8 +3771,13 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
     // it fences, so its semantic update can be newer than the claim. Both
     // counters are monotonic u64 session coordinates: freshness requires the
     // exact Status proof to cover this claim, not to share its update number.
-    let current_player_status_binding_covers_update = current_player_status_binding
-        .is_some_and(|binding| binding.queued_update_index >= last.update_index);
+    let current_player_status_binding_covers_update =
+        current_player_status_binding.is_some_and(|binding| {
+            binding.queued_update_index
+                >= recommended_client_inventory_equip_toggle_candidate
+                    .map(|candidate| candidate.update_index)
+                    .unwrap_or(u64::MAX)
+        });
     let current_player_status_binding_area_matches =
         current_player_status_binding.is_some_and(|binding| {
             binding.area_client_area_packets == authorization_context.area_client_area_packets
@@ -3656,57 +3788,91 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
                 && binding.control_epoch == authorization_context.current_control_epoch
         });
     let recommended_client_inventory_equip_toggle_authorization_kind =
-        if protocol.last_client_equip_toggle.is_none() {
+        if !recommendation_uses_confirmed_server_claim {
+            if protocol.last_client_equip_toggle.is_none() {
+                "initial_status_authorized_visible_equipment"
+            } else {
+                "status_authorized_visible_equipment_probe_consumed"
+            }
+        } else if protocol.last_client_equip_toggle.is_none() {
             "initial_confirmed_claim"
         } else if recommended_client_inventory_equip_toggle_authorization_response.is_some() {
             "matched_typed_server_response"
         } else {
             "awaiting_matching_typed_server_response"
         };
-    let recommended_client_inventory_equip_toggle_blocked_reason = if !last_known {
-        "no_confirmed_server_inventory_output"
-    } else if bridge.last_confirmed_inventory_replay_update_index != Some(last.update_index) {
-        "confirmed_replay_update_mismatch"
-    } else if bridge.last_confirmed_inventory_replay_dispatch_update_index
-        != Some(last.update_index)
-    {
-        "confirmed_replay_not_dispatched"
-    } else if last.minor != 1 || last.equip_slot == 0 {
-        // This BOOL is not an equip-success flag. EE RunEquip initializes the
-        // value to false for the ordinary current-creature sentinel path and
-        // only sets it when an explicit player object is supplied
-        // (0x14039F998..0x14039F9AE); SendServerToPlayerInventory_Equip writes
-        // that value unchanged (0x1404DA5ED..0x1404DA5F4). Preserve it as
-        // protocol evidence, but do not reinterpret the normal false value as
-        // a failed equip.
-        "server_inventory_claim_not_equip"
-    } else if !matches!(
-        recommended_client_inventory_equip_toggle_object_status,
-        semantic::InventoryItemObjectStatus::Proven(_)
-    ) {
-        "server_inventory_claim_object_not_currently_proven"
-    } else if current_player_status_binding.is_none() {
-        "current_player_inventory_status_unconfirmed"
-    } else if !current_player_status_binding_covers_update
-        || !current_player_status_binding_area_matches
-    {
-        "current_player_inventory_status_stale"
-    } else if !current_player_status_binding_owner_matches {
-        "current_player_inventory_status_owner_mismatch"
-    } else if !recommended_client_inventory_equip_toggle_visible_equipment_positive_match {
-        // The projection is explicitly partial. Lack of a matching P/5 row
-        // cannot be interpreted as an unequipped item or used to clear state;
-        // it only withholds this optional engine-facing probe.
-        "current_player_visible_equipment_positive_match_unavailable"
-    } else if protocol.last_client_equip_toggle.is_some()
-        && recommended_client_inventory_equip_toggle_authorization_response.is_none()
-    {
-        "awaiting_matching_typed_server_response"
-    } else {
-        "none"
-    };
+    let recommended_client_inventory_equip_toggle_blocked_reason =
+        if recommendation_uses_confirmed_server_claim {
+            if !last_known {
+                "no_confirmed_server_inventory_output"
+            } else if bridge.last_confirmed_inventory_replay_update_index != Some(last.update_index)
+            {
+                "confirmed_replay_update_mismatch"
+            } else if bridge.last_confirmed_inventory_replay_dispatch_update_index
+                != Some(last.update_index)
+            {
+                "confirmed_replay_not_dispatched"
+            } else if last.minor != 1 || last.equip_slot == 0 {
+                // This BOOL is not an equip-success flag. EE RunEquip initializes the
+                // value to false for the ordinary current-creature sentinel path and
+                // only sets it when an explicit player object is supplied
+                // (0x14039F998..0x14039F9AE); SendServerToPlayerInventory_Equip writes
+                // that value unchanged (0x1404DA5ED..0x1404DA5F4). Preserve it as
+                // protocol evidence, but do not reinterpret the normal false value as
+                // a failed equip.
+                "server_inventory_claim_not_equip"
+            } else if !matches!(
+                recommended_client_inventory_equip_toggle_object_status,
+                semantic::InventoryItemObjectStatus::Proven(_)
+            ) {
+                "server_inventory_claim_object_not_currently_proven"
+            } else if current_player_status_binding.is_none() {
+                "current_player_inventory_status_unconfirmed"
+            } else if !current_player_status_binding_covers_update
+                || !current_player_status_binding_area_matches
+            {
+                "current_player_inventory_status_stale"
+            } else if !current_player_status_binding_owner_matches {
+                "current_player_inventory_status_owner_mismatch"
+            } else if !recommended_client_inventory_equip_toggle_visible_equipment_positive_match {
+                // The projection is explicitly partial. Lack of a matching P/5 row
+                // cannot be interpreted as an unequipped item or used to clear state;
+                // it only withholds this optional engine-facing probe.
+                "current_player_visible_equipment_positive_match_unavailable"
+            } else if protocol.last_client_equip_toggle.is_some()
+                && recommended_client_inventory_equip_toggle_authorization_response.is_none()
+            {
+                "awaiting_matching_typed_server_response"
+            } else {
+                "none"
+            }
+        } else if current_player_known_visible_equipment.is_err() {
+            match current_player_known_visible_equipment
+                .as_ref()
+                .expect_err("checked unavailable Status-authorized P/5 view")
+            {
+                CurrentPlayerKnownVisibleEquipmentBlockedReason::MissingStatusBinding => {
+                    "current_player_inventory_status_unconfirmed"
+                }
+                CurrentPlayerKnownVisibleEquipmentBlockedReason::AreaMismatch => {
+                    "current_player_inventory_status_stale"
+                }
+                CurrentPlayerKnownVisibleEquipmentBlockedReason::ControlEpochMismatch
+                | CurrentPlayerKnownVisibleEquipmentBlockedReason::OwnerMismatch => {
+                    "current_player_inventory_status_owner_mismatch"
+                }
+            }
+        } else if status_authorized_visible_equipment_candidate.is_none() {
+            "current_player_visible_equipment_positive_match_unavailable"
+        } else if protocol.last_client_equip_toggle.is_some() {
+            "status_authorized_visible_equipment_probe_consumed"
+        } else {
+            "none"
+        };
     let recommended_client_inventory_equip_toggle_output =
-        (recommended_client_inventory_equip_toggle_blocked_reason == "none").then_some(last);
+        (recommended_client_inventory_equip_toggle_blocked_reason == "none")
+            .then_some(recommended_client_inventory_equip_toggle_candidate)
+            .flatten();
     let recommended_client_inventory_equip_toggle_payload =
         recommended_client_inventory_equip_toggle_output.and_then(|output| {
             client_inventory::build_equip_toggle_payload(output.object_id, None)
@@ -3728,7 +3894,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             .unwrap_or(0);
     let recommended_client_inventory_equip_toggle_minor =
         recommended_client_inventory_equip_toggle_output
-            .map(|output| output.minor)
+            .map(|output| output.server_inventory_minor)
             .unwrap_or(0);
     let recommended_client_inventory_equip_toggle_alternate_inventory_context =
         recommended_client_inventory_equip_toggle_output
@@ -3736,7 +3902,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             .unwrap_or(false);
     let recommended_client_inventory_equip_toggle_equip_slot =
         recommended_client_inventory_equip_toggle_output
-            .map(|output| output.equip_slot)
+            .map(|output| output.server_inventory_equip_slot)
             .unwrap_or(0);
     let recommended_client_inventory_equip_toggle_authorization_action_epoch =
         protocol.client_equip_toggle_events;
@@ -4080,7 +4246,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"recommended_client_inventory_equip_toggle_server_inventory_alternate_context\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_server_inventory_equip_slot\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_has_secondary_object\": false,\n",
-            "  \"recommended_client_inventory_equip_toggle_source\": \"confirmed_current_player_inventory_server_equip_claim\",\n",
+            "  \"recommended_client_inventory_equip_toggle_source\": \"{}\",\n",
             "  \"recommended_client_inventory_equip_toggle_authorization_kind\": \"{}\",\n",
             "  \"recommended_client_inventory_equip_toggle_authorization_action_epoch\": {},\n",
             "  \"recommended_client_inventory_equip_toggle_authorization_response_ordinal\": {},\n",
@@ -4322,6 +4488,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         recommended_client_inventory_equip_toggle_minor,
         recommended_client_inventory_equip_toggle_alternate_inventory_context,
         recommended_client_inventory_equip_toggle_equip_slot,
+        recommended_client_inventory_equip_toggle_source.as_str(),
         recommended_client_inventory_equip_toggle_authorization_kind,
         recommended_client_inventory_equip_toggle_authorization_action_epoch,
         recommended_client_inventory_equip_toggle_authorization_response_ordinal,
@@ -12269,10 +12436,13 @@ mod tests {
             "\"inventory_equipment_bridge_output_confirmed_inventory_replay_queued_for_dispatch\": true"
         ));
         assert!(
-            body.contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+            body.contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
         );
         assert!(body.contains(
-            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"confirmed_replay_not_dispatched\""
+            "\"recommended_client_inventory_equip_toggle_source\": \"status_authorized_current_player_visible_equipment\""
+        ));
+        assert!(body.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"initial_status_authorized_visible_equipment\""
         ));
 
         bridge.record_confirmed_inventory_replay_dispatch();
@@ -12335,11 +12505,15 @@ mod tests {
             );
         assert!(
             stale_update_body
-                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
         );
         assert!(stale_update_body.contains(
-            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"confirmed_replay_update_mismatch\""
+            "\"recommended_client_inventory_equip_toggle_source\": \"status_authorized_current_player_visible_equipment\""
         ));
+        assert!(
+            stale_update_body
+                .contains("\"recommended_client_inventory_equip_toggle_update_index\": 13")
+        );
 
         bridge
             .last_queued_output
@@ -12556,6 +12730,154 @@ mod tests {
     }
 
     #[test]
+    fn inventory_equip_toggle_initial_probe_uses_lowest_proven_status_authorized_p5_member() {
+        const OWNER: u32 = 0xFFFF_FFEF;
+        const UNPROVEN_ITEM: u32 = 0x8000_0033;
+        const ITEM_A: u32 = 0x8000_0044;
+        const ITEM_B: u32 = 0x8000_0055;
+
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.current_player_status_binding =
+            Some(state::InventoryEquipmentCurrentPlayerStatusBinding {
+                queued_update_index: 7,
+                area_client_area_packets: 1,
+                control_epoch: 1,
+                server_sequence: 44,
+                owner_object_id: OWNER,
+                owner_record_count: 1,
+                owner_mask_union: 0x2000,
+            });
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((OWNER, 1), UNPROVEN_ITEM);
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((OWNER, 2), ITEM_A);
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((OWNER, 0x10), ITEM_B);
+        let mut object_registry = semantic::ObjectRegistry::default();
+        object_registry.observe_materialized_item_object_ids(&[ITEM_A, ITEM_B]);
+        let authority = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(OWNER),
+            current_control_epoch: 1,
+            area_client_area_packets: 1,
+        };
+
+        let initial = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+            authority,
+        );
+        assert!(
+            initial
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_source\": \"status_authorized_current_player_visible_equipment\""
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"initial_status_authorized_visible_equipment\""
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_payload_hex\": \"700C0B0B0000004400008080\""
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_object_id_hex\": \"0x80000044\""
+        ));
+        assert!(initial.contains("\"recommended_client_inventory_equip_toggle_update_index\": 7"));
+        assert!(
+            initial.contains(
+                "\"recommended_client_inventory_equip_toggle_server_inventory_minor\": 0"
+            )
+        );
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_server_inventory_equip_slot\": 0"
+        ));
+        assert!(initial.contains(
+            "\"recommended_client_inventory_equip_toggle_visible_equipment_visible_slot\": 2"
+        ));
+
+        let client_payload =
+            client_inventory::build_equip_toggle_payload(ITEM_A, None).expect("client payload");
+        protocol.observe_client_equip_toggle(
+            client_inventory::claim_payload_if_verified(&client_payload)
+                .expect("exact client EquipToggle"),
+        );
+        let consumed = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+            authority,
+        );
+        assert!(
+            consumed
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": false")
+        );
+        assert!(consumed.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"status_authorized_visible_equipment_probe_consumed\""
+        ));
+
+        let stale_area = InventoryEquipToggleAuthorizationContext {
+            area_client_area_packets: 2,
+            ..authority
+        };
+        let stale = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut semantic::InventoryEquipmentProtocolState::default(),
+            stale_area,
+        );
+        assert!(stale.contains(
+            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"current_player_inventory_status_stale\""
+        ));
+
+        protocol.reset_equip_toggle_authorization_for_area();
+        object_registry.reset_for_area();
+        object_registry.observe_materialized_item_object_ids(&[ITEM_B]);
+        protocol
+            .visible_equipment_slots_by_owner
+            .insert((OWNER, 0x10), ITEM_B);
+        bridge.current_player_status_binding =
+            Some(state::InventoryEquipmentCurrentPlayerStatusBinding {
+                queued_update_index: 8,
+                area_client_area_packets: 2,
+                control_epoch: 2,
+                server_sequence: 45,
+                owner_object_id: OWNER,
+                owner_record_count: 1,
+                owner_mask_union: 0x2000,
+            });
+        let fresh_area_authority = InventoryEquipToggleAuthorizationContext {
+            current_controlled_object_id: Some(OWNER),
+            current_control_epoch: 2,
+            area_client_area_packets: 2,
+        };
+        let fresh_area = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
+            "{\n  \"kind\": \"quickbar_item_refresh_idle\"\n}\n".to_string(),
+            &bridge,
+            &object_registry,
+            &mut protocol,
+            fresh_area_authority,
+        );
+        assert!(
+            fresh_area
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
+        assert!(fresh_area.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_kind\": \"initial_status_authorized_visible_equipment\""
+        ));
+        assert!(fresh_area.contains(
+            "\"recommended_client_inventory_equip_toggle_authorization_action_epoch\": 1"
+        ));
+    }
+
+    #[test]
     fn inventory_equip_toggle_rearm_requires_fresh_matching_response_epoch() {
         let object_id = 0x8000_5678;
         let controlled_object_id = 0xFFFF_FFEF;
@@ -12625,9 +12947,17 @@ mod tests {
                 &mut protocol,
                 authorization_context,
             );
+        assert!(
+            stale_status_update
+                .contains("\"recommended_client_inventory_equip_toggle_payload_available\": true")
+        );
         assert!(stale_status_update.contains(
-            "\"recommended_client_inventory_equip_toggle_blocked_reason\": \"current_player_inventory_status_stale\""
+            "\"recommended_client_inventory_equip_toggle_source\": \"status_authorized_current_player_visible_equipment\""
         ));
+        assert!(
+            stale_status_update
+                .contains("\"recommended_client_inventory_equip_toggle_update_index\": 11")
+        );
         bridge
             .current_player_status_binding
             .as_mut()
