@@ -7717,8 +7717,13 @@ fn parse_legacy_visible_equipment_records(
 /// fragment BOOL. EE `sub_14077FE10` (`0x140781078..0x1407810DD`) consumes the
 /// same status BYTE and then an object visual-transform map. Legacy input must
 /// therefore gain the exact empty EE map at this byte cursor, while an emitted
-/// EE row must already contain the complete map. Keeping both walkers on this
-/// helper prevents their byte handoff from drifting independently.
+/// EE row must already contain the complete map. Because that map is eight
+/// zero bytes, it can also prefix a following compact all-zero legacy row. Try
+/// the post-map cursor first, but fall back to the legacy cursor when only that
+/// cursor can satisfy the declared remaining-row count. If both interpretations
+/// parse, the existing EE-map preference remains until authentic traffic can
+/// resolve that ambiguity. Keeping both walkers on this helper prevents their
+/// byte handoff from drifting independently.
 fn parse_legacy_visible_equipment_update_record(
     bytes: &[u8],
     cursor: usize,
@@ -7747,30 +7752,46 @@ fn parse_legacy_visible_equipment_update_record(
     }
     let update_status = *bytes.get(header_end)?;
 
-    let (next, mut prefix_inserts) =
-        if has_ee_object_visual_transform_identity_at(bytes, status_end, limit) {
-            (
-                status_end.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len())?,
-                Vec::new(),
-            )
-        } else if has_partial_ee_object_visual_transform_identity_at(bytes, status_end, limit)
-            || require_translated_byte_shape
-        {
+    let row = LiveObjectVisibleEquipmentRow {
+        operation: LiveObjectVisibleEquipmentOperation::Update,
+        object_id,
+        visible_slot: slot,
+        update_status: Some(update_status),
+    };
+
+    if has_ee_object_visual_transform_identity_at(bytes, status_end, limit) {
+        let map_end = status_end.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len())?;
+        if let Some(rest) = parse_legacy_visible_equipment_records(
+            bytes,
+            map_end,
+            limit,
+            remaining - 1,
+            require_translated_byte_shape,
+            bit_proof,
+            legacy_bits_before,
+            ee_extra_bits_before,
+        ) {
+            return Some(prepend_visible_equipment_row(rest, row));
+        }
+
+        // Do not let the zero-filled EE identity map greedily steal the first
+        // eight bytes of a following compact all-zero legacy row. If the
+        // post-map cursor cannot satisfy the declared remaining row count, the
+        // legacy interpretation below is the only decompile-shaped boundary.
+        // Exact emitted-EE validation cannot use that fallback because its U
+        // reader must own the complete map.
+        if require_translated_byte_shape {
             return None;
-        } else {
-            (
-                status_end,
-                vec![
-                    CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity {
-                        offset: status_end,
-                    },
-                ],
-            )
-        };
+        }
+    } else if has_partial_ee_object_visual_transform_identity_at(bytes, status_end, limit)
+        || require_translated_byte_shape
+    {
+        return None;
+    }
 
     let mut rest = parse_legacy_visible_equipment_records(
         bytes,
-        next,
+        status_end,
         limit,
         remaining - 1,
         require_translated_byte_shape,
@@ -7778,17 +7799,11 @@ fn parse_legacy_visible_equipment_update_record(
         legacy_bits_before,
         ee_extra_bits_before,
     )?;
-    prefix_inserts.extend(rest.ee_extra_byte_inserts);
-    rest.ee_extra_byte_inserts = prefix_inserts;
-    Some(prepend_visible_equipment_row(
-        rest,
-        LiveObjectVisibleEquipmentRow {
-            operation: LiveObjectVisibleEquipmentOperation::Update,
-            object_id,
-            visible_slot: slot,
-            update_status: Some(update_status),
-        },
-    ))
+    rest.ee_extra_byte_inserts.insert(
+        0,
+        CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity { offset: status_end },
+    );
+    Some(prepend_visible_equipment_row(rest, row))
 }
 
 fn visible_equipment_translated_end_is_bounded(bytes: &[u8], end: usize, limit: usize) -> bool {
@@ -10332,6 +10347,20 @@ mod public_tests {
         bytes
     }
 
+    fn partial_legacy_creature_equipment_delta_update_then_zero_row() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0043);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
+        bytes.push(2); // ordered U then compact legacy no-op row.
+        bytes.push(b'U');
+        push_u32(&mut bytes, 0x8000_0044);
+        push_u32(&mut bytes, 2);
+        bytes.push(0x7F); // U status BYTE; neither client reads a BOOL here.
+        bytes.extend_from_slice(&[0; 1 + 4 + 4]);
+        bytes
+    }
+
     fn partial_legacy_creature_ignored_high_mask_only() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
@@ -11334,6 +11363,112 @@ mod public_tests {
         );
         assert_eq!(claim.fragment_bit_start, 0);
         assert_eq!(claim.fragment_bit_end, 0);
+    }
+
+    #[test]
+    fn partial_equipment_delta_update_before_zero_row_uses_remaining_row_boundary() {
+        let mut bytes = partial_legacy_creature_equipment_delta_update_then_zero_row();
+        let legacy_record_end = bytes.len();
+        let mut record_end = legacy_record_end;
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, legacy_record_end),
+            Some(legacy_record_end),
+            "the declared second row must keep its first eight zero bytes from masquerading as EE's U map"
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, legacy_record_end),
+            None,
+            "legacy U plus a zero row is not already an exact EE U map"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("bounded remaining-row proof should select the legacy U boundary");
+        assert_eq!(
+            rewrite.bytes_inserted,
+            EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            record_end,
+            legacy_record_end + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
+        );
+
+        let update_map_offset = 2 + 4 + 2 + 1 + 1 + 4 + 4 + 1;
+        let update_map_end = update_map_offset + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len();
+        assert_eq!(
+            &bytes[update_map_offset..update_map_end],
+            EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.as_slice()
+        );
+        assert_eq!(
+            &bytes[update_map_end..record_end],
+            &[0; 1 + 4 + 4],
+            "the complete compact legacy row must remain after the inserted EE map"
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, record_end),
+            Some(record_end)
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0, "U and compact zero rows own no CNW BOOLs");
+
+        let claim =
+            claim_verified_ee_creature_visible_equipment(&bytes, 0, record_end, &fragment_bits, 0)
+                .expect("rewritten U plus zero row should exact-claim");
+        assert_eq!(
+            claim.rows,
+            vec![
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_0044,
+                    visible_slot: 2,
+                    update_status: Some(0x7F),
+                },
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero,
+                    object_id: 0,
+                    visible_slot: 0,
+                    update_status: None,
+                },
+            ]
+        );
+        assert_eq!(claim.fragment_bit_start, 0);
+        assert_eq!(claim.fragment_bit_end, 0);
+
+        let exact_ee_bytes = bytes.clone();
+        let mut exact_ee_end = record_end;
+        let exact_ee_rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut exact_ee_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("an exact EE U map followed by a compact zero row must remain exact");
+        assert_eq!(exact_ee_rewrite.bytes_inserted, 0);
+        assert_eq!(exact_ee_rewrite.bits_inserted, 0);
+        assert_eq!(exact_ee_rewrite.bits_removed, 0);
+        assert_eq!(exact_ee_end, record_end);
+        assert_eq!(
+            bytes, exact_ee_bytes,
+            "the EE-first dual-plausible case must not gain a duplicate map"
+        );
     }
 
     #[test]
