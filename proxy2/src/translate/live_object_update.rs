@@ -20152,6 +20152,36 @@ pub struct LiveObjectVisibleEquipmentRow {
     pub update_status: Option<u8>,
 }
 
+/// Exact emitted-EE byte and fragment-cursor ownership for one creature
+/// visible-equipment `U` row.
+///
+/// Diamond `sub_448E30` reads the common opcode/object/slot header at
+/// `0x4495EC..0x44960D`, then its `U` branch reads the status byte at
+/// `0x449AD7..0x449B16` without moving the CNW fragment cursor. EE
+/// `sub_14077FE10` reads the same common header at
+/// `0x140780A90..0x140780ABC`, then its `U` branch reads the status and calls
+/// the transform-map reader at `0x140781078..0x1407810DD`.
+/// `sub_140973160` reads the two empty-map counts at `0x1409732A4` and
+/// `0x140973340`, producing the exact eight-byte identity map; no branch moves
+/// the fragment cursor. These offsets come only
+/// from the exact emitted-EE appearance parser; they are not inferred later by
+/// the semantic or diagnostics layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectVisibleEquipmentUpdateProvenance {
+    /// Absolute opcode offset within the deflated live-object read-buffer
+    /// slice supplied to the typed parser (not an M-frame offset and not
+    /// relative to the enclosing appearance record).
+    pub row_offset: usize,
+    pub object_id_offset: usize,
+    pub visible_slot_offset: usize,
+    pub status_offset: usize,
+    pub visual_transform_map_offset: usize,
+    pub visual_transform_map_end: usize,
+    pub row_end: usize,
+    pub fragment_bit_start: usize,
+    pub fragment_bit_end: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveObjectCreatureVisibleEquipmentClaim {
     pub owner_id: u32,
@@ -20168,6 +20198,10 @@ pub struct LiveObjectCreatureVisibleEquipmentClaim {
     pub fragment_bit_start: usize,
     pub fragment_bit_end: usize,
     pub rows: Vec<LiveObjectVisibleEquipmentRow>,
+    /// One entry per `Update` row, in the same relative order as those rows in
+    /// `rows`. Exact claim construction rejects a missing, shifted, or
+    /// fragment-moving `U` provenance entry.
+    pub update_row_provenance: Vec<LiveObjectVisibleEquipmentUpdateProvenance>,
 }
 
 const MAX_LIVE_OBJECT_RECORD_PROFILES: usize = 256;

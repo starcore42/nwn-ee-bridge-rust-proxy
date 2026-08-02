@@ -1843,12 +1843,17 @@ fn trace_live_object_visible_equipment_profiles(
             "server live-object exact creature visible-equipment claim profile"
         );
 
+        let mut update_provenance = equipment_claim.update_row_provenance.iter().copied();
         for (row_index, row) in equipment_claim
             .rows
             .iter()
             .take(claim_rows_emitted)
             .enumerate()
         {
+            let row_update_provenance = (row.operation
+                == live_object_update::LiveObjectVisibleEquipmentOperation::Update)
+                .then(|| update_provenance.next())
+                .flatten();
             tracing::debug!(
                 family = family_name,
                 claim_index,
@@ -1865,6 +1870,37 @@ fn trace_live_object_visible_equipment_profiles(
                 visible_slot = format_args!("0x{:08X}", row.visible_slot),
                 update_status = row.update_status.unwrap_or_default(),
                 update_status_present = row.update_status.is_some(),
+                update_provenance_present = row_update_provenance.is_some(),
+                row_offset = row_update_provenance
+                    .map(|provenance| provenance.row_offset)
+                    .unwrap_or_default(),
+                object_id_offset = row_update_provenance
+                    .map(|provenance| provenance.object_id_offset)
+                    .unwrap_or_default(),
+                visible_slot_offset = row_update_provenance
+                    .map(|provenance| provenance.visible_slot_offset)
+                    .unwrap_or_default(),
+                status_offset = row_update_provenance
+                    .map(|provenance| provenance.status_offset)
+                    .unwrap_or_default(),
+                visual_transform_map_offset = row_update_provenance
+                    .map(|provenance| provenance.visual_transform_map_offset)
+                    .unwrap_or_default(),
+                visual_transform_map_end = row_update_provenance
+                    .map(|provenance| provenance.visual_transform_map_end)
+                    .unwrap_or_default(),
+                row_end = row_update_provenance
+                    .map(|provenance| provenance.row_end)
+                    .unwrap_or_default(),
+                row_fragment_bit_start = row_update_provenance
+                    .map(|provenance| provenance.fragment_bit_start)
+                    .unwrap_or_default(),
+                row_fragment_bit_end = row_update_provenance
+                    .map(|provenance| provenance.fragment_bit_end)
+                    .unwrap_or_default(),
+                row_fragment_cursor_unchanged = row_update_provenance.is_some_and(|provenance| {
+                    provenance.fragment_bit_start == provenance.fragment_bit_end
+                }),
                 "server live-object exact creature visible-equipment row profile"
             );
             rows_emitted = rows_emitted.saturating_add(1);
@@ -6337,6 +6373,7 @@ mod exact_claim_trace_tests {
         LiveObjectRecordOrientation, LiveObjectRecordOrientationSource,
         LiveObjectRecordOrientationVector, LiveObjectRecordPosition,
         LiveObjectVisibleEquipmentOperation, LiveObjectVisibleEquipmentRow,
+        LiveObjectVisibleEquipmentUpdateProvenance,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -6720,15 +6757,48 @@ mod exact_claim_trace_tests {
         all_fields_appearance: bool,
         rows: Vec<LiveObjectVisibleEquipmentRow>,
     ) -> LiveObjectCreatureVisibleEquipmentClaim {
+        let record_offset = 10;
+        let mut row_offset = record_offset + 8 + 1;
+        let mut update_row_provenance = Vec::new();
+        for row in &rows {
+            if row.operation == LiveObjectVisibleEquipmentOperation::Update {
+                let status_offset = row_offset + 1 + 4 + 4;
+                let visual_transform_map_offset = status_offset + 1;
+                let visual_transform_map_end = visual_transform_map_offset + 8;
+                update_row_provenance.push(LiveObjectVisibleEquipmentUpdateProvenance {
+                    row_offset,
+                    object_id_offset: row_offset + 1,
+                    visible_slot_offset: row_offset + 1 + 4,
+                    status_offset,
+                    visual_transform_map_offset,
+                    visual_transform_map_end,
+                    row_end: visual_transform_map_end,
+                    fragment_bit_start: 3,
+                    fragment_bit_end: 3,
+                });
+                row_offset = visual_transform_map_end;
+            } else {
+                row_offset += if matches!(
+                    row.operation,
+                    LiveObjectVisibleEquipmentOperation::Delete
+                        | LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero
+                ) {
+                    1 + 4 + 4
+                } else {
+                    18
+                };
+            }
+        }
         LiveObjectCreatureVisibleEquipmentClaim {
             owner_id: 0x8000_1000 + u32::from(appearance_mask),
             appearance_mask,
             all_fields_appearance,
-            record_offset: 10,
-            record_end: 20,
+            record_offset,
+            record_end: row_offset,
             fragment_bit_start: 3,
             fragment_bit_end: 7,
             rows,
+            update_row_provenance,
         }
     }
 

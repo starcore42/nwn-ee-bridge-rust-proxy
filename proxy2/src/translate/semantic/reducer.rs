@@ -2930,6 +2930,95 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn exact_live_object_two_update_rows_reach_ordered_area_ledger() {
+        const OWNER_ID: u32 = 0x8000_0043;
+        const FIRST_ITEM_ID: u32 = 0x8000_0044;
+        const SECOND_ITEM_ID: u32 = 0x8000_0045;
+
+        let mut live = vec![b'P', 5];
+        live.extend_from_slice(&OWNER_ID.to_le_bytes());
+        live.extend_from_slice(&0x0200u16.to_le_bytes());
+        live.push(2);
+        for (object_id, visible_slot, status) in
+            [(FIRST_ITEM_ID, 2u32, 0x7Fu8), (SECOND_ITEM_ID, 0x10, 1)]
+        {
+            live.push(b'U');
+            live.extend_from_slice(&object_id.to_le_bytes());
+            live.extend_from_slice(&visible_slot.to_le_bytes());
+            live.push(status);
+            live.extend_from_slice(&[0; 8]);
+        }
+        let payload = live_object_payload_with_bits(&live, &[]);
+
+        let mut state = SemanticSessionState::default();
+        let equipment = &mut state.ui.inventory_equipment_protocol;
+        equipment
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, 2), FIRST_ITEM_ID);
+        equipment
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, 0x10), SECOND_ITEM_ID);
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &payload,
+        );
+
+        let equipment = &state.ui.inventory_equipment_protocol;
+        let retained = equipment
+            .visible_equipment_update_observation_ledger
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 2);
+        assert_eq!(retained[0].area_update_ordinal, 1);
+        assert_eq!(retained[1].area_update_ordinal, 2);
+        assert_eq!(retained[0].claim_ordinal, 1);
+        assert_eq!(retained[1].claim_ordinal, 1);
+        assert_eq!(retained[0].row_ordinal, 0);
+        assert_eq!(retained[1].row_ordinal, 1);
+        assert_eq!((retained[0].row_offset, retained[0].row_end), (9, 27));
+        assert_eq!((retained[1].row_offset, retained[1].row_end), (27, 45));
+        assert_eq!(retained[0].row_fragment_bit_start, 3);
+        assert_eq!(retained[0].row_fragment_bit_end, 3);
+        assert_eq!(retained[1].row_fragment_bit_start, 3);
+        assert_eq!(retained[1].row_fragment_bit_end, 3);
+        assert!(
+            retained
+                .iter()
+                .all(|observation| observation.exact_object_id_match)
+        );
+        assert_eq!(
+            equipment.last_visible_equipment_update_observation,
+            Some(retained[1])
+        );
+
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::AreaClientArea),
+            &[],
+        );
+        let equipment = &state.ui.inventory_equipment_protocol;
+        assert!(
+            equipment
+                .visible_equipment_update_observation_ledger
+                .is_empty()
+        );
+        assert_eq!(equipment.visible_equipment_update_observations_in_area, 0);
+        assert_eq!(
+            equipment.visible_equipment_update_observations_evicted_in_area,
+            0
+        );
+        assert!(
+            equipment
+                .last_visible_equipment_update_observation
+                .is_none()
+        );
+    }
+
+    #[test]
     fn obj_control_epoch_change_invalidates_direct_probe_before_following_delete() {
         const PLAYER_ID: u32 = 0x0102_0304;
         const OWNER_A: u32 = 0xFFFF_FFEF;

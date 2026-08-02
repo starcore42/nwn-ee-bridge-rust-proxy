@@ -7,7 +7,92 @@
 //! semantic state; this module does not parse packets, reinterpret the `U`
 //! status BYTE, or infer missing equipment rows.
 
+use std::fmt::Write as _;
+
 use crate::translate::{live_object_update::LiveObjectVisibleEquipmentOperation, semantic};
+
+fn visible_equipment_update_ledger_json(
+    protocol: &semantic::InventoryEquipmentProtocolState,
+) -> String {
+    let mut json = String::from("[");
+    for (index, observation) in protocol
+        .visible_equipment_update_observation_ledger
+        .iter()
+        .enumerate()
+    {
+        if index != 0 {
+            json.push(',');
+        }
+        write!(
+            json,
+            concat!(
+                "{{\"area_update_ordinal\":{},",
+                "\"claim_ordinal\":{},",
+                "\"owner_object_id\":{},",
+                "\"appearance_mask\":{},",
+                "\"all_fields_appearance\":{},",
+                "\"record_offset\":{},",
+                "\"record_end\":{},",
+                "\"claim_fragment_bit_start\":{},",
+                "\"claim_fragment_bit_end\":{},",
+                "\"row_ordinal\":{},",
+                "\"row_offset\":{},",
+                "\"object_id_offset\":{},",
+                "\"visible_slot_offset\":{},",
+                "\"status_offset\":{},",
+                "\"visual_transform_map_offset\":{},",
+                "\"visual_transform_map_end\":{},",
+                "\"row_end\":{},",
+                "\"row_fragment_bit_start\":{},",
+                "\"row_fragment_bit_end\":{},",
+                "\"row_fragment_cursor_unchanged\":{},",
+                "\"row_object_id\":{},",
+                "\"carried_visible_slot\":{},",
+                "\"status_known\":{},",
+                "\"status\":{},",
+                "\"matching_visible_slot_count\":{},",
+                "\"unique_matching_visible_slot_known\":{},",
+                "\"unique_matching_visible_slot\":{},",
+                "\"legacy_equivalent_visible_slot_count\":{},",
+                "\"exact_object_id_match\":{},",
+                "\"legacy_equivalence_only_match\":{}}}"
+            ),
+            observation.area_update_ordinal,
+            observation.claim_ordinal,
+            observation.owner_object_id,
+            observation.appearance_mask,
+            observation.all_fields_appearance,
+            observation.record_offset,
+            observation.record_end,
+            observation.fragment_bit_start,
+            observation.fragment_bit_end,
+            observation.row_ordinal,
+            observation.row_offset,
+            observation.object_id_offset,
+            observation.visible_slot_offset,
+            observation.status_offset,
+            observation.visual_transform_map_offset,
+            observation.visual_transform_map_end,
+            observation.row_end,
+            observation.row_fragment_bit_start,
+            observation.row_fragment_bit_end,
+            observation.row_fragment_bit_start == observation.row_fragment_bit_end,
+            observation.row_object_id,
+            observation.carried_visible_slot,
+            observation.update_status.is_some(),
+            observation.update_status.unwrap_or(0),
+            observation.matching_visible_slot_count,
+            observation.unique_matching_visible_slot.is_some(),
+            observation.unique_matching_visible_slot.unwrap_or(0),
+            observation.legacy_equivalent_visible_slot_count,
+            observation.exact_object_id_match,
+            observation.legacy_equivalence_only_match,
+        )
+        .expect("writing visible-equipment U ledger JSON to String cannot fail");
+    }
+    json.push(']');
+    json
+}
 
 pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) -> String {
     let stage = protocol
@@ -44,7 +129,7 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
         })
         .unwrap_or("none");
 
-    format!(
+    let mut fields = format!(
         concat!(
             ",\n",
             "  \"status_authorized_visible_equipment_probe_transaction_stage\": \"{}\",\n",
@@ -216,7 +301,61 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
             .unwrap_or(0),
         last_update.is_some_and(|value| value.exact_object_id_match),
         last_update.is_some_and(|value| value.legacy_equivalence_only_match),
+    );
+    let ledger_json = visible_equipment_update_ledger_json(protocol);
+    write!(
+        fields,
+        concat!(
+            ",\n",
+            "  \"last_visible_equipment_update_area_update_ordinal\": {},\n",
+            "  \"last_visible_equipment_update_row_offset\": {},\n",
+            "  \"last_visible_equipment_update_object_id_offset\": {},\n",
+            "  \"last_visible_equipment_update_visible_slot_offset\": {},\n",
+            "  \"last_visible_equipment_update_status_offset\": {},\n",
+            "  \"last_visible_equipment_update_visual_transform_map_offset\": {},\n",
+            "  \"last_visible_equipment_update_visual_transform_map_end\": {},\n",
+            "  \"last_visible_equipment_update_row_end\": {},\n",
+            "  \"last_visible_equipment_update_row_fragment_bit_start\": {},\n",
+            "  \"last_visible_equipment_update_row_fragment_bit_end\": {},\n",
+            "  \"last_visible_equipment_update_row_fragment_cursor_unchanged\": {},\n",
+            "  \"visible_equipment_update_ledger_capacity\": {},\n",
+            "  \"visible_equipment_update_ledger_observed_in_area\": {},\n",
+            "  \"visible_equipment_update_ledger_retained\": {},\n",
+            "  \"visible_equipment_update_ledger_evicted_in_area\": {},\n",
+            "  \"visible_equipment_update_ledger\": {}"
+        ),
+        last_update
+            .map(|value| value.area_update_ordinal)
+            .unwrap_or(0),
+        last_update.map(|value| value.row_offset).unwrap_or(0),
+        last_update.map(|value| value.object_id_offset).unwrap_or(0),
+        last_update
+            .map(|value| value.visible_slot_offset)
+            .unwrap_or(0),
+        last_update.map(|value| value.status_offset).unwrap_or(0),
+        last_update
+            .map(|value| value.visual_transform_map_offset)
+            .unwrap_or(0),
+        last_update
+            .map(|value| value.visual_transform_map_end)
+            .unwrap_or(0),
+        last_update.map(|value| value.row_end).unwrap_or(0),
+        last_update
+            .map(|value| value.row_fragment_bit_start)
+            .unwrap_or(0),
+        last_update
+            .map(|value| value.row_fragment_bit_end)
+            .unwrap_or(0),
+        last_update
+            .is_some_and(|value| { value.row_fragment_bit_start == value.row_fragment_bit_end }),
+        semantic::MAX_VISIBLE_EQUIPMENT_UPDATE_OBSERVATIONS_PER_AREA,
+        protocol.visible_equipment_update_observations_in_area,
+        protocol.visible_equipment_update_observation_ledger.len(),
+        protocol.visible_equipment_update_observations_evicted_in_area,
+        ledger_json,
     )
+    .expect("writing visible-equipment U ledger fields to String cannot fail");
+    fields
 }
 
 #[cfg(test)]
@@ -226,6 +365,7 @@ mod tests {
         client_inventory, inventory,
         live_object_update::{
             LiveObjectCreatureVisibleEquipmentClaim, LiveObjectVisibleEquipmentRow,
+            LiveObjectVisibleEquipmentUpdateProvenance,
         },
     };
 
@@ -274,12 +414,35 @@ mod tests {
         object_id: u32,
         visible_slot: u32,
     ) -> LiveObjectCreatureVisibleEquipmentClaim {
+        let row_offset = 77 + 8 + 1;
+        let update_row_provenance = (operation == LiveObjectVisibleEquipmentOperation::Update)
+            .then(|| {
+                let status_offset = row_offset + 1 + 4 + 4;
+                let visual_transform_map_offset = status_offset + 1;
+                let visual_transform_map_end = visual_transform_map_offset + 8;
+                LiveObjectVisibleEquipmentUpdateProvenance {
+                    row_offset,
+                    object_id_offset: row_offset + 1,
+                    visible_slot_offset: row_offset + 1 + 4,
+                    status_offset,
+                    visual_transform_map_offset,
+                    visual_transform_map_end,
+                    row_end: visual_transform_map_end,
+                    fragment_bit_start: 11,
+                    fragment_bit_end: 11,
+                }
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
         LiveObjectCreatureVisibleEquipmentClaim {
             owner_id,
             appearance_mask,
             all_fields_appearance: appearance_mask == u16::MAX,
             record_offset: 77,
-            record_end: 94,
+            record_end: update_row_provenance
+                .first()
+                .map(|provenance| provenance.row_end)
+                .unwrap_or(row_offset + 1 + 4 + 4),
             fragment_bit_start: 11,
             fragment_bit_end: 11,
             rows: vec![LiveObjectVisibleEquipmentRow {
@@ -288,6 +451,7 @@ mod tests {
                 visible_slot,
                 update_status: None,
             }],
+            update_row_provenance,
         }
     }
 
@@ -556,6 +720,34 @@ mod tests {
         );
         assert!(fields.contains("\"last_visible_equipment_update_carried_visible_slot\": 64"));
         assert!(fields.contains("\"last_visible_equipment_update_status\": 127"));
+        assert!(fields.contains("\"last_visible_equipment_update_area_update_ordinal\": 1"));
+        assert!(fields.contains("\"last_visible_equipment_update_row_offset\": 86"));
+        assert!(fields.contains("\"last_visible_equipment_update_object_id_offset\": 87"));
+        assert!(fields.contains("\"last_visible_equipment_update_visible_slot_offset\": 91"));
+        assert!(fields.contains("\"last_visible_equipment_update_status_offset\": 95"));
+        assert!(
+            fields.contains("\"last_visible_equipment_update_visual_transform_map_offset\": 96")
+        );
+        assert!(fields.contains("\"last_visible_equipment_update_visual_transform_map_end\": 104"));
+        assert!(fields.contains("\"last_visible_equipment_update_row_end\": 104"));
+        assert!(fields.contains("\"last_visible_equipment_update_row_fragment_bit_start\": 11"));
+        assert!(fields.contains("\"last_visible_equipment_update_row_fragment_bit_end\": 11"));
+        assert!(
+            fields
+                .contains("\"last_visible_equipment_update_row_fragment_cursor_unchanged\": true")
+        );
+        assert!(fields.contains("\"visible_equipment_update_ledger_capacity\": 64"));
+        assert!(fields.contains("\"visible_equipment_update_ledger_observed_in_area\": 1"));
+        assert!(fields.contains("\"visible_equipment_update_ledger_retained\": 1"));
+        assert!(fields.contains("\"visible_equipment_update_ledger_evicted_in_area\": 0"));
+        assert!(fields.contains(concat!(
+            "\"visible_equipment_update_ledger\": [",
+            "{\"area_update_ordinal\":1,\"claim_ordinal\":2,",
+            "\"owner_object_id\":4294967279"
+        )));
+        assert!(fields.contains(
+            "\"row_fragment_bit_start\":11,\"row_fragment_bit_end\":11,\"row_fragment_cursor_unchanged\":true"
+        ));
         assert!(
             fields.contains("\"last_visible_equipment_update_matching_visible_slot_count\": 1")
         );
@@ -575,5 +767,53 @@ mod tests {
             fields
                 .contains("\"last_visible_equipment_update_legacy_equivalence_only_match\": false")
         );
+    }
+
+    #[test]
+    fn visible_equipment_update_ledger_serializes_two_rows_in_observation_order() {
+        let owner_id = 0xffff_ffef;
+        let first_object_id = 0x8000_0077;
+        let second_object_id = 0x8000_0088;
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        let mut first = visible_equipment_claim(
+            owner_id,
+            0x0200,
+            LiveObjectVisibleEquipmentOperation::Update,
+            first_object_id,
+            0x20,
+        );
+        first.rows[0].update_status = Some(0x11);
+        let mut second = visible_equipment_claim(
+            owner_id,
+            0x0200,
+            LiveObjectVisibleEquipmentOperation::Update,
+            second_object_id,
+            0x40,
+        );
+        second.rows[0].update_status = Some(0x22);
+
+        protocol.observe_creature_visible_equipment_claims(&[first, second]);
+
+        let ledger = visible_equipment_update_ledger_json(&protocol);
+        assert!(ledger.starts_with("[{") && ledger.ends_with("}]"));
+        assert_eq!(
+            ledger.matches("},{").count(),
+            1,
+            "two retained rows must be adjacent JSON objects with one comma"
+        );
+        let separator = ledger
+            .find("},{")
+            .expect("two-entry ledger object separator");
+        let (first_json, second_json) = ledger.split_at(separator);
+        assert!(first_json.contains(concat!("\"area_update_ordinal\":1,", "\"claim_ordinal\":1")));
+        assert!(first_json.contains("\"row_object_id\":2147483767"));
+        assert!(first_json.contains("\"status\":17"));
+        assert!(second_json.contains(concat!("\"area_update_ordinal\":2,", "\"claim_ordinal\":2")));
+        assert!(second_json.contains("\"row_object_id\":2147483784"));
+        assert!(second_json.contains("\"status\":34"));
+
+        let fields = json_fields(&protocol);
+        let wrapped = format!("{{\"base\":true{fields}\n}}");
+        assert!(wrapped.contains(&format!("\"visible_equipment_update_ledger\": {ledger}")));
     }
 }

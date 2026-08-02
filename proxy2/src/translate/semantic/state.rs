@@ -42,6 +42,7 @@ use super::event::{
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
+pub(crate) const MAX_VISIBLE_EQUIPMENT_UPDATE_OBSERVATIONS_PER_AREA: usize = 64;
 const QUICKBAR_ITEM_REFRESH_SET_BUTTON_FALLBACK_SLOT: u8 = 0;
 const ITEM_OBJECT_TYPE: u8 = 0x06;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
@@ -1036,6 +1037,7 @@ pub(crate) struct StatusAuthorizedVisibleEquipmentProbeDelta {
 /// recurrence supplies that evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VisibleEquipmentUpdateObservation {
+    pub(crate) area_update_ordinal: u64,
     pub(crate) claim_ordinal: u64,
     pub(crate) owner_object_id: u32,
     pub(crate) appearance_mask: u16,
@@ -1045,6 +1047,15 @@ pub(crate) struct VisibleEquipmentUpdateObservation {
     pub(crate) fragment_bit_start: usize,
     pub(crate) fragment_bit_end: usize,
     pub(crate) row_ordinal: usize,
+    pub(crate) row_offset: usize,
+    pub(crate) object_id_offset: usize,
+    pub(crate) visible_slot_offset: usize,
+    pub(crate) status_offset: usize,
+    pub(crate) visual_transform_map_offset: usize,
+    pub(crate) visual_transform_map_end: usize,
+    pub(crate) row_end: usize,
+    pub(crate) row_fragment_bit_start: usize,
+    pub(crate) row_fragment_bit_end: usize,
     pub(crate) row_object_id: u32,
     pub(crate) carried_visible_slot: u32,
     pub(crate) update_status: Option<u8>,
@@ -1178,6 +1189,13 @@ pub(crate) struct InventoryEquipmentProtocolState {
     /// `U` rows without an exact owner-local emitted-EE object match. A
     /// compact/external-equivalent alias remains diagnostic, not authority.
     pub(crate) visible_equipment_update_without_mapping: u64,
+    /// Ordered, bounded exact `U` observations for the current area. Older
+    /// entries are evicted from the front without changing the retained
+    /// latest-observation compatibility projection.
+    pub(crate) visible_equipment_update_observations_in_area: u64,
+    pub(crate) visible_equipment_update_observations_evicted_in_area: u64,
+    pub(crate) visible_equipment_update_observation_ledger:
+        VecDeque<VisibleEquipmentUpdateObservation>,
     pub(crate) last_visible_equipment_update_observation: Option<VisibleEquipmentUpdateObservation>,
     pub(crate) last_visible_equipment_removed_slots: usize,
 }
@@ -1475,6 +1493,9 @@ impl InventoryEquipmentProtocolState {
         self.committed_equipment_slots.clear();
         self.last_unequip_removed_slots = 0;
         self.visible_equipment_slots_by_owner.clear();
+        self.visible_equipment_update_observations_in_area = 0;
+        self.visible_equipment_update_observations_evicted_in_area = 0;
+        self.visible_equipment_update_observation_ledger.clear();
         self.last_visible_equipment_update_observation = None;
         self.last_visible_equipment_removed_slots = 0;
     }
@@ -1496,6 +1517,7 @@ impl InventoryEquipmentProtocolState {
 
             self.last_visible_equipment_removed_slots = 0;
             let state_updates_before = self.visible_equipment_state_updates;
+            let mut update_provenance = claim.update_row_provenance.iter().copied();
             for (row_ordinal, row) in claim.rows.iter().enumerate() {
                 let key = (claim.owner_id, row.visible_slot);
                 let direct_probe_completion = self
@@ -1590,6 +1612,15 @@ impl InventoryEquipmentProtocolState {
                     LiveObjectVisibleEquipmentOperation::Update => {
                         self.visible_equipment_update_rows =
                             self.visible_equipment_update_rows.saturating_add(1);
+                        let Some(provenance) = update_provenance.next() else {
+                            tracing::error!(
+                                claim_ordinal = self.visible_equipment_claims,
+                                owner_object_id = format_args!("0x{:08X}", claim.owner_id),
+                                row_ordinal,
+                                "exact creature visible-equipment U claim omitted row-local provenance"
+                            );
+                            continue;
+                        };
                         // Diamond and EE resolve U strictly by OBJECTID, then
                         // apply status/visual-transform state. The slot field
                         // is not mapping authority, so a cache miss cannot
@@ -1619,7 +1650,11 @@ impl InventoryEquipmentProtocolState {
                         let exact_object_id_match = matching_visible_slot_count > 0;
                         let legacy_equivalence_only_match =
                             !exact_object_id_match && legacy_equivalent_visible_slot_count > 0;
+                        self.visible_equipment_update_observations_in_area = self
+                            .visible_equipment_update_observations_in_area
+                            .saturating_add(1);
                         let observation = VisibleEquipmentUpdateObservation {
+                            area_update_ordinal: self.visible_equipment_update_observations_in_area,
                             claim_ordinal: self.visible_equipment_claims,
                             owner_object_id: claim.owner_id,
                             appearance_mask: claim.appearance_mask,
@@ -1629,6 +1664,15 @@ impl InventoryEquipmentProtocolState {
                             fragment_bit_start: claim.fragment_bit_start,
                             fragment_bit_end: claim.fragment_bit_end,
                             row_ordinal,
+                            row_offset: provenance.row_offset,
+                            object_id_offset: provenance.object_id_offset,
+                            visible_slot_offset: provenance.visible_slot_offset,
+                            status_offset: provenance.status_offset,
+                            visual_transform_map_offset: provenance.visual_transform_map_offset,
+                            visual_transform_map_end: provenance.visual_transform_map_end,
+                            row_end: provenance.row_end,
+                            row_fragment_bit_start: provenance.fragment_bit_start,
+                            row_fragment_bit_end: provenance.fragment_bit_end,
                             row_object_id: row.object_id,
                             carried_visible_slot: row.visible_slot,
                             update_status: row.update_status,
@@ -1638,6 +1682,16 @@ impl InventoryEquipmentProtocolState {
                             exact_object_id_match,
                             legacy_equivalence_only_match,
                         };
+                        if self.visible_equipment_update_observation_ledger.len()
+                            >= MAX_VISIBLE_EQUIPMENT_UPDATE_OBSERVATIONS_PER_AREA
+                        {
+                            self.visible_equipment_update_observation_ledger.pop_front();
+                            self.visible_equipment_update_observations_evicted_in_area = self
+                                .visible_equipment_update_observations_evicted_in_area
+                                .saturating_add(1);
+                        }
+                        self.visible_equipment_update_observation_ledger
+                            .push_back(observation);
                         self.last_visible_equipment_update_observation = Some(observation);
 
                         if matching_visible_slot_count > 0 {
@@ -1660,6 +1714,18 @@ impl InventoryEquipmentProtocolState {
                             fragment_bit_start = observation.fragment_bit_start,
                             fragment_bit_end = observation.fragment_bit_end,
                             row_ordinal = observation.row_ordinal,
+                            row_offset = observation.row_offset,
+                            object_id_offset = observation.object_id_offset,
+                            visible_slot_offset = observation.visible_slot_offset,
+                            status_offset = observation.status_offset,
+                            visual_transform_map_offset =
+                                observation.visual_transform_map_offset,
+                            visual_transform_map_end = observation.visual_transform_map_end,
+                            row_end = observation.row_end,
+                            row_fragment_bit_start = observation.row_fragment_bit_start,
+                            row_fragment_bit_end = observation.row_fragment_bit_end,
+                            row_fragment_cursor_unchanged = observation.row_fragment_bit_start
+                                == observation.row_fragment_bit_end,
                             row_object_id = format_args!("0x{:08X}", observation.row_object_id),
                             carried_visible_slot = observation.carried_visible_slot,
                             update_status = ?observation.update_status,
@@ -8311,6 +8377,7 @@ mod tests {
     use crate::translate::live_object_update::{
         LiveObjectCreatureVisibleEquipmentClaim, LiveObjectQuickbarItemUseCountUpdate,
         LiveObjectVisibleEquipmentOperation, LiveObjectVisibleEquipmentRow,
+        LiveObjectVisibleEquipmentUpdateProvenance,
     };
     use crate::translate::semantic::{
         LiveObjectInventoryFeature25Reference, LiveObjectOrientationSource,
@@ -8343,6 +8410,43 @@ mod tests {
         all_fields_appearance: bool,
         rows: Vec<LiveObjectVisibleEquipmentRow>,
     ) -> LiveObjectCreatureVisibleEquipmentClaim {
+        let record_offset = 7;
+        let mut row_offset = record_offset + 8 + 1;
+        let mut update_row_provenance = Vec::new();
+        for row in &rows {
+            if row.operation == LiveObjectVisibleEquipmentOperation::Update {
+                let status_offset = row_offset + 1 + 4 + 4;
+                let visual_transform_map_offset = status_offset + 1;
+                let visual_transform_map_end = visual_transform_map_offset + 8;
+                update_row_provenance.push(LiveObjectVisibleEquipmentUpdateProvenance {
+                    row_offset,
+                    object_id_offset: row_offset + 1,
+                    visible_slot_offset: row_offset + 1 + 4,
+                    status_offset,
+                    visual_transform_map_offset,
+                    visual_transform_map_end,
+                    row_end: visual_transform_map_end,
+                    fragment_bit_start: 3,
+                    fragment_bit_end: 3,
+                });
+                row_offset = visual_transform_map_end;
+            } else {
+                // D/zero rows are exactly nine bytes. Synthetic A rows use an
+                // eighteen-byte stand-in span here because this helper feeds
+                // semantic-state tests, not the nested item parser; keeping
+                // the following row coordinates disjoint is the only needed
+                // invariant.
+                row_offset += if matches!(
+                    row.operation,
+                    LiveObjectVisibleEquipmentOperation::Delete
+                        | LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero
+                ) {
+                    1 + 4 + 4
+                } else {
+                    18
+                };
+            }
+        }
         LiveObjectCreatureVisibleEquipmentClaim {
             owner_id,
             appearance_mask: if all_fields_appearance {
@@ -8351,11 +8455,12 @@ mod tests {
                 0x0200
             },
             all_fields_appearance,
-            record_offset: 7,
-            record_end: 23,
+            record_offset,
+            record_end: row_offset,
             fragment_bit_start: 3,
             fragment_bit_end: 3,
             rows,
+            update_row_provenance,
         }
     }
 
@@ -8536,15 +8641,25 @@ mod tests {
         assert_eq!(
             state.last_visible_equipment_update_observation,
             Some(VisibleEquipmentUpdateObservation {
+                area_update_ordinal: 1,
                 claim_ordinal: 1,
                 owner_object_id: OWNER_ID,
                 appearance_mask: 0x0200,
                 all_fields_appearance: false,
                 record_offset: 7,
-                record_end: 23,
+                record_end: 34,
                 fragment_bit_start: 3,
                 fragment_bit_end: 3,
                 row_ordinal: 0,
+                row_offset: 16,
+                object_id_offset: 17,
+                visible_slot_offset: 21,
+                status_offset: 25,
+                visual_transform_map_offset: 26,
+                visual_transform_map_end: 34,
+                row_end: 34,
+                row_fragment_bit_start: 3,
+                row_fragment_bit_end: 3,
                 row_object_id: ITEM_ID,
                 carried_visible_slot: CARRIED_SLOT,
                 update_status: Some(0x7F),
@@ -8558,11 +8673,30 @@ mod tests {
         );
         assert_eq!(state.visible_equipment_update_matches, 1);
         assert_eq!(state.visible_equipment_update_without_mapping, 0);
+        assert_eq!(state.visible_equipment_update_observations_in_area, 1);
+        assert_eq!(
+            state.visible_equipment_update_observations_evicted_in_area,
+            0
+        );
+        assert_eq!(state.visible_equipment_update_observation_ledger.len(), 1);
+        assert_eq!(
+            state
+                .visible_equipment_update_observation_ledger
+                .back()
+                .copied(),
+            state.last_visible_equipment_update_observation
+        );
 
         state.reset_equip_toggle_authorization_for_area();
         assert!(
             state.last_visible_equipment_update_observation.is_none(),
             "Area_ClientArea must clear retained P/5 U provenance"
+        );
+        assert!(state.visible_equipment_update_observation_ledger.is_empty());
+        assert_eq!(state.visible_equipment_update_observations_in_area, 0);
+        assert_eq!(
+            state.visible_equipment_update_observations_evicted_in_area,
+            0
         );
     }
 
@@ -8599,6 +8733,125 @@ mod tests {
     }
 
     #[test]
+    fn visible_equipment_update_ledger_is_ordered_bounded_and_area_local() {
+        const OWNER_ID: u32 = 0x8000_0010;
+        let mut state = InventoryEquipmentProtocolState::default();
+        let total = super::MAX_VISIBLE_EQUIPMENT_UPDATE_OBSERVATIONS_PER_AREA + 3;
+
+        for ordinal in 0..total {
+            state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+                OWNER_ID,
+                false,
+                vec![LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_1000 + ordinal as u32,
+                    visible_slot: 2,
+                    update_status: Some(ordinal as u8),
+                }],
+            )]);
+        }
+
+        assert_eq!(
+            state.visible_equipment_update_observations_in_area,
+            total as u64
+        );
+        assert_eq!(
+            state.visible_equipment_update_observations_evicted_in_area,
+            3
+        );
+        assert_eq!(
+            state.visible_equipment_update_observation_ledger.len(),
+            super::MAX_VISIBLE_EQUIPMENT_UPDATE_OBSERVATIONS_PER_AREA
+        );
+        let first = state
+            .visible_equipment_update_observation_ledger
+            .front()
+            .copied()
+            .expect("bounded ledger first observation");
+        let last = state
+            .visible_equipment_update_observation_ledger
+            .back()
+            .copied()
+            .expect("bounded ledger last observation");
+        assert_eq!(first.area_update_ordinal, 4);
+        assert_eq!(first.claim_ordinal, 4);
+        assert_eq!(first.update_status, Some(3));
+        assert_eq!(last.area_update_ordinal, total as u64);
+        assert_eq!(last.claim_ordinal, total as u64);
+        assert_eq!(last.update_status, Some((total - 1) as u8));
+        assert!(
+            state
+                .visible_equipment_update_observation_ledger
+                .iter()
+                .all(|observation| observation.row_fragment_bit_start
+                    == observation.row_fragment_bit_end)
+        );
+        assert_eq!(
+            state.last_visible_equipment_update_observation,
+            Some(last),
+            "the compatibility projection must remain the newest retained row"
+        );
+
+        state.reset_equip_toggle_authorization_for_area();
+        assert!(state.visible_equipment_update_observation_ledger.is_empty());
+        assert_eq!(state.visible_equipment_update_observations_in_area, 0);
+        assert_eq!(
+            state.visible_equipment_update_observations_evicted_in_area,
+            0
+        );
+        assert!(state.last_visible_equipment_update_observation.is_none());
+    }
+
+    #[test]
+    fn visible_equipment_update_ledger_retains_multiple_rows_from_one_claim() {
+        const OWNER_ID: u32 = 0x8000_0010;
+        let mut state = InventoryEquipmentProtocolState::default();
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_ID,
+            false,
+            vec![
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_0044,
+                    visible_slot: 2,
+                    update_status: Some(0x7F),
+                },
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_0045,
+                    visible_slot: 0x10,
+                    update_status: Some(1),
+                },
+            ],
+        )]);
+
+        let retained = state
+            .visible_equipment_update_observation_ledger
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 2);
+        assert_eq!(retained[0].area_update_ordinal, 1);
+        assert_eq!(retained[1].area_update_ordinal, 2);
+        assert_eq!(retained[0].claim_ordinal, 1);
+        assert_eq!(retained[1].claim_ordinal, 1);
+        assert_eq!(retained[0].row_ordinal, 0);
+        assert_eq!(retained[1].row_ordinal, 1);
+        assert_eq!(retained[0].row_offset, 16);
+        assert_eq!(retained[0].row_end, 34);
+        assert_eq!(retained[1].row_offset, 34);
+        assert_eq!(retained[1].row_end, 52);
+        assert_eq!(retained[0].row_fragment_bit_start, 3);
+        assert_eq!(retained[0].row_fragment_bit_end, 3);
+        assert_eq!(retained[1].row_fragment_bit_start, 3);
+        assert_eq!(retained[1].row_fragment_bit_end, 3);
+        assert_eq!(
+            state.last_visible_equipment_update_observation,
+            Some(retained[1])
+        );
+    }
+
+    #[test]
     fn visible_equipment_update_observation_retains_unmatched_row_provenance() {
         const OWNER_ID: u32 = 0x8000_0010;
 
@@ -8625,15 +8878,25 @@ mod tests {
         assert_eq!(
             state.last_visible_equipment_update_observation,
             Some(VisibleEquipmentUpdateObservation {
+                area_update_ordinal: 1,
                 claim_ordinal: 1,
                 owner_object_id: OWNER_ID,
                 appearance_mask: 0xFFFF,
                 all_fields_appearance: true,
                 record_offset: 7,
-                record_end: 23,
+                record_end: 43,
                 fragment_bit_start: 3,
                 fragment_bit_end: 3,
                 row_ordinal: 1,
+                row_offset: 25,
+                object_id_offset: 26,
+                visible_slot_offset: 30,
+                status_offset: 34,
+                visual_transform_map_offset: 35,
+                visual_transform_map_end: 43,
+                row_end: 43,
+                row_fragment_bit_start: 3,
+                row_fragment_bit_end: 3,
                 row_object_id: 0x8000_0777,
                 carried_visible_slot: 9,
                 update_status: Some(0),

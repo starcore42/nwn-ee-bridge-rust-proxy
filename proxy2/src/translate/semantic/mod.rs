@@ -33,7 +33,8 @@ pub(crate) use state::{
     InventoryItemContextCandidate, InventoryItemContextCandidateSource,
     InventoryItemContextSummary, InventoryItemObjectProof, InventoryItemObjectProvenNeighbor,
     InventoryItemObjectProvenNeighborhood, InventoryItemObjectStatus, KnownObjectState,
-    LiveObjectInventoryMaterializationSummary, ModuleState, ObjectRegistry,
-    QuickbarItemContextSource, QuickbarItemRefreshOutcome, ResourceState, SemanticSessionState,
-    StatusAuthorizedVisibleEquipmentProbeAuthorization, SyntheticState, UiState,
+    LiveObjectInventoryMaterializationSummary, MAX_VISIBLE_EQUIPMENT_UPDATE_OBSERVATIONS_PER_AREA,
+    ModuleState, ObjectRegistry, QuickbarItemContextSource, QuickbarItemRefreshOutcome,
+    ResourceState, SemanticSessionState, StatusAuthorizedVisibleEquipmentProbeAuthorization,
+    SyntheticState, UiState,
 };

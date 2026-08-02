@@ -12711,6 +12711,7 @@ mod tests {
                     visible_slot,
                     update_status: None,
                 }],
+                update_row_provenance: Vec::new(),
             }
         };
         let binding = |area_client_area_packets, control_epoch, owner_object_id| {
@@ -13017,6 +13018,7 @@ mod tests {
                     visible_slot: 2,
                     update_status: None,
                 }],
+                update_row_provenance: Vec::new(),
             },
             LiveObjectCreatureVisibleEquipmentClaim {
                 owner_id: OWNER,
@@ -13032,6 +13034,7 @@ mod tests {
                     visible_slot: 0x20,
                     update_status: None,
                 }],
+                update_row_provenance: Vec::new(),
             },
         ]);
         assert_eq!(
@@ -13057,6 +13060,7 @@ mod tests {
                     visible_slot: 2,
                     update_status: None,
                 }],
+                update_row_provenance: Vec::new(),
             },
         ]);
         let completed = augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
@@ -13634,6 +13638,7 @@ mod tests {
                         update_status: None,
                     },
                 ],
+                update_row_provenance: Vec::new(),
             },
         ]);
         let explicit_visible_delete =
@@ -13674,6 +13679,7 @@ mod tests {
                         update_status: None,
                     },
                 ],
+                update_row_provenance: Vec::new(),
             },
         ]);
 
