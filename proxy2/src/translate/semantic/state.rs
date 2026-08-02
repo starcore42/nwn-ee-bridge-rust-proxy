@@ -1031,10 +1031,10 @@ pub(crate) struct StatusAuthorizedVisibleEquipmentProbeDelta {
 /// Diamond `sub_448E30` and EE `sub_14077FE10` resolve `U` by OBJECTID. The
 /// row's slot DWORD is retained as wire provenance only; it does not select or
 /// mutate an owner/slot mapping. Diamond consumes the trailing status BYTE;
-/// EE consumes that same BYTE followed by its exact object-transform map, and
-/// neither reader moves the CNW fragment cursor. The status is deliberately
-/// retained without assigning engine semantics until an authentic live `U`
-/// recurrence supplies that evidence.
+/// EE consumes that same BYTE followed by its exact object-transform map. An
+/// empty map owns no BOOLs; each non-empty current-EE map entry owns one
+/// identity BOOL. The status is deliberately retained without assigning engine
+/// semantics until an authentic live `U` recurrence supplies that evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VisibleEquipmentUpdateObservation {
     pub(crate) area_update_ordinal: u64,
@@ -1053,6 +1053,7 @@ pub(crate) struct VisibleEquipmentUpdateObservation {
     pub(crate) status_offset: usize,
     pub(crate) visual_transform_map_offset: usize,
     pub(crate) visual_transform_map_end: usize,
+    pub(crate) visual_transform_map_entries: u32,
     pub(crate) row_end: usize,
     pub(crate) row_fragment_bit_start: usize,
     pub(crate) row_fragment_bit_end: usize,
@@ -1670,6 +1671,7 @@ impl InventoryEquipmentProtocolState {
                             status_offset: provenance.status_offset,
                             visual_transform_map_offset: provenance.visual_transform_map_offset,
                             visual_transform_map_end: provenance.visual_transform_map_end,
+                            visual_transform_map_entries: provenance.visual_transform_map_entries,
                             row_end: provenance.row_end,
                             row_fragment_bit_start: provenance.fragment_bit_start,
                             row_fragment_bit_end: provenance.fragment_bit_end,
@@ -1721,6 +1723,8 @@ impl InventoryEquipmentProtocolState {
                             visual_transform_map_offset =
                                 observation.visual_transform_map_offset,
                             visual_transform_map_end = observation.visual_transform_map_end,
+                            visual_transform_map_entries =
+                                observation.visual_transform_map_entries,
                             row_end = observation.row_end,
                             row_fragment_bit_start = observation.row_fragment_bit_start,
                             row_fragment_bit_end = observation.row_fragment_bit_end,
@@ -8425,6 +8429,7 @@ mod tests {
                     status_offset,
                     visual_transform_map_offset,
                     visual_transform_map_end,
+                    visual_transform_map_entries: 0,
                     row_end: visual_transform_map_end,
                     fragment_bit_start: 3,
                     fragment_bit_end: 3,
@@ -8657,6 +8662,7 @@ mod tests {
                 status_offset: 25,
                 visual_transform_map_offset: 26,
                 visual_transform_map_end: 34,
+                visual_transform_map_entries: 0,
                 row_end: 34,
                 row_fragment_bit_start: 3,
                 row_fragment_bit_end: 3,
@@ -8894,6 +8900,7 @@ mod tests {
                 status_offset: 34,
                 visual_transform_map_offset: 35,
                 visual_transform_map_end: 43,
+                visual_transform_map_entries: 0,
                 row_end: 43,
                 row_fragment_bit_start: 3,
                 row_fragment_bit_end: 3,

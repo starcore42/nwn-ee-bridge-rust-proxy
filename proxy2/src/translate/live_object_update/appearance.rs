@@ -1179,8 +1179,9 @@ pub(super) fn claim_verified_ee_creature_visible_equipment(
 
     // Reuse the exact emitted-EE validator as the authority boundary. This
     // rejects shifted nested item/name/active-property cursors before any row
-    // reaches semantic state; D/U own no fragment BOOLs, while A owns the
-    // decompile-backed nested selectors and EE's appended fifth property BOOL.
+    // reaches semantic state. D owns no fragment BOOLs; U owns one identity
+    // BOOL per non-empty modern map entry; A owns the decompile-backed nested
+    // selectors and EE's appended fifth property BOOL.
     let mut exact_cursor = bit_cursor;
     if !advance_verified_ee_creature_appearance_record(
         bytes,
@@ -1205,13 +1206,26 @@ pub(super) fn claim_verified_ee_creature_visible_equipment(
         .filter(|row| row.operation == LiveObjectVisibleEquipmentOperation::Update)
         .zip(verified.record.equipment_update_provenance.iter())
         .all(|(row, provenance)| {
+            let Some(parsed_map) = super::visual_transform::parse_ee_object_visual_transform_map(
+                bytes,
+                provenance.visual_transform_map_offset,
+                provenance.visual_transform_map_end,
+                Some(fragment_bits),
+                provenance.fragment_bit_start,
+            ) else {
+                return false;
+            };
             bytes.get(provenance.row_offset).copied() == Some(b'U')
                 && read_u32_le(bytes, provenance.object_id_offset) == Some(row.object_id)
                 && read_u32_le(bytes, provenance.visible_slot_offset) == Some(row.visible_slot)
                 && bytes.get(provenance.status_offset).copied() == row.update_status
-                && bytes.get(
-                    provenance.visual_transform_map_offset..provenance.visual_transform_map_end,
-                ) == Some(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.as_slice())
+                && parsed_map.end == provenance.visual_transform_map_end
+                && u32::try_from(parsed_map.map.entries.len()).ok()
+                    == Some(provenance.visual_transform_map_entries)
+                && provenance
+                    .fragment_bit_start
+                    .checked_add(parsed_map.fragment_bits_consumed)
+                    == Some(provenance.fragment_bit_end)
         });
     if verified.record.equipment_update_provenance.len() != update_row_count
         || !update_provenance_matches_rows
@@ -1227,22 +1241,21 @@ pub(super) fn claim_verified_ee_creature_visible_equipment(
                     || provenance.status_offset != provenance.row_offset.saturating_add(1 + 4 + 4)
                     || provenance.visual_transform_map_offset
                         != provenance.status_offset.saturating_add(1)
-                    || provenance.visual_transform_map_end
-                        != provenance
-                            .visual_transform_map_offset
-                            .saturating_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len())
                     || provenance.row_end != provenance.visual_transform_map_end
                     || provenance.row_end > record_end
                     || provenance.fragment_bit_start < bit_cursor
                     || provenance.fragment_bit_start > exact_cursor
-                    || provenance.fragment_bit_start != provenance.fragment_bit_end
+                    || provenance.fragment_bit_start > provenance.fragment_bit_end
+                    || provenance.fragment_bit_end > exact_cursor
             })
         || verified
             .record
             .equipment_update_provenance
             .windows(2)
             .any(|pair| {
-                pair[0].row_offset >= pair[1].row_offset || pair[0].row_end > pair[1].row_offset
+                pair[0].row_offset >= pair[1].row_offset
+                    || pair[0].row_end > pair[1].row_offset
+                    || pair[0].fragment_bit_end > pair[1].fragment_bit_start
             })
     {
         return None;
@@ -7478,6 +7491,28 @@ fn prepend_visible_equipment_row_values(
     rows
 }
 
+fn prepend_visible_equipment_source_fragment_bits(
+    mut parse: LegacyVisibleEquipmentParse,
+    bits: usize,
+) -> Option<LegacyVisibleEquipmentParse> {
+    if bits == 0 {
+        return Some(parse);
+    }
+    parse.fragment_bits_consumed = parse.fragment_bits_consumed.checked_add(bits)?;
+    for offset in &mut parse.ee_extra_insert_offsets {
+        *offset = offset.checked_add(bits)?;
+    }
+    for rewrite in &mut parse.ee_name_bit_rewrites {
+        rewrite.relative_offset = rewrite.relative_offset.checked_add(bits)?;
+    }
+    // These three repair anchors are created from the cumulative
+    // `legacy_bits_before` passed into the recursive suffix parse. They already
+    // include this map's BOOLs; shifting them again would double-count a U -> A
+    // handoff. Insert offsets and name rewrites above remain suffix-relative and
+    // therefore do require the prepend adjustment.
+    Some(parse)
+}
+
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 struct VisibleEquipmentParseMemoKey {
     cursor: usize,
@@ -7651,6 +7686,9 @@ fn attach_visible_equipment_update_boundary_reachability(
             .ee_identity_map_candidate_cursor
             .filter(|_| decision.ee_identity_map_candidate_evaluated)
             .and_then(|candidate_cursor| {
+                let source_bits_after_map = decision
+                    .source_fragment_bits_before_row
+                    .checked_add(decision.ee_object_map_fragment_bits_consumed)?;
                 parse_legacy_visible_equipment_records_memoized(
                     bytes,
                     candidate_cursor,
@@ -7658,7 +7696,7 @@ fn attach_visible_equipment_update_boundary_reachability(
                     suffix_rows,
                     require_translated_byte_shape,
                     bit_proof,
-                    decision.source_fragment_bits_before_row,
+                    source_bits_after_map,
                     decision.ee_extra_fragment_bits_before_row,
                     &mut reachability_memo,
                 )
@@ -7675,6 +7713,7 @@ fn attach_visible_equipment_update_boundary_reachability(
                 visible_equipment_boundary_fragment_totals_match(
                     &decision,
                     suffix,
+                    decision.ee_object_map_fragment_bits_consumed,
                     enclosing_source_fragment_bits,
                     enclosing_emitted_fragment_bits,
                 )
@@ -7708,6 +7747,7 @@ fn attach_visible_equipment_update_boundary_reachability(
                 visible_equipment_boundary_fragment_totals_match(
                     &decision,
                     suffix,
+                    0,
                     enclosing_source_fragment_bits,
                     enclosing_emitted_fragment_bits,
                 )
@@ -7726,12 +7766,14 @@ fn attach_visible_equipment_update_boundary_reachability(
 fn visible_equipment_boundary_fragment_totals_match(
     decision: &LiveObjectVisibleEquipmentUpdateSourceDecision,
     suffix: &LegacyVisibleEquipmentParse,
+    row_source_fragment_bits: usize,
     enclosing_source_fragment_bits: Option<usize>,
     enclosing_emitted_fragment_bits: Option<usize>,
 ) -> bool {
     let Some(candidate_source) = decision
         .source_fragment_bits_before_row
-        .checked_add(suffix.fragment_bits_consumed)
+        .checked_add(row_source_fragment_bits)
+        .and_then(|bits| bits.checked_add(suffix.fragment_bits_consumed))
     else {
         return false;
     };
@@ -8194,18 +8236,18 @@ fn parse_legacy_visible_equipment_records_uncached(
 /// `ReadCHAR(8)` at `0x449AD7..0x449B16`. EE `sub_14077FE10` consumes the same
 /// common header at `0x140780A90..0x140780ABC`, reads the status through
 /// `ReadBYTE(8)`, then calls the general object-map reader at
-/// `0x140781078..0x1407810DD`. This parser currently supports only the proxy's
-/// canonical empty-map fallback: `sub_140973160` reads its two signed INT32 zero
-/// counts at `0x1409732A4` and `0x140973340`. The direct full-width helper paths
-/// use little-endian object/slot/count loads, and this local U plus empty-map
-/// subset owns no CNW fragment bits. Legacy input therefore gains the proxy's
-/// canonical empty map at this byte cursor, while an emitted row in the exact
-/// supported subset must already contain it. Because those eight bytes are
-/// zero, they can also prefix a following client-tolerated compact zero
-/// compatibility row. Try the post-map cursor first, but fall back to the
-/// legacy cursor when only that cursor can satisfy the declared remaining-row
-/// count. If both current-parser continuations parse, the existing EE-map
-/// preference remains until authentic traffic can resolve that ambiguity.
+/// `0x140781078..0x1407810DD`. `ObjectVisualTransformData::Write` at
+/// `0x14059683C..0x140596900` writes the same signed-ascending key set twice,
+/// followed by one value per second-pass key. `sub_140596610` writes one
+/// MSB-first identity BOOL for each value; true owns no bytes, while false owns
+/// ten `LerpFloat` values whose exact build-`0x23` byte branches are mirrored by
+/// the shared typed codec. Legacy input still gains the canonical two-zero-count
+/// map at this byte cursor and therefore gains no BOOL. Because those eight
+/// empty-map bytes can also prefix a following client-tolerated compact zero
+/// compatibility row, source selection still tries the post-map cursor first
+/// and falls back to Diamond's status cursor only when that is the sole declared
+/// remaining-row continuation. Non-empty exact maps use the same EE-first rule
+/// and advance the shared source fragment cursor by one BOOL per map entry.
 /// Keeping both walkers on this helper prevents their byte handoff from
 /// drifting independently; the exact outer validator remains the final byte
 /// and fragment-boundary authority.
@@ -8245,12 +8287,34 @@ fn parse_legacy_visible_equipment_update_record(
         update_status: Some(update_status),
     };
 
-    let ee_identity_map_bytes_present =
-        has_ee_object_visual_transform_identity_at(bytes, status_end, limit);
-    let partial_ee_identity_map = !ee_identity_map_bytes_present
+    let map_fragment_bit_cursor = if let Some(proof) = bit_proof {
+        proof
+            .bit_cursor
+            .checked_add(legacy_bits_before)
+            .and_then(|cursor| {
+                if proof.translated_ee {
+                    cursor.checked_add(ee_extra_bits_before)
+                } else {
+                    Some(cursor)
+                }
+            })?
+    } else {
+        0
+    };
+    let ee_object_map = super::visual_transform::parse_ee_object_visual_transform_map(
+        bytes,
+        status_end,
+        limit,
+        bit_proof.map(|proof| proof.fragment_bits),
+        map_fragment_bit_cursor,
+    );
+    let ee_object_map_bytes_present = ee_object_map.is_some();
+    let ee_identity_map_bytes_present = ee_object_map
+        .as_ref()
+        .is_some_and(|parsed| parsed.map.is_canonical_empty());
+    let partial_ee_identity_map = !ee_object_map_bytes_present
         && has_partial_ee_object_visual_transform_identity_at(bytes, status_end, limit);
-    if partial_ee_identity_map || (require_translated_byte_shape && !ee_identity_map_bytes_present)
-    {
+    if partial_ee_identity_map || (require_translated_byte_shape && !ee_object_map_bytes_present) {
         return None;
     }
 
@@ -8260,10 +8324,18 @@ fn parse_legacy_visible_equipment_update_record(
     // carry many rows; sharing positive and negative states prevents a run of
     // zero-prefixed U ambiguities from expanding recursively. Exact emitted-EE
     // mode intentionally evaluates only the mandatory post-map cursor.
-    let ee_identity_map_candidate_cursor = ee_identity_map_bytes_present
-        .then(|| status_end.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()))
-        .flatten();
+    let ee_object_map_fragment_bits_consumed = ee_object_map
+        .as_ref()
+        .map(|parsed| parsed.fragment_bits_consumed)
+        .unwrap_or_default();
+    let ee_object_map_entries = ee_object_map
+        .as_ref()
+        .and_then(|parsed| u32::try_from(parsed.map.entries.len()).ok())
+        .unwrap_or_default();
+    let ee_identity_map_candidate_cursor = ee_object_map.as_ref().map(|parsed| parsed.end);
     let ee_identity_map_rest = ee_identity_map_candidate_cursor.and_then(|candidate_cursor| {
+        let source_bits_after_map =
+            legacy_bits_before.checked_add(ee_object_map_fragment_bits_consumed)?;
         parse_legacy_visible_equipment_records_memoized(
             bytes,
             candidate_cursor,
@@ -8271,7 +8343,7 @@ fn parse_legacy_visible_equipment_update_record(
             remaining - 1,
             require_translated_byte_shape,
             bit_proof,
-            legacy_bits_before,
+            source_bits_after_map,
             ee_extra_bits_before,
             memo,
         )
@@ -8299,6 +8371,10 @@ fn parse_legacy_visible_equipment_update_record(
         status_end,
         source_fragment_bits_before_row: legacy_bits_before,
         ee_extra_fragment_bits_before_row: ee_extra_bits_before,
+        ee_object_map_bytes_present,
+        ee_object_map_is_canonical_empty: ee_identity_map_bytes_present,
+        ee_object_map_entries,
+        ee_object_map_fragment_bits_consumed,
         ee_identity_map_bytes_present,
         ee_identity_map_candidate_evaluated: ee_identity_map_candidate_cursor.is_some(),
         ee_identity_map_candidate_cursor,
@@ -8332,8 +8408,10 @@ fn parse_legacy_visible_equipment_update_record(
         legacy_status_candidate_enclosing_suffix_fragment_bits_consumed: None,
         legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits: None,
         legacy_status_candidate_enclosing_fragment_proven: false,
-        selected: if ee_identity_map_rest.is_some() {
+        selected: if ee_identity_map_rest.is_some() && ee_identity_map_bytes_present {
             LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeIdentityMap
+        } else if ee_identity_map_rest.is_some() {
+            LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeObjectMap
         } else {
             LiveObjectVisibleEquipmentUpdateSourceInterpretation::LegacyStatusOnly
         },
@@ -8341,6 +8419,10 @@ fn parse_legacy_visible_equipment_update_record(
 
     if let Some(rest) = ee_identity_map_rest {
         let map_end = ee_identity_map_candidate_cursor?;
+        let rest = prepend_visible_equipment_source_fragment_bits(
+            rest,
+            ee_object_map_fragment_bits_consumed,
+        )?;
         let provenance = bit_proof
             .filter(|proof| proof.translated_ee)
             .and_then(|proof| {
@@ -8355,9 +8437,11 @@ fn parse_legacy_visible_equipment_update_record(
                     status_offset: header_end,
                     visual_transform_map_offset: status_end,
                     visual_transform_map_end: map_end,
+                    visual_transform_map_entries: ee_object_map_entries,
                     row_end: map_end,
                     fragment_bit_start,
-                    fragment_bit_end: fragment_bit_start,
+                    fragment_bit_end: fragment_bit_start
+                        .checked_add(ee_object_map_fragment_bits_consumed)?,
                 })
             });
         let parse = prepend_visible_equipment_update_row(rest, row, provenance);
@@ -11980,6 +12064,212 @@ mod public_tests {
     }
 
     #[test]
+    fn exact_nonidentity_equipment_update_map_advances_dynamic_byte_and_bit_handoff() {
+        use crate::translate::live_object_update::visual_transform::{
+            EeAurObjectVisualTransformWireValue, EeLerpFloatWireValue, EeObjectVisualTransformMap,
+            EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
+        };
+
+        let mut bytes = partial_legacy_creature_equipment_delta_update_then_delete();
+        let encoded_map = encode_ee_object_visual_transform_map(&EeObjectVisualTransformMap {
+            entries: vec![EeObjectVisualTransformValueEntry {
+                scope: 7,
+                value: EeAurObjectVisualTransformWireValue::LerpValues(Box::new(
+                    [EeLerpFloatWireValue {
+                        current_float_bits: 0,
+                        first_timeline_value: 0,
+                        second_timeline_value: 0,
+                        active: None,
+                    }; 10],
+                )),
+            }],
+        })
+        .expect("one exact nonidentity scope should encode");
+        assert_eq!(encoded_map.fragment_bits, [false]);
+        let map_offset = 19;
+        bytes.splice(map_offset..map_offset, encoded_map.bytes.clone());
+        let record_end = bytes.len();
+        let mut fragment_bits = vec![false, true];
+        fragment_bits.extend_from_slice(&encoded_map.fragment_bits);
+        fragment_bits.push(false);
+
+        let mut exact_cursor = 2usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut exact_cursor,
+        ));
+        assert_eq!(
+            exact_cursor, 3,
+            "one modern map value owns exactly one MSB-first fragment BOOL"
+        );
+
+        let claim =
+            claim_verified_ee_creature_visible_equipment(&bytes, 0, record_end, &fragment_bits, 2)
+                .expect("the exact writer-shaped non-empty map should reach semantic state");
+        assert_eq!(claim.rows.len(), 2);
+        assert_eq!(claim.fragment_bit_start, 2);
+        assert_eq!(claim.fragment_bit_end, 3);
+        assert_eq!(claim.update_row_provenance.len(), 1);
+        let provenance = claim.update_row_provenance[0];
+        assert_eq!(provenance.visual_transform_map_offset, map_offset);
+        assert_eq!(
+            provenance.visual_transform_map_end,
+            map_offset + encoded_map.bytes.len()
+        );
+        assert_eq!(provenance.visual_transform_map_entries, 1);
+        assert_eq!(provenance.fragment_bit_start, 2);
+        assert_eq!(provenance.fragment_bit_end, 3);
+        assert_eq!(
+            bytes.get(provenance.row_end),
+            Some(&b'D'),
+            "the following row starts at the typed map's dynamic byte end"
+        );
+
+        let original = bytes.clone();
+        let mut second_pass_end = record_end;
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut second_pass_end,
+            &mut fragment_bits,
+            2,
+        )
+        .expect("an exact general map must survive the source/EE validation transaction");
+        assert_eq!(rewrite.bytes_inserted, 0);
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(second_pass_end, record_end);
+        assert_eq!(bytes, original);
+        let decision = rewrite
+            .visible_equipment_update_source_decisions
+            .iter()
+            .next()
+            .expect("the exact non-empty map should retain its source decision");
+        assert_eq!(
+            decision.selected,
+            LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeObjectMap
+        );
+        assert!(decision.ee_object_map_bytes_present);
+        assert!(!decision.ee_object_map_is_canonical_empty);
+        assert_eq!(decision.ee_object_map_entries, 1);
+        assert_eq!(decision.ee_object_map_fragment_bits_consumed, 1);
+    }
+
+    #[test]
+    fn nontranslated_add_then_nonempty_update_map_uses_only_source_bits_for_map_cursor() {
+        use crate::translate::live_object_update::visual_transform::{
+            EeAurObjectVisualTransformWireValue, EeObjectVisualTransformMap,
+            EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
+        };
+
+        let mut rows = Vec::new();
+        push_visible_equipment_no_name_item(&mut rows);
+        rows.push(b'U');
+        push_u32(&mut rows, 0x8000_0044);
+        push_u32(&mut rows, 2);
+        rows.push(0x7F);
+        let encoded_map = encode_ee_object_visual_transform_map(&EeObjectVisualTransformMap {
+            entries: vec![EeObjectVisualTransformValueEntry {
+                scope: 7,
+                value: EeAurObjectVisualTransformWireValue::Identity,
+            }],
+        })
+        .expect("one exact identity-valued scope should encode");
+        rows.extend_from_slice(&encoded_map.bytes);
+
+        let fragment_bits = [
+            true, false, true, false, // source A active-property BOOLs.
+            true,  // source U map identity BOOL.
+        ];
+        let parse = parse_legacy_visible_equipment_records(
+            &rows,
+            0,
+            rows.len(),
+            2,
+            false,
+            Some(AppearanceBitProof {
+                bit_cursor: 0,
+                fragment_bits: &fragment_bits,
+                translated_ee: false,
+                allow_cross_record_fence: false,
+                owner_offset: 0,
+            }),
+            0,
+            0,
+        )
+        .expect("planned EE-only A bits must not shift the following source U map BOOL");
+        assert_eq!(parse.fragment_bits_consumed, 5);
+        assert_eq!(parse.ee_extra_fragment_bits, 1);
+        let decision = parse
+            .update_source_decisions
+            .iter()
+            .next()
+            .expect("the U row should retain its source decision");
+        assert_eq!(decision.source_fragment_bits_before_row, 4);
+        assert_eq!(decision.ee_extra_fragment_bits_before_row, 1);
+        assert_eq!(decision.ee_object_map_fragment_bits_consumed, 1);
+        assert_eq!(
+            decision.selected,
+            LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeObjectMap
+        );
+    }
+
+    #[test]
+    fn nonempty_update_map_then_add_preserves_cumulative_name_repair_anchors() {
+        use crate::translate::live_object_update::visual_transform::{
+            EeAurObjectVisualTransformWireValue, EeObjectVisualTransformMap,
+            EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
+        };
+
+        let mut rows = vec![b'U'];
+        push_u32(&mut rows, 0x8000_0044);
+        push_u32(&mut rows, 2);
+        rows.push(0x7F);
+        let encoded_map = encode_ee_object_visual_transform_map(&EeObjectVisualTransformMap {
+            entries: vec![EeObjectVisualTransformValueEntry {
+                scope: 7,
+                value: EeAurObjectVisualTransformWireValue::Identity,
+            }],
+        })
+        .expect("one exact identity-valued scope should encode");
+        rows.extend_from_slice(&encoded_map.bytes);
+        push_visible_equipment_locstring_token_item(&mut rows);
+
+        let fragment_bits = [
+            true, // source U map identity BOOL.
+            true, true, false, // source A item-name locstring/token BOOLs.
+            true, false, true, false, // source A active-property BOOLs.
+        ];
+        let parse = parse_legacy_visible_equipment_records(
+            &rows,
+            0,
+            rows.len(),
+            2,
+            false,
+            Some(AppearanceBitProof {
+                bit_cursor: 0,
+                fragment_bits: &fragment_bits,
+                translated_ee: false,
+                allow_cross_record_fence: false,
+                owner_offset: 0,
+            }),
+            0,
+            0,
+        )
+        .expect("a non-empty U map should hand its exact byte/bit end to the following A row");
+        assert_eq!(parse.fragment_bits_consumed, 8);
+        assert_eq!(parse.ee_extra_fragment_bits, 1);
+        assert_eq!(parse.first_positive_name_selector_relative_start, Some(1));
+        assert_eq!(parse.token_selector_padding_repair_relative_start, Some(2));
+        assert_eq!(parse.inline_active_name_fence_repair_relative_start, None);
+        assert_eq!(parse.ee_name_bit_rewrites.len(), 1);
+        assert_eq!(parse.ee_name_bit_rewrites[0].relative_offset, 1);
+    }
+
+    #[test]
     fn partial_equipment_update_provenance_is_live_buffer_absolute() {
         const PREFIX_BYTES: usize = 7;
         let mut bytes = vec![0xCC; PREFIX_BYTES];
@@ -12015,6 +12305,7 @@ mod public_tests {
                 status_offset: PREFIX_BYTES + 18,
                 visual_transform_map_offset: PREFIX_BYTES + 19,
                 visual_transform_map_end: PREFIX_BYTES + 27,
+                visual_transform_map_entries: 0,
                 row_end: PREFIX_BYTES + 27,
                 fragment_bit_start: 2,
                 fragment_bit_end: 2,
@@ -12121,6 +12412,7 @@ mod public_tests {
                 status_offset: 18,
                 visual_transform_map_offset: 19,
                 visual_transform_map_end: 27,
+                visual_transform_map_entries: 0,
                 row_end: 27,
                 fragment_bit_start: 0,
                 fragment_bit_end: 0,
@@ -12430,6 +12722,7 @@ mod public_tests {
                     status_offset: 18,
                     visual_transform_map_offset: 19,
                     visual_transform_map_end: 27,
+                    visual_transform_map_entries: 0,
                     row_end: 27,
                     fragment_bit_start: 3,
                     fragment_bit_end: 3,
@@ -12441,6 +12734,7 @@ mod public_tests {
                     status_offset: 36,
                     visual_transform_map_offset: 37,
                     visual_transform_map_end: 45,
+                    visual_transform_map_entries: 0,
                     row_end: 45,
                     fragment_bit_start: 3,
                     fragment_bit_end: 3,

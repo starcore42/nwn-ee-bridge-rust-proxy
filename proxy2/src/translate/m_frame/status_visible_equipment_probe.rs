@@ -42,6 +42,7 @@ fn visible_equipment_update_ledger_json(
                 "\"status_offset\":{},",
                 "\"visual_transform_map_offset\":{},",
                 "\"visual_transform_map_end\":{},",
+                "\"visual_transform_map_entries\":{},",
                 "\"row_end\":{},",
                 "\"row_fragment_bit_start\":{},",
                 "\"row_fragment_bit_end\":{},",
@@ -73,6 +74,7 @@ fn visible_equipment_update_ledger_json(
             observation.status_offset,
             observation.visual_transform_map_offset,
             observation.visual_transform_map_end,
+            observation.visual_transform_map_entries,
             observation.row_end,
             observation.row_fragment_bit_start,
             observation.row_fragment_bit_end,
@@ -314,6 +316,7 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
             "  \"last_visible_equipment_update_status_offset\": {},\n",
             "  \"last_visible_equipment_update_visual_transform_map_offset\": {},\n",
             "  \"last_visible_equipment_update_visual_transform_map_end\": {},\n",
+            "  \"last_visible_equipment_update_visual_transform_map_entries\": {},\n",
             "  \"last_visible_equipment_update_row_end\": {},\n",
             "  \"last_visible_equipment_update_row_fragment_bit_start\": {},\n",
             "  \"last_visible_equipment_update_row_fragment_bit_end\": {},\n",
@@ -338,6 +341,9 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
             .unwrap_or(0),
         last_update
             .map(|value| value.visual_transform_map_end)
+            .unwrap_or(0),
+        last_update
+            .map(|value| value.visual_transform_map_entries)
             .unwrap_or(0),
         last_update.map(|value| value.row_end).unwrap_or(0),
         last_update
@@ -427,6 +433,7 @@ mod tests {
                     status_offset,
                     visual_transform_map_offset,
                     visual_transform_map_end,
+                    visual_transform_map_entries: 0,
                     row_end: visual_transform_map_end,
                     fragment_bit_start: 11,
                     fragment_bit_end: 11,
@@ -703,6 +710,15 @@ mod tests {
             carried_slot,
         );
         update.rows[0].update_status = Some(0x7f);
+        {
+            let provenance = &mut update.update_row_provenance[0];
+            provenance.visual_transform_map_end += 8;
+            provenance.visual_transform_map_entries = 1;
+            provenance.row_end = provenance.visual_transform_map_end;
+            provenance.fragment_bit_end += 1;
+            update.record_end = provenance.row_end;
+            update.fragment_bit_end = provenance.fragment_bit_end;
+        }
         protocol.observe_creature_visible_equipment_claims(&[update]);
 
         let fields = json_fields(&protocol);
@@ -728,13 +744,16 @@ mod tests {
         assert!(
             fields.contains("\"last_visible_equipment_update_visual_transform_map_offset\": 96")
         );
-        assert!(fields.contains("\"last_visible_equipment_update_visual_transform_map_end\": 104"));
-        assert!(fields.contains("\"last_visible_equipment_update_row_end\": 104"));
+        assert!(fields.contains("\"last_visible_equipment_update_visual_transform_map_end\": 112"));
+        assert!(
+            fields.contains("\"last_visible_equipment_update_visual_transform_map_entries\": 1")
+        );
+        assert!(fields.contains("\"last_visible_equipment_update_row_end\": 112"));
         assert!(fields.contains("\"last_visible_equipment_update_row_fragment_bit_start\": 11"));
-        assert!(fields.contains("\"last_visible_equipment_update_row_fragment_bit_end\": 11"));
+        assert!(fields.contains("\"last_visible_equipment_update_row_fragment_bit_end\": 12"));
         assert!(
             fields
-                .contains("\"last_visible_equipment_update_row_fragment_cursor_unchanged\": true")
+                .contains("\"last_visible_equipment_update_row_fragment_cursor_unchanged\": false")
         );
         assert!(fields.contains("\"visible_equipment_update_ledger_capacity\": 64"));
         assert!(fields.contains("\"visible_equipment_update_ledger_observed_in_area\": 1"));
@@ -746,7 +765,7 @@ mod tests {
             "\"owner_object_id\":4294967279"
         )));
         assert!(fields.contains(
-            "\"row_fragment_bit_start\":11,\"row_fragment_bit_end\":11,\"row_fragment_cursor_unchanged\":true"
+            "\"visual_transform_map_entries\":1,\"row_end\":112,\"row_fragment_bit_start\":11,\"row_fragment_bit_end\":12,\"row_fragment_cursor_unchanged\":false"
         ));
         assert!(
             fields.contains("\"last_visible_equipment_update_matching_visible_slot_count\": 1")

@@ -1889,6 +1889,9 @@ fn trace_live_object_visible_equipment_profiles(
                 visual_transform_map_end = row_update_provenance
                     .map(|provenance| provenance.visual_transform_map_end)
                     .unwrap_or_default(),
+                visual_transform_map_entries = row_update_provenance
+                    .map(|provenance| provenance.visual_transform_map_entries)
+                    .unwrap_or_default(),
                 row_end = row_update_provenance
                     .map(|provenance| provenance.row_end)
                     .unwrap_or_default(),
@@ -1935,6 +1938,10 @@ fn trace_live_object_visible_equipment_update_source_decisions(
             status_end = decision.status_end,
             source_fragment_bits_before_row = decision.source_fragment_bits_before_row,
             ee_extra_fragment_bits_before_row = decision.ee_extra_fragment_bits_before_row,
+            ee_object_map_bytes_present = decision.ee_object_map_bytes_present,
+            ee_object_map_is_canonical_empty = decision.ee_object_map_is_canonical_empty,
+            ee_object_map_entries = decision.ee_object_map_entries,
+            ee_object_map_fragment_bits_consumed = decision.ee_object_map_fragment_bits_consumed,
             ee_identity_map_bytes_present = decision.ee_identity_map_bytes_present,
             ee_identity_map_candidate_evaluated = decision.ee_identity_map_candidate_evaluated,
             ee_identity_map_candidate_cursor_known =
@@ -6935,6 +6942,7 @@ mod exact_claim_trace_tests {
                     status_offset,
                     visual_transform_map_offset,
                     visual_transform_map_end,
+                    visual_transform_map_entries: 0,
                     row_end: visual_transform_map_end,
                     fragment_bit_start: 3,
                     fragment_bit_end: 3,

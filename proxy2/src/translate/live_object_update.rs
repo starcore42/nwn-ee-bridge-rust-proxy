@@ -20165,14 +20165,12 @@ pub struct LiveObjectVisibleEquipmentRow {
 /// `ReadCHAR(8)` at `0x449AD7..0x449B16`. EE `sub_14077FE10` reads the same
 /// common header at `0x140780A90..0x140780ABC`, reads the status through
 /// `ReadBYTE(8)`, then calls the general transform-map reader at
-/// `0x140781078..0x1407810DD`. The proxy-supported emitted subset is the
-/// canonical empty-map fallback: `sub_140973160` reads its two signed INT32
-/// zero counts at `0x1409732A4` and `0x140973340`. The direct full-width helper
-/// paths use little-endian object/slot/count loads and this zero-count subset
-/// moves only the read-buffer cursor; it owns no CNW fragment bits. These
-/// offsets come only from the exact emitted-EE appearance parser and are not
-/// inferred later by the semantic or diagnostics layers. Non-empty authentic
-/// EE maps remain outside this exact claim.
+/// `0x140781078..0x1407810DD`. The current-EE map is two identical counted
+/// signed-key passes; each value in the second pass owns one MSB-first identity
+/// BOOL, and a false BOOL owns ten byte-stream `LerpFloat` values. The canonical
+/// empty map remains two zero INT32 counts and owns no fragment bits. These
+/// offsets and cursors come only from the exact emitted-EE appearance parser
+/// and are not inferred later by the semantic or diagnostics layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectVisibleEquipmentUpdateProvenance {
     /// Absolute opcode offset within the deflated live-object read-buffer
@@ -20184,6 +20182,7 @@ pub struct LiveObjectVisibleEquipmentUpdateProvenance {
     pub status_offset: usize,
     pub visual_transform_map_offset: usize,
     pub visual_transform_map_end: usize,
+    pub visual_transform_map_entries: u32,
     pub row_end: usize,
     pub fragment_bit_start: usize,
     pub fragment_bit_end: usize,
@@ -20201,6 +20200,7 @@ pub struct LiveObjectVisibleEquipmentUpdateProvenance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectVisibleEquipmentUpdateSourceInterpretation {
     EeIdentityMap,
+    EeObjectMap,
     LegacyStatusOnly,
 }
 
@@ -20208,6 +20208,7 @@ impl LiveObjectVisibleEquipmentUpdateSourceInterpretation {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::EeIdentityMap => "ee_identity_map",
+            Self::EeObjectMap => "ee_object_map",
             Self::LegacyStatusOnly => "legacy_status_only",
         }
     }
@@ -20231,6 +20232,14 @@ pub struct LiveObjectVisibleEquipmentUpdateSourceDecision {
     pub status_end: usize,
     pub source_fragment_bits_before_row: usize,
     pub ee_extra_fragment_bits_before_row: usize,
+    /// Exact modern-EE map shape at the post-status cursor. The historical
+    /// `ee_identity_map_*` candidate fields below retain their JSON names for
+    /// compatibility but carry the suffix reached after either an empty or a
+    /// non-empty exact writer map.
+    pub ee_object_map_bytes_present: bool,
+    pub ee_object_map_is_canonical_empty: bool,
+    pub ee_object_map_entries: u32,
+    pub ee_object_map_fragment_bits_consumed: usize,
     pub ee_identity_map_bytes_present: bool,
     pub ee_identity_map_candidate_evaluated: bool,
     pub ee_identity_map_candidate_cursor: Option<usize>,
