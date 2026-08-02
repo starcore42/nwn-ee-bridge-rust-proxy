@@ -1025,6 +1025,39 @@ pub(crate) struct StatusAuthorizedVisibleEquipmentProbeDelta {
     pub(crate) row_ordinal: usize,
 }
 
+/// Exact creature `P/5` visible-equipment `U` row and its object-only lookup.
+///
+/// Diamond `sub_448E30` and EE `sub_14077FE10` resolve `U` by OBJECTID. The
+/// row's slot DWORD is retained as wire provenance only; it does not select or
+/// mutate an owner/slot mapping. Diamond consumes the trailing status BYTE;
+/// EE consumes that same BYTE followed by its exact object-transform map, and
+/// neither reader moves the CNW fragment cursor. The status is deliberately
+/// retained without assigning engine semantics until an authentic live `U`
+/// recurrence supplies that evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VisibleEquipmentUpdateObservation {
+    pub(crate) claim_ordinal: u64,
+    pub(crate) owner_object_id: u32,
+    pub(crate) appearance_mask: u16,
+    pub(crate) all_fields_appearance: bool,
+    pub(crate) record_offset: usize,
+    pub(crate) record_end: usize,
+    pub(crate) fragment_bit_start: usize,
+    pub(crate) fragment_bit_end: usize,
+    pub(crate) row_ordinal: usize,
+    pub(crate) row_object_id: u32,
+    pub(crate) carried_visible_slot: u32,
+    pub(crate) update_status: Option<u8>,
+    /// Exact emitted-EE object-id matches. Only these model the client lookup.
+    pub(crate) matching_visible_slot_count: usize,
+    pub(crate) unique_matching_visible_slot: Option<u32>,
+    /// Compact/external-equivalent cache rows retained as non-authoritative
+    /// diagnostics. Exact emitted-EE claims must not resolve through aliases.
+    pub(crate) legacy_equivalent_visible_slot_count: usize,
+    pub(crate) exact_object_id_match: bool,
+    pub(crate) legacy_equivalence_only_match: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StatusAuthorizedVisibleEquipmentProbeCompletedTransaction {
     pub(crate) authorization: StatusAuthorizedVisibleEquipmentProbeAuthorization,
@@ -1140,8 +1173,12 @@ pub(crate) struct InventoryEquipmentProtocolState {
     pub(crate) visible_equipment_update_rows: u64,
     pub(crate) visible_equipment_ignored_zero_rows: u64,
     pub(crate) visible_equipment_state_updates: u64,
+    /// `U` rows with at least one exact owner-local emitted-EE object match.
     pub(crate) visible_equipment_update_matches: u64,
+    /// `U` rows without an exact owner-local emitted-EE object match. A
+    /// compact/external-equivalent alias remains diagnostic, not authority.
     pub(crate) visible_equipment_update_without_mapping: u64,
+    pub(crate) last_visible_equipment_update_observation: Option<VisibleEquipmentUpdateObservation>,
     pub(crate) last_visible_equipment_removed_slots: usize,
 }
 
@@ -1438,6 +1475,7 @@ impl InventoryEquipmentProtocolState {
         self.committed_equipment_slots.clear();
         self.last_unequip_removed_slots = 0;
         self.visible_equipment_slots_by_owner.clear();
+        self.last_visible_equipment_update_observation = None;
         self.last_visible_equipment_removed_slots = 0;
     }
 
@@ -1556,15 +1594,53 @@ impl InventoryEquipmentProtocolState {
                         // apply status/visual-transform state. The slot field
                         // is not mapping authority, so a cache miss cannot
                         // create or remap a visible item.
-                        if self.visible_equipment_slots_by_owner.iter().any(
-                            |((owner_id, _), object_id)| {
-                                *owner_id == claim.owner_id
-                                    && object_ids::equivalent_legacy_external_object_ids(
-                                        *object_id,
-                                        row.object_id,
-                                    )
-                            },
-                        ) {
+                        let mut matching_visible_slot_count = 0usize;
+                        let mut unique_matching_visible_slot = None;
+                        let mut legacy_equivalent_visible_slot_count = 0usize;
+                        for ((_, visible_slot), object_id) in self
+                            .visible_equipment_slots_by_owner
+                            .range((claim.owner_id, u32::MIN)..=(claim.owner_id, u32::MAX))
+                        {
+                            if *object_id == row.object_id {
+                                matching_visible_slot_count =
+                                    matching_visible_slot_count.saturating_add(1);
+                                unique_matching_visible_slot =
+                                    (matching_visible_slot_count == 1).then_some(*visible_slot);
+                                continue;
+                            }
+                            if object_ids::equivalent_legacy_external_object_ids(
+                                *object_id,
+                                row.object_id,
+                            ) {
+                                legacy_equivalent_visible_slot_count =
+                                    legacy_equivalent_visible_slot_count.saturating_add(1);
+                            }
+                        }
+                        let exact_object_id_match = matching_visible_slot_count > 0;
+                        let legacy_equivalence_only_match =
+                            !exact_object_id_match && legacy_equivalent_visible_slot_count > 0;
+                        let observation = VisibleEquipmentUpdateObservation {
+                            claim_ordinal: self.visible_equipment_claims,
+                            owner_object_id: claim.owner_id,
+                            appearance_mask: claim.appearance_mask,
+                            all_fields_appearance: claim.all_fields_appearance,
+                            record_offset: claim.record_offset,
+                            record_end: claim.record_end,
+                            fragment_bit_start: claim.fragment_bit_start,
+                            fragment_bit_end: claim.fragment_bit_end,
+                            row_ordinal,
+                            row_object_id: row.object_id,
+                            carried_visible_slot: row.visible_slot,
+                            update_status: row.update_status,
+                            matching_visible_slot_count,
+                            unique_matching_visible_slot,
+                            legacy_equivalent_visible_slot_count,
+                            exact_object_id_match,
+                            legacy_equivalence_only_match,
+                        };
+                        self.last_visible_equipment_update_observation = Some(observation);
+
+                        if matching_visible_slot_count > 0 {
                             self.visible_equipment_update_matches =
                                 self.visible_equipment_update_matches.saturating_add(1);
                         } else {
@@ -1572,6 +1648,32 @@ impl InventoryEquipmentProtocolState {
                                 .visible_equipment_update_without_mapping
                                 .saturating_add(1);
                         }
+                        tracing::debug!(
+                            claim_ordinal = observation.claim_ordinal,
+                            owner_object_id =
+                                format_args!("0x{:08X}", observation.owner_object_id),
+                            appearance_mask =
+                                format_args!("0x{:04X}", observation.appearance_mask),
+                            all_fields_appearance = observation.all_fields_appearance,
+                            record_offset = observation.record_offset,
+                            record_end = observation.record_end,
+                            fragment_bit_start = observation.fragment_bit_start,
+                            fragment_bit_end = observation.fragment_bit_end,
+                            row_ordinal = observation.row_ordinal,
+                            row_object_id = format_args!("0x{:08X}", observation.row_object_id),
+                            carried_visible_slot = observation.carried_visible_slot,
+                            update_status = ?observation.update_status,
+                            matching_visible_slot_count =
+                                observation.matching_visible_slot_count,
+                            unique_matching_visible_slot =
+                                ?observation.unique_matching_visible_slot,
+                            legacy_equivalent_visible_slot_count =
+                                observation.legacy_equivalent_visible_slot_count,
+                            exact_object_id_match = observation.exact_object_id_match,
+                            legacy_equivalence_only_match =
+                                observation.legacy_equivalence_only_match,
+                            "semantic state retained exact creature visible-equipment U observation"
+                        );
                     }
                     LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero => {
                         self.visible_equipment_ignored_zero_rows =
@@ -8233,6 +8335,7 @@ mod tests {
         QuickbarPreservedActiveItemUseCountCoverage, QuickbarRewriteSummary,
         QuickbarStreamProbeSummary, QuickbarValidatedSlotProfile,
         StatusAuthorizedVisibleEquipmentProbeAuthorization, UiState,
+        VisibleEquipmentUpdateObservation,
     };
 
     fn visible_equipment_claim(
@@ -8393,6 +8496,155 @@ mod tests {
         state.reset_equip_toggle_authorization_for_area();
         assert!(state.committed_equipment_slots.is_empty());
         assert!(state.visible_equipment_slots_by_owner.is_empty());
+    }
+
+    #[test]
+    fn visible_equipment_update_observation_resolves_object_without_carried_slot_authority() {
+        const OWNER_ID: u32 = 0x8000_0010;
+        const FOREIGN_OWNER_ID: u32 = 0x8000_0011;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const COMPACT_ALIAS_ID: u32 = 0x0000_0044;
+        const RESOLVED_SLOT: u32 = 2;
+        const ALIAS_SLOT: u32 = 0x10;
+        const CARRIED_SLOT: u32 = 0x40;
+
+        let mut state = InventoryEquipmentProtocolState::default();
+        state
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, RESOLVED_SLOT), ITEM_ID);
+        state
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, ALIAS_SLOT), COMPACT_ALIAS_ID);
+        state
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, CARRIED_SLOT), 0x8000_0099);
+        state
+            .visible_equipment_slots_by_owner
+            .insert((FOREIGN_OWNER_ID, 7), ITEM_ID);
+
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_ID,
+            false,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::Update,
+                object_id: ITEM_ID,
+                visible_slot: CARRIED_SLOT,
+                update_status: Some(0x7F),
+            }],
+        )]);
+
+        assert_eq!(
+            state.last_visible_equipment_update_observation,
+            Some(VisibleEquipmentUpdateObservation {
+                claim_ordinal: 1,
+                owner_object_id: OWNER_ID,
+                appearance_mask: 0x0200,
+                all_fields_appearance: false,
+                record_offset: 7,
+                record_end: 23,
+                fragment_bit_start: 3,
+                fragment_bit_end: 3,
+                row_ordinal: 0,
+                row_object_id: ITEM_ID,
+                carried_visible_slot: CARRIED_SLOT,
+                update_status: Some(0x7F),
+                matching_visible_slot_count: 1,
+                unique_matching_visible_slot: Some(RESOLVED_SLOT),
+                legacy_equivalent_visible_slot_count: 1,
+                exact_object_id_match: true,
+                legacy_equivalence_only_match: false,
+            }),
+            "U must resolve by exact owner-local object id, not its carried slot or alias"
+        );
+        assert_eq!(state.visible_equipment_update_matches, 1);
+        assert_eq!(state.visible_equipment_update_without_mapping, 0);
+
+        state.reset_equip_toggle_authorization_for_area();
+        assert!(
+            state.last_visible_equipment_update_observation.is_none(),
+            "Area_ClientArea must clear retained P/5 U provenance"
+        );
+    }
+
+    #[test]
+    fn visible_equipment_update_observation_keeps_alias_only_evidence_non_authoritative() {
+        const OWNER_ID: u32 = 0x8000_0010;
+        const ITEM_ID: u32 = 0x8000_0044;
+
+        let mut state = InventoryEquipmentProtocolState::default();
+        state
+            .visible_equipment_slots_by_owner
+            .insert((OWNER_ID, 2), 0x0000_0044);
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_ID,
+            false,
+            vec![LiveObjectVisibleEquipmentRow {
+                operation: LiveObjectVisibleEquipmentOperation::Update,
+                object_id: ITEM_ID,
+                visible_slot: 2,
+                update_status: Some(1),
+            }],
+        )]);
+
+        let observation = state
+            .last_visible_equipment_update_observation
+            .expect("alias-only U observation");
+        assert_eq!(observation.matching_visible_slot_count, 0);
+        assert_eq!(observation.unique_matching_visible_slot, None);
+        assert_eq!(observation.legacy_equivalent_visible_slot_count, 1);
+        assert!(!observation.exact_object_id_match);
+        assert!(observation.legacy_equivalence_only_match);
+        assert_eq!(state.visible_equipment_update_matches, 0);
+        assert_eq!(state.visible_equipment_update_without_mapping, 1);
+    }
+
+    #[test]
+    fn visible_equipment_update_observation_retains_unmatched_row_provenance() {
+        const OWNER_ID: u32 = 0x8000_0010;
+
+        let mut state = InventoryEquipmentProtocolState::default();
+        state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            OWNER_ID,
+            true,
+            vec![
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::IgnoredLegacyZero,
+                    object_id: 0,
+                    visible_slot: 1,
+                    update_status: None,
+                },
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_0777,
+                    visible_slot: 9,
+                    update_status: Some(0),
+                },
+            ],
+        )]);
+
+        assert_eq!(
+            state.last_visible_equipment_update_observation,
+            Some(VisibleEquipmentUpdateObservation {
+                claim_ordinal: 1,
+                owner_object_id: OWNER_ID,
+                appearance_mask: 0xFFFF,
+                all_fields_appearance: true,
+                record_offset: 7,
+                record_end: 23,
+                fragment_bit_start: 3,
+                fragment_bit_end: 3,
+                row_ordinal: 1,
+                row_object_id: 0x8000_0777,
+                carried_visible_slot: 9,
+                update_status: Some(0),
+                matching_visible_slot_count: 0,
+                unique_matching_visible_slot: None,
+                legacy_equivalent_visible_slot_count: 0,
+                exact_object_id_match: false,
+                legacy_equivalence_only_match: false,
+            })
+        );
+        assert_eq!(state.visible_equipment_update_without_mapping, 1);
     }
 
     #[test]

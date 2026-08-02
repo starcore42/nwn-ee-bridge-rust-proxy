@@ -1,9 +1,11 @@
-//! Stable diagnostics for one Status-authorized P/5 EquipToggle transaction.
+//! Stable diagnostics for Status-authorized P/5 equipment state.
 //!
-//! Keeping this serializer beside the focused transaction model prevents the
-//! already transport-heavy M-frame dispatcher from owning another large field
-//! projection. The values are copied only from typed semantic state; this
-//! module does not parse packets or infer missing equipment rows.
+//! This retains both the focused EquipToggle transaction and the most recent
+//! exact visible-equipment `U` observation. Keeping the serializer beside those
+//! models prevents the already transport-heavy M-frame dispatcher from owning
+//! another large field projection. The values are copied only from typed
+//! semantic state; this module does not parse packets, reinterpret the `U`
+//! status BYTE, or infer missing equipment rows.
 
 use crate::translate::{live_object_update::LiveObjectVisibleEquipmentOperation, semantic};
 
@@ -32,6 +34,7 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
         .or_else(|| terminal.map(|transaction| transaction.response))
         .or_else(|| active.and_then(|transaction| transaction.matching_response));
     let delta = completed.map(|transaction| transaction.delta);
+    let last_update = protocol.last_visible_equipment_update_observation;
     let delta_operation = delta
         .map(|delta| match delta.operation {
             LiveObjectVisibleEquipmentOperation::Add => "add",
@@ -88,7 +91,31 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
             "  \"status_authorized_visible_equipment_probe_transaction_delta_record_end\": {},\n",
             "  \"status_authorized_visible_equipment_probe_transaction_delta_fragment_bit_start\": {},\n",
             "  \"status_authorized_visible_equipment_probe_transaction_delta_fragment_bit_end\": {},\n",
-            "  \"status_authorized_visible_equipment_probe_transaction_delta_row_ordinal\": {}"
+            "  \"status_authorized_visible_equipment_probe_transaction_delta_row_ordinal\": {},\n",
+            "  \"last_visible_equipment_update_observed\": {},\n",
+            "  \"last_visible_equipment_update_claim_ordinal\": {},\n",
+            "  \"last_visible_equipment_update_owner_object_id\": {},\n",
+            "  \"last_visible_equipment_update_owner_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"last_visible_equipment_update_appearance_mask\": {},\n",
+            "  \"last_visible_equipment_update_appearance_mask_hex\": \"0x{:04X}\",\n",
+            "  \"last_visible_equipment_update_all_fields_appearance\": {},\n",
+            "  \"last_visible_equipment_update_record_offset\": {},\n",
+            "  \"last_visible_equipment_update_record_end\": {},\n",
+            "  \"last_visible_equipment_update_fragment_bit_start\": {},\n",
+            "  \"last_visible_equipment_update_fragment_bit_end\": {},\n",
+            "  \"last_visible_equipment_update_row_ordinal\": {},\n",
+            "  \"last_visible_equipment_update_row_object_id\": {},\n",
+            "  \"last_visible_equipment_update_row_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"last_visible_equipment_update_carried_visible_slot\": {},\n",
+            "  \"last_visible_equipment_update_status_known\": {},\n",
+            "  \"last_visible_equipment_update_status\": {},\n",
+            "  \"last_visible_equipment_update_matching_visible_slot_count\": {},\n",
+            "  \"last_visible_equipment_update_unique_matching_visible_slot_known\": {},\n",
+            "  \"last_visible_equipment_update_unique_matching_visible_slot\": {},\n",
+            "  \"last_visible_equipment_update_carried_slot_matches_unique_mapping\": {},\n",
+            "  \"last_visible_equipment_update_legacy_equivalent_visible_slot_count\": {},\n",
+            "  \"last_visible_equipment_update_exact_object_id_match\": {},\n",
+            "  \"last_visible_equipment_update_legacy_equivalence_only_match\": {}"
         ),
         stage,
         completed.is_some(),
@@ -151,6 +178,44 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
         delta.map(|value| value.fragment_bit_start).unwrap_or(0),
         delta.map(|value| value.fragment_bit_end).unwrap_or(0),
         delta.map(|value| value.row_ordinal).unwrap_or(0),
+        last_update.is_some(),
+        last_update.map(|value| value.claim_ordinal).unwrap_or(0),
+        last_update.map(|value| value.owner_object_id).unwrap_or(0),
+        last_update.map(|value| value.owner_object_id).unwrap_or(0),
+        last_update.map(|value| value.appearance_mask).unwrap_or(0),
+        last_update.map(|value| value.appearance_mask).unwrap_or(0),
+        last_update.is_some_and(|value| value.all_fields_appearance),
+        last_update.map(|value| value.record_offset).unwrap_or(0),
+        last_update.map(|value| value.record_end).unwrap_or(0),
+        last_update
+            .map(|value| value.fragment_bit_start)
+            .unwrap_or(0),
+        last_update.map(|value| value.fragment_bit_end).unwrap_or(0),
+        last_update.map(|value| value.row_ordinal).unwrap_or(0),
+        last_update.map(|value| value.row_object_id).unwrap_or(0),
+        last_update.map(|value| value.row_object_id).unwrap_or(0),
+        last_update
+            .map(|value| value.carried_visible_slot)
+            .unwrap_or(0),
+        last_update.is_some_and(|value| value.update_status.is_some()),
+        last_update
+            .and_then(|value| value.update_status)
+            .unwrap_or(0),
+        last_update
+            .map(|value| value.matching_visible_slot_count)
+            .unwrap_or(0),
+        last_update.is_some_and(|value| value.unique_matching_visible_slot.is_some()),
+        last_update
+            .and_then(|value| value.unique_matching_visible_slot)
+            .unwrap_or(0),
+        last_update.is_some_and(|value| {
+            value.unique_matching_visible_slot == Some(value.carried_visible_slot)
+        }),
+        last_update
+            .map(|value| value.legacy_equivalent_visible_slot_count)
+            .unwrap_or(0),
+        last_update.is_some_and(|value| value.exact_object_id_match),
+        last_update.is_some_and(|value| value.legacy_equivalence_only_match),
     )
 }
 
@@ -450,5 +515,65 @@ mod tests {
         assert!(fields.contains(
             "\"status_authorized_visible_equipment_probe_transaction_delta_operation\": \"delete\""
         ));
+    }
+
+    #[test]
+    fn last_visible_equipment_update_serializes_object_only_resolution() {
+        let owner_id = 0xffff_ffef;
+        let object_id = 0x8000_0077;
+        let mapped_slot = 0x10;
+        let carried_slot = 0x40;
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+            owner_id,
+            u16::MAX,
+            LiveObjectVisibleEquipmentOperation::Add,
+            object_id,
+            mapped_slot,
+        )]);
+        let mut update = visible_equipment_claim(
+            owner_id,
+            0x0200,
+            LiveObjectVisibleEquipmentOperation::Update,
+            object_id,
+            carried_slot,
+        );
+        update.rows[0].update_status = Some(0x7f);
+        protocol.observe_creature_visible_equipment_claims(&[update]);
+
+        let fields = json_fields(&protocol);
+
+        assert!(fields.contains("\"last_visible_equipment_update_observed\": true"));
+        assert!(
+            fields
+                .contains("\"last_visible_equipment_update_owner_object_id_hex\": \"0xFFFFFFEF\"")
+        );
+        assert!(
+            fields.contains("\"last_visible_equipment_update_appearance_mask_hex\": \"0x0200\"")
+        );
+        assert!(
+            fields.contains("\"last_visible_equipment_update_row_object_id_hex\": \"0x80000077\"")
+        );
+        assert!(fields.contains("\"last_visible_equipment_update_carried_visible_slot\": 64"));
+        assert!(fields.contains("\"last_visible_equipment_update_status\": 127"));
+        assert!(
+            fields.contains("\"last_visible_equipment_update_matching_visible_slot_count\": 1")
+        );
+        assert!(
+            fields.contains("\"last_visible_equipment_update_unique_matching_visible_slot\": 16")
+        );
+        assert!(fields.contains(
+            "\"last_visible_equipment_update_carried_slot_matches_unique_mapping\": false"
+        ));
+        assert!(
+            fields.contains(
+                "\"last_visible_equipment_update_legacy_equivalent_visible_slot_count\": 0"
+            )
+        );
+        assert!(fields.contains("\"last_visible_equipment_update_exact_object_id_match\": true"));
+        assert!(
+            fields
+                .contains("\"last_visible_equipment_update_legacy_equivalence_only_match\": false")
+        );
     }
 }
