@@ -7491,13 +7491,68 @@ struct VisibleEquipmentParseMemoKey {
     translated_ee: bool,
     allow_cross_record_fence: bool,
     owner_offset: usize,
+    required_end: Option<usize>,
+    required_source_fragment_bits_end: Option<usize>,
+    required_ee_extra_fragment_bits_end: Option<usize>,
+    retain_source_decisions: bool,
 }
 
-#[derive(Default)]
 struct VisibleEquipmentParseMemo {
     entries: HashMap<VisibleEquipmentParseMemoKey, Option<LegacyVisibleEquipmentParse>>,
     states_evaluated: u32,
     cache_hits: u32,
+    required_end: Option<usize>,
+    required_source_fragment_bits_end: Option<usize>,
+    required_ee_extra_fragment_bits_end: Option<usize>,
+    retain_source_decisions: bool,
+}
+
+impl Default for VisibleEquipmentParseMemo {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            states_evaluated: 0,
+            cache_hits: 0,
+            required_end: None,
+            required_source_fragment_bits_end: None,
+            required_ee_extra_fragment_bits_end: None,
+            retain_source_decisions: true,
+        }
+    }
+}
+
+impl VisibleEquipmentParseMemo {
+    fn for_required_boundary(
+        required_end: usize,
+        required_source_fragment_bits_end: usize,
+        required_ee_extra_fragment_bits_end: usize,
+    ) -> Self {
+        Self {
+            required_end: Some(required_end),
+            required_source_fragment_bits_end: Some(required_source_fragment_bits_end),
+            required_ee_extra_fragment_bits_end: Some(required_ee_extra_fragment_bits_end),
+            // Boundary probes are sidecar evidence. Retaining nested decision
+            // ledgers would recursively launch more probes and cannot affect
+            // the writer's already-selected parse.
+            retain_source_decisions: false,
+            ..Self::default()
+        }
+    }
+
+    fn terminal_state_matches(
+        &self,
+        cursor: usize,
+        source_fragment_bits_end: usize,
+        ee_extra_fragment_bits_end: usize,
+    ) -> bool {
+        self.required_end.is_none_or(|required| cursor == required)
+            && self
+                .required_source_fragment_bits_end
+                .is_none_or(|required| source_fragment_bits_end == required)
+            && self
+                .required_ee_extra_fragment_bits_end
+                .is_none_or(|required| ee_extra_fragment_bits_end == required)
+    }
 }
 
 fn parse_legacy_visible_equipment_records(
@@ -7524,7 +7579,170 @@ fn parse_legacy_visible_equipment_records(
     )?;
     parse.update_source_decisions.parse_states_evaluated = memo.states_evaluated;
     parse.update_source_decisions.memo_cache_hits = memo.cache_hits;
+    attach_visible_equipment_update_boundary_reachability(
+        bytes,
+        limit,
+        require_translated_byte_shape,
+        bit_proof,
+        legacy_bits_before,
+        ee_extra_bits_before,
+        &mut parse,
+    );
     Some(parse)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn attach_visible_equipment_update_boundary_reachability(
+    bytes: &[u8],
+    limit: usize,
+    require_translated_byte_shape: bool,
+    bit_proof: Option<AppearanceBitProof<'_>>,
+    initial_source_fragment_bits: usize,
+    initial_ee_extra_fragment_bits: usize,
+    parse: &mut LegacyVisibleEquipmentParse,
+) {
+    if parse.update_source_decisions.observed == 0 {
+        return;
+    }
+    if !cfg!(test)
+        && !crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_VISIBLE_EQUIPMENT_PROFILE",
+        )
+    {
+        return;
+    }
+
+    // `parse.end` is the complete equipment-list byte boundary selected by the
+    // enclosing P/5 parser. The ledger leaves this function only through a
+    // transactional appearance rewrite that reparses the emitted EE bytes and
+    // exact fragment cursor, so a committed diagnostic joins to an
+    // authoritative outer boundary without making this sidecar a writer rule.
+    let enclosing_byte_end = parse.end.min(limit);
+    let enclosing_source_fragment_bits =
+        initial_source_fragment_bits.checked_add(parse.fragment_bits_consumed);
+    let enclosing_ee_extra_fragment_bits =
+        initial_ee_extra_fragment_bits.checked_add(parse.ee_extra_fragment_bits);
+    let enclosing_emitted_fragment_bits = enclosing_source_fragment_bits
+        .zip(enclosing_ee_extra_fragment_bits)
+        .and_then(|(source, extra)| source.checked_add(extra));
+    let (Some(required_source_end), Some(required_ee_extra_end)) = (
+        enclosing_source_fragment_bits,
+        enclosing_ee_extra_fragment_bits,
+    ) else {
+        return;
+    };
+    let mut reachability_memo = VisibleEquipmentParseMemo::for_required_boundary(
+        enclosing_byte_end,
+        required_source_end,
+        required_ee_extra_end,
+    );
+
+    for index in 0..parse.update_source_decisions.entries.len() {
+        let Some(mut decision) = parse.update_source_decisions.entries[index] else {
+            break;
+        };
+        decision.enclosing_byte_end = Some(enclosing_byte_end);
+        decision.enclosing_source_fragment_bits_consumed = enclosing_source_fragment_bits;
+        decision.enclosing_emitted_fragment_bits_consumed = enclosing_emitted_fragment_bits;
+        decision.enclosing_fragment_proof_present = bit_proof.is_some();
+        let suffix_rows = decision.rows_including_current.saturating_sub(1);
+
+        let ee_boundary = decision
+            .ee_identity_map_candidate_cursor
+            .filter(|_| decision.ee_identity_map_candidate_evaluated)
+            .and_then(|candidate_cursor| {
+                parse_legacy_visible_equipment_records_memoized(
+                    bytes,
+                    candidate_cursor,
+                    enclosing_byte_end,
+                    suffix_rows,
+                    require_translated_byte_shape,
+                    bit_proof,
+                    decision.source_fragment_bits_before_row,
+                    decision.ee_extra_fragment_bits_before_row,
+                    &mut reachability_memo,
+                )
+            });
+        decision.ee_identity_map_candidate_reaches_enclosing_boundary = ee_boundary.is_some();
+        decision.ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed = ee_boundary
+            .as_ref()
+            .map(|suffix| suffix.fragment_bits_consumed);
+        decision.ee_identity_map_candidate_enclosing_suffix_ee_extra_fragment_bits = ee_boundary
+            .as_ref()
+            .map(|suffix| suffix.ee_extra_fragment_bits);
+        decision.ee_identity_map_candidate_enclosing_fragment_proven = bit_proof.is_some()
+            && ee_boundary.as_ref().is_some_and(|suffix| {
+                visible_equipment_boundary_fragment_totals_match(
+                    &decision,
+                    suffix,
+                    enclosing_source_fragment_bits,
+                    enclosing_emitted_fragment_bits,
+                )
+            });
+
+        let legacy_boundary = decision
+            .legacy_status_candidate_evaluated
+            .then(|| {
+                parse_legacy_visible_equipment_records_memoized(
+                    bytes,
+                    decision.legacy_status_candidate_cursor,
+                    enclosing_byte_end,
+                    suffix_rows,
+                    require_translated_byte_shape,
+                    bit_proof,
+                    decision.source_fragment_bits_before_row,
+                    decision.ee_extra_fragment_bits_before_row,
+                    &mut reachability_memo,
+                )
+            })
+            .flatten();
+        decision.legacy_status_candidate_reaches_enclosing_boundary = legacy_boundary.is_some();
+        decision.legacy_status_candidate_enclosing_suffix_fragment_bits_consumed = legacy_boundary
+            .as_ref()
+            .map(|suffix| suffix.fragment_bits_consumed);
+        decision.legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits = legacy_boundary
+            .as_ref()
+            .map(|suffix| suffix.ee_extra_fragment_bits);
+        decision.legacy_status_candidate_enclosing_fragment_proven = bit_proof.is_some()
+            && legacy_boundary.as_ref().is_some_and(|suffix| {
+                visible_equipment_boundary_fragment_totals_match(
+                    &decision,
+                    suffix,
+                    enclosing_source_fragment_bits,
+                    enclosing_emitted_fragment_bits,
+                )
+            });
+        parse.update_source_decisions.entries[index] = Some(decision);
+    }
+
+    parse
+        .update_source_decisions
+        .boundary_reachability_states_evaluated = reachability_memo.states_evaluated;
+    parse
+        .update_source_decisions
+        .boundary_reachability_memo_cache_hits = reachability_memo.cache_hits;
+}
+
+fn visible_equipment_boundary_fragment_totals_match(
+    decision: &LiveObjectVisibleEquipmentUpdateSourceDecision,
+    suffix: &LegacyVisibleEquipmentParse,
+    enclosing_source_fragment_bits: Option<usize>,
+    enclosing_emitted_fragment_bits: Option<usize>,
+) -> bool {
+    let Some(candidate_source) = decision
+        .source_fragment_bits_before_row
+        .checked_add(suffix.fragment_bits_consumed)
+    else {
+        return false;
+    };
+    let Some(candidate_emitted) = candidate_source
+        .checked_add(decision.ee_extra_fragment_bits_before_row)
+        .and_then(|bits| bits.checked_add(suffix.ee_extra_fragment_bits))
+    else {
+        return false;
+    };
+    enclosing_source_fragment_bits == Some(candidate_source)
+        && enclosing_emitted_fragment_bits == Some(candidate_emitted)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7555,6 +7773,10 @@ fn parse_legacy_visible_equipment_records_memoized(
         owner_offset: bit_proof
             .map(|proof| proof.owner_offset)
             .unwrap_or_default(),
+        required_end: memo.required_end,
+        required_source_fragment_bits_end: memo.required_source_fragment_bits_end,
+        required_ee_extra_fragment_bits_end: memo.required_ee_extra_fragment_bits_end,
+        retain_source_decisions: memo.retain_source_decisions,
     };
     if let Some(cached) = memo.entries.get(&key) {
         memo.cache_hits = memo.cache_hits.saturating_add(1);
@@ -7590,6 +7812,9 @@ fn parse_legacy_visible_equipment_records_uncached(
     memo: &mut VisibleEquipmentParseMemo,
 ) -> Option<LegacyVisibleEquipmentParse> {
     if remaining == 0 {
+        if !memo.terminal_state_matches(cursor, legacy_bits_before, ee_extra_bits_before) {
+            return None;
+        }
         return Some(LegacyVisibleEquipmentParse {
             end: cursor,
             fragment_bits_consumed: 0,
@@ -7715,6 +7940,23 @@ fn parse_legacy_visible_equipment_records_uncached(
                             legacy_bits_before,
                             ee_extra_bits_before,
                             cursor,
+                        ) {
+                            continue;
+                        }
+                        let Some(source_fragment_bits_end) =
+                            legacy_bits_before.checked_add(item.fragment_bits_consumed)
+                        else {
+                            continue;
+                        };
+                        let Some(ee_extra_fragment_bits_end) =
+                            ee_extra_bits_before.checked_add(item.ee_extra_fragment_bits)
+                        else {
+                            continue;
+                        };
+                        if !memo.terminal_state_matches(
+                            next,
+                            source_fragment_bits_end,
+                            ee_extra_fragment_bits_end,
                         ) {
                             continue;
                         }
@@ -8055,6 +8297,8 @@ fn parse_legacy_visible_equipment_update_record(
         row_offset: cursor,
         rows_including_current: remaining,
         status_end,
+        source_fragment_bits_before_row: legacy_bits_before,
+        ee_extra_fragment_bits_before_row: ee_extra_bits_before,
         ee_identity_map_bytes_present,
         ee_identity_map_candidate_evaluated: ee_identity_map_candidate_cursor.is_some(),
         ee_identity_map_candidate_cursor,
@@ -8076,6 +8320,18 @@ fn parse_legacy_visible_equipment_update_record(
         legacy_status_candidate_suffix_ee_extra_fragment_bits: legacy_status_rest
             .as_ref()
             .map(|rest| rest.ee_extra_fragment_bits),
+        enclosing_byte_end: None,
+        enclosing_source_fragment_bits_consumed: None,
+        enclosing_emitted_fragment_bits_consumed: None,
+        enclosing_fragment_proof_present: false,
+        ee_identity_map_candidate_reaches_enclosing_boundary: false,
+        ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed: None,
+        ee_identity_map_candidate_enclosing_suffix_ee_extra_fragment_bits: None,
+        ee_identity_map_candidate_enclosing_fragment_proven: false,
+        legacy_status_candidate_reaches_enclosing_boundary: false,
+        legacy_status_candidate_enclosing_suffix_fragment_bits_consumed: None,
+        legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits: None,
+        legacy_status_candidate_enclosing_fragment_proven: false,
         selected: if ee_identity_map_rest.is_some() {
             LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeIdentityMap
         } else {
@@ -8104,10 +8360,12 @@ fn parse_legacy_visible_equipment_update_record(
                     fragment_bit_end: fragment_bit_start,
                 })
             });
-        return Some(prepend_visible_equipment_update_source_decision(
-            prepend_visible_equipment_update_row(rest, row, provenance),
-            decision,
-        ));
+        let parse = prepend_visible_equipment_update_row(rest, row, provenance);
+        return Some(if memo.retain_source_decisions {
+            prepend_visible_equipment_update_source_decision(parse, decision)
+        } else {
+            parse
+        });
     }
 
     let mut rest = legacy_status_rest?;
@@ -8115,10 +8373,12 @@ fn parse_legacy_visible_equipment_update_record(
         0,
         CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity { offset: status_end },
     );
-    Some(prepend_visible_equipment_update_source_decision(
-        prepend_visible_equipment_update_row(rest, row, None),
-        decision,
-    ))
+    let parse = prepend_visible_equipment_update_row(rest, row, None);
+    Some(if memo.retain_source_decisions {
+        prepend_visible_equipment_update_source_decision(parse, decision)
+    } else {
+        parse
+    })
 }
 
 fn visible_equipment_translated_end_is_bounded(bytes: &[u8], end: usize, limit: usize) -> bool {
@@ -8251,6 +8511,23 @@ fn parse_legacy_compact_visible_equipment_records(
                             legacy_bits_before,
                             ee_extra_bits_before,
                             cursor,
+                        ) {
+                            continue;
+                        }
+                        let Some(source_fragment_bits_end) =
+                            legacy_bits_before.checked_add(item.fragment_bits_consumed)
+                        else {
+                            continue;
+                        };
+                        let Some(ee_extra_fragment_bits_end) =
+                            ee_extra_bits_before.checked_add(item.ee_extra_fragment_bits)
+                        else {
+                            continue;
+                        };
+                        if !memo.terminal_state_matches(
+                            next,
+                            source_fragment_bits_end,
+                            ee_extra_fragment_bits_end,
                         ) {
                             continue;
                         }
@@ -11868,6 +12145,32 @@ mod public_tests {
             None,
             "legacy U plus a zero row is not already an exact EE U map"
         );
+        let proof_backed_source = parse_legacy_visible_equipment_records(
+            &bytes,
+            9,
+            legacy_record_end,
+            2,
+            false,
+            Some(AppearanceBitProof {
+                bit_cursor: 0,
+                fragment_bits: &fragment_bits,
+                translated_ee: false,
+                allow_cross_record_fence: false,
+                owner_offset: 0,
+            }),
+            0,
+            0,
+        )
+        .expect("proof-backed source suffix should reach the exact byte/fragment target");
+        let proof_backed_decision = proof_backed_source
+            .update_source_decisions
+            .iter()
+            .next()
+            .expect("proof-backed source U decision");
+        assert!(proof_backed_decision.enclosing_fragment_proof_present);
+        assert!(proof_backed_decision.legacy_status_candidate_reaches_enclosing_boundary);
+        assert!(proof_backed_decision.legacy_status_candidate_enclosing_fragment_proven);
+        assert!(!proof_backed_decision.ee_identity_map_candidate_reaches_enclosing_boundary);
 
         let rewrite = insert_ee_creature_appearance_extras_for_ee(
             &mut bytes,
@@ -11924,6 +12227,27 @@ mod public_tests {
             source_decision.selected,
             LiveObjectVisibleEquipmentUpdateSourceInterpretation::LegacyStatusOnly
         );
+        assert_eq!(source_decision.source_fragment_bits_before_row, 0);
+        assert_eq!(source_decision.ee_extra_fragment_bits_before_row, 0);
+        assert_eq!(source_decision.enclosing_byte_end, Some(legacy_record_end));
+        assert_eq!(
+            source_decision.enclosing_source_fragment_bits_consumed,
+            Some(0)
+        );
+        assert_eq!(
+            source_decision.enclosing_emitted_fragment_bits_consumed,
+            Some(0)
+        );
+        assert!(source_decision.legacy_status_candidate_reaches_enclosing_boundary);
+        assert!(!source_decision.enclosing_fragment_proof_present);
+        assert!(!source_decision.legacy_status_candidate_enclosing_fragment_proven);
+        assert_eq!(
+            source_decision.legacy_status_candidate_enclosing_suffix_fragment_bits_consumed,
+            Some(0)
+        );
+        assert!(!source_decision.ee_identity_map_candidate_reaches_enclosing_boundary);
+        assert!(!source_decision.ee_identity_map_candidate_enclosing_fragment_proven);
+        assert!(source_decisions.boundary_reachability_states_evaluated > 0);
         assert_eq!(
             record_end,
             legacy_record_end + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
@@ -12025,6 +12349,18 @@ mod public_tests {
             exact_source_decision.selected,
             LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeIdentityMap
         );
+        assert_eq!(exact_source_decision.enclosing_byte_end, Some(record_end));
+        assert!(exact_source_decision.ee_identity_map_candidate_reaches_enclosing_boundary);
+        assert_eq!(
+            exact_source_decision.ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed,
+            Some(0)
+        );
+        assert!(
+            !exact_source_decision.legacy_status_candidate_reaches_enclosing_boundary,
+            "a locally parsable status-only suffix that stops inside the enclosing record is not boundary-reachable"
+        );
+        assert!(!exact_source_decision.legacy_status_candidate_enclosing_fragment_proven);
+        assert!(exact_source_decisions.boundary_reachability_states_evaluated > 0);
         assert_eq!(exact_ee_end, record_end);
         assert_eq!(
             bytes, exact_ee_bytes,

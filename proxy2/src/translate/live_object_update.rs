@@ -20216,21 +20216,21 @@ impl LiveObjectVisibleEquipmentUpdateSourceInterpretation {
 /// Bounded source-side cursor evidence for one successfully parsed creature
 /// visible-equipment `U` row.
 ///
-/// `*_candidate_end` is the final read-buffer cursor selected by today's
-/// recursive suffix policy after the complete declared remaining-row suffix,
-/// not merely the end of the current row. It is deliberately not an exhaustive
-/// set of every reachable endpoint: a future authoritative enclosing-boundary
-/// resolver still needs bounded multi-result search. Candidate ends are
-/// read-buffer evidence only. Their retained suffix bit
-/// counts remain diagnostic, and neither candidate proves an enclosing byte or
-/// fragment boundary; the exact outer validator remains authoritative. This
-/// evidence lets an authentic `U` capture be inspected without changing
-/// today's writer.
+/// `*_candidate_end` is the final read-buffer cursor selected by the ordinary
+/// recursive suffix policy, not merely the end of the current row. The
+/// `*_reaches_enclosing_boundary` fields instead use a second, memoized search
+/// constrained by the selected equipment list's byte, source-fragment, and
+/// EE-extra-fragment totals. This remains diagnostic and selection-neutral:
+/// EE-first behavior is unchanged. Fragment proof is authoritative only when
+/// `enclosing_fragment_proof_present` is true and the surrounding transactional
+/// rewrite subsequently passes exact emitted-EE byte/cursor validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectVisibleEquipmentUpdateSourceDecision {
     pub row_offset: usize,
     pub rows_including_current: u8,
     pub status_end: usize,
+    pub source_fragment_bits_before_row: usize,
+    pub ee_extra_fragment_bits_before_row: usize,
     pub ee_identity_map_bytes_present: bool,
     pub ee_identity_map_candidate_evaluated: bool,
     pub ee_identity_map_candidate_cursor: Option<usize>,
@@ -20244,6 +20244,27 @@ pub struct LiveObjectVisibleEquipmentUpdateSourceDecision {
     pub legacy_status_candidate_end: Option<usize>,
     pub legacy_status_candidate_suffix_fragment_bits_consumed: Option<usize>,
     pub legacy_status_candidate_suffix_ee_extra_fragment_bits: Option<usize>,
+    /// Selected enclosing equipment-list boundary. These fields are populated
+    /// only after the complete selected suffix has parsed; the decision ledger
+    /// is exposed only when the outer appearance rewrite subsequently passes
+    /// exact byte/fragment validation.
+    pub enclosing_byte_end: Option<usize>,
+    pub enclosing_source_fragment_bits_consumed: Option<usize>,
+    pub enclosing_emitted_fragment_bits_consumed: Option<usize>,
+    pub enclosing_fragment_proof_present: bool,
+    /// Boundary-constrained reachability for the EE-map cursor. Unlike the
+    /// current-policy `*_candidate_end` above, this asks whether *any* bounded,
+    /// memoized remaining-row path lands on the complete enclosing byte and
+    /// modeled fragment-count shape.
+    pub ee_identity_map_candidate_reaches_enclosing_boundary: bool,
+    pub ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed: Option<usize>,
+    pub ee_identity_map_candidate_enclosing_suffix_ee_extra_fragment_bits: Option<usize>,
+    pub ee_identity_map_candidate_enclosing_fragment_proven: bool,
+    /// Same boundary-constrained evidence for Diamond's status-only cursor.
+    pub legacy_status_candidate_reaches_enclosing_boundary: bool,
+    pub legacy_status_candidate_enclosing_suffix_fragment_bits_consumed: Option<usize>,
+    pub legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits: Option<usize>,
+    pub legacy_status_candidate_enclosing_fragment_proven: bool,
     pub selected: LiveObjectVisibleEquipmentUpdateSourceInterpretation,
 }
 
@@ -20260,6 +20281,8 @@ pub struct LiveObjectVisibleEquipmentUpdateSourceDecisionLedger {
     pub observed: u32,
     pub parse_states_evaluated: u32,
     pub memo_cache_hits: u32,
+    pub boundary_reachability_states_evaluated: u32,
+    pub boundary_reachability_memo_cache_hits: u32,
 }
 
 impl Default for LiveObjectVisibleEquipmentUpdateSourceDecisionLedger {
@@ -20269,6 +20292,8 @@ impl Default for LiveObjectVisibleEquipmentUpdateSourceDecisionLedger {
             observed: 0,
             parse_states_evaluated: 0,
             memo_cache_hits: 0,
+            boundary_reachability_states_evaluated: 0,
+            boundary_reachability_memo_cache_hits: 0,
         }
     }
 }
@@ -20312,6 +20337,12 @@ impl LiveObjectVisibleEquipmentUpdateSourceDecisionLedger {
             .parse_states_evaluated
             .saturating_add(other.parse_states_evaluated);
         self.memo_cache_hits = self.memo_cache_hits.saturating_add(other.memo_cache_hits);
+        self.boundary_reachability_states_evaluated = self
+            .boundary_reachability_states_evaluated
+            .saturating_add(other.boundary_reachability_states_evaluated);
+        self.boundary_reachability_memo_cache_hits = self
+            .boundary_reachability_memo_cache_hits
+            .saturating_add(other.boundary_reachability_memo_cache_hits);
     }
 }
 

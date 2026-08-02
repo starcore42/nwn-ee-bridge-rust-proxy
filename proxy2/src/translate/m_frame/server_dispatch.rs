@@ -1933,6 +1933,8 @@ fn trace_live_object_visible_equipment_update_source_decisions(
             row_offset = decision.row_offset,
             rows_including_current = decision.rows_including_current,
             status_end = decision.status_end,
+            source_fragment_bits_before_row = decision.source_fragment_bits_before_row,
+            ee_extra_fragment_bits_before_row = decision.ee_extra_fragment_bits_before_row,
             ee_identity_map_bytes_present = decision.ee_identity_map_bytes_present,
             ee_identity_map_candidate_evaluated = decision.ee_identity_map_candidate_evaluated,
             ee_identity_map_candidate_cursor_known =
@@ -1973,8 +1975,59 @@ fn trace_live_object_visible_equipment_update_source_decisions(
             legacy_status_candidate_suffix_ee_extra_fragment_bits = decision
                 .legacy_status_candidate_suffix_ee_extra_fragment_bits
                 .unwrap_or_default(),
+            enclosing_byte_end_known = decision.enclosing_byte_end.is_some(),
+            enclosing_byte_end = decision.enclosing_byte_end.unwrap_or_default(),
+            enclosing_source_fragment_bits_consumed_known =
+                decision.enclosing_source_fragment_bits_consumed.is_some(),
+            enclosing_source_fragment_bits_consumed = decision
+                .enclosing_source_fragment_bits_consumed
+                .unwrap_or_default(),
+            enclosing_emitted_fragment_bits_consumed_known =
+                decision.enclosing_emitted_fragment_bits_consumed.is_some(),
+            enclosing_emitted_fragment_bits_consumed = decision
+                .enclosing_emitted_fragment_bits_consumed
+                .unwrap_or_default(),
+            enclosing_fragment_proof_present = decision.enclosing_fragment_proof_present,
+            ee_identity_map_candidate_reaches_enclosing_boundary =
+                decision.ee_identity_map_candidate_reaches_enclosing_boundary,
+            ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed_known = decision
+                .ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed
+                .is_some(),
+            ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed = decision
+                .ee_identity_map_candidate_enclosing_suffix_fragment_bits_consumed
+                .unwrap_or_default(),
+            ee_identity_map_candidate_enclosing_suffix_ee_extra_fragment_bits_known = decision
+                .ee_identity_map_candidate_enclosing_suffix_ee_extra_fragment_bits
+                .is_some(),
+            ee_identity_map_candidate_enclosing_suffix_ee_extra_fragment_bits = decision
+                .ee_identity_map_candidate_enclosing_suffix_ee_extra_fragment_bits
+                .unwrap_or_default(),
+            ee_identity_map_candidate_enclosing_fragment_proven =
+                decision.ee_identity_map_candidate_enclosing_fragment_proven,
+            legacy_status_candidate_reaches_enclosing_boundary =
+                decision.legacy_status_candidate_reaches_enclosing_boundary,
+            legacy_status_candidate_enclosing_suffix_fragment_bits_consumed_known = decision
+                .legacy_status_candidate_enclosing_suffix_fragment_bits_consumed
+                .is_some(),
+            legacy_status_candidate_enclosing_suffix_fragment_bits_consumed = decision
+                .legacy_status_candidate_enclosing_suffix_fragment_bits_consumed
+                .unwrap_or_default(),
+            legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits_known = decision
+                .legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits
+                .is_some(),
+            legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits = decision
+                .legacy_status_candidate_enclosing_suffix_ee_extra_fragment_bits
+                .unwrap_or_default(),
+            legacy_status_candidate_enclosing_fragment_proven =
+                decision.legacy_status_candidate_enclosing_fragment_proven,
             dual_valid =
                 decision.ee_identity_map_candidate_valid && decision.legacy_status_candidate_valid,
+            dual_enclosing_boundary_reachable = decision
+                .ee_identity_map_candidate_reaches_enclosing_boundary
+                && decision.legacy_status_candidate_reaches_enclosing_boundary,
+            dual_enclosing_fragment_proven = decision
+                .ee_identity_map_candidate_enclosing_fragment_proven
+                && decision.legacy_status_candidate_enclosing_fragment_proven,
             selected_interpretation = decision.selected.as_str(),
             "server live-object creature visible-equipment U source decision profile"
         );
@@ -1987,6 +2040,8 @@ fn trace_live_object_visible_equipment_update_source_decisions(
         decisions_truncated = decisions.truncated(),
         parse_states_evaluated = decisions.parse_states_evaluated,
         memo_cache_hits = decisions.memo_cache_hits,
+        boundary_reachability_states_evaluated = decisions.boundary_reachability_states_evaluated,
+        boundary_reachability_memo_cache_hits = decisions.boundary_reachability_memo_cache_hits,
         "server live-object creature visible-equipment U source decision profile bounded"
     );
 }
