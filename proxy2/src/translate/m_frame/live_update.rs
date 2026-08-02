@@ -388,6 +388,8 @@ pub struct ExactLiveObjectRewriteSummary {
     pub terminal_exact_writer_rewrites: u32,
     pub terminal_source_fragment_bits_owned: u32,
     pub terminal_emitted_residual_fragment_bits_removed: u32,
+    pub visible_equipment_update_source_decisions:
+        live_object_update::LiveObjectVisibleEquipmentUpdateSourceDecisionLedger,
 }
 
 impl ExactLiveObjectRewriteSummary {
@@ -1789,6 +1791,8 @@ impl ExactLiveObjectRewriteSummary {
         self.terminal_emitted_residual_fragment_bits_removed = self
             .terminal_emitted_residual_fragment_bits_removed
             .saturating_add(rewrite.terminal_emitted_residual_fragment_bits_removed);
+        self.visible_equipment_update_source_decisions
+            .append(rewrite.visible_equipment_update_source_decisions);
         if let Some(followup) = post_terminal_area_context_rewrite {
             // The terminal and exact AreaPlaceableContext stages have separate
             // typed authorizers and phase dimensions. Absorb the bounded child

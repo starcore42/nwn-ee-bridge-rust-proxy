@@ -19041,6 +19041,10 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub terminal_exact_writer_rewrites: u32,
     pub terminal_source_fragment_bits_owned: u32,
     pub terminal_emitted_residual_fragment_bits_removed: u32,
+    /// Source-side P/5 U candidate cursors retained only from transactional
+    /// appearance parses that reached a committed rewrite summary.
+    pub visible_equipment_update_source_decisions:
+        LiveObjectVisibleEquipmentUpdateSourceDecisionLedger,
     /// A separately authorized exact-payload AreaPlaceableContext pass applied
     /// to the sealed terminal candidate before the outer transaction commits.
     /// Keeping the phase summary intact avoids a lossy merge across the large
@@ -20147,8 +20151,9 @@ pub struct LiveObjectVisibleEquipmentRow {
     /// `0x40`). This is deliberately not an Inventory response equip-slot
     /// DWORD.
     pub visible_slot: u32,
-    /// Present only for `Update`; Diamond and EE both consume the same byte
-    /// before EE additionally reads its visual-transform identity map.
+    /// Present only for `Update`; Diamond consumes the raw eight bits through
+    /// `ReadCHAR(8)`, while EE consumes the same bits through `ReadBYTE(8)`
+    /// before reading a general visual-transform map.
     pub update_status: Option<u8>,
 }
 
@@ -20156,16 +20161,18 @@ pub struct LiveObjectVisibleEquipmentRow {
 /// visible-equipment `U` row.
 ///
 /// Diamond `sub_448E30` reads the common opcode/object/slot header at
-/// `0x4495EC..0x44960D`, then its `U` branch reads the status byte at
-/// `0x449AD7..0x449B16` without moving the CNW fragment cursor. EE
-/// `sub_14077FE10` reads the same common header at
-/// `0x140780A90..0x140780ABC`, then its `U` branch reads the status and calls
-/// the transform-map reader at `0x140781078..0x1407810DD`.
-/// `sub_140973160` reads the two empty-map counts at `0x1409732A4` and
-/// `0x140973340`, producing the exact eight-byte identity map; no branch moves
-/// the fragment cursor. These offsets come only
-/// from the exact emitted-EE appearance parser; they are not inferred later by
-/// the semantic or diagnostics layers.
+/// `0x4495EC..0x44960D`, then its `U` branch reads the status through
+/// `ReadCHAR(8)` at `0x449AD7..0x449B16`. EE `sub_14077FE10` reads the same
+/// common header at `0x140780A90..0x140780ABC`, reads the status through
+/// `ReadBYTE(8)`, then calls the general transform-map reader at
+/// `0x140781078..0x1407810DD`. The proxy-supported emitted subset is the
+/// canonical empty-map fallback: `sub_140973160` reads its two signed INT32
+/// zero counts at `0x1409732A4` and `0x140973340`. The direct full-width helper
+/// paths use little-endian object/slot/count loads and this zero-count subset
+/// moves only the read-buffer cursor; it owns no CNW fragment bits. These
+/// offsets come only from the exact emitted-EE appearance parser and are not
+/// inferred later by the semantic or diagnostics layers. Non-empty authentic
+/// EE maps remain outside this exact claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectVisibleEquipmentUpdateProvenance {
     /// Absolute opcode offset within the deflated live-object read-buffer
@@ -20180,6 +20187,132 @@ pub struct LiveObjectVisibleEquipmentUpdateProvenance {
     pub row_end: usize,
     pub fragment_bit_start: usize,
     pub fragment_bit_end: usize,
+}
+
+/// Interpretation selected for one source-side creature visible-equipment
+/// `U` row before the EE identity-map writer runs.
+///
+/// The proxy-supported eight-byte EE empty transform map is all zeroes, so
+/// those bytes can also be the prefix of a following client-tolerated compact
+/// zero compatibility row. Selection remains EE-first when both current-parser
+/// continuations entered at the decompile-backed local cursors parse; this enum
+/// records that decision without claiming which source dialect produced the
+/// zeroes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectVisibleEquipmentUpdateSourceInterpretation {
+    EeIdentityMap,
+    LegacyStatusOnly,
+}
+
+impl LiveObjectVisibleEquipmentUpdateSourceInterpretation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EeIdentityMap => "ee_identity_map",
+            Self::LegacyStatusOnly => "legacy_status_only",
+        }
+    }
+}
+
+/// Bounded source-side cursor evidence for one successfully parsed creature
+/// visible-equipment `U` row.
+///
+/// `*_candidate_end` is the final read-buffer cursor selected by today's
+/// recursive suffix policy after the complete declared remaining-row suffix,
+/// not merely the end of the current row. It is deliberately not an exhaustive
+/// set of every reachable endpoint: a future authoritative enclosing-boundary
+/// resolver still needs bounded multi-result search. Candidate ends are
+/// read-buffer evidence only. Their retained suffix bit
+/// counts remain diagnostic, and neither candidate proves an enclosing byte or
+/// fragment boundary; the exact outer validator remains authoritative. This
+/// evidence lets an authentic `U` capture be inspected without changing
+/// today's writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectVisibleEquipmentUpdateSourceDecision {
+    pub row_offset: usize,
+    pub rows_including_current: u8,
+    pub status_end: usize,
+    pub ee_identity_map_bytes_present: bool,
+    pub ee_identity_map_candidate_evaluated: bool,
+    pub ee_identity_map_candidate_cursor: Option<usize>,
+    pub ee_identity_map_candidate_valid: bool,
+    pub ee_identity_map_candidate_end: Option<usize>,
+    pub ee_identity_map_candidate_suffix_fragment_bits_consumed: Option<usize>,
+    pub ee_identity_map_candidate_suffix_ee_extra_fragment_bits: Option<usize>,
+    pub legacy_status_candidate_cursor: usize,
+    pub legacy_status_candidate_evaluated: bool,
+    pub legacy_status_candidate_valid: bool,
+    pub legacy_status_candidate_end: Option<usize>,
+    pub legacy_status_candidate_suffix_fragment_bits_consumed: Option<usize>,
+    pub legacy_status_candidate_suffix_ee_extra_fragment_bits: Option<usize>,
+    pub selected: LiveObjectVisibleEquipmentUpdateSourceInterpretation,
+}
+
+pub const MAX_VISIBLE_EQUIPMENT_UPDATE_SOURCE_DECISIONS: usize = 8;
+
+/// Fixed-capacity ledger carried from the source parser through the committed
+/// exact rewrite summary. Counted P/5 equipment lists can be large, so
+/// diagnostics retain the first rows and report truncation instead of growing
+/// packet-owned state without a bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectVisibleEquipmentUpdateSourceDecisionLedger {
+    pub entries: [Option<LiveObjectVisibleEquipmentUpdateSourceDecision>;
+        MAX_VISIBLE_EQUIPMENT_UPDATE_SOURCE_DECISIONS],
+    pub observed: u32,
+    pub parse_states_evaluated: u32,
+    pub memo_cache_hits: u32,
+}
+
+impl Default for LiveObjectVisibleEquipmentUpdateSourceDecisionLedger {
+    fn default() -> Self {
+        Self {
+            entries: [None; MAX_VISIBLE_EQUIPMENT_UPDATE_SOURCE_DECISIONS],
+            observed: 0,
+            parse_states_evaluated: 0,
+            memo_cache_hits: 0,
+        }
+    }
+}
+
+impl LiveObjectVisibleEquipmentUpdateSourceDecisionLedger {
+    pub fn retained(&self) -> usize {
+        self.entries
+            .iter()
+            .take_while(|entry| entry.is_some())
+            .count()
+    }
+
+    pub fn truncated(&self) -> u32 {
+        self.observed
+            .saturating_sub(u32::try_from(self.retained()).unwrap_or(u32::MAX))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &LiveObjectVisibleEquipmentUpdateSourceDecision> {
+        self.entries.iter().flatten()
+    }
+
+    pub(crate) fn push(&mut self, decision: LiveObjectVisibleEquipmentUpdateSourceDecision) {
+        let retained = self.retained();
+        if retained < self.entries.len() {
+            self.entries[retained] = Some(decision);
+        }
+        self.observed = self.observed.saturating_add(1);
+    }
+
+    pub(crate) fn append(&mut self, other: Self) {
+        let retained = self.retained();
+        let available = self.entries.len().saturating_sub(retained);
+        for (slot, decision) in self.entries[retained..]
+            .iter_mut()
+            .zip(other.iter().take(available))
+        {
+            *slot = Some(*decision);
+        }
+        self.observed = self.observed.saturating_add(other.observed);
+        self.parse_states_evaluated = self
+            .parse_states_evaluated
+            .saturating_add(other.parse_states_evaluated);
+        self.memo_cache_hits = self.memo_cache_hits.saturating_add(other.memo_cache_hits);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26455,6 +26588,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         bit_cursor,
                     )
                 {
+                    summary
+                        .visible_equipment_update_source_decisions
+                        .append(appearance_rewrite.visible_equipment_update_source_decisions);
                     appearance_bits_inserted_for_tail_repair = appearance_rewrite.bits_inserted;
                     appearance_bits_removed_for_tail_repair = appearance_rewrite.bits_removed;
                     creature_appearance_bits_inserted_for_ledger =
@@ -26505,6 +26641,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         bit_cursor,
                     )
                 {
+                    summary
+                        .visible_equipment_update_source_decisions
+                        .append(appearance_rewrite.visible_equipment_update_source_decisions);
                     appearance_bits_inserted_for_tail_repair =
                         appearance_bits_inserted_for_tail_repair
                             .saturating_add(appearance_rewrite.bits_inserted);
@@ -26535,6 +26674,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         bit_cursor,
                     )
                 {
+                    summary
+                        .visible_equipment_update_source_decisions
+                        .append(appearance_rewrite.visible_equipment_update_source_decisions);
                     if appearance_rewrite.bits_inserted != 0 || appearance_rewrite.bits_removed != 0
                     {
                         appearance_bits_inserted_for_tail_repair =

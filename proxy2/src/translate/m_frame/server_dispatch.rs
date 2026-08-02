@@ -1920,6 +1920,77 @@ fn trace_live_object_visible_equipment_profiles(
     bounds
 }
 
+fn trace_live_object_visible_equipment_update_source_decisions(
+    family_name: &'static str,
+    source: &'static str,
+    decisions: live_object_update::LiveObjectVisibleEquipmentUpdateSourceDecisionLedger,
+) {
+    for (decision_index, decision) in decisions.iter().enumerate() {
+        tracing::debug!(
+            family = family_name,
+            source,
+            decision_index,
+            row_offset = decision.row_offset,
+            rows_including_current = decision.rows_including_current,
+            status_end = decision.status_end,
+            ee_identity_map_bytes_present = decision.ee_identity_map_bytes_present,
+            ee_identity_map_candidate_evaluated = decision.ee_identity_map_candidate_evaluated,
+            ee_identity_map_candidate_cursor_known =
+                decision.ee_identity_map_candidate_cursor.is_some(),
+            ee_identity_map_candidate_cursor = decision
+                .ee_identity_map_candidate_cursor
+                .unwrap_or_default(),
+            ee_identity_map_candidate_valid = decision.ee_identity_map_candidate_valid,
+            ee_identity_map_candidate_end_known = decision.ee_identity_map_candidate_end.is_some(),
+            ee_identity_map_candidate_end =
+                decision.ee_identity_map_candidate_end.unwrap_or_default(),
+            ee_identity_map_candidate_suffix_fragment_bits_consumed_known = decision
+                .ee_identity_map_candidate_suffix_fragment_bits_consumed
+                .is_some(),
+            ee_identity_map_candidate_suffix_fragment_bits_consumed = decision
+                .ee_identity_map_candidate_suffix_fragment_bits_consumed
+                .unwrap_or_default(),
+            ee_identity_map_candidate_suffix_ee_extra_fragment_bits_known = decision
+                .ee_identity_map_candidate_suffix_ee_extra_fragment_bits
+                .is_some(),
+            ee_identity_map_candidate_suffix_ee_extra_fragment_bits = decision
+                .ee_identity_map_candidate_suffix_ee_extra_fragment_bits
+                .unwrap_or_default(),
+            legacy_status_candidate_cursor = decision.legacy_status_candidate_cursor,
+            legacy_status_candidate_evaluated = decision.legacy_status_candidate_evaluated,
+            legacy_status_candidate_valid = decision.legacy_status_candidate_valid,
+            legacy_status_candidate_end_known = decision.legacy_status_candidate_end.is_some(),
+            legacy_status_candidate_end = decision.legacy_status_candidate_end.unwrap_or_default(),
+            legacy_status_candidate_suffix_fragment_bits_consumed_known = decision
+                .legacy_status_candidate_suffix_fragment_bits_consumed
+                .is_some(),
+            legacy_status_candidate_suffix_fragment_bits_consumed = decision
+                .legacy_status_candidate_suffix_fragment_bits_consumed
+                .unwrap_or_default(),
+            legacy_status_candidate_suffix_ee_extra_fragment_bits_known = decision
+                .legacy_status_candidate_suffix_ee_extra_fragment_bits
+                .is_some(),
+            legacy_status_candidate_suffix_ee_extra_fragment_bits = decision
+                .legacy_status_candidate_suffix_ee_extra_fragment_bits
+                .unwrap_or_default(),
+            dual_valid =
+                decision.ee_identity_map_candidate_valid && decision.legacy_status_candidate_valid,
+            selected_interpretation = decision.selected.as_str(),
+            "server live-object creature visible-equipment U source decision profile"
+        );
+    }
+    tracing::debug!(
+        family = family_name,
+        source,
+        decisions_observed = decisions.observed,
+        decisions_retained = decisions.retained(),
+        decisions_truncated = decisions.truncated(),
+        parse_states_evaluated = decisions.parse_states_evaluated,
+        memo_cache_hits = decisions.memo_cache_hits,
+        "server live-object creature visible-equipment U source decision profile bounded"
+    );
+}
+
 fn trace_live_object_exact_claim_summary(
     family_name: &'static str,
     claim: &live_update::ClaimSummary,
@@ -2382,6 +2453,17 @@ fn trace_live_object_exact_rewrite_summary(
     unresolved_placeable_conflicts: AreaStaticPlaceableConflictTraceSummary,
 ) {
     let summary = exact_rewrite.summary;
+    if summary.visible_equipment_update_source_decisions.observed != 0
+        && crate::translate::live_object_update::live_object_debug_env_enabled(
+            "HGBRIDGE_PROXY2_DEBUG_VISIBLE_EQUIPMENT_PROFILE",
+        )
+    {
+        trace_live_object_visible_equipment_update_source_decisions(
+            family_name,
+            exact_rewrite.source,
+            summary.visible_equipment_update_source_decisions,
+        );
+    }
     let unresolved = unresolved_placeable_conflicts.unresolved;
     let current_record_progress = unresolved_placeable_conflicts.current_record_progress;
     let unproven_carrier_disposition =
@@ -5016,6 +5098,32 @@ fn translate_live_object_records_if_verified(
     }
 
     if live_update::claim_payload_if_verified(&candidate).is_some() {
+        let mut visible_equipment_update_source_decisions =
+            live_object_update::LiveObjectVisibleEquipmentUpdateSourceDecisionLedger::default();
+        for summary in [
+            update_pre_summary.as_ref(),
+            update_post_summary.as_ref(),
+            update_after_add_name_summary.as_ref(),
+            update_after_final_add_summary.as_ref(),
+            update_after_second_final_add_summary.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            visible_equipment_update_source_decisions
+                .append(summary.visible_equipment_update_source_decisions);
+        }
+        if visible_equipment_update_source_decisions.observed != 0
+            && crate::translate::live_object_update::live_object_debug_env_enabled(
+                "HGBRIDGE_PROXY2_DEBUG_VISIBLE_EQUIPMENT_PROFILE",
+            )
+        {
+            trace_live_object_visible_equipment_update_source_decisions(
+                "GameObjUpdate_LiveObject",
+                source,
+                visible_equipment_update_source_decisions,
+            );
+        }
         if let Some(summary) = external_object_id_summary {
             tracing::info!(
                 source,
