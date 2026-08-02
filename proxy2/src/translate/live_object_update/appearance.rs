@@ -7709,6 +7709,16 @@ fn parse_legacy_visible_equipment_records(
     }
 }
 
+/// Parses one creature `P/5` visible-equipment `U` row for both the fixed and
+/// compact record walkers.
+///
+/// Diamond `sub_448E30` (`0x449AD7..0x449B16`) consumes the row opcode,
+/// OBJECTID, visible-slot DWORD, and one status BYTE without consuming a CNW
+/// fragment BOOL. EE `sub_14077FE10` (`0x140781078..0x1407810DD`) consumes the
+/// same status BYTE and then an object visual-transform map. Legacy input must
+/// therefore gain the exact empty EE map at this byte cursor, while an emitted
+/// EE row must already contain the complete map. Keeping both walkers on this
+/// helper prevents their byte handoff from drifting independently.
 fn parse_legacy_visible_equipment_update_record(
     bytes: &[u8],
     cursor: usize,
@@ -7854,57 +7864,16 @@ fn parse_legacy_compact_visible_equipment_records(
                 },
             ))
         }
-        b'U' => {
-            if !looks_like_creature_or_legacy_sentinel_id(object_id) {
-                return None;
-            }
-            let next = header_end.checked_add(1)?;
-            if next > limit || next > bytes.len() {
-                return None;
-            }
-            let update_status = *bytes.get(header_end)?;
-            let (next, mut prefix_inserts) =
-                if has_ee_object_visual_transform_identity_at(bytes, next, limit) {
-                    (
-                        next.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len())?,
-                        Vec::new(),
-                    )
-                } else if has_partial_ee_object_visual_transform_identity_at(bytes, next, limit)
-                    || require_translated_byte_shape
-                {
-                    return None;
-                } else {
-                    (
-                        next,
-                        vec![
-                            CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity {
-                                offset: next,
-                            },
-                        ],
-                    )
-                };
-            let mut rest = parse_legacy_visible_equipment_records(
-                bytes,
-                next,
-                limit,
-                remaining - 1,
-                require_translated_byte_shape,
-                bit_proof,
-                legacy_bits_before,
-                ee_extra_bits_before,
-            )?;
-            prefix_inserts.extend(rest.ee_extra_byte_inserts);
-            rest.ee_extra_byte_inserts = prefix_inserts;
-            Some(prepend_visible_equipment_row(
-                rest,
-                LiveObjectVisibleEquipmentRow {
-                    operation: LiveObjectVisibleEquipmentOperation::Update,
-                    object_id,
-                    visible_slot: slot,
-                    update_status: Some(update_status),
-                },
-            ))
-        }
+        b'U' => parse_legacy_visible_equipment_update_record(
+            bytes,
+            cursor,
+            limit,
+            remaining,
+            require_translated_byte_shape,
+            bit_proof,
+            legacy_bits_before,
+            ee_extra_bits_before,
+        ),
         b'A' => {
             if remaining == 1 {
                 let min_next =
@@ -10347,6 +10316,22 @@ mod public_tests {
         bytes
     }
 
+    fn partial_legacy_creature_equipment_delta_update_then_delete() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0043);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
+        bytes.push(2); // ordered U then D equipment-delta rows.
+        bytes.push(b'U');
+        push_u32(&mut bytes, 0x8000_0044);
+        push_u32(&mut bytes, 2);
+        bytes.push(0x7F); // U status BYTE; neither client reads a BOOL here.
+        bytes.push(b'D');
+        push_u32(&mut bytes, LEGACY_APPEARANCE_DUMMY_ITEM_OBJECT_ID);
+        push_u32(&mut bytes, 2);
+        bytes
+    }
+
     fn partial_legacy_creature_ignored_high_mask_only() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
@@ -11258,6 +11243,168 @@ mod public_tests {
             &mut ee_cursor,
         ));
         assert_eq!(ee_cursor, 0);
+    }
+
+    #[test]
+    fn partial_equipment_delta_update_then_delete_keeps_exact_byte_and_bit_handoff() {
+        let mut bytes = partial_legacy_creature_equipment_delta_update_then_delete();
+        let legacy_record_end = bytes.len();
+        let mut record_end = legacy_record_end;
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, legacy_record_end),
+            Some(legacy_record_end),
+            "Diamond must consume the trailing U status BYTE before starting the following D row"
+        );
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            legacy_record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 0,
+            "P/5 U and D rows consume no CNW fragment BOOLs"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("ordered U then D rows should rewrite to exact EE shape");
+        assert_eq!(
+            rewrite.bytes_inserted,
+            EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+
+        let update_map_offset = 2 + 4 + 2 + 1 + 1 + 4 + 4 + 1;
+        let update_map_end = update_map_offset + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len();
+        assert_eq!(
+            &bytes[update_map_offset..update_map_end],
+            EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.as_slice(),
+            "EE's transform map belongs after the U status BYTE and before the following row"
+        );
+        assert_eq!(bytes.get(update_map_end), Some(&b'D'));
+        assert_eq!(
+            record_end,
+            legacy_record_end + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, record_end),
+            Some(record_end)
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0);
+
+        let claim =
+            claim_verified_ee_creature_visible_equipment(&bytes, 0, record_end, &fragment_bits, 0)
+                .expect("the emitted EE U then D sequence should claim at the exact final cursor");
+        assert_eq!(
+            claim.rows,
+            vec![
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Update,
+                    object_id: 0x8000_0044,
+                    visible_slot: 2,
+                    update_status: Some(0x7F),
+                },
+                LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Delete,
+                    object_id: LEGACY_APPEARANCE_DUMMY_ITEM_OBJECT_ID,
+                    visible_slot: 2,
+                    update_status: None,
+                },
+            ]
+        );
+        assert_eq!(claim.fragment_bit_start, 0);
+        assert_eq!(claim.fragment_bit_end, 0);
+    }
+
+    #[test]
+    fn partial_equipment_delta_update_rejects_truncated_status_and_ee_map() {
+        let mut missing_status = partial_legacy_creature_nonzero_equipment_delta_with_update();
+        missing_status.pop();
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&missing_status, 0, missing_status.len()),
+            None,
+            "Diamond U requires its trailing status BYTE"
+        );
+        let original_missing_status = missing_status.clone();
+        let mut missing_status_end = missing_status.len();
+        let mut missing_status_bits = Vec::new();
+        assert!(
+            insert_ee_creature_appearance_extras_for_ee(
+                &mut missing_status,
+                0,
+                &mut missing_status_end,
+                &mut missing_status_bits,
+                0,
+            )
+            .is_none()
+        );
+        assert_eq!(missing_status, original_missing_status);
+
+        let mut truncated_map = partial_legacy_creature_nonzero_equipment_delta_with_update();
+        let mut translated_end = truncated_map.len();
+        let mut fragment_bits = Vec::new();
+        insert_ee_creature_appearance_extras_for_ee(
+            &mut truncated_map,
+            0,
+            &mut translated_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("complete legacy U should gain EE's exact transform map");
+        let map_end = translated_end;
+        let map_start = map_end - EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len();
+        for prefix_len in 1..EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len() {
+            let truncated_end = map_start + prefix_len;
+            let truncated_map = &truncated_map[..truncated_end];
+            assert_eq!(
+                try_get_ee_creature_appearance_record_end_by_byte_shape(
+                    truncated_map,
+                    0,
+                    truncated_end
+                ),
+                None,
+                "an EE U row must not accept a {prefix_len}-byte prefix of the transform map"
+            );
+            let mut ee_cursor = 0usize;
+            assert!(!advance_verified_ee_creature_appearance_record(
+                truncated_map,
+                0,
+                truncated_end,
+                &fragment_bits,
+                &mut ee_cursor,
+            ));
+            assert_eq!(ee_cursor, 0);
+            assert!(
+                claim_verified_ee_creature_visible_equipment(
+                    truncated_map,
+                    0,
+                    truncated_end,
+                    &fragment_bits,
+                    0,
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]
