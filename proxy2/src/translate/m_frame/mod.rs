@@ -12974,18 +12974,19 @@ mod tests {
             "client_action_observed"
         );
 
-        let canceled_payload = inventory::build_ee_inventory_unequip_payload(8, ITEM_A, true)
-            .expect("same-primary typed UnequipCancel");
+        let alternate_context_cancel_payload =
+            inventory::build_ee_inventory_unequip_payload(8, ITEM_A, true)
+                .expect("same-primary alternate-context UnequipCancel");
         protocol.observe_server_inventory_response(
-            inventory::claim_payload_if_verified(&canceled_payload)
-                .expect("exact same-primary cancel"),
+            inventory::claim_payload_if_verified(&alternate_context_cancel_payload)
+                .expect("exact same-primary alternate-context cancel"),
         );
         assert_eq!(
             protocol
                 .status_authorized_visible_equipment_probe_stage()
                 .as_str(),
             "client_action_observed",
-            "a cancel is not the successful response that can own a later P/5 delete"
+            "an alternate-context response cannot terminate the false-context direct probe"
         );
 
         let unequip_payload = inventory::build_ee_inventory_unequip_payload(7, ITEM_A, false)

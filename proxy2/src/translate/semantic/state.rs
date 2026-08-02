@@ -1034,6 +1034,21 @@ pub(crate) struct StatusAuthorizedVisibleEquipmentProbeCompletedTransaction {
     pub(crate) delta: StatusAuthorizedVisibleEquipmentProbeDelta,
 }
 
+/// Exact same-action response that terminated the direct probe without the
+/// successful Unequip -> P/5 delete closure.
+///
+/// Equip, EquipCancel, and UnequipCancel are distinct terminal branches in the
+/// Diamond and EE client handlers. Retaining them separately prevents the
+/// one-shot diagnostic action from remaining indefinitely active while also
+/// preventing a later unrelated Unequip from stealing the old action epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StatusAuthorizedVisibleEquipmentProbeTerminalTransaction {
+    pub(crate) authorization: StatusAuthorizedVisibleEquipmentProbeAuthorization,
+    pub(crate) action_epoch: u64,
+    pub(crate) action: client_inventory::ClientInventoryClaimSummary,
+    pub(crate) response: InventoryEquipmentResponseRecord,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum StatusAuthorizedVisibleEquipmentProbeStage {
     #[default]
@@ -1041,6 +1056,7 @@ pub(crate) enum StatusAuthorizedVisibleEquipmentProbeStage {
     Offered,
     ClientActionObserved,
     TypedResponseObserved,
+    TerminalResponseObserved,
     CompletedVisibleEquipmentDelta,
 }
 
@@ -1051,6 +1067,7 @@ impl StatusAuthorizedVisibleEquipmentProbeStage {
             Self::Offered => "offered",
             Self::ClientActionObserved => "client_action_observed",
             Self::TypedResponseObserved => "typed_response_observed",
+            Self::TerminalResponseObserved => "terminal_response_observed",
             Self::CompletedVisibleEquipmentDelta => "completed_visible_equipment_delta",
         }
     }
@@ -1097,6 +1114,11 @@ pub(crate) struct InventoryEquipmentProtocolState {
         Option<StatusAuthorizedVisibleEquipmentProbeAuthorization>,
     pub(crate) active_status_authorized_visible_equipment_probe:
         Option<StatusAuthorizedVisibleEquipmentProbeActiveTransaction>,
+    /// Retained exact non-Unequip terminal outcome for the one-shot direct
+    /// probe. Like completed evidence, this is historical and survives later
+    /// authority changes until Area_ClientArea resets the lifecycle.
+    pub(crate) last_terminal_status_authorized_visible_equipment_probe:
+        Option<StatusAuthorizedVisibleEquipmentProbeTerminalTransaction>,
     /// Retained independently of the mutable recommendation candidate so the
     /// final hint preserves the exact response plus following P/5 delta after
     /// the one-shot source advances to its consumed state.
@@ -1132,6 +1154,11 @@ impl InventoryEquipmentProtocolState {
             .is_some()
         {
             StatusAuthorizedVisibleEquipmentProbeStage::CompletedVisibleEquipmentDelta
+        } else if self
+            .last_terminal_status_authorized_visible_equipment_probe
+            .is_some()
+        {
+            StatusAuthorizedVisibleEquipmentProbeStage::TerminalResponseObserved
         } else if self
             .active_status_authorized_visible_equipment_probe
             .is_some_and(|active| active.matching_response.is_some())
@@ -1403,6 +1430,7 @@ impl InventoryEquipmentProtocolState {
         self.status_authorized_visible_equipment_probe_issued_for_area = false;
         self.offered_status_authorized_visible_equipment_probe = None;
         self.active_status_authorized_visible_equipment_probe = None;
+        self.last_terminal_status_authorized_visible_equipment_probe = None;
         self.last_completed_status_authorized_visible_equipment_probe = None;
         // This cache has no owner or area epoch. Keeping it across
         // Area_ClientArea could make a prior creature's Inventory response
@@ -1667,18 +1695,52 @@ impl InventoryEquipmentProtocolState {
             };
             self.response_records_since_last_client_equip_toggle
                 .push(response);
-            if let Some(active) = self
+            let matching_direct_probe = self
                 .active_status_authorized_visible_equipment_probe
-                .as_mut()
-                && active.matching_response.is_none()
-                && response.action_epoch == active.action_epoch
-                && response.object_id == active.authorization.object_id
-                && response.operation == inventory::InventoryOperation::Unequip
-                && !response.alternate_inventory_context
-                && response.matches_client_primary
-                && !response.matches_client_secondary
-            {
-                active.matching_response = Some(response);
+                .filter(|active| {
+                    active.matching_response.is_none()
+                        && response.action_epoch == active.action_epoch
+                        && response.object_id == active.authorization.object_id
+                        && !response.alternate_inventory_context
+                        && response.matches_client_primary
+                        && !response.matches_client_secondary
+                });
+            if let Some(active) = matching_direct_probe {
+                if response.operation == inventory::InventoryOperation::Unequip {
+                    self.active_status_authorized_visible_equipment_probe
+                        .as_mut()
+                        .expect("matching direct probe remains active")
+                        .matching_response = Some(response);
+                } else {
+                    // EE `sub_14079F150` and Diamond `sub_450800` make all
+                    // four minors terminal client-handler branches. The EE
+                    // server paths are mutually exclusive too: RunEquip sends
+                    // cancel then returns at 0x14039FD32..0x14039FD37, versus
+                    // success at 0x14039FEC1..0x14039FEC6; RunUnequip sends
+                    // cancel then returns zero at 0x1403A0563..0x1403A0572,
+                    // versus success at 0x1403A0521..0x1403A052B. Only a
+                    // successful Unequip can be followed by the P/5 D closure
+                    // this probe is measuring. Equip, EquipCancel, and
+                    // UnequipCancel therefore terminate and are retained now;
+                    // leaving the action active would let a later unrelated
+                    // Unequip inherit this epoch because the wire has no
+                    // explicit transaction id.
+                    self.last_terminal_status_authorized_visible_equipment_probe =
+                        Some(StatusAuthorizedVisibleEquipmentProbeTerminalTransaction {
+                            authorization: active.authorization,
+                            action_epoch: active.action_epoch,
+                            action: active.action,
+                            response,
+                        });
+                    self.active_status_authorized_visible_equipment_probe = None;
+                    tracing::info!(
+                        action_epoch = active.action_epoch,
+                        response_ordinal = response.response_ordinal,
+                        response_operation = response.operation.as_str(),
+                        object_id = format_args!("0x{:08X}", response.object_id),
+                        "semantic state retained terminal Status-authorized visible-equipment probe response"
+                    );
+                }
             }
         }
 
@@ -8659,6 +8721,163 @@ mod tests {
                 .is_none(),
             "the explicit D removes the participant mapping, so the rejected transaction must be revoked rather than left active"
         );
+    }
+
+    #[test]
+    fn status_authorized_visible_equipment_probe_retains_non_unequip_terminal_responses() {
+        const OWNER_ID: u32 = 0xFFFF_FFEF;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+        const INVENTORY_SLOT: u32 = 0x0002_0000;
+
+        for (minor, expected_operation) in [
+            (0x01, inventory::InventoryOperation::Equip),
+            (0x02, inventory::InventoryOperation::EquipCancel),
+            (0x08, inventory::InventoryOperation::UnequipCancel),
+        ] {
+            let authorization = StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                status_update_index: 7,
+                status_server_sequence: 44,
+                area_client_area_packets: 1,
+                control_epoch: 2,
+                owner_object_id: OWNER_ID,
+                visible_slot: VISIBLE_SLOT,
+                object_id: ITEM_ID,
+            };
+            let mut state = InventoryEquipmentProtocolState::default();
+            state
+                .visible_equipment_slots_by_owner
+                .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID);
+            state.offer_status_authorized_visible_equipment_probe(authorization);
+            let client_payload = client_inventory::build_equip_toggle_payload(ITEM_ID, None)
+                .expect("direct false-context EquipToggle");
+            state.observe_client_equip_toggle(
+                client_inventory::claim_payload_if_verified(&client_payload)
+                    .expect("exact direct EquipToggle"),
+            );
+
+            let response_payload = if minor == 0x08 {
+                inventory::build_ee_inventory_unequip_payload(minor, ITEM_ID, false)
+                    .expect("exact false-context UnequipCancel")
+            } else {
+                inventory::build_ee_inventory_payload(minor, ITEM_ID, false, INVENTORY_SLOT)
+                    .expect("exact false-context Equip response")
+            };
+            state.observe_server_inventory_response(
+                inventory::claim_payload_if_verified(&response_payload)
+                    .expect("exact typed terminal response"),
+            );
+
+            let terminal = state
+                .last_terminal_status_authorized_visible_equipment_probe
+                .expect("matching non-Unequip response must be retained as terminal");
+            assert_eq!(terminal.authorization, authorization);
+            assert_eq!(terminal.action_epoch, 1);
+            assert_eq!(terminal.response.operation, expected_operation);
+            assert_eq!(terminal.response.object_id, ITEM_ID);
+            assert!(!terminal.response.alternate_inventory_context);
+            assert!(terminal.response.matches_client_primary);
+            assert!(!terminal.response.matches_client_secondary);
+            assert!(
+                state
+                    .active_status_authorized_visible_equipment_probe
+                    .is_none(),
+                "{expected_operation:?} must not leave the one-shot direct probe active"
+            );
+            assert_eq!(
+                state
+                    .status_authorized_visible_equipment_probe_stage()
+                    .as_str(),
+                "terminal_response_observed"
+            );
+
+            let later_unequip = inventory::build_ee_inventory_unequip_payload(0x07, ITEM_ID, false)
+                .expect("later same-epoch Unequip");
+            state.observe_server_inventory_response(
+                inventory::claim_payload_if_verified(&later_unequip)
+                    .expect("exact later same-epoch Unequip"),
+            );
+            state.observe_creature_visible_equipment_claims(&[visible_equipment_claim(
+                OWNER_ID,
+                false,
+                vec![LiveObjectVisibleEquipmentRow {
+                    operation: LiveObjectVisibleEquipmentOperation::Delete,
+                    object_id: 0x7F00_0000,
+                    visible_slot: VISIBLE_SLOT,
+                    update_status: None,
+                }],
+            )]);
+            assert_eq!(
+                state.last_terminal_status_authorized_visible_equipment_probe,
+                Some(terminal),
+                "a later response in the global client epoch cannot replace the first exact terminal outcome"
+            );
+            assert!(
+                state
+                    .last_completed_status_authorized_visible_equipment_probe
+                    .is_none(),
+                "a later Unequip plus D cannot resurrect a terminal direct transaction"
+            );
+        }
+    }
+
+    #[test]
+    fn status_authorized_visible_equipment_probe_ignores_alternate_context_terminal_responses() {
+        const OWNER_ID: u32 = 0xFFFF_FFEF;
+        const ITEM_ID: u32 = 0x8000_0044;
+        const VISIBLE_SLOT: u32 = 2;
+
+        for minor in [0x01, 0x02, 0x08] {
+            let authorization = StatusAuthorizedVisibleEquipmentProbeAuthorization {
+                status_update_index: 7,
+                status_server_sequence: 44,
+                area_client_area_packets: 1,
+                control_epoch: 2,
+                owner_object_id: OWNER_ID,
+                visible_slot: VISIBLE_SLOT,
+                object_id: ITEM_ID,
+            };
+            let mut state = InventoryEquipmentProtocolState::default();
+            state
+                .visible_equipment_slots_by_owner
+                .insert((OWNER_ID, VISIBLE_SLOT), ITEM_ID);
+            state.offer_status_authorized_visible_equipment_probe(authorization);
+            let client_payload = client_inventory::build_equip_toggle_payload(ITEM_ID, None)
+                .expect("direct false-context EquipToggle");
+            state.observe_client_equip_toggle(
+                client_inventory::claim_payload_if_verified(&client_payload)
+                    .expect("exact direct EquipToggle"),
+            );
+
+            let response_payload = if minor == 0x08 {
+                inventory::build_ee_inventory_unequip_payload(minor, ITEM_ID, true)
+                    .expect("exact alternate-context UnequipCancel")
+            } else {
+                inventory::build_ee_inventory_payload(minor, ITEM_ID, true, 0x0002_0000)
+                    .expect("exact alternate-context Equip response")
+            };
+            state.observe_server_inventory_response(
+                inventory::claim_payload_if_verified(&response_payload)
+                    .expect("exact alternate-context response"),
+            );
+
+            assert!(
+                state
+                    .active_status_authorized_visible_equipment_probe
+                    .is_some_and(|active| active.matching_response.is_none()),
+                "alternate-controller minor {minor} cannot terminate the false-context probe"
+            );
+            assert!(
+                state
+                    .last_terminal_status_authorized_visible_equipment_probe
+                    .is_none()
+            );
+            assert_eq!(
+                state.response_records_since_last_client_equip_toggle.len(),
+                1,
+                "the unrelated response remains visible in exact chronology"
+            );
+        }
     }
 
     #[test]

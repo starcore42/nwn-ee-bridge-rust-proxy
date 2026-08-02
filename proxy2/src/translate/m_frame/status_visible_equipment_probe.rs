@@ -12,19 +12,24 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
         .status_authorized_visible_equipment_probe_stage()
         .as_str();
     let completed = protocol.last_completed_status_authorized_visible_equipment_probe;
+    let terminal = protocol.last_terminal_status_authorized_visible_equipment_probe;
     let active = protocol.active_status_authorized_visible_equipment_probe;
     let authorization = completed
         .map(|transaction| transaction.authorization)
+        .or_else(|| terminal.map(|transaction| transaction.authorization))
         .or_else(|| active.map(|transaction| transaction.authorization))
         .or(protocol.offered_status_authorized_visible_equipment_probe);
     let action_epoch = completed
         .map(|transaction| transaction.action_epoch)
+        .or_else(|| terminal.map(|transaction| transaction.action_epoch))
         .or_else(|| active.map(|transaction| transaction.action_epoch));
     let action = completed
         .map(|transaction| transaction.action)
+        .or_else(|| terminal.map(|transaction| transaction.action))
         .or_else(|| active.map(|transaction| transaction.action));
     let response = completed
         .map(|transaction| transaction.response)
+        .or_else(|| terminal.map(|transaction| transaction.response))
         .or_else(|| active.and_then(|transaction| transaction.matching_response));
     let delta = completed.map(|transaction| transaction.delta);
     let delta_operation = delta
@@ -41,6 +46,7 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
             ",\n",
             "  \"status_authorized_visible_equipment_probe_transaction_stage\": \"{}\",\n",
             "  \"status_authorized_visible_equipment_probe_transaction_completed\": {},\n",
+            "  \"status_authorized_visible_equipment_probe_transaction_terminal\": {},\n",
             "  \"status_authorized_visible_equipment_probe_transaction_status_update_index\": {},\n",
             "  \"status_authorized_visible_equipment_probe_transaction_status_server_sequence\": {},\n",
             "  \"status_authorized_visible_equipment_probe_transaction_area_client_area_packets\": {},\n",
@@ -86,6 +92,7 @@ pub(super) fn json_fields(protocol: &semantic::InventoryEquipmentProtocolState) 
         ),
         stage,
         completed.is_some(),
+        terminal.is_some(),
         authorization
             .map(|value| value.status_update_index)
             .unwrap_or(0),
@@ -298,6 +305,66 @@ mod tests {
         ));
         assert!(fields.contains(
             "\"status_authorized_visible_equipment_probe_transaction_response_operation\": \"unequip\""
+        ));
+        assert!(fields.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_delta_operation\": \"none\""
+        ));
+    }
+
+    #[test]
+    fn terminal_transaction_serializes_exact_response_without_delta() {
+        let terminal_authorization = authorization(8, 0xffff_ffee, 0x8000_0055, 0x10);
+        let mut protocol = semantic::InventoryEquipmentProtocolState::default();
+        protocol.visible_equipment_slots_by_owner.insert(
+            (
+                terminal_authorization.owner_object_id,
+                terminal_authorization.visible_slot,
+            ),
+            terminal_authorization.object_id,
+        );
+        protocol.offer_status_authorized_visible_equipment_probe(terminal_authorization);
+        protocol.observe_client_equip_toggle(action(terminal_authorization.object_id));
+        let response_payload = inventory::build_ee_inventory_payload(
+            0x02,
+            terminal_authorization.object_id,
+            false,
+            0x0002_0000,
+        )
+        .expect("exact false-context EquipCancel payload");
+        protocol.observe_server_inventory_response(
+            inventory::claim_payload_if_verified(&response_payload)
+                .expect("exact false-context EquipCancel claim"),
+        );
+
+        let fields = json_fields(&protocol);
+
+        assert!(fields.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_stage\": \"terminal_response_observed\""
+        ));
+        assert!(fields.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_completed\": false"
+        ));
+        assert!(
+            fields.contains(
+                "\"status_authorized_visible_equipment_probe_transaction_terminal\": true"
+            )
+        );
+        assert!(fields.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_object_id_hex\": \"0x80000055\""
+        ));
+        assert!(
+            fields.contains(
+                "\"status_authorized_visible_equipment_probe_transaction_action_epoch\": 1"
+            )
+        );
+        assert!(fields.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_operation\": \"equip_cancel\""
+        ));
+        assert!(fields.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_equip_slot_known\": true"
+        ));
+        assert!(fields.contains(
+            "\"status_authorized_visible_equipment_probe_transaction_response_equip_slot\": 131072"
         ));
         assert!(fields.contains(
             "\"status_authorized_visible_equipment_probe_transaction_delta_operation\": \"none\""
