@@ -746,6 +746,8 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) client_gui_status_response_materialized_item_packets: u64,
     pub(super) client_gui_status_response_observations_observed: u64,
     pub(super) client_gui_status_response_observations_evicted: u64,
+    pub(super) client_gui_status_response_pre_completion_owner_observations_evicted: u64,
+    pub(super) client_gui_status_response_queued_candidate_observations_evicted: u64,
     pub(super) client_gui_status_post_completion_observation_open: bool,
     pub(super) client_gui_status_response_observations:
         VecDeque<InventoryEquipmentBridgeClientGuiStatusResponseObservation>,
@@ -856,6 +858,8 @@ impl InventoryEquipmentBridgeState {
         self.client_gui_status_response_materialized_item_packets = 0;
         self.client_gui_status_response_observations_observed = 0;
         self.client_gui_status_response_observations_evicted = 0;
+        self.client_gui_status_response_pre_completion_owner_observations_evicted = 0;
+        self.client_gui_status_response_queued_candidate_observations_evicted = 0;
         self.client_gui_status_post_completion_observation_open = false;
         self.client_gui_status_response_observations.clear();
     }
@@ -870,7 +874,20 @@ impl InventoryEquipmentBridgeState {
         if self.client_gui_status_response_observations.len()
             == CLIENT_GUI_STATUS_RESPONSE_OBSERVATION_CAPACITY
         {
-            self.client_gui_status_response_observations.pop_front();
+            if let Some(evicted) = self.client_gui_status_response_observations.pop_front() {
+                if evicted.current_player_inventory_records != 0
+                    && !evicted.response_window_complete_before_observation
+                {
+                    self.client_gui_status_response_pre_completion_owner_observations_evicted =
+                        self.client_gui_status_response_pre_completion_owner_observations_evicted
+                            .saturating_add(1);
+                }
+                if evicted.materialized_item_object_ids_contain_queued_candidate {
+                    self.client_gui_status_response_queued_candidate_observations_evicted = self
+                        .client_gui_status_response_queued_candidate_observations_evicted
+                        .saturating_add(1);
+                }
+            }
             self.client_gui_status_response_observations_evicted = self
                 .client_gui_status_response_observations_evicted
                 .saturating_add(1);
