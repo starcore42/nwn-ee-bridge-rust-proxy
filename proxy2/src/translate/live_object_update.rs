@@ -21004,6 +21004,7 @@ fn claim_payload_if_verified_with_reject(
             .min(live_bytes.len())
         });
         let mut verified_creature_appearance_next_bit_cursor = None;
+        let mut verified_creature_visual_transform_end_and_next_bit_cursor = None;
         if live_bytes.get(offset).copied() == Some(b'I')
             && let Some(verified_end) = inventory::try_get_verified_inventory_prefix_record_end(
                 live_bytes,
@@ -21058,7 +21059,19 @@ fn claim_payload_if_verified_with_reject(
         if live_bytes.get(offset).copied() == Some(b'U')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
         {
-            if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
+            if let Some((verified_end, next_bit_cursor)) =
+                appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
+                    live_bytes,
+                    offset,
+                    live_bytes.len(),
+                    &fragment_bits,
+                    bit_cursor,
+                )
+            {
+                record_end = verified_end;
+                verified_creature_visual_transform_end_and_next_bit_cursor =
+                    Some((verified_end, next_bit_cursor));
+            } else if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
                 live_bytes,
                 offset,
                 live_bytes.len(),
@@ -21068,7 +21081,9 @@ fn claim_payload_if_verified_with_reject(
                 record_end = verified_end;
             }
         }
-        if live_bytes.get(offset).copied() == Some(b'U') {
+        if live_bytes.get(offset).copied() == Some(b'U')
+            && verified_creature_visual_transform_end_and_next_bit_cursor.is_none()
+        {
             if let Some(verified_end) =
                 effects::try_get_verified_ee_looping_visual_effect_update_record_end(
                     live_bytes,
@@ -21144,6 +21159,50 @@ fn claim_payload_if_verified_with_reject(
             trace_claim_accept(
                 &mut summary,
                 "creature-appearance",
+                live_bytes,
+                offset,
+                record_end,
+                record_bit_cursor,
+                bit_cursor,
+                None,
+            );
+            offset = record_end;
+            continue;
+        }
+        if let Some((verified_end, next_bit_cursor)) =
+            verified_creature_visual_transform_end_and_next_bit_cursor
+        {
+            if record_end != verified_end {
+                trace_claim_reject(
+                    "creature-visual-transform-boundary-overwritten",
+                    live_bytes,
+                    offset,
+                    record_end,
+                    bit_cursor,
+                );
+                return Err(LiveObjectPayloadClaimReject::at(
+                    LiveObjectPayloadClaimRejectStage::RecordValidator,
+                    offset,
+                    record_end,
+                    bit_cursor,
+                ));
+            }
+            bit_cursor = next_bit_cursor;
+            summary.creature_visual_transform_update_records = summary
+                .creature_visual_transform_update_records
+                .saturating_add(1);
+            push_verified_record_mention(
+                &mut summary,
+                live_bytes,
+                offset,
+                record_end,
+                &fragment_bits,
+                record_bit_cursor,
+                bit_cursor,
+            );
+            trace_claim_accept(
+                &mut summary,
+                "creature-visual-transform",
                 live_bytes,
                 offset,
                 record_end,
@@ -21403,34 +21462,6 @@ fn claim_payload_if_verified_with_reject(
             offset = record_end;
             continue;
         }
-        if appearance::is_verified_ee_creature_visual_transform_update_record(
-            live_bytes, offset, record_end,
-        ) {
-            summary.creature_visual_transform_update_records = summary
-                .creature_visual_transform_update_records
-                .saturating_add(1);
-            push_verified_record_mention(
-                &mut summary,
-                live_bytes,
-                offset,
-                record_end,
-                &fragment_bits,
-                record_bit_cursor,
-                bit_cursor,
-            );
-            trace_claim_accept(
-                &mut summary,
-                "creature-visual-transform",
-                live_bytes,
-                offset,
-                record_end,
-                record_bit_cursor,
-                bit_cursor,
-                None,
-            );
-            offset = record_end;
-            continue;
-        }
         let mut creature_probe_bit_cursor = bit_cursor;
         let creature_probe = creature::advance_verified_noop_creature_update_record(
             live_bytes,
@@ -21632,26 +21663,46 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
             );
             return None;
         }
-        let record_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        let mut record_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
             live_bytes,
             offset,
             live_bytes.len(),
         )
         .min(live_bytes.len());
-        let record_end = if live_bytes.get(offset).copied() == Some(b'P')
+        if live_bytes.get(offset).copied() == Some(b'P')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
         {
-            appearance::try_get_verified_ee_creature_appearance_record_end(
+            record_end = appearance::try_get_verified_ee_creature_appearance_record_end(
                 live_bytes,
                 offset,
                 live_bytes.len(),
                 &fragment_bits,
                 bit_cursor,
             )
-            .unwrap_or(record_end)
-        } else {
-            record_end
-        };
+            .unwrap_or(record_end);
+        } else if live_bytes.get(offset).copied() == Some(b'U')
+            && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+        {
+            if let Some((verified_end, _)) =
+                appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
+                    live_bytes,
+                    offset,
+                    live_bytes.len(),
+                    &fragment_bits,
+                    bit_cursor,
+                )
+            {
+                record_end = verified_end;
+            } else if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
+                live_bytes,
+                offset,
+                live_bytes.len(),
+                &fragment_bits,
+                bit_cursor,
+            ) {
+                record_end = verified_end;
+            }
+        }
         if record_end <= offset {
             trace_add_name_rewrite_reject(
                 "non-advancing-live-object-boundary",
@@ -21851,8 +21902,12 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
                     record_end,
                     &fragment_bits,
                     &mut bit_cursor,
-                ) || appearance::is_verified_ee_creature_visual_transform_update_record(
-                    live_bytes, offset, record_end,
+                ) || appearance::advance_verified_ee_creature_visual_transform_update_record(
+                    live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    &mut bit_cursor,
                 ) || creature::advance_verified_noop_creature_update_record(
                     live_bytes,
                     offset,
@@ -22302,11 +22357,21 @@ fn try_get_verified_creature_update_record_end_for_ee(
     if min_end > scan_end
         || live_bytes.get(offset).copied()? != b'U'
         || live_bytes.get(offset + 1).copied()? != CREATURE_OBJECT_TYPE
-        || read_u32_le(live_bytes, offset + 6)? != 0x0000_3967
+        || !creature::is_supported_legacy_creature_update_cursor_mask(read_u32_le(
+            live_bytes,
+            offset + 6,
+        )?)
     {
         return None;
     }
 
+    // A supported ordinary creature update can begin with bytes that also
+    // decode as a short ObjectVisualTransformData map. Prove its complete
+    // decompile-ordered body against every top-level boundary (and scan_end)
+    // before allowing the standalone selector reader to claim a shorter
+    // prefix. The generic boundary scanner supplies mask-specific floors for
+    // families such as 0x47, so interior position/orientation bytes cannot win
+    // merely because they spell a live-object opcode pair.
     let mut candidate_ends = Vec::new();
     let first_boundary = boundary::find_next_legacy_live_object_sub_message_boundary_after(
         live_bytes, offset, scan_end,
@@ -22558,9 +22623,24 @@ pub(crate) fn advance_verified_creature_update_fragment_cursor_for_ee(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    if appearance::is_verified_ee_creature_visual_transform_update_record(
-        live_bytes, offset, record_end,
-    ) {
+    // Resolve a typed map against the full available read buffer and commit it
+    // only when its dynamic endpoint equals the proposed boundary. The typed
+    // resolver first proves any competing complete ordinary creature update,
+    // so a map-shaped 0x47 prefix fails here while selector-0x08 empty maps can
+    // still be traversed before later records.
+    if let Some((verified_end, next_bit_cursor)) =
+        appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
+            live_bytes,
+            offset,
+            live_bytes.len(),
+            fragment_bits,
+            *bit_cursor,
+        )
+    {
+        if verified_end != record_end {
+            return false;
+        }
+        *bit_cursor = next_bit_cursor;
         return true;
     }
     if effects::is_verified_ee_looping_visual_effect_update_record(live_bytes, offset, record_end) {
@@ -25321,7 +25401,17 @@ fn rewrite_update_records_payload_with_area_context_inner(
             }
         }
         if opcode == b'U' && object_type == CREATURE_OBJECT_TYPE && bit_cursor_reliable {
-            if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
+            if let Some((verified_end, _)) =
+                appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
+                    &live_bytes,
+                    offset,
+                    live_bytes.len(),
+                    &fragment_bits,
+                    bit_cursor,
+                )
+            {
+                record_end = verified_end;
+            } else if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
                 &live_bytes,
                 offset,
                 live_bytes.len(),
@@ -27143,11 +27233,15 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         );
                     creature_visual_transform_rewritten_for_ledger = true;
                 }
-                if appearance::is_verified_ee_creature_visual_transform_update_record(
+                let mut advanced_visual_transform_cursor = bit_cursor;
+                if appearance::advance_verified_ee_creature_visual_transform_update_record(
                     &live_bytes,
                     offset,
                     record_end,
+                    &fragment_bits,
+                    &mut advanced_visual_transform_cursor,
                 ) {
+                    bit_cursor = advanced_visual_transform_cursor;
                     if !rewrite_bit_ledger.commit_record(
                         &live_bytes,
                         LiveObjectRewriteBitLedgerCommit {

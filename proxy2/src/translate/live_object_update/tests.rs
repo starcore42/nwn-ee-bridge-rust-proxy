@@ -1942,11 +1942,17 @@ fn legacy_creature_visual_transform_selector_still_gets_identity_map() {
     assert_eq!(rewrite.bytes_inserted, 8);
     assert_eq!(rewrite.bytes_removed, 0);
     assert_eq!(record_end, 15);
+    let mut verified_bit_cursor = super::CNW_FRAGMENT_HEADER_BITS;
     assert!(
-        super::appearance::is_verified_ee_creature_visual_transform_update_record(
-            &live, 0, record_end
+        super::appearance::advance_verified_ee_creature_visual_transform_update_record(
+            &live,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut verified_bit_cursor,
         )
     );
+    assert_eq!(verified_bit_cursor, super::CNW_FRAGMENT_HEADER_BITS);
 }
 
 #[test]

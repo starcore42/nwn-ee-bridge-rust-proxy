@@ -7941,6 +7941,187 @@ fn creature_c008_compact_status_rows_rewrite_before_following_add() {
 }
 
 #[test]
+fn standalone_creature_visual_transform_general_map_preserves_following_cursor_handoff() {
+    use super::visual_transform::{
+        EeAurObjectVisualTransformWireValue, EeObjectVisualTransformMap,
+        EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
+    };
+
+    let encoded = encode_ee_object_visual_transform_map(&EeObjectVisualTransformMap {
+        entries: vec![EeObjectVisualTransformValueEntry {
+            scope: -17,
+            value: EeAurObjectVisualTransformWireValue::Identity,
+        }],
+    })
+    .expect("identity-valued general map encodes");
+    assert_eq!(encoded.fragment_bits, [true]);
+
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_3344u32.to_le_bytes());
+    live.push(0xFE);
+    live.extend_from_slice(&encoded.bytes);
+    let visual_end = live.len();
+    live.extend_from_slice(&[b'U', super::CREATURE_OBJECT_TYPE]);
+    live.extend_from_slice(&0x8000_3345u32.to_le_bytes());
+    live.extend_from_slice(&0u32.to_le_bytes());
+
+    let claim = super::claim_payload_if_verified(&live_object_payload_with_bits(
+        &live,
+        encoded.fragment_bits,
+    ))
+    .expect("typed standalone map and following zero-mask update should exact-claim");
+    assert_eq!(claim.creature_visual_transform_update_records, 1);
+    assert_eq!(claim.creature_update_records, 1);
+    assert_eq!(claim.mentions.len(), 2);
+    assert_eq!(claim.mentions[0].record_end, visual_end);
+    assert_eq!(
+        claim.mentions[0].fragment_bit_end,
+        claim.mentions[0].fragment_bit_start + 1,
+        "the map value BOOL must advance the shared cursor before the next record"
+    );
+    assert_eq!(
+        claim.mentions[1].fragment_bit_start, claim.mentions[0].fragment_bit_end,
+        "the following U/5 starts at the typed map's exact bit handoff"
+    );
+}
+
+#[test]
+fn standalone_creature_visual_transform_selector_08_beats_short_effect_prefix() {
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_3344u32.to_le_bytes());
+    live.push(0x08);
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+    assert_eq!(
+        super::effects::try_get_verified_ee_looping_visual_effect_update_record_end(
+            &live,
+            0,
+            live.len(),
+        ),
+        Some(12),
+        "selector 0x08 plus the empty map has a shorter zero-effect-count prefix"
+    );
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("the complete typed map must retain its atomic boundary");
+    assert_eq!(claim.records_examined, 1);
+    assert_eq!(claim.creature_visual_transform_update_records, 1);
+    assert_eq!(claim.creature_update_records, 0);
+    assert_eq!(claim.mentions[0].record_end, live.len());
+
+    let mut mixed_live = live.clone();
+    mixed_live.extend_from_slice(&[b'U', super::CREATURE_OBJECT_TYPE]);
+    mixed_live.extend_from_slice(&0x8000_3345u32.to_le_bytes());
+    mixed_live.extend_from_slice(&0u32.to_le_bytes());
+    let decoded_fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    let mut stream_cursor = super::CNW_FRAGMENT_HEADER_BITS;
+    assert!(
+        super::advance_verified_creature_update_fragment_cursor_for_ee(
+            &mixed_live,
+            0,
+            live.len(),
+            &decoded_fragment_bits,
+            &mut stream_cursor,
+        ),
+        "a full-stream walker must retain the exact selector-0x08 map before later records"
+    );
+    assert_eq!(stream_cursor, super::CNW_FRAGMENT_HEADER_BITS);
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "an exact empty EE map must remain idempotent"
+    );
+}
+
+#[test]
+fn ordinary_creature_0047_map_shaped_prefix_keeps_full_record_boundary() {
+    // The 0x47 mask's final three zero bytes plus the first five position bytes
+    // form EE's eight-byte empty visual-transform map at selector+1. The sixth
+    // position byte and scalar-orientation byte deliberately spell `U/5`, so a
+    // prefix-only map check also sees a plausible top-level handoff. Diamond
+    // `sub_44ADD0` and EE `sub_140781E80` nevertheless own the full ordered
+    // position/orientation/action/state record and its exact fragment cursor.
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+    live.extend_from_slice(&0x0000_0047u32.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes()); // position X
+    live.extend_from_slice(&0u16.to_le_bytes()); // position Y
+    live.extend_from_slice(&0x5500u16.to_le_bytes()); // interior `U`
+    live.push(super::CREATURE_OBJECT_TYPE); // scalar orientation; interior `/5`
+    live.extend_from_slice(&f32::from_bits(0x8000_000A).to_le_bytes()); // interior object id
+    live.extend_from_slice(&4u16.to_le_bytes()); // action code
+    live.push(1); // action state
+    live.extend_from_slice(&0u16.to_le_bytes()); // no action followups
+    live.extend_from_slice(&0xFFFFu16.to_le_bytes()); // 0x0040 state field
+    live.push(1); // state mode without object id
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.push(1);
+    let ordinary_end = live.len();
+    assert!(
+        super::boundary::looks_like_legacy_live_object_sub_message_boundary(&live, 15),
+        "the empty-map endpoint must genuinely look like an interior U/5 boundary"
+    );
+    live.extend_from_slice(&[b'U', super::CREATURE_OBJECT_TYPE]);
+    live.extend_from_slice(&0x8000_000Bu32.to_le_bytes());
+    live.extend_from_slice(&0u32.to_le_bytes());
+
+    let fragment_bits = vec![
+        false, false, // position Z high bits
+        false, // scalar orientation branch
+        false, false, false, false, // scalar residual bits
+        false, // no orientation target
+        false, // no post-state extra float
+        false, // 0x0040 state BOOL
+    ];
+    let mut decoded_fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    decoded_fragment_bits.extend_from_slice(&fragment_bits);
+    let mut bounded_cursor = super::CNW_FRAGMENT_HEADER_BITS;
+    assert!(
+        !super::advance_verified_creature_update_fragment_cursor_for_ee(
+            &live,
+            0,
+            15,
+            &decoded_fragment_bits,
+            &mut bounded_cursor,
+        ),
+        "a bounded transport cursor must fail closed on the ambiguous empty-map prefix"
+    );
+    assert_eq!(bounded_cursor, super::CNW_FRAGMENT_HEADER_BITS);
+    let mut payload = live_object_payload_with_bits(&live, fragment_bits.clone());
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("map-shaped 0x47 prefix must yield to the full ordinary reader");
+    assert_eq!(claim.creature_update_records, 2);
+    assert_eq!(claim.creature_visual_transform_update_records, 0);
+    assert_eq!(claim.mentions[0].record_end, ordinary_end);
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "an exact ordinary 0x47 record must remain byte-identical"
+    );
+
+    let mut legacy_live = live[..ordinary_end].to_vec();
+    legacy_live.extend_from_slice(&[b'U', super::CREATURE_OBJECT_TYPE]);
+    legacy_live.extend_from_slice(&0x8000_000Bu32.to_le_bytes());
+    legacy_live.push(0xFE);
+    let mut legacy_payload = live_object_payload_with_bits(&legacy_live, fragment_bits);
+    assert!(
+        super::claim_payload_if_verified(&legacy_payload).is_none(),
+        "the following Diamond selector still needs its EE map"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut legacy_payload)
+        .expect("rewrite must walk past the full 0x47 row and translate the following selector");
+    assert_eq!(rewrite.creature_visual_transform_update_records, 1);
+    assert_eq!(
+        rewrite.bytes_inserted,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
+    );
+    let rewritten_claim = super::claim_payload_if_verified(&legacy_payload)
+        .expect("rewritten mixed ordinary/selector stream must exact-claim");
+    assert_eq!(rewritten_claim.creature_update_records, 1);
+    assert_eq!(rewritten_claim.creature_visual_transform_update_records, 1);
+}
+
+#[test]
 fn zero_mask_looking_creature_selector_storage_waits_for_following_boundary() {
     // `U/5 + OBJECTID + 00 00 00 00` is ambiguous without a stream boundary:
     // the creature update reader treats the four zero bytes as a mask and owns
@@ -7953,6 +8134,11 @@ fn zero_mask_looking_creature_selector_storage_waits_for_following_boundary() {
     let storage =
         super::bits::pack_msb_valid_bits(vec![false; 64], super::CNW_FRAGMENT_HEADER_BITS);
     assert_eq!(storage.len(), 8);
+    assert_eq!(
+        storage,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        "all-zero legacy fragment storage is byte-identical to EE's empty map; local bytes cannot prove source origin"
+    );
     live.extend_from_slice(&storage);
     let visual_selector_end = live.len();
     live.extend_from_slice(&[b'W', 0x10, 0x20]);
