@@ -23,8 +23,9 @@ use super::{
         sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
     },
     state::{
-        InventoryEquipmentBridgeClientGuiStatusResponse, InventoryEquipmentBridgeOutputDecision,
-        InventoryEquipmentBridgeOutputDecisionKind,
+        InventoryEquipmentBridgeClientGuiStatusResponse,
+        InventoryEquipmentBridgeClientGuiStatusResponseObservation,
+        InventoryEquipmentBridgeOutputDecision, InventoryEquipmentBridgeOutputDecisionKind,
         InventoryEquipmentBridgePendingConfirmedInventoryReplay,
         InventoryEquipmentBridgeQueuedClientGuiStatusOutput, InventoryEquipmentBridgeQueuedOutput,
         InventoryEquipmentCurrentPlayerStatusBinding, PendingClientPacket, SessionState,
@@ -337,6 +338,55 @@ pub(super) fn maybe_record_non_server_inventory_equipment_bridge_output_decision
     }
 }
 
+fn client_gui_status_transport_matches_completing_response(
+    state: &SessionState,
+    server_sequence: u16,
+    server_peer_ack_sequence: u16,
+    ack_sequence: u16,
+) -> bool {
+    state
+        .inventory_equipment
+        .last_client_gui_status_response
+        .is_some_and(|response| {
+            response.server_sequence == server_sequence
+                && response.server_peer_ack_sequence == server_peer_ack_sequence
+                && response.ack_sequence == ack_sequence
+        })
+}
+
+/// Close the forwarded Status diagnostic tail as soon as transport advances
+/// beyond the exact reliable M frame or deflated reassembly that completed it.
+/// This runs once per verified semantic transport before its wire-ordered
+/// LiveObject units are applied; it changes no response or action state.
+pub(super) fn observe_client_gui_status_transport_boundary(
+    state: &mut SessionState,
+    server_sequence: u16,
+    server_peer_ack_sequence: u16,
+    ack_sequence: u16,
+) {
+    if !state
+        .inventory_equipment
+        .client_gui_status_post_completion_observation_open
+        || client_gui_status_transport_matches_completing_response(
+            state,
+            server_sequence,
+            server_peer_ack_sequence,
+            ack_sequence,
+        )
+    {
+        return;
+    }
+    state
+        .inventory_equipment
+        .client_gui_status_post_completion_observation_open = false;
+    tracing::debug!(
+        server_sequence,
+        server_peer_ack_sequence,
+        ack_sequence,
+        "inventory/equipment bridge closed forwarded Status post-completion observation tail at the next transport boundary"
+    );
+}
+
 pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
     state: &mut SessionState,
     proof: &VerifiedProof,
@@ -347,6 +397,8 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
         &crate::translate::semantic::LiveObjectInventoryMaterializationSummary,
     >,
     current_controlled_object_id_at_observation: Option<u32>,
+    area_client_area_packets_at_observation: u64,
+    control_epoch_at_observation: u64,
 ) -> bool {
     if state
         .inventory_equipment
@@ -354,11 +406,37 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
         .is_none()
         || !proof.contains_family(VerifiedFamily::GameObjUpdateLiveObject)
         || frame_materialization.is_none()
-        || state
-            .inventory_equipment
-            .client_gui_status_response_window_complete()
     {
         return false;
+    }
+    let forwarded_request = state
+        .inventory_equipment
+        .client_gui_status_request_is_forwarded();
+    let response_window_complete = state
+        .inventory_equipment
+        .client_gui_status_response_window_complete();
+    if response_window_complete {
+        let player_inventory_gui = state
+            .inventory_equipment
+            .last_queued_client_gui_status_output
+            .is_some_and(|queued| queued.player_inventory_gui);
+        if !forwarded_request
+            || !player_inventory_gui
+            || !state
+                .inventory_equipment
+                .client_gui_status_post_completion_observation_open
+            || !client_gui_status_transport_matches_completing_response(
+                state,
+                server_sequence,
+                server_peer_ack_sequence,
+                ack_sequence,
+            )
+        {
+            state
+                .inventory_equipment
+                .client_gui_status_post_completion_observation_open = false;
+            return false;
+        }
     }
     let Some(queued_request_sequence) = state
         .inventory_equipment
@@ -379,6 +457,9 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
         .client_gui_status_request_acknowledged()
         || !current_packet_acknowledges_request
     {
+        if response_window_complete {
+            return false;
+        }
         state
             .inventory_equipment
             .client_gui_status_pre_ack_live_object_packets_ignored = state
@@ -419,9 +500,6 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
     let Some(summary) = frame_materialization.cloned() else {
         return false;
     };
-    let forwarded_request = state
-        .inventory_equipment
-        .client_gui_status_request_is_forwarded();
     let current_player_object_id = state
         .inventory_equipment
         .last_queued_client_gui_status_output
@@ -458,32 +536,6 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
     let current_player_inventory_mask_union = current_player_inventory_claims
         .iter()
         .fold(0u16, |mask, claim| mask | claim.mask);
-    let typed_response_relevant = if forwarded_request {
-        summary.inventory_records != 0
-    } else {
-        summary.inventory_records != 0
-            || summary.live_gui_records != 0
-            || !summary.materialized_item_object_ids.is_empty()
-    };
-    if !typed_response_relevant {
-        state
-            .inventory_equipment
-            .client_gui_status_non_inventory_live_object_packets_ignored = state
-            .inventory_equipment
-            .client_gui_status_non_inventory_live_object_packets_ignored
-            .saturating_add(1);
-        tracing::debug!(
-            queued_update_index = state
-                .inventory_equipment
-                .last_queued_client_gui_status_update_index
-                .unwrap_or(0),
-            server_sequence,
-            server_peer_ack_sequence,
-            forwarded_request,
-            "inventory/equipment bridge ignored non-inventory live-object frame outside the tracked ClientGuiInventory_Status response"
-        );
-        return false;
-    }
     let queued_update_index = state
         .inventory_equipment
         .last_queued_client_gui_status_update_index
@@ -517,6 +569,77 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
                 .materialized_item_object_ids
                 .contains(&candidate.object_id)
         });
+    let diagnostic_response_relevant = summary.inventory_records != 0
+        || summary.live_gui_records != 0
+        || materialized_item_object_ids != 0;
+    if !diagnostic_response_relevant {
+        // A completed forwarded window used to return before this point. Keep
+        // that counter behavior unchanged while allowing later exact inventory
+        // or materialization units into the bounded diagnostic ledger below.
+        if !response_window_complete {
+            state
+                .inventory_equipment
+                .client_gui_status_non_inventory_live_object_packets_ignored = state
+                .inventory_equipment
+                .client_gui_status_non_inventory_live_object_packets_ignored
+                .saturating_add(1);
+            tracing::debug!(
+                queued_update_index,
+                server_sequence,
+                server_peer_ack_sequence,
+                forwarded_request,
+                "inventory/equipment bridge ignored non-inventory live-object unit outside the tracked ClientGuiInventory_Status response"
+            );
+        }
+        return false;
+    }
+    state
+        .inventory_equipment
+        .record_client_gui_status_response_observation(
+            InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                queued_update_index,
+                server_sequence,
+                server_peer_ack_sequence,
+                ack_sequence,
+                forwarded_request,
+                response_window_complete_before_observation: response_window_complete,
+                current_player_object_id,
+                area_client_area_packets: area_client_area_packets_at_observation,
+                control_epoch: control_epoch_at_observation,
+                inventory_records: summary.inventory_records,
+                current_player_inventory_records,
+                current_player_inventory_mask_union,
+                live_gui_records: summary.live_gui_records,
+                live_gui_fragment_bits: summary.live_gui_fragment_bits,
+                materialized_item_object_ids,
+                materialized_item_object_id_first,
+                materialized_item_object_id_last,
+                materialized_item_object_id_min,
+                materialized_item_object_id_max,
+                materialized_item_object_ids_contain_queued_candidate,
+            },
+        );
+    if response_window_complete {
+        // Forwarded Status completion remains terminal for all protocol state;
+        // later ACK-covered units are retained only as unit-local provenance.
+        return false;
+    }
+    if forwarded_request && summary.inventory_records == 0 {
+        state
+            .inventory_equipment
+            .client_gui_status_non_inventory_live_object_packets_ignored = state
+            .inventory_equipment
+            .client_gui_status_non_inventory_live_object_packets_ignored
+            .saturating_add(1);
+        tracing::debug!(
+            queued_update_index,
+            server_sequence,
+            server_peer_ack_sequence,
+            forwarded_request,
+            "inventory/equipment bridge retained forwarded Status materialization provenance without changing response state"
+        );
+        return false;
+    }
     state
         .inventory_equipment
         .client_gui_status_response_live_object_packets = state
@@ -585,6 +708,9 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
         .inventory_equipment
         .client_gui_status_response_window_satisfied()
     {
+        state
+            .inventory_equipment
+            .client_gui_status_post_completion_observation_open = forwarded_request;
         state
             .inventory_equipment
             .last_completed_client_gui_status_response_update_index = Some(queued_update_index);
@@ -749,6 +875,8 @@ fn maybe_record_client_gui_status_live_object_response(
         .flatten();
     let current_controlled_object_id_at_observation =
         state.semantic.player_control.current_controlled_object_id;
+    let area_client_area_packets_at_observation = state.semantic.area.client_area_packets;
+    let control_epoch_at_observation = state.semantic.player_control.control_epoch;
     maybe_record_client_gui_status_live_object_frame_response(
         state,
         proof,
@@ -757,6 +885,8 @@ fn maybe_record_client_gui_status_live_object_response(
         ack_sequence,
         frame_materialization.as_ref(),
         current_controlled_object_id_at_observation,
+        area_client_area_packets_at_observation,
+        control_epoch_at_observation,
     );
 }
 
@@ -1756,6 +1886,8 @@ mod tests {
             51,
             Some(&generic_live_object),
             None,
+            0,
+            0,
         );
         assert_eq!(
             state
@@ -1790,6 +1922,8 @@ mod tests {
             51,
             Some(&inventory_response),
             None,
+            0,
+            0,
         );
         assert_eq!(
             state
@@ -1851,6 +1985,8 @@ mod tests {
                 51,
                 Some(&current_player_inventory_response),
                 Some(CURRENT_CREATURE_ID),
+                0,
+                1,
             );
         assert!(recorded_current_player_response);
         if recorded_current_player_response {
@@ -1932,6 +2068,8 @@ mod tests {
             51,
             Some(&later_sibling.summary),
             later_sibling.current_controlled_object_id,
+            later_sibling.area_client_area_packets,
+            later_sibling.control_epoch,
         );
         assert!(
             !recorded_later_sibling,
@@ -2060,6 +2198,8 @@ mod tests {
             51,
             Some(&response),
             Some(CREATURE_B),
+            0,
+            2,
         );
 
         assert_eq!(
@@ -2124,6 +2264,8 @@ mod tests {
             53,
             Some(&response_for_new_control),
             Some(CREATURE_B),
+            0,
+            2,
         );
         assert_eq!(
             state
@@ -2156,6 +2298,8 @@ mod tests {
             53,
             Some(&response_for_requested_object),
             Some(CREATURE_B),
+            0,
+            2,
         );
         maybe_bind_current_player_status_response_authority(
             &mut state,
@@ -2383,6 +2527,8 @@ mod tests {
             82,
             frame_materialization.as_ref(),
             None,
+            0,
+            0,
         );
 
         assert_eq!(
@@ -2603,6 +2749,9 @@ mod tests {
             });
         state
             .inventory_equipment
+            .client_gui_status_post_completion_observation_open = true;
+        state
+            .inventory_equipment
             .begin_client_gui_status_request_window();
         assert!(
             state
@@ -2610,6 +2759,11 @@ mod tests {
                 .current_player_status_binding
                 .is_none(),
             "a new Status request must invalidate the prior response authority"
+        );
+        assert!(
+            !state
+                .inventory_equipment
+                .client_gui_status_post_completion_observation_open
         );
         state.inventory_equipment.queued_client_gui_status_outputs = 2;
         state
@@ -2705,7 +2859,7 @@ mod tests {
             "a proof entry without a current gameplay unit must not adopt the previous summary"
         );
         maybe_record_client_gui_status_live_object_frame_response(
-            &mut state, &proof, 36, 82, 80, None, None,
+            &mut state, &proof, 36, 82, 80, None, None, 0, 0,
         );
 
         assert!(
@@ -3154,6 +3308,495 @@ mod tests {
         assert_eq!(
             state.inventory_equipment.output_status().as_str(),
             "client_gui_status_inventory_replay_dispatched"
+        );
+    }
+
+    #[test]
+    fn client_gui_status_observations_retain_cross_unit_owner_and_materialization() {
+        const CURRENT_CREATURE_ID: u32 = 0xFFFF_FFEF;
+        const CANDIDATE_ID: u32 = 0x8001_6201;
+
+        let mut state = SessionState::default();
+        state.inventory_equipment.queued_client_gui_status_outputs = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(20);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 20,
+                emission_index: 20,
+                event_index: 20,
+                candidate: Some(InventoryItemContextCandidate {
+                    object_id: CANDIDATE_ID,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ready_objects: 4,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                resolved_current_player_object_id: None,
+                player_inventory_gui: true,
+                trigger_client_sequence: 80,
+                synthetic_sequence: 81,
+                ack_sequence: 40,
+            });
+        mark_current_status_server_acknowledged(&mut state, 81);
+
+        let owner_only = crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+            inventory_records: 1,
+            inventory_owner_claims: vec![crate::translate::semantic::LiveObjectInventoryOwner {
+                owner_id: CURRENT_CREATURE_ID,
+                mask: 0x2400,
+            }],
+            ..Default::default()
+        };
+        assert!(maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            50,
+            81,
+            40,
+            Some(&owner_only),
+            Some(CURRENT_CREATURE_ID),
+            4,
+            7,
+        ));
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "awaiting_materialized_items"
+        );
+
+        let materialization_only =
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 1,
+                live_gui_fragment_bits: 7,
+                materialized_item_object_ids: vec![CANDIDATE_ID],
+                compact_item_emission_ready_objects: 1,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: CANDIDATE_ID,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ..Default::default()
+            };
+        assert!(maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            50,
+            81,
+            40,
+            Some(&materialization_only),
+            Some(CURRENT_CREATURE_ID),
+            4,
+            7,
+        ));
+
+        let observations = &state
+            .inventory_equipment
+            .client_gui_status_response_observations;
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations_observed,
+            2
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations_evicted,
+            0
+        );
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].queued_update_index, 20);
+        assert_eq!(observations[0].server_sequence, 50);
+        assert_eq!(observations[0].server_peer_ack_sequence, 81);
+        assert_eq!(
+            observations[0].current_player_object_id,
+            Some(CURRENT_CREATURE_ID)
+        );
+        assert_eq!(observations[0].current_player_inventory_records, 1);
+        assert_eq!(observations[0].current_player_inventory_mask_union, 0x2400);
+        assert_eq!(observations[0].materialized_item_object_ids, 0);
+        assert_eq!(observations[1].server_sequence, 50);
+        assert_eq!(observations[1].current_player_inventory_records, 0);
+        assert_eq!(observations[1].materialized_item_object_ids, 1);
+        assert!(!observations[1].response_window_complete_before_observation);
+        assert_eq!(
+            observations[1].materialized_item_object_id_first,
+            CANDIDATE_ID
+        );
+        assert!(observations[1].materialized_item_object_ids_contain_queued_candidate);
+
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response
+                .expect("owner response remains the existing strongest response")
+                .server_sequence,
+            50
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "awaiting_materialized_items",
+            "the provenance ledger must not change completion semantics"
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .current_player_status_binding
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn forwarded_client_gui_status_retains_post_completion_materialization_observation() {
+        const CURRENT_CREATURE_ID: u32 = 0xFFFF_FFEF;
+        const CANDIDATE_ID: u32 = 0x8001_6202;
+
+        let mut state = SessionState::default();
+        state
+            .inventory_equipment
+            .forwarded_client_gui_status_requests = 1;
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(21);
+        state
+            .inventory_equipment
+            .last_forwarded_client_gui_status_update_index = Some(21);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 21,
+                emission_index: 21,
+                event_index: 21,
+                candidate: Some(InventoryItemContextCandidate {
+                    object_id: CANDIDATE_ID,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ready_objects: 4,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                resolved_current_player_object_id: None,
+                player_inventory_gui: true,
+                trigger_client_sequence: 82,
+                synthetic_sequence: 82,
+                ack_sequence: 41,
+            });
+        mark_current_status_server_acknowledged(&mut state, 82);
+
+        let owner_only = crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+            inventory_records: 1,
+            inventory_owner_claims: vec![crate::translate::semantic::LiveObjectInventoryOwner {
+                owner_id: CURRENT_CREATURE_ID,
+                mask: 0x2000,
+            }],
+            ..Default::default()
+        };
+        assert!(maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            52,
+            82,
+            41,
+            Some(&owner_only),
+            Some(CURRENT_CREATURE_ID),
+            5,
+            8,
+        ));
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "confirmed_current_player_inventory_record"
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_window_complete()
+        );
+
+        let materialization_only =
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 1,
+                live_gui_fragment_bits: 9,
+                materialized_item_object_ids: vec![CANDIDATE_ID],
+                compact_item_emission_ready_objects: 1,
+                compact_item_emission_ready_candidate: Some(InventoryItemContextCandidate {
+                    object_id: CANDIDATE_ID,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ..Default::default()
+            };
+        assert!(
+            !maybe_record_client_gui_status_live_object_frame_response(
+                &mut state,
+                &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+                52,
+                82,
+                41,
+                Some(&materialization_only),
+                Some(CURRENT_CREATURE_ID),
+                5,
+                8,
+            ),
+            "forwarded materialization-only units remain diagnostic-only"
+        );
+
+        let observations = &state
+            .inventory_equipment
+            .client_gui_status_response_observations;
+        assert_eq!(observations.len(), 2);
+        assert!(
+            observations
+                .iter()
+                .all(|observation| observation.forwarded_request)
+        );
+        assert_eq!(observations[0].server_sequence, 52);
+        assert_eq!(observations[0].current_player_inventory_records, 1);
+        assert_eq!(observations[0].materialized_item_object_ids, 0);
+        assert_eq!(observations[1].server_sequence, 52);
+        assert_eq!(observations[1].current_player_inventory_records, 0);
+        assert_eq!(observations[1].materialized_item_object_ids, 1);
+        assert!(observations[1].response_window_complete_before_observation);
+        assert!(observations[1].materialized_item_object_ids_contain_queued_candidate);
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations_observed,
+            2
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .best_client_gui_status_response
+                .expect("owner response remains authoritative")
+                .server_sequence,
+            52
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_client_gui_status_response
+                .expect("diagnostic observation must not replace response state")
+                .server_sequence,
+            52
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_request_completion()
+                .as_str(),
+            "confirmed_current_player_inventory_record"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_live_object_packets,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_materialized_item_packets,
+            0
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .pending_confirmed_inventory_replay
+                .is_none()
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .current_player_status_binding
+                .is_none()
+        );
+
+        let retained_before_later_transport = state
+            .inventory_equipment
+            .client_gui_status_response_observations
+            .len();
+        observe_client_gui_status_transport_boundary(&mut state, 53, 82, 41);
+        assert!(
+            !state
+                .inventory_equipment
+                .client_gui_status_post_completion_observation_open
+        );
+        assert!(!maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            53,
+            82,
+            41,
+            Some(&materialization_only),
+            Some(CURRENT_CREATURE_ID),
+            5,
+            8,
+        ));
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations
+                .len(),
+            retained_before_later_transport,
+            "the next transport must close the post-completion diagnostic tail"
+        );
+        assert!(!maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            52,
+            82,
+            41,
+            Some(&materialization_only),
+            Some(CURRENT_CREATURE_ID),
+            5,
+            8,
+        ));
+    }
+
+    #[test]
+    fn forwarded_closed_inventory_status_never_opens_post_completion_observation_tail() {
+        let mut state = SessionState::default();
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_update_index = Some(22);
+        state
+            .inventory_equipment
+            .last_forwarded_client_gui_status_update_index = Some(22);
+        state
+            .inventory_equipment
+            .last_completed_client_gui_status_response_update_index = Some(22);
+        state
+            .inventory_equipment
+            .last_queued_client_gui_status_output =
+            Some(InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
+                update_index: 22,
+                emission_index: 22,
+                event_index: 22,
+                candidate: Some(InventoryItemContextCandidate {
+                    object_id: 0x8001_6203,
+                    proof: InventoryItemObjectProof::ActiveObject,
+                    source: InventoryItemContextCandidateSource::DirectOnly,
+                }),
+                ready_objects: 1,
+                deferred_feature25_only_objects: 0,
+                object_id: client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID,
+                resolved_current_player_object_id: None,
+                player_inventory_gui: false,
+                trigger_client_sequence: 83,
+                synthetic_sequence: 83,
+                ack_sequence: 42,
+            });
+        let materialization =
+            crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+                live_gui_records: 1,
+                materialized_item_object_ids: vec![0x8001_6203],
+                ..Default::default()
+            };
+
+        assert!(!maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            54,
+            83,
+            42,
+            Some(&materialization),
+            Some(0xFFFF_FFEF),
+            5,
+            8,
+        ));
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations
+                .is_empty()
+        );
+        assert!(
+            !state
+                .inventory_equipment
+                .client_gui_status_post_completion_observation_open
+        );
+    }
+
+    #[test]
+    fn client_gui_status_observation_ledger_is_bounded_and_request_scoped() {
+        let mut state = SessionState::default();
+        let capacity = super::super::state::CLIENT_GUI_STATUS_RESPONSE_OBSERVATION_CAPACITY;
+
+        for ordinal in 0..capacity + 3 {
+            state
+                .inventory_equipment
+                .record_client_gui_status_response_observation(
+                    InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                        queued_update_index: 9,
+                        server_sequence: u16::try_from(ordinal).expect("bounded test ordinal"),
+                        ..Default::default()
+                    },
+                );
+        }
+
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations_observed,
+            u64::try_from(capacity + 3).expect("bounded test observation count")
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations_evicted,
+            3
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations
+                .len(),
+            capacity
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations
+                .front()
+                .expect("oldest retained observation")
+                .server_sequence,
+            3
+        );
+
+        state
+            .inventory_equipment
+            .begin_client_gui_status_request_window();
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations_observed,
+            0
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations_evicted,
+            0
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .client_gui_status_response_observations
+                .is_empty()
         );
     }
 

@@ -415,6 +415,44 @@ pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponse {
         Option<semantic::InventoryItemContextCandidate>,
 }
 
+pub(super) const CLIENT_GUI_STATUS_RESPONSE_OBSERVATION_CAPACITY: usize = 32;
+
+/// Unit-local provenance for one exact, ACK-covered live-object unit observed
+/// while a ClientGuiInventory_Status response window is open.
+///
+/// This ledger is deliberately independent of `best_client_gui_status_response`.
+/// A current-player owner row is stronger identity evidence than a generic item
+/// materialization, but that ranking must not hide that the two facts arrived in
+/// different wire-ordered units. Several units can share one reliable M frame or
+/// deflated reassembly, so deque order is the unit order while `server_sequence`
+/// remains the enclosing transport identity. Retaining these observations is
+/// diagnostic only;
+/// completion, authority binding, Inventory replay, and EquipToggle consumers
+/// continue to use their existing fail-closed gates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+    pub(super) queued_update_index: u64,
+    pub(super) server_sequence: u16,
+    pub(super) server_peer_ack_sequence: u16,
+    pub(super) ack_sequence: u16,
+    pub(super) forwarded_request: bool,
+    pub(super) response_window_complete_before_observation: bool,
+    pub(super) current_player_object_id: Option<u32>,
+    pub(super) area_client_area_packets: u64,
+    pub(super) control_epoch: u64,
+    pub(super) inventory_records: u32,
+    pub(super) current_player_inventory_records: u32,
+    pub(super) current_player_inventory_mask_union: u16,
+    pub(super) live_gui_records: u32,
+    pub(super) live_gui_fragment_bits: u32,
+    pub(super) materialized_item_object_ids: usize,
+    pub(super) materialized_item_object_id_first: u32,
+    pub(super) materialized_item_object_id_last: u32,
+    pub(super) materialized_item_object_id_min: u32,
+    pub(super) materialized_item_object_id_max: u32,
+    pub(super) materialized_item_object_ids_contain_queued_candidate: bool,
+}
+
 /// Exact current-player owner association recovered from one completed,
 /// ACK-covered ClientGuiInventory_Status response window.
 ///
@@ -706,6 +744,11 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) client_gui_status_response_inventory_record_packets: u64,
     pub(super) client_gui_status_response_live_gui_record_packets: u64,
     pub(super) client_gui_status_response_materialized_item_packets: u64,
+    pub(super) client_gui_status_response_observations_observed: u64,
+    pub(super) client_gui_status_response_observations_evicted: u64,
+    pub(super) client_gui_status_post_completion_observation_open: bool,
+    pub(super) client_gui_status_response_observations:
+        VecDeque<InventoryEquipmentBridgeClientGuiStatusResponseObservation>,
     pub(super) deferred_client_gui_updates: u64,
     pub(super) deferred_missing_claim_updates: u64,
     pub(super) blocked_candidate_mismatch_updates: u64,
@@ -811,6 +854,29 @@ impl InventoryEquipmentBridgeState {
         self.client_gui_status_response_inventory_record_packets = 0;
         self.client_gui_status_response_live_gui_record_packets = 0;
         self.client_gui_status_response_materialized_item_packets = 0;
+        self.client_gui_status_response_observations_observed = 0;
+        self.client_gui_status_response_observations_evicted = 0;
+        self.client_gui_status_post_completion_observation_open = false;
+        self.client_gui_status_response_observations.clear();
+    }
+
+    pub(super) fn record_client_gui_status_response_observation(
+        &mut self,
+        observation: InventoryEquipmentBridgeClientGuiStatusResponseObservation,
+    ) {
+        self.client_gui_status_response_observations_observed = self
+            .client_gui_status_response_observations_observed
+            .saturating_add(1);
+        if self.client_gui_status_response_observations.len()
+            == CLIENT_GUI_STATUS_RESPONSE_OBSERVATION_CAPACITY
+        {
+            self.client_gui_status_response_observations.pop_front();
+            self.client_gui_status_response_observations_evicted = self
+                .client_gui_status_response_observations_evicted
+                .saturating_add(1);
+        }
+        self.client_gui_status_response_observations
+            .push_back(observation);
     }
 
     pub(super) fn record_confirmed_inventory_replay_dispatch(&mut self) {

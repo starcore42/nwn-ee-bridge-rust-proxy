@@ -3168,6 +3168,12 @@ pub(super) fn apply_verified_server_semantic_side_effects(
     proof: &VerifiedProof,
     frame: ServerSemanticFrameContext,
 ) {
+    inventory_equipment::observe_client_gui_status_transport_boundary(
+        state,
+        frame.sequence,
+        frame.server_peer_ack_sequence,
+        frame.client_unshifted_ack_sequence,
+    );
     for observation in &frame.live_object_inventory_materializations {
         let recorded =
             inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
@@ -3178,6 +3184,8 @@ pub(super) fn apply_verified_server_semantic_side_effects(
                 frame.client_unshifted_ack_sequence,
                 Some(&observation.summary),
                 observation.current_controlled_object_id,
+                observation.area_client_area_packets,
+                observation.control_epoch,
             );
         if recorded {
             inventory_equipment::maybe_bind_current_player_status_response_authority(
@@ -3719,6 +3727,217 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             == state::InventoryEquipmentBridgeClientGuiStatusResponseAssociation::MatchesQueuedStatusCandidate;
     let best_client_gui_status_response_candidate_delta =
         bridge.best_client_gui_status_response_candidate_delta_from_queued_status();
+    let client_gui_status_response_observations = &bridge.client_gui_status_response_observations;
+    let client_gui_status_response_observations_retained =
+        client_gui_status_response_observations.len();
+    let first_client_gui_status_response_observation = client_gui_status_response_observations
+        .front()
+        .copied()
+        .unwrap_or_default();
+    let last_client_gui_status_response_observation = client_gui_status_response_observations
+        .back()
+        .copied()
+        .unwrap_or_default();
+    let same_client_gui_status_response_authority =
+        |left: &state::InventoryEquipmentBridgeClientGuiStatusResponseObservation,
+         right: &state::InventoryEquipmentBridgeClientGuiStatusResponseObservation| {
+            left.area_client_area_packets == right.area_client_area_packets
+                && left.control_epoch == right.control_epoch
+                && left.current_player_object_id == right.current_player_object_id
+        };
+    let client_gui_status_response_observation_authority_contexts =
+        client_gui_status_response_observations
+            .iter()
+            .enumerate()
+            .filter(|(index, observation)| {
+                !client_gui_status_response_observations
+                    .iter()
+                    .take(*index)
+                    .any(|prior| same_client_gui_status_response_authority(prior, observation))
+            })
+            .count();
+    let client_gui_status_response_observation_forwarded_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| observation.forwarded_request)
+            .count();
+    let client_gui_status_response_observation_units_after_response_completion =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| observation.response_window_complete_before_observation)
+            .count();
+    let client_gui_status_response_observation_inventory_records =
+        client_gui_status_response_observations
+            .iter()
+            .fold(0u64, |records, observation| {
+                records.saturating_add(u64::from(observation.inventory_records))
+            });
+    let client_gui_status_response_observation_owner_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| observation.current_player_inventory_records != 0)
+            .count();
+    let client_gui_status_response_observation_pre_completion_owner_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| {
+                observation.current_player_inventory_records != 0
+                    && !observation.response_window_complete_before_observation
+            })
+            .count();
+    let client_gui_status_response_observation_owner_records =
+        client_gui_status_response_observations
+            .iter()
+            .fold(0u64, |records, observation| {
+                records.saturating_add(u64::from(observation.current_player_inventory_records))
+            });
+    let client_gui_status_response_observation_owner_mask_union =
+        client_gui_status_response_observations
+            .iter()
+            .fold(0u16, |mask, observation| {
+                mask | observation.current_player_inventory_mask_union
+            });
+    let client_gui_status_response_observation_materialization_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| observation.materialized_item_object_ids != 0)
+            .count();
+    let client_gui_status_response_observation_materialized_item_object_ids =
+        client_gui_status_response_observations
+            .iter()
+            .fold(0usize, |object_ids, observation| {
+                object_ids.saturating_add(observation.materialized_item_object_ids)
+            });
+    let client_gui_status_response_observation_queued_candidate_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| observation.materialized_item_object_ids_contain_queued_candidate)
+            .count();
+    let client_gui_status_response_observation_same_unit_owner_materialization_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| {
+                observation.current_player_inventory_records != 0
+                    && observation.materialized_item_object_ids != 0
+            })
+            .count();
+    let client_gui_status_response_observation_owner_only_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| {
+                observation.current_player_inventory_records != 0
+                    && observation.materialized_item_object_ids == 0
+            })
+            .count();
+    let client_gui_status_response_observation_materialization_only_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| {
+                observation.current_player_inventory_records == 0
+                    && observation.materialized_item_object_ids != 0
+            })
+            .count();
+    // The semantic reducer emits one observation per wire-ordered LiveObject
+    // unit. Multiple observations can share one M frame or one deflated
+    // reassembly, so correlate deque positions as units, not transport frames.
+    // Authority must also match: ObjControl or area changes inside one gameplay
+    // stream cannot manufacture a Status owner/materialization relationship.
+    let mut cross_unit_owner_materialization_pair = None;
+    let mut same_unit_owner_materialization_pair = None;
+    for (owner_index, owner) in client_gui_status_response_observations.iter().enumerate() {
+        if owner.current_player_inventory_records == 0
+            || owner.response_window_complete_before_observation
+        {
+            continue;
+        }
+        for (materialization_index, materialization) in
+            client_gui_status_response_observations.iter().enumerate()
+        {
+            if materialization.materialized_item_object_ids == 0
+                || !same_client_gui_status_response_authority(owner, materialization)
+            {
+                continue;
+            }
+            if owner_index == materialization_index {
+                same_unit_owner_materialization_pair
+                    .get_or_insert((owner_index, materialization_index));
+            } else {
+                cross_unit_owner_materialization_pair
+                    .get_or_insert((owner_index, materialization_index));
+            }
+        }
+    }
+    let client_gui_status_response_observation_cross_unit_owner_materialization =
+        cross_unit_owner_materialization_pair.is_some();
+    let correlated_owner_materialization_pair =
+        cross_unit_owner_materialization_pair.or(same_unit_owner_materialization_pair);
+    let client_gui_status_response_observation_authority_correlated_owner_materialization =
+        correlated_owner_materialization_pair.is_some();
+    let client_gui_status_response_observation_correlated_pair_includes_post_completion_unit =
+        correlated_owner_materialization_pair.is_some_and(|(owner, materialization)| {
+            client_gui_status_response_observations[owner]
+                .response_window_complete_before_observation
+                || client_gui_status_response_observations[materialization]
+                    .response_window_complete_before_observation
+        });
+    let client_gui_status_response_observation_authority_mismatch_only =
+        client_gui_status_response_observation_pre_completion_owner_units != 0
+            && client_gui_status_response_observation_materialization_units != 0
+            && correlated_owner_materialization_pair.is_none();
+    let client_gui_status_response_observation_missing_pre_completion_owner_anchor =
+        client_gui_status_response_observation_owner_units != 0
+            && client_gui_status_response_observation_materialization_units != 0
+            && client_gui_status_response_observation_pre_completion_owner_units == 0
+            && client_gui_status_response_observation_units_after_response_completion != 0;
+    let client_gui_status_response_observation_owner_materialization_chronology =
+        match correlated_owner_materialization_pair {
+            Some((owner, materialization))
+                if owner < materialization
+                    && client_gui_status_response_observations[materialization]
+                        .response_window_complete_before_observation =>
+            {
+                "owner_before_post_completion_materialization"
+            }
+            Some((owner, materialization)) if owner == materialization => "same_unit",
+            Some((owner, materialization)) if owner < materialization => {
+                "owner_before_materialization"
+            }
+            Some(_) => "materialization_before_owner",
+            None if client_gui_status_response_observation_owner_units != 0
+                && client_gui_status_response_observation_materialization_units == 0 =>
+            {
+                "owner_only"
+            }
+            None if client_gui_status_response_observation_owner_units == 0
+                && client_gui_status_response_observation_materialization_units != 0 =>
+            {
+                "materialization_only"
+            }
+            None if client_gui_status_response_observation_authority_mismatch_only => {
+                "authority_context_mismatch"
+            }
+            None if client_gui_status_response_observation_missing_pre_completion_owner_anchor => {
+                "missing_pre_completion_owner_anchor"
+            }
+            None => "none",
+        };
+    let client_gui_status_response_observation_live_gui_units =
+        client_gui_status_response_observations
+            .iter()
+            .filter(|observation| observation.live_gui_records != 0)
+            .count();
+    let client_gui_status_response_observation_live_gui_records =
+        client_gui_status_response_observations
+            .iter()
+            .fold(0u64, |records, observation| {
+                records.saturating_add(u64::from(observation.live_gui_records))
+            });
+    let client_gui_status_response_observation_live_gui_fragment_bits =
+        client_gui_status_response_observations
+            .iter()
+            .fold(0u64, |bits, observation| {
+                bits.saturating_add(u64::from(observation.live_gui_fragment_bits))
+            });
     let current_player_status_binding = bridge.current_player_status_binding;
     let current_player_known_visible_equipment =
         current_player_known_visible_equipment(bridge, protocol, authorization_context);
@@ -4649,6 +4868,115 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         current_player_status_binding_owner_record_count,
         current_player_status_binding_owner_mask_union,
         current_player_status_binding_owner_mask_union
+    );
+    let fields = format!(
+        concat!(
+            "{}",
+            ",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observations_observed\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observations_retained\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observations_evicted\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_contexts\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_queued_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_server_peer_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_area_client_area_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_control_epoch\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_current_player_object_id_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_current_player_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_first_current_player_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_queued_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_server_peer_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_area_client_area_packets\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_control_epoch\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_current_player_object_id_known\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_current_player_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_last_current_player_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_forwarded_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_units_after_response_completion\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_inventory_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_pre_completion_owner_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_mask_union\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_mask_union_hex\": \"0x{:04X}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_materialization_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_materialized_item_object_ids\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_queued_candidate_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_same_unit_owner_materialization_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_only_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_materialization_only_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_cross_unit_owner_materialization\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_correlated_owner_materialization\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_correlated_pair_includes_post_completion_unit\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_mismatch_only\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_missing_pre_completion_owner_anchor\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_materialization_chronology\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_live_gui_units\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_live_gui_records\": {},\n",
+            "  \"inventory_equipment_bridge_output_client_gui_status_response_observation_live_gui_fragment_bits\": {}"
+        ),
+        fields,
+        bridge.client_gui_status_response_observations_observed,
+        client_gui_status_response_observations_retained,
+        bridge.client_gui_status_response_observations_evicted,
+        client_gui_status_response_observation_authority_contexts,
+        first_client_gui_status_response_observation.queued_update_index,
+        first_client_gui_status_response_observation.server_sequence,
+        first_client_gui_status_response_observation.server_peer_ack_sequence,
+        first_client_gui_status_response_observation.ack_sequence,
+        first_client_gui_status_response_observation.area_client_area_packets,
+        first_client_gui_status_response_observation.control_epoch,
+        first_client_gui_status_response_observation
+            .current_player_object_id
+            .is_some(),
+        first_client_gui_status_response_observation
+            .current_player_object_id
+            .unwrap_or(0),
+        first_client_gui_status_response_observation
+            .current_player_object_id
+            .unwrap_or(0),
+        last_client_gui_status_response_observation.queued_update_index,
+        last_client_gui_status_response_observation.server_sequence,
+        last_client_gui_status_response_observation.server_peer_ack_sequence,
+        last_client_gui_status_response_observation.ack_sequence,
+        last_client_gui_status_response_observation.area_client_area_packets,
+        last_client_gui_status_response_observation.control_epoch,
+        last_client_gui_status_response_observation
+            .current_player_object_id
+            .is_some(),
+        last_client_gui_status_response_observation
+            .current_player_object_id
+            .unwrap_or(0),
+        last_client_gui_status_response_observation
+            .current_player_object_id
+            .unwrap_or(0),
+        client_gui_status_response_observation_forwarded_units,
+        client_gui_status_response_observation_units_after_response_completion,
+        client_gui_status_response_observation_inventory_records,
+        client_gui_status_response_observation_owner_units,
+        client_gui_status_response_observation_pre_completion_owner_units,
+        client_gui_status_response_observation_owner_records,
+        client_gui_status_response_observation_owner_mask_union,
+        client_gui_status_response_observation_owner_mask_union,
+        client_gui_status_response_observation_materialization_units,
+        client_gui_status_response_observation_materialized_item_object_ids,
+        client_gui_status_response_observation_queued_candidate_units,
+        client_gui_status_response_observation_same_unit_owner_materialization_units,
+        client_gui_status_response_observation_owner_only_units,
+        client_gui_status_response_observation_materialization_only_units,
+        client_gui_status_response_observation_cross_unit_owner_materialization,
+        client_gui_status_response_observation_authority_correlated_owner_materialization,
+        client_gui_status_response_observation_correlated_pair_includes_post_completion_unit,
+        client_gui_status_response_observation_authority_mismatch_only,
+        client_gui_status_response_observation_missing_pre_completion_owner_anchor,
+        client_gui_status_response_observation_owner_materialization_chronology,
+        client_gui_status_response_observation_live_gui_units,
+        client_gui_status_response_observation_live_gui_records,
+        client_gui_status_response_observation_live_gui_fragment_bits,
     );
     let fields = format!(
         concat!(
@@ -14207,6 +14535,43 @@ mod tests {
                 ),
             });
         bridge.best_client_gui_status_response = bridge.last_client_gui_status_response;
+        bridge.record_client_gui_status_response_observation(
+            state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                queued_update_index: 12,
+                server_sequence: 47,
+                server_peer_ack_sequence: 82,
+                ack_sequence: 82,
+                current_player_object_id: Some(0xFFFF_FFEF),
+                area_client_area_packets: 4,
+                control_epoch: 7,
+                inventory_records: 1,
+                current_player_inventory_records: 2,
+                current_player_inventory_mask_union: 0x2000,
+                ..Default::default()
+            },
+        );
+        bridge.record_client_gui_status_response_observation(
+            state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                queued_update_index: 12,
+                // A second high-level LiveObject unit in the same enclosing M
+                // frame shares transport sequence/ACK identity.
+                server_sequence: 47,
+                server_peer_ack_sequence: 82,
+                ack_sequence: 82,
+                current_player_object_id: Some(0xFFFF_FFEF),
+                area_client_area_packets: 4,
+                control_epoch: 7,
+                live_gui_records: 51,
+                live_gui_fragment_bits: 348,
+                materialized_item_object_ids: 51,
+                materialized_item_object_id_first: 0x8000_1200,
+                materialized_item_object_id_last: 0x8000_1234,
+                materialized_item_object_id_min: 0x8000_1200,
+                materialized_item_object_id_max: 0x8000_1234,
+                materialized_item_object_ids_contain_queued_candidate: true,
+                ..Default::default()
+            },
+        );
         bridge.last_decision = Some(state::InventoryEquipmentBridgeOutputDecision {
             kind: state::InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput,
             update_index: 12,
@@ -14321,6 +14686,78 @@ mod tests {
             "\"inventory_equipment_bridge_output_client_gui_status_response_materialized_item_packets\": 1"
         ));
         assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observations_observed\": 2"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observations_retained\": 2"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observations_evicted\": 0"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_first_server_sequence\": 47"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_last_server_sequence\": 47"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_contexts\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_first_area_client_area_packets\": 4"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_first_control_epoch\": 7"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_units\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_pre_completion_owner_units\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_records\": 2"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_mask_union_hex\": \"0x2000\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_materialization_units\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_materialized_item_object_ids\": 51"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_queued_candidate_units\": 1"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_same_unit_owner_materialization_units\": 0"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_cross_unit_owner_materialization\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_correlated_owner_materialization\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_units_after_response_completion\": 0"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_correlated_pair_includes_post_completion_unit\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_mismatch_only\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_materialization_chronology\": \"owner_before_materialization\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_live_gui_records\": 51"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_live_gui_fragment_bits\": 348"
+        ));
+        assert!(body.contains(
             "\"inventory_equipment_bridge_output_last_client_gui_status_response_live_gui_records\": 51"
         ));
         assert!(body.contains(
@@ -14398,6 +14835,155 @@ mod tests {
         assert!(plan.emission_enabled);
         assert_eq!(plan.action, "status_current_player_inventory");
         assert_eq!(plan.blocked_reason, "none");
+    }
+
+    #[test]
+    fn status_observation_hint_does_not_correlate_across_control_epochs() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.record_client_gui_status_response_observation(
+            state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                queued_update_index: 9,
+                server_sequence: 40,
+                server_peer_ack_sequence: 70,
+                ack_sequence: 70,
+                current_player_object_id: Some(0xFFFF_FFEF),
+                area_client_area_packets: 3,
+                control_epoch: 11,
+                inventory_records: 1,
+                current_player_inventory_records: 1,
+                current_player_inventory_mask_union: 0x2000,
+                ..Default::default()
+            },
+        );
+        bridge.record_client_gui_status_response_observation(
+            state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                queued_update_index: 9,
+                // Same enclosing transport frame, but ObjControl changed in a
+                // later wire-ordered unit before its semantic observation.
+                server_sequence: 40,
+                server_peer_ack_sequence: 70,
+                ack_sequence: 70,
+                current_player_object_id: Some(0xFFFF_FFEE),
+                area_client_area_packets: 3,
+                control_epoch: 12,
+                live_gui_records: 1,
+                materialized_item_object_ids: 1,
+                ..Default::default()
+            },
+        );
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+            &semantic::ObjectRegistry::default(),
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_contexts\": 2"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_cross_unit_owner_materialization\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_correlated_owner_materialization\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_correlated_pair_includes_post_completion_unit\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_mismatch_only\": true"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_missing_pre_completion_owner_anchor\": false"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_materialization_chronology\": \"authority_context_mismatch\""
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_first_control_epoch\": 11"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_last_control_epoch\": 12"
+        ));
+
+        let mut post_completion_bridge = state::InventoryEquipmentBridgeState::default();
+        post_completion_bridge.record_client_gui_status_response_observation(
+            state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                current_player_object_id: Some(0xFFFF_FFEF),
+                area_client_area_packets: 3,
+                control_epoch: 11,
+                current_player_inventory_records: 1,
+                ..Default::default()
+            },
+        );
+        post_completion_bridge.record_client_gui_status_response_observation(
+            state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                current_player_object_id: Some(0xFFFF_FFEF),
+                area_client_area_packets: 3,
+                control_epoch: 11,
+                response_window_complete_before_observation: true,
+                materialized_item_object_ids: 1,
+                ..Default::default()
+            },
+        );
+        let post_completion_body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &post_completion_bridge,
+            &semantic::ObjectRegistry::default(),
+        );
+        assert!(post_completion_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_units_after_response_completion\": 1"
+        ));
+        assert!(post_completion_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_correlated_pair_includes_post_completion_unit\": true"
+        ));
+        assert!(post_completion_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_materialization_chronology\": \"owner_before_post_completion_materialization\""
+        ));
+
+        let mut evicted_anchor_bridge = state::InventoryEquipmentBridgeState::default();
+        evicted_anchor_bridge.record_client_gui_status_response_observation(
+            state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                current_player_object_id: Some(0xFFFF_FFEF),
+                area_client_area_packets: 3,
+                control_epoch: 11,
+                current_player_inventory_records: 1,
+                ..Default::default()
+            },
+        );
+        for _ in 0..state::CLIENT_GUI_STATUS_RESPONSE_OBSERVATION_CAPACITY {
+            evicted_anchor_bridge.record_client_gui_status_response_observation(
+                state::InventoryEquipmentBridgeClientGuiStatusResponseObservation {
+                    current_player_object_id: Some(0xFFFF_FFEF),
+                    area_client_area_packets: 3,
+                    control_epoch: 11,
+                    response_window_complete_before_observation: true,
+                    current_player_inventory_records: 1,
+                    materialized_item_object_ids: 1,
+                    ..Default::default()
+                },
+            );
+        }
+        let evicted_anchor_body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &evicted_anchor_bridge,
+            &semantic::ObjectRegistry::default(),
+        );
+        assert!(evicted_anchor_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observations_evicted\": 1"
+        ));
+        assert!(evicted_anchor_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_pre_completion_owner_units\": 0"
+        ));
+        assert!(evicted_anchor_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_authority_correlated_owner_materialization\": false"
+        ));
+        assert!(evicted_anchor_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_missing_pre_completion_owner_anchor\": true"
+        ));
+        assert!(evicted_anchor_body.contains(
+            "\"inventory_equipment_bridge_output_client_gui_status_response_observation_owner_materialization_chronology\": \"missing_pre_completion_owner_anchor\""
+        ));
     }
 
     #[test]
@@ -16572,6 +17158,12 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         .last()
         .map(|frame| frame.server_peer_ack_sequence)
         .unwrap_or(response_ack_sequence);
+    inventory_equipment::observe_client_gui_status_transport_boundary(
+        state,
+        reassembly.first_sequence,
+        response_server_peer_ack_sequence,
+        response_ack_sequence,
+    );
     for observation in &live_object_inventory_materializations {
         let recorded =
             inventory_equipment::maybe_record_client_gui_status_live_object_frame_response(
@@ -16582,6 +17174,8 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 response_ack_sequence,
                 Some(&observation.summary),
                 observation.current_controlled_object_id,
+                observation.area_client_area_packets,
+                observation.control_epoch,
             );
         if recorded {
             inventory_equipment::maybe_bind_current_player_status_response_authority(
