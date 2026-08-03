@@ -2742,6 +2742,15 @@ fn trace_live_object_exact_rewrite_summary(
             "server live-object terminal rewrite applied from exact two-sided writer proof"
         );
     }
+    if summary.ambiguous_standalone_visual_transform_legacy_promotions != 0 {
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            ambiguous_standalone_visual_transform_legacy_promotions =
+                summary.ambiguous_standalone_visual_transform_legacy_promotions,
+            "server live-object standalone transform storage selected by unique whole-payload exact claim"
+        );
+    }
     tracing::info!(
         source = exact_rewrite.source,
         family = family_name,

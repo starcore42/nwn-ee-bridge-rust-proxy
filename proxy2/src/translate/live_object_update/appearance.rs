@@ -527,6 +527,13 @@ pub(super) struct CreatureVisualTransformUpdateRewrite {
     pub bytes_inserted: usize,
     pub bytes_removed: usize,
     pub bits_inserted: usize,
+    pub ambiguous_legacy_fragment_storage_promoted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StandaloneVisualTransformSourcePolicy {
+    PreserveEeMap,
+    PromoteCanonicalEmptyMapAsLegacyFragmentStorage,
 }
 
 pub(super) fn try_get_legacy_creature_appearance_record_end(
@@ -1841,6 +1848,24 @@ pub(super) fn rewrite_creature_visual_transform_update_for_ee(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
 ) -> Option<CreatureVisualTransformUpdateRewrite> {
+    rewrite_creature_visual_transform_update_for_ee_with_source_policy(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        StandaloneVisualTransformSourcePolicy::PreserveEeMap,
+    )
+}
+
+pub(super) fn rewrite_creature_visual_transform_update_for_ee_with_source_policy(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &mut Vec<bool>,
+    bit_cursor: usize,
+    source_policy: StandaloneVisualTransformSourcePolicy,
+) -> Option<CreatureVisualTransformUpdateRewrite> {
     let selector_end = offset.checked_add(LEGACY_CREATURE_VISUAL_TRANSFORM_UPDATE_HEADER_BYTES)?;
     if *record_end > bytes.len()
         || bytes.get(offset).copied()? != b'U'
@@ -1855,14 +1880,34 @@ pub(super) fn rewrite_creature_visual_transform_update_for_ee(
         return None;
     }
 
-    let mut verified_ee_bit_cursor = bit_cursor;
-    if advance_verified_ee_creature_visual_transform_update_record(
+    let verified_ee = try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
         bytes,
         offset,
         *record_end,
         fragment_bits,
-        &mut verified_ee_bit_cursor,
-    ) {
+        bit_cursor,
+    );
+    let promote_ambiguous_legacy_fragment_storage = matches!(
+        source_policy,
+        StandaloneVisualTransformSourcePolicy::PromoteCanonicalEmptyMapAsLegacyFragmentStorage
+    ) && verified_ee
+        == Some((*record_end, bit_cursor))
+        && bytes.get(selector_end..*record_end)
+            == Some(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.as_slice())
+        && super::visual_transform::parse_ee_object_visual_transform_map(
+            bytes,
+            selector_end,
+            *record_end,
+            Some(fragment_bits),
+            bit_cursor,
+        )
+        .is_some_and(|parsed| {
+            parsed.end == *record_end
+                && parsed.fragment_bits_consumed == 0
+                && parsed.map.is_canonical_empty()
+        });
+
+    if verified_ee.is_some() && !promote_ambiguous_legacy_fragment_storage {
         // Rewrites can run more than once while declared-length repair and
         // neighboring live-object families converge. A typed, exact EE map is
         // already complete even when it is nonempty; never drain its bytes as
@@ -1905,6 +1950,13 @@ pub(super) fn rewrite_creature_visual_transform_update_for_ee(
     // walker grouped after the selector are chunk-local CNW fragment storage,
     // not part of this semantic record, so promote them back into the fragment
     // stream before inserting the EE-only identity map.
+    // The canonical empty EE map is byte-identical to one eight-byte Diamond
+    // CNW storage span containing 64 false bits. The first three MSB bits are
+    // the fragment final-count header, so the legacy interpretation promotes
+    // exactly 61 semantic bits at the inherited cursor. Record-local bytes can
+    // never choose that interpretation: the alternate production pass is
+    // allowed to request it only as a fresh whole-payload candidate, and the
+    // final exact EE reader/cursor validator must make it uniquely viable.
     let old_record_end = *record_end;
     let mut bytes_removed = 0usize;
     let mut bits_inserted = 0usize;
@@ -1932,6 +1984,7 @@ pub(super) fn rewrite_creature_visual_transform_update_for_ee(
         bytes_inserted: EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len(),
         bytes_removed,
         bits_inserted,
+        ambiguous_legacy_fragment_storage_promoted: promote_ambiguous_legacy_fragment_storage,
     })
 }
 
@@ -10895,7 +10948,8 @@ mod public_tests {
     }
 
     #[test]
-    fn standalone_creature_visual_transform_rewrite_preserves_nonempty_ee_map() {
+    fn standalone_creature_visual_transform_rewrite_preserves_nonempty_ee_map_under_every_source_policy()
+     {
         use crate::translate::live_object_update::visual_transform::{
             EeAurObjectVisualTransformWireValue, EeObjectVisualTransformMap,
             EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
@@ -10908,26 +10962,32 @@ mod public_tests {
             }],
         })
         .expect("identity-valued map encodes");
-        let mut bytes = standalone_creature_visual_transform_record(&encoded.bytes);
-        let original_bytes = bytes.clone();
-        let mut fragment_bits = vec![false, true, false];
-        let original_fragment_bits = fragment_bits.clone();
-        let mut record_end = bytes.len();
+        let original_bytes = standalone_creature_visual_transform_record(&encoded.bytes);
+        let original_fragment_bits = vec![false, true, false];
+        for source_policy in [
+            StandaloneVisualTransformSourcePolicy::PreserveEeMap,
+            StandaloneVisualTransformSourcePolicy::PromoteCanonicalEmptyMapAsLegacyFragmentStorage,
+        ] {
+            let mut bytes = original_bytes.clone();
+            let mut fragment_bits = original_fragment_bits.clone();
+            let mut record_end = bytes.len();
 
-        assert!(
-            rewrite_creature_visual_transform_update_for_ee(
-                &mut bytes,
-                0,
-                &mut record_end,
-                &mut fragment_bits,
-                1,
-            )
-            .is_none(),
-            "an exact nonempty EE map is already in final wire shape"
-        );
-        assert_eq!(bytes, original_bytes);
-        assert_eq!(fragment_bits, original_fragment_bits);
-        assert_eq!(record_end, bytes.len());
+            assert!(
+                rewrite_creature_visual_transform_update_for_ee_with_source_policy(
+                    &mut bytes,
+                    0,
+                    &mut record_end,
+                    &mut fragment_bits,
+                    1,
+                    source_policy,
+                )
+                .is_none(),
+                "an exact nonempty EE map is already in final wire shape under {source_policy:?}"
+            );
+            assert_eq!(bytes, original_bytes);
+            assert_eq!(fragment_bits, original_fragment_bits);
+            assert_eq!(record_end, bytes.len());
+        }
     }
 
     fn live_object_payload_with_bits(live: &[u8], owned_bits: Vec<bool>) -> Vec<u8> {

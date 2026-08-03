@@ -19029,6 +19029,10 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub bits_removed: u32,
     pub fragment_bits_trimmed: u32,
     pub creature_visual_transform_update_records: u32,
+    /// Canonical eight-byte standalone `U/5` spans promoted as Diamond CNW
+    /// fragment storage only after the ordinary whole-payload EE candidate
+    /// failed and the fresh alternate candidate exact-claimed.
+    pub ambiguous_standalone_visual_transform_legacy_promotions: u32,
     pub live_gui_missing_add_opcodes_repaired: u32,
     pub live_object_missing_appearance_opcodes_repaired: u32,
     pub live_object_missing_update_opcodes_repaired: u32,
@@ -24545,6 +24549,22 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
     rewrite_update_records_payload_with_area_context_attempt(payload, area_context).summary
 }
 
+pub(crate) fn rewrite_update_records_payload_with_area_context_promote_ambiguous_visual_transform_storage_if_possible(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<LiveObjectUpdateRewriteSummary> {
+    let mut failure = None;
+    rewrite_update_records_payload_with_area_context_inner(
+        payload,
+        area_context,
+        &mut failure,
+        None,
+        None,
+        appearance::StandaloneVisualTransformSourcePolicy::
+            PromoteCanonicalEmptyMapAsLegacyFragmentStorage,
+    )
+}
+
 pub fn rewrite_update_records_payload_with_area_context_attempt(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
@@ -24568,6 +24588,7 @@ pub fn rewrite_update_records_payload_with_area_context_attempt(
         &mut failure,
         None,
         None,
+        appearance::StandaloneVisualTransformSourcePolicy::PreserveEeMap,
     );
     LiveObjectUpdateRewriteAttempt { summary, failure }
 }
@@ -24594,6 +24615,7 @@ where
         &mut failure,
         None,
         None,
+        appearance::StandaloneVisualTransformSourcePolicy::PreserveEeMap,
     );
 
     if summary.is_none()
@@ -24618,6 +24640,7 @@ where
             &mut neutral_failure,
             Some(&mut terminal_ee_writer_audit),
             Some(&mut terminal_staged_summary),
+            appearance::StandaloneVisualTransformSourcePolicy::PreserveEeMap,
         );
         if neutral_summary.is_none()
             && neutral_payload.as_slice() == source_payload.as_slice()
@@ -24757,6 +24780,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
         &mut Option<terminal_ee_writer::TerminalEeWholePacketAudit>,
     >,
     mut terminal_staged_summary: Option<&mut Option<LiveObjectUpdateRewriteSummary>>,
+    standalone_visual_transform_source_policy: appearance::StandaloneVisualTransformSourcePolicy,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
     if crate::translate::live_object_update::live_object_debug_env_enabled(
         "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
@@ -27199,12 +27223,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
 
                 let mut creature_visual_transform_rewritten_for_ledger = false;
                 if let Some(visual_rewrite) =
-                    appearance::rewrite_creature_visual_transform_update_for_ee(
+                    appearance::rewrite_creature_visual_transform_update_for_ee_with_source_policy(
                         &mut live_bytes,
                         offset,
                         &mut record_end,
                         &mut fragment_bits,
                         bit_cursor,
+                        standalone_visual_transform_source_policy,
                     )
                 {
                     changed = true;
@@ -27231,6 +27256,34 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         summary.interleaved_fragment_bits_promoted.saturating_add(
                             u32::try_from(visual_rewrite.bits_inserted).unwrap_or(u32::MAX),
                         );
+                    summary.ambiguous_standalone_visual_transform_legacy_promotions = summary
+                        .ambiguous_standalone_visual_transform_legacy_promotions
+                        .saturating_add(
+                            visual_rewrite.ambiguous_legacy_fragment_storage_promoted as u32,
+                        );
+                    // These recovered bits belonged to Diamond's source CNW
+                    // storage and are consumed by following records. They are
+                    // not BOOLs owned by either the Diamond selector or EE's
+                    // empty map, so add them to the source ledger at the
+                    // inherited cursor and keep this row's commit at 0/0.
+                    if visual_rewrite.bits_inserted != 0
+                        && !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                            &fragment_bits,
+                            bit_cursor,
+                            visual_rewrite.bits_inserted,
+                        )
+                    {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-visual-transform-promoted-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     creature_visual_transform_rewritten_for_ledger = true;
                 }
                 let mut advanced_visual_transform_cursor = bit_cursor;

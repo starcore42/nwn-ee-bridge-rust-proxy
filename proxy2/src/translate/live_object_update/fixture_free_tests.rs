@@ -8098,6 +8098,16 @@ fn ordinary_creature_0047_map_shaped_prefix_keeps_full_record_boundary() {
         super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
         "an exact ordinary 0x47 record must remain byte-identical"
     );
+    let exact_ordinary_payload = payload.clone();
+    assert!(
+        super::rewrite_update_records_payload_with_area_context_promote_ambiguous_visual_transform_storage_if_possible(
+            &mut payload,
+            None,
+        )
+        .is_none(),
+        "the forced alternate must still yield to the complete ordinary 0x47 reader"
+    );
+    assert_eq!(payload, exact_ordinary_payload);
 
     let mut legacy_live = live[..ordinary_end].to_vec();
     legacy_live.extend_from_slice(&[b'U', super::CREATURE_OBJECT_TYPE]);
