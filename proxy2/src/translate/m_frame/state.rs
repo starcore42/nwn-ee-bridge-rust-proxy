@@ -308,8 +308,9 @@ pub(super) struct PendingClientPacket {
 
 /// Reversible state touched while timer/session-owned client packets are
 /// removed for final strict validation. Producer-side semantic decisions stay
-/// committed; a rejected drain restores the exact typed queue and only the
-/// AreaLoaded timer/sequence effects created by that drain.
+/// committed; a rejected drain restores the exact typed queue plus the
+/// AreaLoaded timer/sequence effects and any ACK-gated Status-open transition
+/// materialized by that drain.
 #[derive(Debug)]
 pub(super) struct PendingClientDrainEffectSnapshot {
     pub(super) pending_packets: Vec<PendingClientPacket>,
@@ -317,6 +318,7 @@ pub(super) struct PendingClientDrainEffectSnapshot {
     pub(super) in_flight_area_loaded: Option<synthetic_area::InFlightAreaLoaded>,
     pub(super) server_hold_gate: Option<synthetic_area::ServerHoldGate>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
+    pub(super) inventory_equipment: InventoryEquipmentBridgeState,
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +382,78 @@ pub(super) struct InventoryEquipmentBridgeQueuedClientGuiStatusOutput {
     pub(super) trigger_client_sequence: u16,
     pub(super) synthetic_sequence: u16,
     pub(super) ack_sequence: u16,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentStagedClientGuiStatusState {
+    #[default]
+    Idle,
+    CloseQueued,
+    CloseAcknowledged,
+    OpenQueued,
+    Cancelled,
+}
+
+impl InventoryEquipmentStagedClientGuiStatusState {
+    pub(super) fn as_str(self, enabled: bool) -> &'static str {
+        if !enabled {
+            return "disabled";
+        }
+        match self {
+            Self::Idle => "idle",
+            Self::CloseQueued => "close_queued",
+            Self::CloseAcknowledged => "close_acknowledged",
+            Self::OpenQueued => "open_queued",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentStagedClientGuiStatusCancelReason {
+    #[default]
+    None,
+    NativeStatus,
+    AreaChanged,
+    ControlEpochChanged,
+    CurrentPlayerChanged,
+    SupersedingUpdate,
+}
+
+impl InventoryEquipmentStagedClientGuiStatusCancelReason {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::NativeStatus => "native_status",
+            Self::AreaChanged => "area_changed",
+            Self::ControlEpochChanged => "control_epoch_changed",
+            Self::CurrentPlayerChanged => "current_player_changed",
+            Self::SupersedingUpdate => "superseding_update",
+        }
+    }
+}
+
+/// One opt-in proxy-owned inventory refresh held between its exact close and
+/// open writes.
+///
+/// The close deliberately does not enter the ordinary Status response window.
+/// Its immutable Diamond-facing transport identity is retained until a
+/// validated raw HG ACK retires that exact send-window slot (including the
+/// slot generation). Only then may the original open update be materialized
+/// from the current client sequence frontier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct InventoryEquipmentPendingStagedClientGuiStatusOpen {
+    pub(super) update: semantic::InventoryEquipmentBridgeStateUpdate,
+    pub(super) open_claim: semantic::InventoryEquipmentClientGuiInventoryClaim,
+    pub(super) current_player_object_id: u32,
+    pub(super) area_client_area_packets: u64,
+    pub(super) control_epoch: u64,
+    pub(super) close_trigger_client_sequence: u16,
+    pub(super) close_synthetic_sequence: u16,
+    pub(super) close_ack_sequence: u16,
+    pub(super) close_transport_identity: Vec<u8>,
+    pub(super) acknowledged_close_key: Option<diamond_send_window::DiamondClientSendKey>,
+    pub(super) acknowledged_raw_server_ack_sequence: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -644,6 +718,7 @@ pub(super) enum InventoryEquipmentBridgeOutputDecisionKind {
     QueuedInventoryOutput,
     NativeInventoryOutcomeSufficient,
     ForwardedClientGuiStatusRequest,
+    StagedClientGuiStatusClose,
     QueuedClientGuiStatusOutput,
     QueuedConfirmedInventoryReplay,
     DeferredClientGui,
@@ -658,6 +733,7 @@ impl InventoryEquipmentBridgeOutputDecisionKind {
             Self::QueuedInventoryOutput => "queued_inventory_output",
             Self::NativeInventoryOutcomeSufficient => "native_inventory_outcome_sufficient",
             Self::ForwardedClientGuiStatusRequest => "forwarded_client_gui_status_request",
+            Self::StagedClientGuiStatusClose => "staged_client_gui_status_close",
             Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::QueuedConfirmedInventoryReplay => "queued_confirmed_inventory_replay",
             Self::DeferredClientGui => "deferred_client_gui",
@@ -674,6 +750,7 @@ pub(super) enum InventoryEquipmentBridgeOutputStatus {
     QueuedInventoryOutput,
     NativeInventoryOutcomeSufficient,
     ForwardedClientGuiStatusRequest,
+    StagedClientGuiStatusClose,
     QueuedClientGuiStatusOutput,
     ClientGuiStatusRefreshConfirmed,
     ClientGuiStatusInventoryReplayQueued,
@@ -691,6 +768,7 @@ impl InventoryEquipmentBridgeOutputStatus {
             Self::QueuedInventoryOutput => "queued_inventory_output",
             Self::NativeInventoryOutcomeSufficient => "native_inventory_outcome_sufficient",
             Self::ForwardedClientGuiStatusRequest => "forwarded_client_gui_status_request",
+            Self::StagedClientGuiStatusClose => "staged_client_gui_status_close",
             Self::QueuedClientGuiStatusOutput => "queued_client_gui_status_output",
             Self::ClientGuiStatusRefreshConfirmed => "client_gui_status_refresh_confirmed",
             Self::ClientGuiStatusInventoryReplayQueued => {
@@ -735,6 +813,30 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) queued_client_gui_status_outputs: u64,
     pub(super) forwarded_client_gui_status_requests: u64,
     pub(super) last_forwarded_client_gui_status_update_index: Option<u64>,
+    pub(super) staged_client_gui_status_close_ack_open_enabled: bool,
+    pub(super) staged_client_gui_status_state: InventoryEquipmentStagedClientGuiStatusState,
+    pub(super) staged_client_gui_status_close_outputs: u64,
+    pub(super) staged_client_gui_status_close_acknowledgements: u64,
+    pub(super) staged_client_gui_status_open_outputs: u64,
+    pub(super) staged_client_gui_status_cancellations: u64,
+    pub(super) staged_client_gui_status_last_cancel_reason:
+        InventoryEquipmentStagedClientGuiStatusCancelReason,
+    pub(super) staged_client_gui_status_last_update_index: Option<u64>,
+    pub(super) staged_client_gui_status_last_object_id: Option<u32>,
+    pub(super) staged_client_gui_status_last_current_player_object_id: Option<u32>,
+    pub(super) staged_client_gui_status_last_area_client_area_packets: Option<u64>,
+    pub(super) staged_client_gui_status_last_control_epoch: Option<u64>,
+    pub(super) staged_client_gui_status_last_close_trigger_client_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_close_synthetic_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_close_ack_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_close_transport_identity: Option<Vec<u8>>,
+    pub(super) staged_client_gui_status_last_acknowledged_close_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_acknowledged_close_generation: Option<u64>,
+    pub(super) staged_client_gui_status_last_raw_server_ack_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_open_synthetic_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_open_ack_sequence: Option<u16>,
+    pub(super) pending_staged_client_gui_status_open:
+        Option<InventoryEquipmentPendingStagedClientGuiStatusOpen>,
     pub(super) client_gui_status_request_acknowledgements: u64,
     pub(super) client_gui_status_pre_ack_live_object_packets_ignored: u64,
     pub(super) client_gui_status_non_inventory_live_object_packets_ignored: u64,
@@ -780,7 +882,9 @@ pub(super) struct InventoryEquipmentBridgeState {
 
 impl InventoryEquipmentBridgeState {
     pub(super) fn output_status(&self) -> InventoryEquipmentBridgeOutputStatus {
-        if self.confirmed_inventory_replay_queued_for_dispatch() {
+        if self.pending_staged_client_gui_status_open.is_some() {
+            InventoryEquipmentBridgeOutputStatus::StagedClientGuiStatusClose
+        } else if self.confirmed_inventory_replay_queued_for_dispatch() {
             InventoryEquipmentBridgeOutputStatus::ClientGuiStatusInventoryReplayQueued
         } else if self.last_decision.is_some_and(|decision| {
             decision.kind
@@ -1127,6 +1231,7 @@ impl SessionState {
         module_resources: module_resources::ModuleResourceRuntime,
         synthesize_area_loadbar: bool,
         quickbar_item_refresh_hint_path: Option<PathBuf>,
+        staged_client_gui_status_close_ack_open_enabled: bool,
     ) -> Self {
         Self {
             deflate: DeflateState::default(),
@@ -1147,7 +1252,10 @@ impl SessionState {
             direct_server_semantic_replays: DirectServerSemanticReplayState::default(),
             client_ack: ClientAckSessionState::default(),
             login_waypoint: LoginWaypointState::default(),
-            inventory_equipment: InventoryEquipmentBridgeState::default(),
+            inventory_equipment: InventoryEquipmentBridgeState {
+                staged_client_gui_status_close_ack_open_enabled,
+                ..InventoryEquipmentBridgeState::default()
+            },
             module_resources,
             synthetic_area: SyntheticAreaState {
                 synthesize_loadbar: synthesize_area_loadbar,

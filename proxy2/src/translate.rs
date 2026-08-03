@@ -354,6 +354,7 @@ pub struct Translator {
     module_resources: module_resources::ModuleResourceRuntime,
     synthetic_area_loadbar: bool,
     quickbar_item_refresh_hint: Option<std::path::PathBuf>,
+    synthetic_status_close_ack_open_experiment: bool,
 }
 
 #[derive(Debug)]
@@ -390,6 +391,8 @@ impl Translator {
             module_resources: module_resource_runtime,
             synthetic_area_loadbar: config.synthetic_area_loadbar_enabled(),
             quickbar_item_refresh_hint: config.quickbar_item_refresh_hint.clone(),
+            synthetic_status_close_ack_open_experiment: config
+                .synthetic_status_close_ack_open_experiment,
         })
     }
 
@@ -401,6 +404,7 @@ impl Translator {
                 self.module_resources.for_new_session(),
                 self.synthetic_area_loadbar,
                 self.quickbar_item_refresh_hint.clone(),
+                self.synthetic_status_close_ack_open_experiment,
             ),
             legacy_udp_port,
         }

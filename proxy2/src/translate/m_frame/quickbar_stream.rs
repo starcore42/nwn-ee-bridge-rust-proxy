@@ -710,6 +710,7 @@ mod tests {
             module_resources::ModuleResourceRuntime::default(),
             true,
             None,
+            false,
         );
         let payload = quickbar::build_blank_set_all_buttons_payload(b'P')
             .expect("blank quickbar payload should be exact EE shape");
@@ -749,6 +750,7 @@ mod tests {
             module_resources::ModuleResourceRuntime::default(),
             true,
             None,
+            false,
         );
         let mut payload = include_bytes!(
             "../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin"

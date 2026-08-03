@@ -117,6 +117,9 @@ fn pending_client_drain_has_work_at(state: &SessionState, now: Instant) -> bool 
             &state.diamond_client_send_window,
         );
     }
+    if inventory_equipment::staged_client_gui_status_open_ready(state) {
+        return diamond_send_window::available_slots(&state.diamond_client_send_window) > 0;
+    }
 
     let Some(active) = state.synthetic_area.pending_area_loaded.as_ref() else {
         return false;
@@ -157,6 +160,10 @@ pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> anyhow
         return Ok(Emit::Consumed);
     }
     begin_pending_client_drain_effect_transaction(state)?;
+    if let Err(err) = inventory_equipment::maybe_queue_staged_client_gui_status_open(state) {
+        rollback_pending_client_drain_effect_transaction(state);
+        return Err(err);
+    }
     if let Err(err) =
         maybe_queue_area_loaded_fallback_from_timer(state, "session pending client drain")
     {
@@ -940,6 +947,15 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         );
     }
 
+    // Native GuiInventory_Status owns the real client source slot. Cancel an
+    // uncommitted staged close before applying insertion shifts so a retracted
+    // close cannot leave this native frame shifted across a reliable gap. The
+    // enclosing client-effect snapshot restores the close and shift together
+    // if strict output validation later rejects this source.
+    if let Some(payload) = parse_window::primary_payload(&outbound, &ack_adjusted_view) {
+        inventory_equipment::cancel_staged_client_gui_status_before_sequence_shift(state, payload);
+    }
+
     shift_client_sequence_for_server(state, &mut outbound, &ack_adjusted_view)?;
     let origin_client_ack_sequence = ack_adjusted_view.ack_sequence;
     let shifted_view = MFrameView::parse(&outbound).unwrap_or(ack_adjusted_view);
@@ -1089,9 +1105,18 @@ pub(super) fn ensure_direct_source_ack_carrier(
 /// rejected, but its independently valid ACK can release proxy-owned client
 /// work just as it would in the original receive window.
 fn observe_validated_server_source_ack(state: &mut SessionState, ack_sequence: u16) {
-    let _ = diamond_send_window::retire_through_raw_server_ack(
+    let staged_close_slot = inventory_equipment::staged_client_gui_status_close_send_slot(state);
+    let retired_slots = diamond_send_window::retire_through_raw_server_ack(
         &mut state.diamond_client_send_window,
         ack_sequence,
+    );
+    let retired_staged_close_key = staged_close_slot
+        .filter(|(index, _)| *index < retired_slots)
+        .map(|(_, key)| key);
+    inventory_equipment::observe_raw_server_ack_for_staged_client_gui_status(
+        state,
+        ack_sequence,
+        retired_staged_close_key,
     );
     let ack_sequence =
         server_replay::observe_peer_ack_sequence(&mut state.server_reliable_slots, ack_sequence);
@@ -1939,6 +1964,7 @@ fn begin_pending_client_drain_effect_transaction(state: &mut SessionState) -> an
         in_flight_area_loaded: state.synthetic_area.in_flight_area_loaded.clone(),
         server_hold_gate: state.synthetic_area.server_hold_gate.clone(),
         client_sequence_shifts: state.sequence.client_sequence_shifts.clone(),
+        inventory_equipment: state.inventory_equipment.clone(),
     });
     Ok(())
 }
@@ -1952,6 +1978,7 @@ fn rollback_pending_client_drain_effect_transaction(state: &mut SessionState) ->
     state.synthetic_area.in_flight_area_loaded = snapshot.in_flight_area_loaded;
     state.synthetic_area.server_hold_gate = snapshot.server_hold_gate;
     state.sequence.client_sequence_shifts = snapshot.client_sequence_shifts;
+    state.inventory_equipment = snapshot.inventory_equipment;
     true
 }
 
@@ -2083,6 +2110,8 @@ fn restore_engine_facing_effect_snapshot(
     let server_sequence_epoch_destination_floor =
         state.sequence.server_sequence_epoch_destination_floor;
     let latest_raw_ee_server_ack = state.sequence.latest_raw_ee_server_ack;
+    let staged_client_gui_status_close_ack_truth =
+        inventory_equipment::staged_client_gui_status_close_ack_truth(state);
     state.deflate.server_reassembly = snapshot.server_reassembly;
     state.deflate.completed_server_stream_windows = snapshot.completed_server_stream_windows;
     state.deflate.completed_server_reliable_stream_slots =
@@ -2111,6 +2140,10 @@ fn restore_engine_facing_effect_snapshot(
     state.module_resources = snapshot.module_resources;
     state.semantic = snapshot.semantic;
     state.quickbar_item_refresh_hint_last_body = snapshot.quickbar_item_refresh_hint_last_body;
+    inventory_equipment::reapply_staged_client_gui_status_close_ack_truth(
+        state,
+        staged_client_gui_status_close_ack_truth,
+    );
 }
 
 fn commit_engine_facing_effect_transaction(state: &mut SessionState) {
@@ -5050,6 +5083,108 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         recommended_client_inventory_equip_toggle_visible_equipment_visible_slot,
         status_authorized_visible_equipment_probe_transaction_fields
     );
+    let staged_status_object_id = bridge
+        .staged_client_gui_status_last_object_id
+        .unwrap_or_default();
+    let staged_status_close_payload_hex = bridge
+        .staged_client_gui_status_last_object_id
+        .map(|object_id| {
+            hex_encode_upper(&client_gui_inventory::build_status_payload(
+                object_id, false,
+            ))
+        })
+        .unwrap_or_default();
+    let staged_status_open_payload_hex = bridge
+        .staged_client_gui_status_last_object_id
+        .map(|object_id| {
+            hex_encode_upper(&client_gui_inventory::build_status_payload(object_id, true))
+        })
+        .unwrap_or_default();
+    let fields = format!(
+        concat!(
+            "{}",
+            ",\n",
+            "  \"inventory_equipment_bridge_staged_status_close_ack_open_enabled\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_close_ack_open_state\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_staged_status_close_ack_open_pending\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_close_outputs\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_close_acknowledgements\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_open_outputs\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_cancellations\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_cancel_reason\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_staged_status_last_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_staged_status_last_current_player_object_id\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_current_player_object_id_hex\": \"0x{:08X}\",\n",
+            "  \"inventory_equipment_bridge_staged_status_last_area_client_area_packets\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_control_epoch\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_close_payload_hex\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_staged_status_open_payload_hex\": \"{}\",\n",
+            "  \"inventory_equipment_bridge_staged_status_last_close_trigger_client_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_close_synthetic_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_close_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_acknowledged_close_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_acknowledged_close_generation\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_raw_server_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_open_synthetic_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_open_ack_sequence\": {}"
+        ),
+        fields,
+        bridge.staged_client_gui_status_close_ack_open_enabled,
+        bridge
+            .staged_client_gui_status_state
+            .as_str(bridge.staged_client_gui_status_close_ack_open_enabled),
+        bridge.pending_staged_client_gui_status_open.is_some(),
+        bridge.staged_client_gui_status_close_outputs,
+        bridge.staged_client_gui_status_close_acknowledgements,
+        bridge.staged_client_gui_status_open_outputs,
+        bridge.staged_client_gui_status_cancellations,
+        bridge.staged_client_gui_status_last_cancel_reason.as_str(),
+        bridge
+            .staged_client_gui_status_last_update_index
+            .unwrap_or_default(),
+        staged_status_object_id,
+        staged_status_object_id,
+        bridge
+            .staged_client_gui_status_last_current_player_object_id
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_current_player_object_id
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_area_client_area_packets
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_control_epoch
+            .unwrap_or_default(),
+        staged_status_close_payload_hex,
+        staged_status_open_payload_hex,
+        bridge
+            .staged_client_gui_status_last_close_trigger_client_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_close_synthetic_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_close_ack_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_acknowledged_close_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_acknowledged_close_generation
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_raw_server_ack_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_open_synthetic_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_open_ack_sequence
+            .unwrap_or_default(),
+    );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
         format!("{prefix}{fields}}}\n")
     } else if let Some(prefix) = body.strip_suffix('}') {
@@ -7363,6 +7498,7 @@ mod tests {
             discovery_module_name: "test-module",
             module_resources: crate::translate::module_resources::ModuleResourceRuntime::default(),
             synthetic_area_loadbar: true,
+            synthetic_status_close_ack_open_experiment: false,
             quickbar_item_refresh_hint: None,
         };
         template.new_session(5122)
@@ -11400,6 +11536,87 @@ mod tests {
             .expect("wrapped replay probe")
             .is_none()
         );
+    }
+
+    #[test]
+    fn native_status_retracts_uncommitted_staged_close_before_sequence_shift() {
+        let current_player = 0x8000_5678;
+        let candidate = crate::translate::semantic::InventoryItemContextCandidate {
+            object_id: 0x8001_5B01,
+            proof: crate::translate::semantic::InventoryItemObjectProof::ActiveObject,
+            source: crate::translate::semantic::InventoryItemContextCandidateSource::DirectOnly,
+        };
+        let claim = crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaim {
+            kind: crate::translate::semantic::InventoryEquipmentClientGuiInventoryClaimKind::Status,
+            object_id: Some(client_gui_inventory::DIAMOND_CURRENT_PLAYER_OBJECT_ID),
+            panel: None,
+            player_inventory_gui: Some(true),
+            rewritten_self_object_id: true,
+        };
+        let update = crate::translate::semantic::InventoryEquipmentBridgeStateUpdate {
+            update_index: 1,
+            emission_index: 1,
+            consumer:
+                crate::translate::semantic::InventoryEquipmentHandoffConsumer::ClientGuiInventory,
+            event_index: 1,
+            candidate,
+            ready_objects: 1,
+            deferred_feature25_only_objects: 0,
+            server_inventory_claim: None,
+            client_gui_inventory_claim: Some(claim),
+        };
+        let mut state = SessionState::default();
+        state
+            .inventory_equipment
+            .staged_client_gui_status_close_ack_open_enabled = true;
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state.semantic.player_control.current_controlled_object_id = Some(current_player);
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+
+        inventory_equipment::maybe_queue_inventory_equipment_bridge_output(&mut state, 20, 7)
+            .expect("stage close before native Status");
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        assert_eq!(
+            state.sequence.client_sequence_shifts,
+            vec![SequenceShift { base: 11, delta: 1 }]
+        );
+
+        let native = client_reliable_m_frame(
+            11,
+            21,
+            &client_gui_inventory::build_status_payload(0xFFFF_FFFD, true),
+        );
+        begin_client_to_server_emit_validation(&mut state, &native)
+            .expect("native Status validation transaction");
+        let translated = translate_client_to_server(&native, &mut state)
+            .expect("native Status should replace uncommitted staged close");
+        let translated_packet = match &translated {
+            Emit::VerifiedPackets { packets, .. } => packets.first().expect("native Status output"),
+            other => panic!("expected one verified native Status, got {other:?}"),
+        };
+        let translated_view =
+            MFrameView::parse(translated_packet).expect("translated native Status");
+        assert_eq!(
+            translated_view.sequence, 11,
+            "native Status must occupy the retracted close sequence"
+        );
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert!(state.sequence.client_sequence_shifts.is_empty());
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_reason,
+            state::InventoryEquipmentStagedClientGuiStatusCancelReason::NativeStatus
+        );
+
+        stage_direct_client_send_window(&mut state, &translated)
+            .expect("stage translated native Status");
+        finish_client_to_server_emit_validation(&mut state, true);
+        assert!(state.sequence.pending_client_to_server_packets.is_empty());
+        assert!(state.sequence.client_sequence_shifts.is_empty());
     }
 
     #[test]

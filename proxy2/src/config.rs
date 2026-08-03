@@ -103,6 +103,13 @@ pub struct Config {
     #[arg(long)]
     pub quickbar_item_refresh_hint: Option<PathBuf>,
 
+    /// Opt-in live experiment: send an exact current-player inventory close,
+    /// wait until a validated raw HG ACK retires that Diamond send-window slot,
+    /// then send the original open request. The deferred open is cancelled on
+    /// native Status, area, control-epoch, or current-player changes.
+    #[arg(long)]
+    pub synthetic_status_close_ack_open_experiment: bool,
+
     /// Private operator-side terminal writer trace artifact to correlate with
     /// quarantined `P/05/01` live-object evidence. Requires `--packet-dump`
     /// with `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`, for correlation output.
