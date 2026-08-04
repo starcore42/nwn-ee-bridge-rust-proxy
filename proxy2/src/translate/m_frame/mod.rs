@@ -5124,6 +5124,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_staged_status_close_commits\": {},\n",
             "  \"inventory_equipment_bridge_staged_status_close_acknowledgements\": {},\n",
             "  \"inventory_equipment_bridge_staged_status_open_outputs\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_response_completions\": {},\n",
             "  \"inventory_equipment_bridge_staged_status_cancellations\": {},\n",
             "  \"inventory_equipment_bridge_staged_status_last_cancel_reason\": \"{}\",\n",
             "  \"inventory_equipment_bridge_staged_status_last_cancel_boundary\": \"{}\",\n",
@@ -5155,7 +5156,11 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             "  \"inventory_equipment_bridge_staged_status_last_acknowledged_close_generation\": {},\n",
             "  \"inventory_equipment_bridge_staged_status_last_raw_server_ack_sequence\": {},\n",
             "  \"inventory_equipment_bridge_staged_status_last_open_synthetic_sequence\": {},\n",
-            "  \"inventory_equipment_bridge_staged_status_last_open_ack_sequence\": {}"
+            "  \"inventory_equipment_bridge_staged_status_last_open_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_response_update_index\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_response_server_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_response_server_peer_ack_sequence\": {},\n",
+            "  \"inventory_equipment_bridge_staged_status_last_response_ack_sequence\": {}"
         ),
         fields,
         bridge.staged_client_gui_status_close_ack_open_enabled,
@@ -5169,6 +5174,7 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
         bridge.staged_client_gui_status_close_commits,
         bridge.staged_client_gui_status_close_acknowledgements,
         bridge.staged_client_gui_status_open_outputs,
+        bridge.staged_client_gui_status_response_completions,
         bridge.staged_client_gui_status_cancellations,
         bridge.staged_client_gui_status_last_cancel_reason.as_str(),
         bridge
@@ -5228,6 +5234,18 @@ fn augment_quickbar_item_refresh_hint_with_bridge_output_and_protocol_state(
             .unwrap_or_default(),
         bridge
             .staged_client_gui_status_last_open_ack_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_response_update_index
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_response_server_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_response_server_peer_ack_sequence
+            .unwrap_or_default(),
+        bridge
+            .staged_client_gui_status_last_response_ack_sequence
             .unwrap_or_default(),
     );
     if let Some(prefix) = body.strip_suffix("\n}\n") {
@@ -15041,6 +15059,44 @@ mod tests {
         ));
         assert!(body.contains(
             "\"inventory_equipment_bridge_staged_status_unresolved_close_cancellations\": 0"
+        ));
+    }
+
+    #[test]
+    fn quickbar_hint_augmentation_serializes_staged_status_response_completion() {
+        let mut bridge = state::InventoryEquipmentBridgeState::default();
+        bridge.staged_client_gui_status_close_ack_open_enabled = true;
+        bridge.staged_client_gui_status_state =
+            state::InventoryEquipmentStagedClientGuiStatusState::ResponseCompleted;
+        bridge.staged_client_gui_status_response_completions = 2;
+        bridge.staged_client_gui_status_last_response_update_index = Some(7);
+        bridge.staged_client_gui_status_last_response_server_sequence = Some(48);
+        bridge.staged_client_gui_status_last_response_server_peer_ack_sequence = Some(81);
+        bridge.staged_client_gui_status_last_response_ack_sequence = Some(44);
+
+        let body = augment_quickbar_item_refresh_hint_with_bridge_output(
+            "{\n  \"kind\": \"quickbar_item_refresh_candidate\"\n}\n".to_string(),
+            &bridge,
+            &semantic::ObjectRegistry::default(),
+        );
+
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_staged_status_close_ack_open_state\": \"response_completed\""
+        ));
+        assert!(
+            body.contains("\"inventory_equipment_bridge_staged_status_response_completions\": 2")
+        );
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_staged_status_last_response_update_index\": 7"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_staged_status_last_response_server_sequence\": 48"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_staged_status_last_response_server_peer_ack_sequence\": 81"
+        ));
+        assert!(body.contains(
+            "\"inventory_equipment_bridge_staged_status_last_response_ack_sequence\": 44"
         ));
     }
 

@@ -651,6 +651,22 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
     {
         return false;
     }
+    if !staged_client_gui_status_response_context_matches(
+        state,
+        current_controlled_object_id_at_observation,
+        area_client_area_packets_at_observation,
+        control_epoch_at_observation,
+    ) {
+        tracing::debug!(
+            server_sequence,
+            server_peer_ack_sequence,
+            current_controlled_object_id_at_observation = ?current_controlled_object_id_at_observation,
+            area_client_area_packets_at_observation,
+            control_epoch_at_observation,
+            "inventory/equipment ignored staged Status response from a changed player/area/control context"
+        );
+        return false;
+    }
     let forwarded_request = state
         .inventory_equipment
         .client_gui_status_request_is_forwarded();
@@ -956,6 +972,16 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
         state
             .inventory_equipment
             .last_completed_client_gui_status_response_update_index = Some(queued_update_index);
+        let _ = observe_staged_client_gui_status_response_completion(
+            state,
+            queued_update_index,
+            server_sequence,
+            server_peer_ack_sequence,
+            ack_sequence,
+            current_controlled_object_id_at_observation,
+            area_client_area_packets_at_observation,
+            control_epoch_at_observation,
+        );
         tracing::info!(
             queued_update_index,
             server_sequence,
@@ -1015,6 +1041,110 @@ pub(super) fn maybe_record_client_gui_status_live_object_frame_response(
             .map(|candidate| format!("0x{:08X}", candidate.object_id))
             .unwrap_or_else(|| "none".to_string()),
         "inventory/equipment bridge observed typed server response to tracked ClientGuiInventory_Status"
+    );
+    true
+}
+
+/// Reject a stale staged response before it can mutate generic response state
+/// or stage the original Inventory replay. Server semantic application can
+/// observe an area/control transition earlier in the same payload, while the
+/// explicit staged-cycle cancellation runs after unit response recording.
+fn staged_client_gui_status_response_context_matches(
+    state: &SessionState,
+    current_controlled_object_id_at_observation: Option<u32>,
+    area_client_area_packets_at_observation: u64,
+    control_epoch_at_observation: u64,
+) -> bool {
+    if state.inventory_equipment.staged_client_gui_status_state
+        != InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+    {
+        return true;
+    }
+    state
+        .inventory_equipment
+        .pending_staged_client_gui_status_open
+        .as_ref()
+        .is_some_and(|pending| {
+            current_controlled_object_id_at_observation == Some(pending.current_player_object_id)
+                && area_client_area_packets_at_observation == pending.area_client_area_packets
+                && control_epoch_at_observation == pending.control_epoch
+        })
+}
+
+/// Finish one staged close/ACK/open cycle only at the exact typed Status
+/// response boundary. The caller has already proved that this server unit's
+/// raw, pre-unshift peer ACK covers the tracked open and that the typed response
+/// satisfies the same request window. Rechecking the update and open sequence
+/// here prevents a later bridge update from inheriting the earlier response;
+/// matching the unit-local player/area/control snapshot prevents a transition
+/// earlier in the same semantic payload from completing the stale cycle.
+fn observe_staged_client_gui_status_response_completion(
+    state: &mut SessionState,
+    queued_update_index: u64,
+    server_sequence: u16,
+    server_peer_ack_sequence: u16,
+    ack_sequence: u16,
+    current_controlled_object_id_at_observation: Option<u32>,
+    area_client_area_packets_at_observation: u64,
+    control_epoch_at_observation: u64,
+) -> bool {
+    let bridge = &state.inventory_equipment;
+    if bridge.staged_client_gui_status_state
+        != InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+        || !bridge.client_gui_status_response_window_satisfied()
+    {
+        return false;
+    }
+    let Some(staged_update_index) = bridge.staged_client_gui_status_last_update_index else {
+        return false;
+    };
+    let Some(staged_open_sequence) = bridge.staged_client_gui_status_last_open_synthetic_sequence
+    else {
+        return false;
+    };
+    let Some(queued) = bridge.last_queued_client_gui_status_output else {
+        return false;
+    };
+    let Some(pending) = bridge.pending_staged_client_gui_status_open.as_ref() else {
+        return false;
+    };
+    if queued_update_index != staged_update_index
+        || pending.update.update_index != staged_update_index
+        || queued.update_index != staged_update_index
+        || queued.synthetic_sequence != staged_open_sequence
+        || current_controlled_object_id_at_observation != Some(pending.current_player_object_id)
+        || area_client_area_packets_at_observation != pending.area_client_area_packets
+        || control_epoch_at_observation != pending.control_epoch
+        || bridge.last_acknowledged_client_gui_status_update_index != Some(staged_update_index)
+        || bridge.last_completed_client_gui_status_response_update_index
+            != Some(staged_update_index)
+        || !sequence_at_or_after(server_peer_ack_sequence, staged_open_sequence)
+    {
+        return false;
+    }
+
+    let bridge = &mut state.inventory_equipment;
+    bridge.staged_client_gui_status_state =
+        InventoryEquipmentStagedClientGuiStatusState::ResponseCompleted;
+    bridge.staged_client_gui_status_response_completions = bridge
+        .staged_client_gui_status_response_completions
+        .saturating_add(1);
+    bridge.staged_client_gui_status_last_response_update_index = Some(staged_update_index);
+    bridge.staged_client_gui_status_last_response_server_sequence = Some(server_sequence);
+    bridge.staged_client_gui_status_last_response_server_peer_ack_sequence =
+        Some(server_peer_ack_sequence);
+    bridge.staged_client_gui_status_last_response_ack_sequence = Some(ack_sequence);
+    // Keep the close/open owner alive through OpenQueued so native Status and
+    // area/control changes can still cancel the exact cycle. Exact response
+    // completion is the only successful terminal boundary that releases it.
+    bridge.pending_staged_client_gui_status_open = None;
+    tracing::info!(
+        update_index = staged_update_index,
+        open_sequence = staged_open_sequence,
+        server_sequence,
+        raw_server_peer_ack_sequence = server_peer_ack_sequence,
+        ee_ack_sequence = ack_sequence,
+        "inventory/equipment completed exact staged Status response cycle"
     );
     true
 }
@@ -1607,15 +1737,27 @@ fn cancel_staged_client_gui_status_open_if_context_changed(
         .pending_staged_client_gui_status_open
         .as_ref()
         .and_then(|pending| staged_client_gui_status_cancel_reason(state, pending));
+    if reason == Some(InventoryEquipmentStagedClientGuiStatusCancelReason::SupersedingUpdate)
+        && state.inventory_equipment.staged_client_gui_status_state
+            == InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+    {
+        // The open has already entered the reliable stream. Starting another
+        // close/open cycle here would overlap response windows and make an old
+        // response attributable to the new update. Leave the newer update
+        // unhandled so it can rearm immediately after exact completion.
+        return None;
+    }
     reason.filter(|reason| cancel_staged_client_gui_status_open(state, *reason))
 }
 
 pub(super) fn staged_client_gui_status_open_ready(state: &SessionState) -> bool {
-    state
-        .inventory_equipment
-        .pending_staged_client_gui_status_open
-        .as_ref()
-        .is_some_and(|pending| pending.acknowledged_close_key.is_some())
+    state.inventory_equipment.staged_client_gui_status_state
+        == InventoryEquipmentStagedClientGuiStatusState::CloseAcknowledged
+        && state
+            .inventory_equipment
+            .pending_staged_client_gui_status_open
+            .as_ref()
+            .is_some_and(|pending| pending.acknowledged_close_key.is_some())
 }
 
 /// Materialize the held open only inside the pending-client drain transaction.
@@ -1652,9 +1794,8 @@ pub(super) fn maybe_queue_staged_client_gui_status_open(
         .inventory_equipment
         .last_queued_client_gui_status_output
         .ok_or_else(|| anyhow::anyhow!("staged Status open queued without tracked output"))?;
-    state
-        .inventory_equipment
-        .pending_staged_client_gui_status_open = None;
+    // Retain the exact cycle owner until response completion or cancellation.
+    // Readiness is state-gated above, so this cannot queue the same open twice.
     state.inventory_equipment.staged_client_gui_status_state =
         InventoryEquipmentStagedClientGuiStatusState::OpenQueued;
     state
@@ -1888,14 +2029,20 @@ fn queue_client_gui_status_output_with_claim(
             server_sequence_to_ack,
         );
     }
-    if state
-        .inventory_equipment
-        .pending_staged_client_gui_status_open
-        .is_some()
-    {
+    if matches!(
+        state.inventory_equipment.staged_client_gui_status_state,
+        InventoryEquipmentStagedClientGuiStatusState::CloseQueued
+            | InventoryEquipmentStagedClientGuiStatusState::CloseInFlight
+            | InventoryEquipmentStagedClientGuiStatusState::CloseAcknowledged
+            | InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+    ) {
         tracing::debug!(
             update_index = update.update_index,
-            "inventory/equipment staged Status coordinator refused to rearm while active"
+            staged_state = state
+                .inventory_equipment
+                .staged_client_gui_status_state
+                .as_str(true),
+            "inventory/equipment staged Status coordinator deferred rearm while the exact cycle remains active"
         );
         return Ok(true);
     }
@@ -2263,6 +2410,80 @@ mod tests {
         (update, claim)
     }
 
+    fn staged_status_open_awaiting_response(
+        current_player: u32,
+    ) -> (
+        SessionState,
+        InventoryEquipmentBridgeStateUpdate,
+        InventoryEquipmentClientGuiInventoryClaim,
+    ) {
+        let (update, claim) = ready_current_player_status_update(current_player);
+        let mut state = SessionState::default();
+        state
+            .inventory_equipment
+            .staged_client_gui_status_close_ack_open_enabled = true;
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state.semantic.player_control.current_controlled_object_id = Some(current_player);
+        state.semantic.player_control.control_epoch = 2;
+        state.semantic.area.client_area_packets = 1;
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+        queue_client_gui_status_output_with_claim(&mut state, update, claim, 10, None)
+            .expect("stage exact close");
+        let close_sequence = state
+            .inventory_equipment
+            .pending_staged_client_gui_status_open
+            .as_ref()
+            .expect("pending staged open")
+            .close_synthetic_sequence;
+        let committed_close = state.sequence.pending_client_to_server_packets.remove(0);
+        assert_eq!(
+            MFrameView::parse(&committed_close.packet)
+                .expect("parse committed staged close")
+                .sequence,
+            close_sequence
+        );
+        observe_raw_server_ack_for_staged_client_gui_status(
+            &mut state,
+            close_sequence,
+            Some(super::super::diamond_send_window::DiamondClientSendKey {
+                sequence: close_sequence,
+                generation: 0,
+            }),
+        );
+        assert!(
+            maybe_queue_staged_client_gui_status_open(&mut state).expect("queue exact staged open")
+        );
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .pending_staged_client_gui_status_open
+                .is_some(),
+            "the exact cycle owner remains available for response or cancellation"
+        );
+        (state, update, claim)
+    }
+
+    fn exact_staged_status_materialization(
+        candidate: InventoryItemContextCandidate,
+    ) -> crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+        crate::translate::semantic::LiveObjectInventoryMaterializationSummary {
+            inventory_records: 0,
+            inventory_owner_claims: Vec::new(),
+            live_gui_records: 1,
+            live_gui_fragment_bits: 1,
+            materialized_item_object_ids: vec![candidate.object_id],
+            compact_item_emission_ready_objects: 1,
+            compact_item_emission_ready_candidate: Some(candidate),
+        }
+    }
+
     #[test]
     fn staged_status_open_waits_for_exact_cumulative_close_slot_retirement() {
         let current_player = 0x8000_5678;
@@ -2502,6 +2723,348 @@ mod tests {
                 .inventory_equipment
                 .staged_client_gui_status_in_flight_close_cancellations,
             0
+        );
+    }
+
+    #[test]
+    fn staged_status_open_is_single_flight_until_exact_response_completion() {
+        let current_player = 0x8000_5678;
+        let (mut state, update, _claim) = staged_status_open_awaiting_response(current_player);
+        let first_open = state
+            .inventory_equipment
+            .last_queued_client_gui_status_output
+            .expect("tracked staged open");
+        mark_current_status_server_acknowledged(&mut state, first_open.synthetic_sequence);
+        let pending_packets = state.sequence.pending_client_to_server_packets.len();
+        let sequence_shifts = state.sequence.client_sequence_shifts.len();
+
+        let superseding = InventoryEquipmentBridgeStateUpdate {
+            update_index: update.update_index + 1,
+            emission_index: update.emission_index + 1,
+            event_index: update.event_index + 1,
+            ..update
+        };
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(superseding);
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 20, 7)
+            .expect("defer superseding staged cycle");
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_queued_client_gui_status_output,
+            Some(first_open),
+            "a second close must not erase the first open response window"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_acknowledged_client_gui_status_update_index,
+            Some(update.update_index),
+            "single-flight deferral retains exact raw-ACK evidence"
+        );
+        assert_eq!(
+            state.sequence.pending_client_to_server_packets.len(),
+            pending_packets
+        );
+        assert_eq!(state.sequence.client_sequence_shifts.len(), sequence_shifts);
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_cancellations,
+            0,
+            "a newer update must not cancel an open already in the reliable stream"
+        );
+        assert!(
+            !maybe_queue_staged_client_gui_status_open(&mut state)
+                .expect("an already queued open is not ready again"),
+            "retaining the cycle owner must not duplicate the staged open"
+        );
+
+        let summary = exact_staged_status_materialization(update.candidate);
+        assert!(maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            48,
+            first_open.synthetic_sequence,
+            82,
+            Some(&summary),
+            Some(current_player),
+            1,
+            2,
+        ));
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::ResponseCompleted
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_response_completions,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_response_update_index,
+            Some(update.update_index)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_response_server_sequence,
+            Some(48)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_response_server_peer_ack_sequence,
+            Some(first_open.synthetic_sequence)
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_response_ack_sequence,
+            Some(82)
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .pending_staged_client_gui_status_open
+                .is_none(),
+            "exact response completion releases the retained cycle owner"
+        );
+        assert!(!maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            48,
+            first_open.synthetic_sequence,
+            82,
+            Some(&summary),
+            Some(current_player),
+            1,
+            2,
+        ));
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_response_completions,
+            1,
+            "an exact response replay cannot complete the staged cycle twice"
+        );
+
+        maybe_queue_inventory_equipment_bridge_output(&mut state, 20, 7)
+            .expect("rearm after exact completion");
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::CloseQueued
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_update_index,
+            Some(superseding.update_index)
+        );
+    }
+
+    #[test]
+    fn staged_status_open_queued_retains_owner_for_context_and_native_cancellation() {
+        let current_player = 0x8000_5678;
+        let (mut area_state, _, _) = staged_status_open_awaiting_response(current_player);
+        area_state.semantic.area.client_area_packets += 1;
+        assert_eq!(
+            cancel_staged_client_gui_status_open_if_context_changed(&mut area_state),
+            Some(InventoryEquipmentStagedClientGuiStatusCancelReason::AreaChanged)
+        );
+        assert_eq!(
+            area_state
+                .inventory_equipment
+                .staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::Cancelled
+        );
+        assert!(
+            area_state
+                .inventory_equipment
+                .pending_staged_client_gui_status_open
+                .is_none()
+        );
+        assert_eq!(
+            area_state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_boundary,
+            InventoryEquipmentStagedClientGuiStatusCancelBoundary::AcknowledgedCloseRetained
+        );
+
+        let (mut native_state, _, claim) = staged_status_open_awaiting_response(current_player);
+        maybe_record_non_server_inventory_equipment_bridge_output_decision(
+            &mut native_state,
+            Some((12, 4, claim)),
+        );
+        assert_eq!(
+            native_state
+                .inventory_equipment
+                .staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::Cancelled
+        );
+        assert!(
+            native_state
+                .inventory_equipment
+                .pending_staged_client_gui_status_open
+                .is_none()
+        );
+        assert_eq!(
+            native_state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_reason,
+            InventoryEquipmentStagedClientGuiStatusCancelReason::NativeStatus
+        );
+        assert_eq!(
+            native_state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_boundary,
+            InventoryEquipmentStagedClientGuiStatusCancelBoundary::AcknowledgedCloseRetained
+        );
+    }
+
+    #[test]
+    fn staged_status_response_completion_rejects_mismatched_open_identity() {
+        let current_player = 0x8000_5678;
+        let (mut state, update, _) = staged_status_open_awaiting_response(current_player);
+        let open = state
+            .inventory_equipment
+            .last_queued_client_gui_status_output
+            .expect("tracked staged open");
+        state
+            .inventory_equipment
+            .staged_client_gui_status_last_open_synthetic_sequence =
+            Some(open.synthetic_sequence.wrapping_add(1));
+        mark_current_status_server_acknowledged(&mut state, open.synthetic_sequence);
+        let summary = exact_staged_status_materialization(update.candidate);
+
+        assert!(maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            49,
+            open.synthetic_sequence,
+            83,
+            Some(&summary),
+            Some(current_player),
+            1,
+            2,
+        ));
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_response_completions,
+            0
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_response_update_index
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn staged_status_response_completion_rejects_changed_observation_context() {
+        let current_player = 0x8000_5678;
+        let (mut state, update, _) = staged_status_open_awaiting_response(current_player);
+        let open = state
+            .inventory_equipment
+            .last_queued_client_gui_status_output
+            .expect("tracked staged open");
+        mark_current_status_server_acknowledged(&mut state, open.synthetic_sequence);
+        let summary = exact_staged_status_materialization(update.candidate);
+        let server_claim = ready_server_inventory_update()
+            .server_inventory_claim
+            .expect("server Inventory fallback claim");
+        let decision = state
+            .inventory_equipment
+            .last_decision
+            .as_mut()
+            .expect("staged open decision");
+        assert_eq!(
+            decision.kind,
+            InventoryEquipmentBridgeOutputDecisionKind::QueuedClientGuiStatusOutput
+        );
+        decision.consumer = InventoryEquipmentHandoffConsumer::ServerInventory;
+        decision.server_inventory_claim = Some(server_claim);
+        state
+            .semantic
+            .objects
+            .observe_materialized_item_object_ids(&[server_claim.object_id]);
+
+        assert!(!maybe_record_client_gui_status_live_object_frame_response(
+            &mut state,
+            &VerifiedProof::family(VerifiedFamily::GameObjUpdateLiveObject),
+            50,
+            open.synthetic_sequence,
+            84,
+            Some(&summary),
+            Some(current_player),
+            2,
+            2,
+        ));
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::OpenQueued
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_response_completions,
+            0
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .last_completed_client_gui_status_response_update_index,
+            None
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .pending_confirmed_inventory_replay
+                .is_none(),
+            "changed-context materialization cannot stage the original Inventory replay"
+        );
+        assert!(
+            !maybe_queue_confirmed_inventory_replay(&mut state, 50, 84)
+                .expect("changed-context response has no confirmed replay")
+        );
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .is_empty()
+        );
+        assert!(state.sequence.pending_server_sequence_insertions.is_empty());
+        assert!(
+            state
+                .inventory_equipment
+                .pending_staged_client_gui_status_open
+                .is_some(),
+            "a response from the changed area cannot release the old cycle owner"
+        );
+
+        state.semantic.area.client_area_packets = 2;
+        assert_eq!(
+            cancel_staged_client_gui_status_open_if_context_changed(&mut state),
+            Some(InventoryEquipmentStagedClientGuiStatusCancelReason::AreaChanged)
+        );
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::Cancelled
         );
     }
 

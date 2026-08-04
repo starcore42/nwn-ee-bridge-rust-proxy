@@ -392,6 +392,7 @@ pub(super) enum InventoryEquipmentStagedClientGuiStatusState {
     CloseInFlight,
     CloseAcknowledged,
     OpenQueued,
+    ResponseCompleted,
     Cancelled,
 }
 
@@ -406,6 +407,7 @@ impl InventoryEquipmentStagedClientGuiStatusState {
             Self::CloseInFlight => "close_in_flight",
             Self::CloseAcknowledged => "close_acknowledged",
             Self::OpenQueued => "open_queued",
+            Self::ResponseCompleted => "response_completed",
             Self::Cancelled => "cancelled",
         }
     }
@@ -850,6 +852,7 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) staged_client_gui_status_close_commits: u64,
     pub(super) staged_client_gui_status_close_acknowledgements: u64,
     pub(super) staged_client_gui_status_open_outputs: u64,
+    pub(super) staged_client_gui_status_response_completions: u64,
     pub(super) staged_client_gui_status_cancellations: u64,
     pub(super) staged_client_gui_status_last_cancel_reason:
         InventoryEquipmentStagedClientGuiStatusCancelReason,
@@ -875,6 +878,10 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) staged_client_gui_status_last_raw_server_ack_sequence: Option<u16>,
     pub(super) staged_client_gui_status_last_open_synthetic_sequence: Option<u16>,
     pub(super) staged_client_gui_status_last_open_ack_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_response_update_index: Option<u64>,
+    pub(super) staged_client_gui_status_last_response_server_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_response_server_peer_ack_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_response_ack_sequence: Option<u16>,
     pub(super) pending_staged_client_gui_status_open:
         Option<InventoryEquipmentPendingStagedClientGuiStatusOpen>,
     pub(super) client_gui_status_request_acknowledgements: u64,
