@@ -38,7 +38,6 @@ use super::{
 const LEGACY_CREATURE_TYPE: u8 = 0x05;
 const MAX_ITEM_CREATE_DIAGNOSTIC_CANDIDATES: usize = 16;
 const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
-const LEGACY_CREATURE_VISUAL_TRANSFORM_UPDATE_HEADER_BYTES: usize = 7;
 const LEGACY_APPEARANCE_NAME_MASK: u16 = 0x0400;
 const LEGACY_APPEARANCE_ALL_FIELDS_MASK: u16 = 0xFFFF;
 const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
@@ -520,20 +519,6 @@ pub(super) struct CreatureAppearanceExtraRewrite {
     pub emitted_fragment_bits_consumed: Option<usize>,
     pub visible_equipment_update_source_decisions:
         LiveObjectVisibleEquipmentUpdateSourceDecisionLedger,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CreatureVisualTransformUpdateRewrite {
-    pub bytes_inserted: usize,
-    pub bytes_removed: usize,
-    pub bits_inserted: usize,
-    pub ambiguous_legacy_fragment_storage_promoted: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StandaloneVisualTransformSourcePolicy {
-    PreserveEeMap,
-    PromoteCanonicalEmptyMapAsLegacyFragmentStorage,
 }
 
 pub(super) fn try_get_legacy_creature_appearance_record_end(
@@ -1746,246 +1731,6 @@ pub(super) fn remove_ee_appearance_trailing_legacy_tail_before_verified_creature
     let bytes_removed = following_offset.saturating_sub(appearance_end);
     bytes.drain(appearance_end..following_offset);
     Some(CreatureAppearanceTrailingTailRemoval { bytes_removed })
-}
-
-pub(super) fn try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-    bytes: &[u8],
-    offset: usize,
-    scan_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: usize,
-) -> Option<(usize, usize)> {
-    let visual_offset = offset.checked_add(LEGACY_CREATURE_VISUAL_TRANSFORM_UPDATE_HEADER_BYTES)?;
-    if scan_end > bytes.len()
-        || bytes.get(offset).copied() != Some(b'U')
-        || bytes.get(offset + 1).copied() != Some(LEGACY_CREATURE_TYPE)
-    {
-        return None;
-    }
-
-    let object_id = read_u32_le(bytes, offset + 2)?;
-    if !looks_like_legacy_creature_object_id(object_id) {
-        return None;
-    }
-
-    // EE `sub_14077FE10` reads the one-byte selector and then hands the same
-    // read/fragment cursors to `sub_140973160`. That shared map reader owns two
-    // signed counts, signed-ordered keys, and one MSB-first BOOL per value. Do
-    // not freeze this standalone `U/5` family at the eight-byte empty-map shape:
-    // an authentic nonempty map has a dynamic byte end and advances the shared
-    // fragment cursor once per entry.
-    let parsed = super::visual_transform::parse_ee_object_visual_transform_map(
-        bytes,
-        visual_offset,
-        scan_end,
-        Some(fragment_bits),
-        bit_cursor,
-    )?;
-    if parsed.end != scan_end
-        && !boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, parsed.end)
-    {
-        // A dynamic map end is useful as a top-level record boundary only when
-        // it hands off to the next live-object opcode (or exactly exhausts the
-        // caller's scan window). This prevents a map-shaped prefix inside an
-        // ordinary creature update from swallowing or exposing interior bytes.
-        return None;
-    }
-
-    // `U/5` also carries the ordinary four-byte creature-update mask at the
-    // selector position. Preserve that reader when the same bytes form one of
-    // its decompile-supported masks *and* its exact cursor validator accepts a
-    // complete candidate at any top-level boundary. Testing only `parsed.end`
-    // is unsafe: a valid 0x47 position/orientation body can begin with an empty-
-    // map-shaped prefix whose next two interior bytes spell `U/5`.
-    if read_u32_le(bytes, offset + 6)
-        .is_some_and(super::creature::is_supported_legacy_creature_update_cursor_mask)
-        && super::try_get_verified_creature_update_record_end_for_ee(
-            bytes,
-            offset,
-            scan_end,
-            fragment_bits,
-            bit_cursor,
-        )
-        .is_some()
-    {
-        return None;
-    }
-
-    let next_bit_cursor = bit_cursor.checked_add(parsed.fragment_bits_consumed)?;
-    Some((parsed.end, next_bit_cursor))
-}
-
-pub(super) fn advance_verified_ee_creature_visual_transform_update_record(
-    bytes: &[u8],
-    offset: usize,
-    record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: &mut usize,
-) -> bool {
-    let Some((verified_end, next_bit_cursor)) =
-        try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-            bytes,
-            offset,
-            record_end,
-            fragment_bits,
-            *bit_cursor,
-        )
-    else {
-        return false;
-    };
-    if verified_end != record_end {
-        return false;
-    }
-
-    *bit_cursor = next_bit_cursor;
-    true
-}
-
-pub(super) fn rewrite_creature_visual_transform_update_for_ee(
-    bytes: &mut Vec<u8>,
-    offset: usize,
-    record_end: &mut usize,
-    fragment_bits: &mut Vec<bool>,
-    bit_cursor: usize,
-) -> Option<CreatureVisualTransformUpdateRewrite> {
-    rewrite_creature_visual_transform_update_for_ee_with_source_policy(
-        bytes,
-        offset,
-        record_end,
-        fragment_bits,
-        bit_cursor,
-        StandaloneVisualTransformSourcePolicy::PreserveEeMap,
-    )
-}
-
-pub(super) fn rewrite_creature_visual_transform_update_for_ee_with_source_policy(
-    bytes: &mut Vec<u8>,
-    offset: usize,
-    record_end: &mut usize,
-    fragment_bits: &mut Vec<bool>,
-    bit_cursor: usize,
-    source_policy: StandaloneVisualTransformSourcePolicy,
-) -> Option<CreatureVisualTransformUpdateRewrite> {
-    let selector_end = offset.checked_add(LEGACY_CREATURE_VISUAL_TRANSFORM_UPDATE_HEADER_BYTES)?;
-    if *record_end > bytes.len()
-        || bytes.get(offset).copied()? != b'U'
-        || bytes.get(offset + 1).copied()? != LEGACY_CREATURE_TYPE
-        || selector_end > *record_end
-    {
-        return None;
-    }
-
-    let object_id = read_u32_le(bytes, offset + 2)?;
-    if !looks_like_legacy_creature_object_id(object_id) {
-        return None;
-    }
-
-    let verified_ee = try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-        bytes,
-        offset,
-        *record_end,
-        fragment_bits,
-        bit_cursor,
-    );
-    let promote_ambiguous_legacy_fragment_storage = matches!(
-        source_policy,
-        StandaloneVisualTransformSourcePolicy::PromoteCanonicalEmptyMapAsLegacyFragmentStorage
-    ) && verified_ee
-        == Some((*record_end, bit_cursor))
-        && bytes.get(selector_end..*record_end)
-            == Some(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.as_slice())
-        && super::visual_transform::parse_ee_object_visual_transform_map(
-            bytes,
-            selector_end,
-            *record_end,
-            Some(fragment_bits),
-            bit_cursor,
-        )
-        .is_some_and(|parsed| {
-            parsed.end == *record_end
-                && parsed.fragment_bits_consumed == 0
-                && parsed.map.is_canonical_empty()
-        });
-
-    if verified_ee.is_some() && !promote_ambiguous_legacy_fragment_storage {
-        // Rewrites can run more than once while declared-length repair and
-        // neighboring live-object families converge. A typed, exact EE map is
-        // already complete even when it is nonempty; never drain its bytes as
-        // legacy fragment storage or replace it with an empty identity map.
-        return None;
-    }
-
-    if let Some(raw_mask) = read_u32_le(bytes, offset + 6) {
-        if raw_mask == 0
-            && offset
-                .checked_add(super::LEGACY_UPDATE_HEADER_BYTES)
-                .is_some_and(|header_end| *record_end == header_end)
-        {
-            // Diamond and EE creature updates both read a four-byte mask and
-            // then stop when it is zero. The legacy visual-transform selector
-            // branch reads only one byte after the object id, so a proven
-            // ten-byte `U/5 + mask(0)` record belongs to the creature-update
-            // reader instead of the selector bridge.
-            return None;
-        }
-        if super::creature::is_supported_legacy_creature_update_cursor_mask(raw_mask) {
-            // EE/Diamond creature update records (`sub_140781E80` /
-            // `sub_44ADD0`) read a four-byte update mask immediately after
-            // the object id. The legacy visual-transform selector branch reads
-            // only one byte there. Do not reinterpret a decompile-supported
-            // creature update mask such as `0x00000047`, `0x00003967`,
-            // `0x0000C408`, or `0x00008000` as selector-plus-fragment data;
-            // doing so leaves the EE live-object dispatcher with shifted
-            // read/fragment cursors and produces `Unknown Update sub-message`.
-            return None;
-        }
-    }
-
-    // Diamond's `sub_448E30` `U/5` branch reads only the object id and one
-    // `ReadBYTE(8)` selector, then clears/applies the local visual effect.
-    // EE's corresponding `sub_14077FE10` branch reads the same selector and
-    // then calls `sub_140973160` for a visual-transform map. Because the 1.69
-    // server has no transform bytes for this branch, the bridge emits the EE
-    // object-level identity map: two zero DWORD counts. Any bytes the boundary
-    // walker grouped after the selector are chunk-local CNW fragment storage,
-    // not part of this semantic record, so promote them back into the fragment
-    // stream before inserting the EE-only identity map.
-    // The canonical empty EE map is byte-identical to one eight-byte Diamond
-    // CNW storage span containing 64 false bits. The first three MSB bits are
-    // the fragment final-count header, so the legacy interpretation promotes
-    // exactly 61 semantic bits at the inherited cursor. Record-local bytes can
-    // never choose that interpretation: the alternate production pass is
-    // allowed to request it only as a fresh whole-payload candidate, and the
-    // final exact EE reader/cursor validator must make it uniquely viable.
-    let old_record_end = *record_end;
-    let mut bytes_removed = 0usize;
-    let mut bits_inserted = 0usize;
-    if old_record_end > selector_end {
-        let span = bytes.get(selector_end..old_record_end)?;
-        let mut promoted_bits = bits::decode_msb_valid_bits(span, CNW_FRAGMENT_HEADER_BITS)?;
-        if promoted_bits.len() < CNW_FRAGMENT_HEADER_BITS {
-            return None;
-        }
-        promoted_bits.drain(0..CNW_FRAGMENT_HEADER_BITS);
-        bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
-        bits_inserted = promoted_bits.len();
-        bytes_removed = old_record_end.saturating_sub(selector_end);
-        bytes.drain(selector_end..old_record_end);
-        *record_end = selector_end;
-    }
-
-    bytes.splice(
-        selector_end..selector_end,
-        EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
-    );
-    *record_end = (*record_end).checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len())?;
-
-    Some(CreatureVisualTransformUpdateRewrite {
-        bytes_inserted: EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len(),
-        bytes_removed,
-        bits_inserted,
-        ambiguous_legacy_fragment_storage_promoted: promote_ambiguous_legacy_fragment_storage,
-    })
 }
 
 pub(super) fn looks_like_legacy_item_add_record_boundary(bytes: &[u8], offset: usize) -> bool {
@@ -6077,10 +5822,6 @@ fn checked_shift_optional_relative(value: Option<usize>, delta: usize) -> Option
         Some(value) => Some(Some(value.checked_add(delta)?)),
         None => Some(None),
     }
-}
-
-fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {
-    super::object_ids::looks_like_legacy_live_object_id_value(object_id)
 }
 
 fn parse_creature_appearance_record(
@@ -10822,174 +10563,6 @@ mod public_tests {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn standalone_creature_visual_transform_record(encoded_map: &[u8]) -> Vec<u8> {
-        let mut bytes = vec![b'U', LEGACY_CREATURE_TYPE];
-        push_u32(&mut bytes, 0x8000_1234);
-        bytes.push(0xFE);
-        bytes.extend_from_slice(encoded_map);
-        bytes
-    }
-
-    #[test]
-    fn standalone_creature_visual_transform_uses_typed_dynamic_map_cursor() {
-        use crate::translate::live_object_update::visual_transform::{
-            EeActiveLerpFloatWireValue, EeAurObjectVisualTransformWireValue, EeLerpFloatWireValue,
-            EeObjectVisualTransformMap, EeObjectVisualTransformValueEntry,
-            encode_ee_object_visual_transform_map,
-        };
-
-        let inactive = EeLerpFloatWireValue {
-            current_float_bits: 0,
-            first_timeline_value: 0,
-            second_timeline_value: 0,
-            active: None,
-        };
-        let mut lerps = [inactive; 10];
-        lerps[9] = EeLerpFloatWireValue {
-            current_float_bits: 0.75f32.to_bits(),
-            first_timeline_value: -7,
-            second_timeline_value: 9,
-            active: Some(EeActiveLerpFloatWireValue {
-                first_float_bits: 1.25f32.to_bits(),
-                second_float_bits: (-2.5f32).to_bits(),
-                third_float_bits: 3.75f32.to_bits(),
-                first_build_23_value: -11,
-                second_build_23_value: 13,
-            }),
-        };
-        let map = EeObjectVisualTransformMap {
-            entries: vec![
-                EeObjectVisualTransformValueEntry {
-                    scope: -9,
-                    value: EeAurObjectVisualTransformWireValue::Identity,
-                },
-                EeObjectVisualTransformValueEntry {
-                    scope: 42,
-                    value: EeAurObjectVisualTransformWireValue::LerpValues(Box::new(lerps)),
-                },
-            ],
-        };
-        let encoded = encode_ee_object_visual_transform_map(&map).expect("general map encodes");
-        assert_eq!(encoded.fragment_bits, [true, false]);
-        let bytes = standalone_creature_visual_transform_record(&encoded.bytes);
-        let fragment_bits = [false, true, false, true];
-
-        let (verified_end, next_bit_cursor) =
-            try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-                &bytes,
-                0,
-                bytes.len(),
-                &fragment_bits,
-                1,
-            )
-            .expect("standalone general transform map should prove its dynamic end");
-        assert_eq!(verified_end, bytes.len());
-        assert_eq!(next_bit_cursor, 3);
-
-        let mut bit_cursor = 1;
-        assert!(advance_verified_ee_creature_visual_transform_update_record(
-            &bytes,
-            0,
-            bytes.len(),
-            &fragment_bits,
-            &mut bit_cursor,
-        ));
-        assert_eq!(bit_cursor, 3, "one BOOL is owned by each map entry");
-    }
-
-    #[test]
-    fn standalone_creature_visual_transform_rejects_truncated_map_transactionally() {
-        use crate::translate::live_object_update::visual_transform::{
-            EeAurObjectVisualTransformWireValue, EeLerpFloatWireValue, EeObjectVisualTransformMap,
-            EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
-        };
-
-        let lerps = [EeLerpFloatWireValue {
-            current_float_bits: 1.0f32.to_bits(),
-            first_timeline_value: -1,
-            second_timeline_value: 0,
-            active: None,
-        }; 10];
-        let encoded = encode_ee_object_visual_transform_map(&EeObjectVisualTransformMap {
-            entries: vec![EeObjectVisualTransformValueEntry {
-                scope: -4,
-                value: EeAurObjectVisualTransformWireValue::LerpValues(Box::new(lerps)),
-            }],
-        })
-        .expect("value map encodes");
-        let bytes = standalone_creature_visual_transform_record(&encoded.bytes);
-
-        for record_end in LEGACY_CREATURE_VISUAL_TRANSFORM_UPDATE_HEADER_BYTES..bytes.len() {
-            let mut bit_cursor = 1;
-            assert!(
-                !advance_verified_ee_creature_visual_transform_update_record(
-                    &bytes,
-                    0,
-                    record_end,
-                    &[true, false, true],
-                    &mut bit_cursor,
-                ),
-                "truncated record ending at {record_end} must reject"
-            );
-            assert_eq!(bit_cursor, 1, "a rejected record cannot move the cursor");
-        }
-
-        let mut missing_bool_cursor = 1;
-        assert!(
-            !advance_verified_ee_creature_visual_transform_update_record(
-                &bytes,
-                0,
-                bytes.len(),
-                &[true],
-                &mut missing_bool_cursor,
-            )
-        );
-        assert_eq!(missing_bool_cursor, 1);
-    }
-
-    #[test]
-    fn standalone_creature_visual_transform_rewrite_preserves_nonempty_ee_map_under_every_source_policy()
-     {
-        use crate::translate::live_object_update::visual_transform::{
-            EeAurObjectVisualTransformWireValue, EeObjectVisualTransformMap,
-            EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
-        };
-
-        let encoded = encode_ee_object_visual_transform_map(&EeObjectVisualTransformMap {
-            entries: vec![EeObjectVisualTransformValueEntry {
-                scope: 17,
-                value: EeAurObjectVisualTransformWireValue::Identity,
-            }],
-        })
-        .expect("identity-valued map encodes");
-        let original_bytes = standalone_creature_visual_transform_record(&encoded.bytes);
-        let original_fragment_bits = vec![false, true, false];
-        for source_policy in [
-            StandaloneVisualTransformSourcePolicy::PreserveEeMap,
-            StandaloneVisualTransformSourcePolicy::PromoteCanonicalEmptyMapAsLegacyFragmentStorage,
-        ] {
-            let mut bytes = original_bytes.clone();
-            let mut fragment_bits = original_fragment_bits.clone();
-            let mut record_end = bytes.len();
-
-            assert!(
-                rewrite_creature_visual_transform_update_for_ee_with_source_policy(
-                    &mut bytes,
-                    0,
-                    &mut record_end,
-                    &mut fragment_bits,
-                    1,
-                    source_policy,
-                )
-                .is_none(),
-                "an exact nonempty EE map is already in final wire shape under {source_policy:?}"
-            );
-            assert_eq!(bytes, original_bytes);
-            assert_eq!(fragment_bits, original_fragment_bits);
-            assert_eq!(record_end, bytes.len());
-        }
-    }
-
     fn live_object_payload_with_bits(live: &[u8], owned_bits: Vec<bool>) -> Vec<u8> {
         let mut payload = vec![b'P', 0x05, 0x01];
         let declared = (super::super::HIGH_LEVEL_HEADER_BYTES
@@ -11329,7 +10902,7 @@ mod public_tests {
         bytes.push(b'U');
         push_u32(&mut bytes, 0x8000_0044);
         push_u32(&mut bytes, 2);
-        bytes.push(0x7F); // equipment update selector byte.
+        bytes.push(0x7F); // equipment update status byte.
         bytes
     }
 
@@ -12320,7 +11893,7 @@ mod public_tests {
         assert_eq!(
             try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
             Some(bytes.len()),
-            "Diamond U equipment deltas own one selector byte and no visual-transform bytes"
+            "Diamond U equipment deltas own one status byte and no visual-transform bytes"
         );
         let mut legacy_cursor = 0usize;
         assert!(advance_verified_legacy_creature_appearance_record(
@@ -13042,6 +12615,122 @@ mod public_tests {
         );
         assert_eq!(claim.rows[0].update_status, Some(0x7F));
         assert_eq!(claim.rows[1].update_status, Some(0x01));
+    }
+
+    #[test]
+    fn mixed_legacy_and_ee_equipment_updates_select_source_per_nested_row() {
+        use crate::translate::live_object_update::visual_transform::{
+            EeAurObjectVisualTransformWireValue, EeObjectVisualTransformMap,
+            EeObjectVisualTransformValueEntry, encode_ee_object_visual_transform_map,
+        };
+
+        let mut bytes = vec![b'P', LEGACY_CREATURE_TYPE];
+        push_u32(&mut bytes, 0x8000_0040);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
+        bytes.push(3);
+
+        for (object_id, status) in [(0x8000_0044u32, 0x7F), (0x8000_0045, 0x55)] {
+            bytes.push(b'U');
+            push_u32(&mut bytes, object_id);
+            push_u32(&mut bytes, 2);
+            bytes.push(status);
+            if object_id == 0x8000_0045 {
+                let encoded = encode_ee_object_visual_transform_map(&EeObjectVisualTransformMap {
+                    entries: vec![EeObjectVisualTransformValueEntry {
+                        scope: -17,
+                        value: EeAurObjectVisualTransformWireValue::Identity,
+                    }],
+                })
+                .expect("one identity-valued equipment map should encode");
+                assert_eq!(encoded.fragment_bits, [true]);
+                assert_eq!(encoded.bytes.len(), 16);
+                bytes.extend_from_slice(&encoded.bytes);
+            }
+        }
+        bytes.push(b'U');
+        push_u32(&mut bytes, 0x8000_0046);
+        push_u32(&mut bytes, 2);
+        bytes.push(0x01);
+
+        let mut record_end = bytes.len();
+        let mut fragment_bits = vec![true];
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("mixed nested U rows should translate independently");
+        assert_eq!(rewrite.bytes_inserted, 16);
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(fragment_bits, [true]);
+
+        let decisions = rewrite
+            .visible_equipment_update_source_decisions
+            .iter()
+            .map(|decision| decision.selected)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decisions,
+            [
+                LiveObjectVisibleEquipmentUpdateSourceInterpretation::LegacyStatusOnly,
+                LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeObjectMap,
+                LiveObjectVisibleEquipmentUpdateSourceInterpretation::LegacyStatusOnly,
+            ]
+        );
+
+        let claim =
+            claim_verified_ee_creature_visible_equipment(&bytes, 0, record_end, &fragment_bits, 0)
+                .expect("mixed nested U rows should exact-claim after translation");
+        assert_eq!(claim.fragment_bit_end, 1);
+        assert_eq!(claim.update_row_provenance.len(), 3);
+        assert_eq!(
+            claim
+                .update_row_provenance
+                .iter()
+                .map(|row| (
+                    row.row_offset,
+                    row.status_offset,
+                    row.visual_transform_map_offset,
+                    row.visual_transform_map_end,
+                    row.fragment_bit_start,
+                    row.fragment_bit_end,
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (9, 18, 19, 27, 0, 0),
+                (27, 36, 37, 53, 0, 1),
+                (53, 62, 63, 71, 1, 1),
+            ]
+        );
+
+        let exact_bytes = bytes.clone();
+        let exact_bits = fragment_bits.clone();
+        let exact = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("the emitted mixed-row list should remain exactly idempotent");
+        assert_eq!(exact.bytes_inserted, 0);
+        assert_eq!(bytes, exact_bytes);
+        assert_eq!(fragment_bits, exact_bits);
+        assert_eq!(
+            exact
+                .visible_equipment_update_source_decisions
+                .iter()
+                .map(|decision| decision.selected)
+                .collect::<Vec<_>>(),
+            [
+                LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeIdentityMap,
+                LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeObjectMap,
+                LiveObjectVisibleEquipmentUpdateSourceInterpretation::EeIdentityMap,
+            ]
+        );
     }
 
     #[test]

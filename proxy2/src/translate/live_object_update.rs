@@ -88,7 +88,7 @@ use terminal_claim::{
 
 pub(crate) use add::{
     VerifiedDiamondPlaceableAddLocalizedName, VerifiedDiamondPlaceableAddSource,
-    VerifiedDiamondPlaceableAddState, parse_verified_diamond_placeable_add_localized_name_source,
+    parse_verified_diamond_placeable_add_localized_name_source,
 };
 pub(crate) use terminal_evidence::{
     LIVE_OBJECT_UPDATE_DOOR_PLACEABLE_FRAGMENT_FIELD_LIMIT,
@@ -19028,11 +19028,6 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub bits_inserted: u32,
     pub bits_removed: u32,
     pub fragment_bits_trimmed: u32,
-    pub creature_visual_transform_update_records: u32,
-    /// Canonical eight-byte standalone `U/5` spans promoted as Diamond CNW
-    /// fragment storage only after the ordinary whole-payload EE candidate
-    /// failed and the fresh alternate candidate exact-claimed.
-    pub ambiguous_standalone_visual_transform_legacy_promotions: u32,
     pub live_gui_missing_add_opcodes_repaired: u32,
     pub live_object_missing_appearance_opcodes_repaired: u32,
     pub live_object_missing_update_opcodes_repaired: u32,
@@ -20447,7 +20442,6 @@ pub struct LiveObjectUpdateClaimSummary {
     pub add_records: u32,
     pub update_records: u32,
     pub creature_appearance_records: u32,
-    pub creature_visual_transform_update_records: u32,
     pub creature_update_records: u32,
     pub delete_records: u32,
     pub mentions: Vec<LiveObjectRecordMention>,
@@ -21008,7 +21002,6 @@ fn claim_payload_if_verified_with_reject(
             .min(live_bytes.len())
         });
         let mut verified_creature_appearance_next_bit_cursor = None;
-        let mut verified_creature_visual_transform_end_and_next_bit_cursor = None;
         if live_bytes.get(offset).copied() == Some(b'I')
             && let Some(verified_end) = inventory::try_get_verified_inventory_prefix_record_end(
                 live_bytes,
@@ -21063,19 +21056,7 @@ fn claim_payload_if_verified_with_reject(
         if live_bytes.get(offset).copied() == Some(b'U')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
         {
-            if let Some((verified_end, next_bit_cursor)) =
-                appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-                    live_bytes,
-                    offset,
-                    live_bytes.len(),
-                    &fragment_bits,
-                    bit_cursor,
-                )
-            {
-                record_end = verified_end;
-                verified_creature_visual_transform_end_and_next_bit_cursor =
-                    Some((verified_end, next_bit_cursor));
-            } else if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
+            if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
                 live_bytes,
                 offset,
                 live_bytes.len(),
@@ -21085,9 +21066,7 @@ fn claim_payload_if_verified_with_reject(
                 record_end = verified_end;
             }
         }
-        if live_bytes.get(offset).copied() == Some(b'U')
-            && verified_creature_visual_transform_end_and_next_bit_cursor.is_none()
-        {
+        if live_bytes.get(offset).copied() == Some(b'U') {
             if let Some(verified_end) =
                 effects::try_get_verified_ee_looping_visual_effect_update_record_end(
                     live_bytes,
@@ -21163,50 +21142,6 @@ fn claim_payload_if_verified_with_reject(
             trace_claim_accept(
                 &mut summary,
                 "creature-appearance",
-                live_bytes,
-                offset,
-                record_end,
-                record_bit_cursor,
-                bit_cursor,
-                None,
-            );
-            offset = record_end;
-            continue;
-        }
-        if let Some((verified_end, next_bit_cursor)) =
-            verified_creature_visual_transform_end_and_next_bit_cursor
-        {
-            if record_end != verified_end {
-                trace_claim_reject(
-                    "creature-visual-transform-boundary-overwritten",
-                    live_bytes,
-                    offset,
-                    record_end,
-                    bit_cursor,
-                );
-                return Err(LiveObjectPayloadClaimReject::at(
-                    LiveObjectPayloadClaimRejectStage::RecordValidator,
-                    offset,
-                    record_end,
-                    bit_cursor,
-                ));
-            }
-            bit_cursor = next_bit_cursor;
-            summary.creature_visual_transform_update_records = summary
-                .creature_visual_transform_update_records
-                .saturating_add(1);
-            push_verified_record_mention(
-                &mut summary,
-                live_bytes,
-                offset,
-                record_end,
-                &fragment_bits,
-                record_bit_cursor,
-                bit_cursor,
-            );
-            trace_claim_accept(
-                &mut summary,
-                "creature-visual-transform",
                 live_bytes,
                 offset,
                 record_end,
@@ -21687,17 +21622,7 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
         } else if live_bytes.get(offset).copied() == Some(b'U')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
         {
-            if let Some((verified_end, _)) =
-                appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-                    live_bytes,
-                    offset,
-                    live_bytes.len(),
-                    &fragment_bits,
-                    bit_cursor,
-                )
-            {
-                record_end = verified_end;
-            } else if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
+            if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
                 live_bytes,
                 offset,
                 live_bytes.len(),
@@ -21901,12 +21826,6 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) || creature::advance_verified_noop_creature_appearance_record(
-                    live_bytes,
-                    offset,
-                    record_end,
-                    &fragment_bits,
-                    &mut bit_cursor,
-                ) || appearance::advance_verified_ee_creature_visual_transform_update_record(
                     live_bytes,
                     offset,
                     record_end,
@@ -22369,13 +22288,11 @@ fn try_get_verified_creature_update_record_end_for_ee(
         return None;
     }
 
-    // A supported ordinary creature update can begin with bytes that also
-    // decode as a short ObjectVisualTransformData map. Prove its complete
-    // decompile-ordered body against every top-level boundary (and scan_end)
-    // before allowing the standalone selector reader to claim a shorter
-    // prefix. The generic boundary scanner supplies mask-specific floors for
-    // families such as 0x47, so interior position/orientation bytes cannot win
-    // merely because they spell a live-object opcode pair.
+    // Prove the complete decompile-ordered DWORD-mask body against every
+    // top-level boundary (and scan_end). The generic boundary scanner supplies
+    // mask-specific floors for families such as 0x47, so interior
+    // position/orientation bytes cannot win merely because they spell a
+    // live-object opcode pair.
     let mut candidate_ends = Vec::new();
     let first_boundary = boundary::find_next_legacy_live_object_sub_message_boundary_after(
         live_bytes, offset, scan_end,
@@ -22627,26 +22544,6 @@ pub(crate) fn advance_verified_creature_update_fragment_cursor_for_ee(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    // Resolve a typed map against the full available read buffer and commit it
-    // only when its dynamic endpoint equals the proposed boundary. The typed
-    // resolver first proves any competing complete ordinary creature update,
-    // so a map-shaped 0x47 prefix fails here while selector-0x08 empty maps can
-    // still be traversed before later records.
-    if let Some((verified_end, next_bit_cursor)) =
-        appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-            live_bytes,
-            offset,
-            live_bytes.len(),
-            fragment_bits,
-            *bit_cursor,
-        )
-    {
-        if verified_end != record_end {
-            return false;
-        }
-        *bit_cursor = next_bit_cursor;
-        return true;
-    }
     if effects::is_verified_ee_looping_visual_effect_update_record(live_bytes, offset, record_end) {
         return true;
     }
@@ -24549,22 +24446,6 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
     rewrite_update_records_payload_with_area_context_attempt(payload, area_context).summary
 }
 
-pub(crate) fn rewrite_update_records_payload_with_area_context_promote_ambiguous_visual_transform_storage_if_possible(
-    payload: &mut Vec<u8>,
-    area_context: Option<&AreaPlaceableContext>,
-) -> Option<LiveObjectUpdateRewriteSummary> {
-    let mut failure = None;
-    rewrite_update_records_payload_with_area_context_inner(
-        payload,
-        area_context,
-        &mut failure,
-        None,
-        None,
-        appearance::StandaloneVisualTransformSourcePolicy::
-            PromoteCanonicalEmptyMapAsLegacyFragmentStorage,
-    )
-}
-
 pub fn rewrite_update_records_payload_with_area_context_attempt(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
@@ -24588,7 +24469,6 @@ pub fn rewrite_update_records_payload_with_area_context_attempt(
         &mut failure,
         None,
         None,
-        appearance::StandaloneVisualTransformSourcePolicy::PreserveEeMap,
     );
     LiveObjectUpdateRewriteAttempt { summary, failure }
 }
@@ -24615,7 +24495,6 @@ where
         &mut failure,
         None,
         None,
-        appearance::StandaloneVisualTransformSourcePolicy::PreserveEeMap,
     );
 
     if summary.is_none()
@@ -24640,7 +24519,6 @@ where
             &mut neutral_failure,
             Some(&mut terminal_ee_writer_audit),
             Some(&mut terminal_staged_summary),
-            appearance::StandaloneVisualTransformSourcePolicy::PreserveEeMap,
         );
         if neutral_summary.is_none()
             && neutral_payload.as_slice() == source_payload.as_slice()
@@ -24780,7 +24658,6 @@ fn rewrite_update_records_payload_with_area_context_inner(
         &mut Option<terminal_ee_writer::TerminalEeWholePacketAudit>,
     >,
     mut terminal_staged_summary: Option<&mut Option<LiveObjectUpdateRewriteSummary>>,
-    standalone_visual_transform_source_policy: appearance::StandaloneVisualTransformSourcePolicy,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
     if crate::translate::live_object_update::live_object_debug_env_enabled(
         "HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM",
@@ -25425,17 +25302,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
             }
         }
         if opcode == b'U' && object_type == CREATURE_OBJECT_TYPE && bit_cursor_reliable {
-            if let Some((verified_end, _)) =
-                appearance::try_get_verified_ee_creature_visual_transform_update_record_end_and_cursor(
-                    &live_bytes,
-                    offset,
-                    live_bytes.len(),
-                    &fragment_bits,
-                    bit_cursor,
-                )
-            {
-                record_end = verified_end;
-            } else if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
+            if let Some(verified_end) = try_get_verified_creature_update_record_end_for_ee(
                 &live_bytes,
                 offset,
                 live_bytes.len(),
@@ -27221,111 +27088,6 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     }
                 }
 
-                let mut creature_visual_transform_rewritten_for_ledger = false;
-                if let Some(visual_rewrite) =
-                    appearance::rewrite_creature_visual_transform_update_for_ee_with_source_policy(
-                        &mut live_bytes,
-                        offset,
-                        &mut record_end,
-                        &mut fragment_bits,
-                        bit_cursor,
-                        standalone_visual_transform_source_policy,
-                    )
-                {
-                    changed = true;
-                    summary.creature_visual_transform_update_records = summary
-                        .creature_visual_transform_update_records
-                        .saturating_add(1);
-                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
-                        u32::try_from(visual_rewrite.bytes_inserted).unwrap_or(u32::MAX),
-                    );
-                    summary.bytes_removed = summary.bytes_removed.saturating_add(
-                        u32::try_from(visual_rewrite.bytes_removed).unwrap_or(u32::MAX),
-                    );
-                    summary.bits_inserted = summary.bits_inserted.saturating_add(
-                        u32::try_from(visual_rewrite.bits_inserted).unwrap_or(u32::MAX),
-                    );
-                    summary.interleaved_fragment_spans_promoted = summary
-                        .interleaved_fragment_spans_promoted
-                        .saturating_add((visual_rewrite.bytes_removed != 0) as u32);
-                    summary.interleaved_fragment_bytes_promoted =
-                        summary.interleaved_fragment_bytes_promoted.saturating_add(
-                            u32::try_from(visual_rewrite.bytes_removed).unwrap_or(u32::MAX),
-                        );
-                    summary.interleaved_fragment_bits_promoted =
-                        summary.interleaved_fragment_bits_promoted.saturating_add(
-                            u32::try_from(visual_rewrite.bits_inserted).unwrap_or(u32::MAX),
-                        );
-                    summary.ambiguous_standalone_visual_transform_legacy_promotions = summary
-                        .ambiguous_standalone_visual_transform_legacy_promotions
-                        .saturating_add(
-                            visual_rewrite.ambiguous_legacy_fragment_storage_promoted as u32,
-                        );
-                    // These recovered bits belonged to Diamond's source CNW
-                    // storage and are consumed by following records. They are
-                    // not BOOLs owned by either the Diamond selector or EE's
-                    // empty map, so add them to the source ledger at the
-                    // inherited cursor and keep this row's commit at 0/0.
-                    if visual_rewrite.bits_inserted != 0
-                        && !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
-                            &fragment_bits,
-                            bit_cursor,
-                            visual_rewrite.bits_inserted,
-                        )
-                    {
-                        trace_update_rewrite_cursor_unreliable(
-                            "creature-visual-transform-promoted-source-ledger-insert-invalid",
-                            &live_bytes,
-                            offset,
-                            record_end,
-                            bit_cursor,
-                        );
-                        bit_cursor_reliable = false;
-                        offset = record_end.max(offset + 1);
-                        continue;
-                    }
-                    creature_visual_transform_rewritten_for_ledger = true;
-                }
-                let mut advanced_visual_transform_cursor = bit_cursor;
-                if appearance::advance_verified_ee_creature_visual_transform_update_record(
-                    &live_bytes,
-                    offset,
-                    record_end,
-                    &fragment_bits,
-                    &mut advanced_visual_transform_cursor,
-                ) {
-                    bit_cursor = advanced_visual_transform_cursor;
-                    if !rewrite_bit_ledger.commit_record(
-                        &live_bytes,
-                        LiveObjectRewriteBitLedgerCommit {
-                            offset,
-                            record_end,
-                            emitted_bit_start: creature_update_start_bit_cursor,
-                            emitted_bit_end: bit_cursor,
-                            bits_inserted: 0,
-                            bits_removed: 0,
-                            family: if creature_visual_transform_rewritten_for_ledger {
-                                "creature-visual-transform-rewrite"
-                            } else {
-                                "creature-visual-transform-exact"
-                            },
-                        },
-                    ) {
-                        trace_update_rewrite_cursor_unreliable(
-                            "creature-visual-transform-ledger-commit-invalid",
-                            &live_bytes,
-                            offset,
-                            record_end,
-                            creature_update_start_bit_cursor,
-                        );
-                        bit_cursor_reliable = false;
-                        offset = record_end.max(offset + 1);
-                        continue;
-                    }
-                    last_verified_creature_4408_record_end = None;
-                    offset = record_end.max(offset + 1);
-                    continue;
-                }
                 if creature::rewrite_3967_bare_second_identity_string_for_ee(
                     &mut live_bytes,
                     offset,

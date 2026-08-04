@@ -385,7 +385,6 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_update_appearance_exact_rejected: u32,
     pub exact_placeable_update_orientation_rewritten: u32,
     pub exact_placeable_update_state_rewritten: u32,
-    pub ambiguous_standalone_visual_transform_legacy_promotions: u32,
     pub terminal_exact_writer_rewrites: u32,
     pub terminal_source_fragment_bits_owned: u32,
     pub terminal_emitted_residual_fragment_bits_removed: u32,
@@ -1783,9 +1782,6 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_update_state_rewritten = self
             .exact_placeable_update_state_rewritten
             .saturating_add(rewrite.exact_placeable_update_state_rewritten);
-        self.ambiguous_standalone_visual_transform_legacy_promotions = self
-            .ambiguous_standalone_visual_transform_legacy_promotions
-            .saturating_add(rewrite.ambiguous_standalone_visual_transform_legacy_promotions);
         self.terminal_exact_writer_rewrites = self
             .terminal_exact_writer_rewrites
             .saturating_add(rewrite.terminal_exact_writer_rewrites);
@@ -1831,16 +1827,6 @@ pub fn rewrite_payload_if_needed_with_area_context(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
 ) -> Option<RewriteSummary> {
     live_object_update::rewrite_update_records_payload_with_area_context_if_possible(
-        payload,
-        latest_area_placeables,
-    )
-}
-
-fn rewrite_payload_if_needed_with_area_context_promote_ambiguous_visual_transform_storage(
-    payload: &mut Vec<u8>,
-    latest_area_placeables: Option<&area::AreaPlaceableContext>,
-) -> Option<RewriteSummary> {
-    live_object_update::rewrite_update_records_payload_with_area_context_promote_ambiguous_visual_transform_storage_if_possible(
         payload,
         latest_area_placeables,
     )
@@ -1918,33 +1904,12 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
     payload: &mut Vec<u8>,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
 ) -> Option<ExactLiveObjectRewriteSummary> {
-    if let Some(summary) =
-        rewrite_payload_to_exact_ee_candidate(payload, latest_area_placeables, false)
-    {
-        return Some(summary);
-    }
-
-    // `[0; 8]` is both EE's canonical empty ObjectVisualTransformData map and
-    // one Diamond CNW storage block containing 61 semantic false bits after
-    // its three-bit final-count header. If the immutable source already exact-
-    // claims under EE's whole-payload reader/cursor contract, that
-    // interpretation wins and the alternate must never add another bit span.
-    if claim_payload_if_verified(payload).is_some() {
-        return None;
-    }
-
-    // Retry once from the untouched source. The alternate candidate may force
-    // only its first typed update pass; subsequent alternating passes are
-    // ordinary EE-first passes so they cannot reinterpret the identity map the
-    // proxy just emitted. Acceptance additionally requires at least one forced
-    // promotion and the same final exact whole-payload validator.
-    rewrite_payload_to_exact_ee_candidate(payload, latest_area_placeables, true)
+    rewrite_payload_to_exact_ee_candidate(payload, latest_area_placeables)
 }
 
 fn rewrite_payload_to_exact_ee_candidate(
     payload: &mut Vec<u8>,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
-    promote_ambiguous_visual_transform_storage_on_first_update_pass: bool,
 ) -> Option<ExactLiveObjectRewriteSummary> {
     // This adapter deliberately owns orchestration only. The actual record
     // semantics remain in the focused decompile-backed live-object modules:
@@ -1966,11 +1931,7 @@ fn rewrite_payload_to_exact_ee_candidate(
     summary.record_update_summary(promote_work_remaining_trailing_fragment_span_if_needed(
         &mut candidate,
     ));
-    if exact_after_changed(
-        &candidate,
-        summary,
-        promote_ambiguous_visual_transform_storage_on_first_update_pass,
-    ) {
+    if exact_after_changed(&candidate, summary) {
         *payload = candidate;
         return Some(summary);
     }
@@ -1984,20 +1945,11 @@ fn rewrite_payload_to_exact_ee_candidate(
     // add map first can move the read boundaries while the legacy `U` masks
     // are still present, leaving neither focused pass able to commit its safe
     // intermediate form. The final exact EE claim below remains mandatory.
-    let first_update_summary = if promote_ambiguous_visual_transform_storage_on_first_update_pass {
-        rewrite_payload_if_needed_with_area_context_promote_ambiguous_visual_transform_storage(
-            &mut candidate,
-            latest_area_placeables,
-        )
-    } else {
-        rewrite_payload_if_needed_with_area_context(&mut candidate, latest_area_placeables)
-    };
-    summary.record_update_summary(first_update_summary);
-    if exact_after_changed(
-        &candidate,
-        summary,
-        promote_ambiguous_visual_transform_storage_on_first_update_pass,
-    ) {
+    summary.record_update_summary(rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    ));
+    if exact_after_changed(&candidate, summary) {
         *payload = candidate;
         return Some(summary);
     }
@@ -2013,11 +1965,7 @@ fn rewrite_payload_to_exact_ee_candidate(
         &mut candidate,
         latest_area_placeables,
     ));
-    if exact_after_changed(
-        &candidate,
-        summary,
-        promote_ambiguous_visual_transform_storage_on_first_update_pass,
-    ) {
+    if exact_after_changed(&candidate, summary) {
         *payload = candidate;
         return Some(summary);
     }
@@ -2030,11 +1978,7 @@ fn rewrite_payload_to_exact_ee_candidate(
             )
             .is_some();
         summary.record_add(add_changed);
-        if exact_after_changed(
-            &candidate,
-            summary,
-            promote_ambiguous_visual_transform_storage_on_first_update_pass,
-        ) {
+        if exact_after_changed(&candidate, summary) {
             *payload = candidate;
             return Some(summary);
         }
@@ -2042,11 +1986,7 @@ fn rewrite_payload_to_exact_ee_candidate(
         let update_changed = summary.record_update_summary(
             rewrite_payload_if_needed_with_area_context(&mut candidate, latest_area_placeables),
         );
-        if exact_after_changed(
-            &candidate,
-            summary,
-            promote_ambiguous_visual_transform_storage_on_first_update_pass,
-        ) {
+        if exact_after_changed(&candidate, summary) {
             *payload = candidate;
             return Some(summary);
         }
@@ -2057,11 +1997,7 @@ fn rewrite_payload_to_exact_ee_candidate(
                 rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate).is_some();
             summary.record_add_name_bits(add_name_bits_changed);
             add_name_bits_attempted = true;
-            if exact_after_changed(
-                &candidate,
-                summary,
-                promote_ambiguous_visual_transform_storage_on_first_update_pass,
-            ) {
+            if exact_after_changed(&candidate, summary) {
                 *payload = candidate;
                 return Some(summary);
             }
@@ -2075,11 +2011,7 @@ fn rewrite_payload_to_exact_ee_candidate(
     // Candidate passes are intentionally speculative. If a later record, such
     // as a bit-short U/9 before a read-buffer-only W row, prevents the exact EE
     // reader claim, discard every staged edit instead of emitting a mixed stream.
-    if !exact_after_changed(
-        &candidate,
-        summary,
-        promote_ambiguous_visual_transform_storage_on_first_update_pass,
-    ) {
+    if !exact_after_changed(&candidate, summary) {
         return None;
     }
 
@@ -2087,15 +2019,8 @@ fn rewrite_payload_to_exact_ee_candidate(
     Some(summary)
 }
 
-fn exact_after_changed(
-    candidate: &[u8],
-    summary: ExactLiveObjectRewriteSummary,
-    require_ambiguous_legacy_promotion: bool,
-) -> bool {
-    summary.changed()
-        && (!require_ambiguous_legacy_promotion
-            || summary.ambiguous_standalone_visual_transform_legacy_promotions != 0)
-        && claim_payload_if_verified(candidate).is_some()
+fn exact_after_changed(candidate: &[u8], summary: ExactLiveObjectRewriteSummary) -> bool {
+    summary.changed() && claim_payload_if_verified(candidate).is_some()
 }
 
 #[cfg(test)]
@@ -2106,176 +2031,6 @@ pub(super) fn alternating_legacy_door_placeable_test_payload() -> Vec<u8> {
 #[cfg(test)]
 mod fixture_free_tests {
     use super::*;
-
-    fn pack_test_fragment_bits(payload_bits: &[bool]) -> Vec<u8> {
-        let valid_bits = 3usize
-            .checked_add(payload_bits.len())
-            .expect("fixture bit count fits");
-        let final_byte_bits = valid_bits % 8;
-        let mut packed = vec![0u8; valid_bits.div_ceil(8)];
-        packed[0] |= u8::try_from(final_byte_bits).expect("final bit count fits") << 5;
-        for (index, value) in payload_bits.iter().copied().enumerate() {
-            if value {
-                let bit_index = 3 + index;
-                packed[bit_index / 8] |= 0x80 >> (bit_index % 8);
-            }
-        }
-        packed
-    }
-
-    fn ambiguous_standalone_visual_transform_then_deletes(
-        delete_rows: usize,
-        existing_fragment_bits: &[bool],
-    ) -> Vec<u8> {
-        let mut live = vec![b'U', 0x05];
-        live.extend_from_slice(&0x8000_3344u32.to_le_bytes());
-        live.push(0xFE);
-        live.extend_from_slice(
-            &live_object_update::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
-        );
-        for index in 0..delete_rows {
-            live.extend_from_slice(&[b'D', 0x05]);
-            live.extend_from_slice(
-                &0x8000_4000u32
-                    .saturating_add(u32::try_from(index).expect("fixture row fits"))
-                    .to_le_bytes(),
-            );
-        }
-
-        let mut payload = vec![b'P', 0x05, 0x01];
-        let declared = u32::try_from(7usize + live.len()).expect("fixture length fits");
-        payload.extend_from_slice(&declared.to_le_bytes());
-        payload.extend_from_slice(&live);
-        payload.extend_from_slice(&pack_test_fragment_bits(existing_fragment_bits));
-        payload
-    }
-
-    #[test]
-    fn unique_whole_payload_legacy_visual_transform_candidate_promotes_61_bits() {
-        // Diamond `sub_448E30` consumes object id + selector and leaves this
-        // all-zero eight-byte CNW storage span to the shared fragment stream.
-        // EE `sub_14077FE10 -> sub_140973160` instead sees the same bytes as an
-        // empty map and consumes zero BOOLs. Sixty-one following D/5 records
-        // make only the Diamond-source interpretation reach the final exact
-        // cursor because the storage's first three bits are the CNW header.
-        let mut payload = ambiguous_standalone_visual_transform_then_deletes(61, &[]);
-        let source = payload.clone();
-        assert!(
-            claim_payload_if_verified(&payload).is_none(),
-            "the EE-first candidate lacks the 61 following delete BOOLs"
-        );
-
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("the unique legacy-storage candidate should exact-claim");
-        assert_eq!(
-            summary.ambiguous_standalone_visual_transform_legacy_promotions,
-            1
-        );
-        let source_declared = u32::from_le_bytes(source[3..7].try_into().unwrap()) as usize;
-        let rewritten_declared = u32::from_le_bytes(payload[3..7].try_into().unwrap()) as usize;
-        assert_eq!(rewritten_declared, source_declared);
-        assert_eq!(
-            &payload[7..rewritten_declared],
-            &source[7..source_declared],
-            "legacy promotion removes and reinserts the byte-identical empty EE map"
-        );
-        assert_eq!(
-            &payload[rewritten_declared..],
-            &[0u8; 8],
-            "61 false payload bits plus the three-bit CNW header occupy eight bytes"
-        );
-
-        let claim = claim_payload_if_verified(&payload)
-            .expect("the selected whole-payload candidate must pass the exact EE reader");
-        assert_eq!(claim.creature_visual_transform_update_records, 1);
-        assert_eq!(claim.delete_records, 61);
-
-        let rewritten = payload.clone();
-        assert!(
-            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
-            "an exact EE result must never be force-promoted again"
-        );
-        assert_eq!(payload, rewritten);
-    }
-
-    #[test]
-    fn ambiguous_visual_transform_candidate_keeps_source_when_neither_cursor_claims() {
-        let mut payload = ambiguous_standalone_visual_transform_then_deletes(62, &[]);
-        let source = payload.clone();
-
-        assert!(
-            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
-            "61 recovered bits cannot authorize a 62-BOOL suffix"
-        );
-        assert_eq!(
-            payload, source,
-            "failed candidates must remain transactional"
-        );
-        assert!(claim_payload_if_verified(&payload).is_none());
-    }
-
-    #[test]
-    fn exact_ee_visual_transform_candidate_wins_without_duplicate_promotion() {
-        let existing_bits = vec![false; 61];
-        let mut payload = ambiguous_standalone_visual_transform_then_deletes(61, &existing_bits);
-        let source = payload.clone();
-        let claim = claim_payload_if_verified(&payload)
-            .expect("the explicit EE fragment tail already proves the whole payload");
-        assert_eq!(claim.creature_visual_transform_update_records, 1);
-        assert_eq!(claim.delete_records, 61);
-
-        assert!(
-            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
-            "an exact EE-first source must suppress the forced legacy alternate"
-        );
-        assert_eq!(payload, source);
-    }
-
-    #[test]
-    fn one_forced_pass_promotes_each_ambiguous_visual_transform_span() {
-        let mut live = Vec::new();
-        for object_id in [0x8000_3344u32, 0x8000_3345] {
-            live.extend_from_slice(&[b'U', 0x05]);
-            live.extend_from_slice(&object_id.to_le_bytes());
-            live.push(0xFE);
-            live.extend_from_slice(
-                &live_object_update::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
-            );
-        }
-        for index in 0..122u32 {
-            live.extend_from_slice(&[b'D', 0x05]);
-            live.extend_from_slice(&0x8000_5000u32.saturating_add(index).to_le_bytes());
-        }
-
-        let mut payload = vec![b'P', 0x05, 0x01];
-        let declared = u32::try_from(7usize + live.len()).expect("fixture length fits");
-        payload.extend_from_slice(&declared.to_le_bytes());
-        payload.extend_from_slice(&live);
-        payload.extend_from_slice(&pack_test_fragment_bits(&[]));
-        let source = payload.clone();
-
-        assert!(claim_payload_if_verified(&payload).is_none());
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("both legacy storage spans should feed the shared following cursor");
-        assert_eq!(
-            summary.ambiguous_standalone_visual_transform_legacy_promotions,
-            2
-        );
-        assert_eq!(
-            &payload[7..declared as usize],
-            &source[7..declared as usize],
-            "each byte-identical map stays in the emitted read buffer"
-        );
-        assert_eq!(
-            &payload[declared as usize..],
-            pack_test_fragment_bits(&vec![false; 122]),
-            "two 61-bit spans plus one three-bit header encode 125 valid bits"
-        );
-        let claim = claim_payload_if_verified(&payload)
-            .expect("the two-span candidate must exact-claim after ledger handoff");
-        assert_eq!(claim.creature_visual_transform_update_records, 2);
-        assert_eq!(claim.delete_records, 122);
-    }
 
     #[test]
     fn fixed_output_carrier_diagnostics_require_observed_evidence() {

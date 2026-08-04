@@ -1237,7 +1237,6 @@ fn appearance_update_slot0_visible_equipment_claims_exactly() {
     let claim = super::claim_payload_if_verified(&payload).expect("slot0 appearance claim");
     assert_eq!(claim.records_examined, 3);
     assert_eq!(claim.creature_appearance_records, 1);
-    assert_eq!(claim.creature_visual_transform_update_records, 0);
     assert_eq!(claim.creature_update_records, 1);
 }
 
@@ -1814,32 +1813,6 @@ fn placeable_looping_effect_updates_expand_identity_visual_maps() {
 }
 
 #[test]
-fn creature_update_mask_0047_is_not_rewritten_as_visual_transform_selector() {
-    let mut live = vec![
-        b'U', 0x05, 0x82, 0x67, 0x01, 0x80, // creature object id
-        0x47, 0x00, 0x00, 0x00, // decompile-supported creature update mask
-    ];
-    live.extend_from_slice(&[
-        0x00, 0x00, 0x80, 0x3F, // plausible read-buffer body bytes
-        0x00, 0x00, 0x80, 0x3F,
-    ]);
-    let mut fragment_bits = vec![false, false, false, false, true, false, false, false];
-    let mut record_end = live.len();
-
-    assert!(
-        super::appearance::rewrite_creature_visual_transform_update_for_ee(
-            &mut live,
-            0,
-            &mut record_end,
-            &mut fragment_bits,
-            super::CNW_FRAGMENT_HEADER_BITS,
-        )
-        .is_none()
-    );
-    assert_eq!(&live[6..10], &[0x47, 0x00, 0x00, 0x00]);
-}
-
-#[test]
 fn quarantined_creature_update_mask_0047_claims_exactly() {
     let payload =
         include_bytes!("../../../fixtures/live_object/creature_update_mask_0047_direct.bin");
@@ -1891,7 +1864,6 @@ fn driver_direct_creature_update_mask_0047_variants_claim_exactly() {
         assert_eq!(claim.records_examined, 1);
         assert_eq!(claim.creature_update_records, 1);
         assert_eq!(claim.update_records, 0);
-        assert_eq!(claim.creature_visual_transform_update_records, 0);
         assert_eq!(claim.live_bytes_length, *live_bytes);
         assert_eq!(claim.fragment_bytes, 2);
     }
@@ -1919,40 +1891,6 @@ fn driver_direct_creature_update_mask_0040_then_0047_pair_claims_exactly() {
     assert_eq!(claim.update_records, 0);
     assert_eq!(claim.live_bytes_length, 48);
     assert_eq!(claim.fragment_bytes, 2);
-}
-
-#[test]
-fn legacy_creature_visual_transform_selector_still_gets_identity_map() {
-    let mut live = vec![
-        b'U', 0x05, 0x82, 0x67, 0x01, 0x80, // creature object id
-        0x01, // legacy selector byte, not a four-byte creature update mask
-    ];
-    let mut fragment_bits = vec![false, false, false];
-    let mut record_end = live.len();
-
-    let rewrite = super::appearance::rewrite_creature_visual_transform_update_for_ee(
-        &mut live,
-        0,
-        &mut record_end,
-        &mut fragment_bits,
-        super::CNW_FRAGMENT_HEADER_BITS,
-    )
-    .expect("selector-only legacy visual-transform update should rewrite");
-
-    assert_eq!(rewrite.bytes_inserted, 8);
-    assert_eq!(rewrite.bytes_removed, 0);
-    assert_eq!(record_end, 15);
-    let mut verified_bit_cursor = super::CNW_FRAGMENT_HEADER_BITS;
-    assert!(
-        super::appearance::advance_verified_ee_creature_visual_transform_update_record(
-            &live,
-            0,
-            record_end,
-            &fragment_bits,
-            &mut verified_bit_cursor,
-        )
-    );
-    assert_eq!(verified_bit_cursor, super::CNW_FRAGMENT_HEADER_BITS);
 }
 
 #[test]
@@ -3981,16 +3919,15 @@ fn hg_starc5_sooty_current_seq35_u5_visual_transform_update_rewrites_and_claims_
     }
 
     let (repair, claim) = accepted.expect(
-        "current Starcore5 Sooty Crow U/5 visual-transform span should repair and claim exactly",
+        "current Starcore5 Sooty Crow U/5 creature-update span should repair and claim exactly",
     );
     assert_ne!(repair.new_declared, repair.old_declared);
     // The quarantined capture was initially named from the visible inventory
     // symptom, but the decompile-backed live-object opcode is `U` for object
     // type 5 with mask 0x47. The following `I/FE` bytes are chunk-local CNW
-    // fragment storage, not an inventory row and not the one-byte legacy
-    // visual-transform selector.
+    // fragment storage, not an inventory row or an independent top-level
+    // visual-transform update.
     assert_eq!(claim.inventory_records, 0);
-    assert_eq!(claim.creature_visual_transform_update_records, 0);
     assert!(claim.creature_update_records >= 1);
     assert!(claim.add_records >= 1);
 }
@@ -4387,9 +4324,8 @@ fn local_xp2_seq34_zero_mask_creature_updates_rewrite_and_lifecycle_clean() {
 
     let pre_canonical = rewrite_payload_to_exact_claim_for_test(&mut payload);
     assert_eq!(pre_canonical.inventory_records, 1);
-    assert_eq!(pre_canonical.creature_visual_transform_update_records, 1);
     assert!(
-        pre_canonical.creature_update_records >= 1,
+        pre_canonical.creature_update_records >= 2,
         "captured XP2 stream should carry exact zero-mask creature no-op updates before cleanup"
     );
 
@@ -4401,7 +4337,7 @@ fn local_xp2_seq34_zero_mask_creature_updates_rewrite_and_lifecycle_clean() {
     .expect("PlayerList-proven compact creature owner should canonicalize for EE");
     assert!(
         canonical.reference_ids_rewritten >= 2,
-        "the visual-transform U/5 and inventory owner should both use the session id"
+        "the zero-mask U/5 and inventory owner should both use the session id"
     );
 
     let cleanup =

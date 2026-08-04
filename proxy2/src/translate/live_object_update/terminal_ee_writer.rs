@@ -520,7 +520,6 @@ pub(super) fn audit_terminal_ee_writer_candidate(
         &mut replay_failure,
         Some(&mut audit),
         None,
-        super::appearance::StandaloneVisualTransformSourcePolicy::PreserveEeMap,
     );
     if summary.is_some() {
         return None;
