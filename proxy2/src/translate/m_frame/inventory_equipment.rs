@@ -161,6 +161,45 @@ pub(super) fn staged_client_gui_status_close_send_slot(
         .map(|(index, slot)| (index, slot.key))
 }
 
+/// Publish the exact boundary at which the staged close has left the producer
+/// queue and committed to Diamond's retransmitted send window.
+///
+/// The transport identity comparison in `staged_client_gui_status_close_send_slot`
+/// prevents a wrapped sequence lookalike from arming the native-cancellation
+/// harness. This transition happens only after final strict acceptance of the
+/// pending-client drain, never while its packet/shift effects are speculative.
+pub(super) fn observe_staged_client_gui_status_close_committed(state: &mut SessionState) -> bool {
+    if state.inventory_equipment.staged_client_gui_status_state
+        != InventoryEquipmentStagedClientGuiStatusState::CloseQueued
+    {
+        return false;
+    }
+    let Some((_, close_key)) = staged_client_gui_status_close_send_slot(state) else {
+        return false;
+    };
+
+    state.inventory_equipment.staged_client_gui_status_state =
+        InventoryEquipmentStagedClientGuiStatusState::CloseInFlight;
+    state
+        .inventory_equipment
+        .staged_client_gui_status_close_commits = state
+        .inventory_equipment
+        .staged_client_gui_status_close_commits
+        .saturating_add(1);
+    state
+        .inventory_equipment
+        .staged_client_gui_status_last_committed_close_sequence = Some(close_key.sequence);
+    state
+        .inventory_equipment
+        .staged_client_gui_status_last_committed_close_generation = Some(close_key.generation);
+    tracing::info!(
+        close_sequence = close_key.sequence,
+        close_generation = close_key.generation,
+        "inventory/equipment staged Status close committed to Diamond send window"
+    );
+    true
+}
+
 /// Advance only from a validated raw HG ACK which retired the exact close slot
 /// found above. Mapped ACKs and the cumulative diagnostic ACK cache never call
 /// this function, and duplicate raw ACKs are idempotent.
@@ -2474,6 +2513,9 @@ mod tests {
         state
             .inventory_equipment
             .staged_client_gui_status_close_ack_open_enabled = true;
+        state
+            .inventory_equipment
+            .staged_client_gui_status_in_flight_native_cancel_enabled = true;
         state.sequence.latest_client_sequence_from_client = Some(10);
         state.semantic.player_control.current_controlled_object_id = Some(current_player);
         state.semantic.player_control.control_epoch = 2;
@@ -2504,6 +2546,22 @@ mod tests {
                 true,
             ),
             Some(1)
+        );
+        assert!(observe_staged_client_gui_status_close_committed(&mut state));
+        assert_eq!(
+            state.inventory_equipment.staged_client_gui_status_state,
+            InventoryEquipmentStagedClientGuiStatusState::CloseInFlight
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_close_commits,
+            1
+        );
+        assert!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_native_cancel_requested()
         );
         assert!(staged_client_gui_status_close_send_slot(&state).is_some());
 

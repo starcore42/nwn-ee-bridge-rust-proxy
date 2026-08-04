@@ -355,6 +355,7 @@ pub struct Translator {
     synthetic_area_loadbar: bool,
     quickbar_item_refresh_hint: Option<std::path::PathBuf>,
     synthetic_status_close_ack_open_experiment: bool,
+    synthetic_status_in_flight_native_cancel_experiment: bool,
 }
 
 #[derive(Debug)]
@@ -393,6 +394,8 @@ impl Translator {
             quickbar_item_refresh_hint: config.quickbar_item_refresh_hint.clone(),
             synthetic_status_close_ack_open_experiment: config
                 .synthetic_status_close_ack_open_experiment,
+            synthetic_status_in_flight_native_cancel_experiment: config
+                .synthetic_status_in_flight_native_cancel_experiment,
         })
     }
 
@@ -405,6 +408,7 @@ impl Translator {
                 self.synthetic_area_loadbar,
                 self.quickbar_item_refresh_hint.clone(),
                 self.synthetic_status_close_ack_open_experiment,
+                self.synthetic_status_in_flight_native_cancel_experiment,
             ),
             legacy_udp_port,
         }

@@ -101,6 +101,16 @@ pub fn build_status_payload(object_id: u32, player_inventory_gui: bool) -> Vec<u
     payload
 }
 
+/// Build the exact EE self-inventory Status form used by a real client.
+///
+/// This keeps harness recommendations on the same typed writer as ordinary
+/// validation: EE and Diamond both write logical `BOOL(open)` followed by the
+/// object id, while CNW storage places the object DWORD in the read buffer and
+/// the one MSB-first BOOL in the final `0x90`/`0x80` fragment byte.
+pub fn build_ee_self_status_payload(player_inventory_gui: bool) -> Vec<u8> {
+    build_status_payload(EE_SELF_OBJECT_ID, player_inventory_gui)
+}
+
 pub fn build_select_panel_payload(panel: u8, player_inventory_gui: bool) -> Vec<u8> {
     let mut payload = Vec::with_capacity(SELECT_PANEL_DECLARED_BYTES + SELECT_PANEL_FRAGMENT_BYTES);
     payload.extend_from_slice(&[0x70, GUI_INVENTORY_MAJOR, SELECT_PANEL_MINOR]);
@@ -272,6 +282,21 @@ mod tests {
         let summary = claim_payload_if_verified(&payload).expect("built payload should claim");
         assert_eq!(summary.kind, ClientGuiInventoryKind::Status);
         assert_eq!(summary.player_inventory_gui, Some(false));
+    }
+
+    #[test]
+    fn builds_exact_ee_self_status_payload_for_native_harness_dispatch() {
+        let payload = build_ee_self_status_payload(true);
+
+        assert_eq!(
+            payload,
+            vec![
+                0x70, 0x0D, 0x01, 0x0B, 0x00, 0x00, 0x00, 0xFD, 0xFF, 0xFF, 0xFF, 0x90
+            ]
+        );
+        let summary = claim_payload_if_verified(&payload).expect("EE self Status should claim");
+        assert_eq!(summary.object_id, Some(EE_SELF_OBJECT_ID));
+        assert_eq!(summary.player_inventory_gui, Some(true));
     }
 
     #[test]

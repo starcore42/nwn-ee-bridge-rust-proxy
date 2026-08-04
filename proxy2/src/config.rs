@@ -110,6 +110,14 @@ pub struct Config {
     #[arg(long)]
     pub synthetic_status_close_ack_open_experiment: bool,
 
+    /// Opt-in cancellation arm for the staged Status experiment. Once the
+    /// exact close commits to the Diamond send window, publish an exact EE
+    /// native-Status request through the harness hint while that slot remains
+    /// in flight. A real client Status then owns cancellation and sequence
+    /// mapping before the close's raw HG ACK can release the held proxy open.
+    #[arg(long, requires = "synthetic_status_close_ack_open_experiment")]
+    pub synthetic_status_in_flight_native_cancel_experiment: bool,
+
     /// Private operator-side terminal writer trace artifact to correlate with
     /// quarantined `P/05/01` live-object evidence. Requires `--packet-dump`
     /// with `--log`, or `NWN_BRIDGE_QUARANTINE_DIR`, for correlation output.
@@ -252,6 +260,31 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn staged_status_native_cancel_requires_the_close_ack_open_experiment() {
+        let error = Config::try_parse_from([
+            "hgbridge_proxy2",
+            "--synthetic-status-in-flight-native-cancel-experiment",
+        ])
+        .expect_err("native cancellation without the staged coordinator must fail in clap");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn staged_status_native_cancel_accepts_the_complete_experiment_pair() {
+        let config = Config::try_parse_from([
+            "hgbridge_proxy2",
+            "--synthetic-status-close-ack-open-experiment",
+            "--synthetic-status-in-flight-native-cancel-experiment",
+        ])
+        .expect("native cancellation should parse with the staged coordinator");
+        assert!(config.synthetic_status_close_ack_open_experiment);
+        assert!(config.synthetic_status_in_flight_native_cancel_experiment);
     }
 
     #[test]

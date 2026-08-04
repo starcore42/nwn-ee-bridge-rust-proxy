@@ -389,6 +389,7 @@ pub(super) enum InventoryEquipmentStagedClientGuiStatusState {
     #[default]
     Idle,
     CloseQueued,
+    CloseInFlight,
     CloseAcknowledged,
     OpenQueued,
     Cancelled,
@@ -402,6 +403,7 @@ impl InventoryEquipmentStagedClientGuiStatusState {
         match self {
             Self::Idle => "idle",
             Self::CloseQueued => "close_queued",
+            Self::CloseInFlight => "close_in_flight",
             Self::CloseAcknowledged => "close_acknowledged",
             Self::OpenQueued => "open_queued",
             Self::Cancelled => "cancelled",
@@ -842,8 +844,10 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) forwarded_client_gui_status_requests: u64,
     pub(super) last_forwarded_client_gui_status_update_index: Option<u64>,
     pub(super) staged_client_gui_status_close_ack_open_enabled: bool,
+    pub(super) staged_client_gui_status_in_flight_native_cancel_enabled: bool,
     pub(super) staged_client_gui_status_state: InventoryEquipmentStagedClientGuiStatusState,
     pub(super) staged_client_gui_status_close_outputs: u64,
+    pub(super) staged_client_gui_status_close_commits: u64,
     pub(super) staged_client_gui_status_close_acknowledgements: u64,
     pub(super) staged_client_gui_status_open_outputs: u64,
     pub(super) staged_client_gui_status_cancellations: u64,
@@ -864,6 +868,8 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) staged_client_gui_status_last_close_synthetic_sequence: Option<u16>,
     pub(super) staged_client_gui_status_last_close_ack_sequence: Option<u16>,
     pub(super) staged_client_gui_status_last_close_transport_identity: Option<Vec<u8>>,
+    pub(super) staged_client_gui_status_last_committed_close_sequence: Option<u16>,
+    pub(super) staged_client_gui_status_last_committed_close_generation: Option<u64>,
     pub(super) staged_client_gui_status_last_acknowledged_close_sequence: Option<u16>,
     pub(super) staged_client_gui_status_last_acknowledged_close_generation: Option<u64>,
     pub(super) staged_client_gui_status_last_raw_server_ack_sequence: Option<u16>,
@@ -915,6 +921,13 @@ pub(super) struct InventoryEquipmentBridgeState {
 }
 
 impl InventoryEquipmentBridgeState {
+    pub(super) fn staged_client_gui_status_native_cancel_requested(&self) -> bool {
+        self.staged_client_gui_status_in_flight_native_cancel_enabled
+            && self.staged_client_gui_status_state
+                == InventoryEquipmentStagedClientGuiStatusState::CloseInFlight
+            && self.pending_staged_client_gui_status_open.is_some()
+    }
+
     pub(super) fn output_status(&self) -> InventoryEquipmentBridgeOutputStatus {
         if self.pending_staged_client_gui_status_open.is_some() {
             InventoryEquipmentBridgeOutputStatus::StagedClientGuiStatusClose
@@ -1266,6 +1279,7 @@ impl SessionState {
         synthesize_area_loadbar: bool,
         quickbar_item_refresh_hint_path: Option<PathBuf>,
         staged_client_gui_status_close_ack_open_enabled: bool,
+        staged_client_gui_status_in_flight_native_cancel_enabled: bool,
     ) -> Self {
         Self {
             deflate: DeflateState::default(),
@@ -1288,6 +1302,7 @@ impl SessionState {
             login_waypoint: LoginWaypointState::default(),
             inventory_equipment: InventoryEquipmentBridgeState {
                 staged_client_gui_status_close_ack_open_enabled,
+                staged_client_gui_status_in_flight_native_cancel_enabled,
                 ..InventoryEquipmentBridgeState::default()
             },
             module_resources,
