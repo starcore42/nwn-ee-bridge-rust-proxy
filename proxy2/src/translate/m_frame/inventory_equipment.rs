@@ -30,6 +30,7 @@ use super::{
         InventoryEquipmentBridgeQueuedClientGuiStatusOutput, InventoryEquipmentBridgeQueuedOutput,
         InventoryEquipmentCurrentPlayerStatusBinding,
         InventoryEquipmentPendingStagedClientGuiStatusOpen,
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary,
         InventoryEquipmentStagedClientGuiStatusCancelReason,
         InventoryEquipmentStagedClientGuiStatusState, PendingClientPacket, SessionState,
     },
@@ -1471,11 +1472,31 @@ fn cancel_staged_client_gui_status_open(
     let Some(pending) = state
         .inventory_equipment
         .pending_staged_client_gui_status_open
-        .take()
+        .as_ref()
+        .cloned()
     else {
         return false;
     };
+    // Observe the exact committed slot before removing the pending owner. The
+    // send-window lookup itself requires that owner to prove sequence,
+    // generation, and immutable transport identity together.
+    let close_in_flight = staged_client_gui_status_close_send_slot(state).is_some();
+    state
+        .inventory_equipment
+        .pending_staged_client_gui_status_open = None;
     let close_retracted = retract_uncommitted_staged_client_gui_status_close(state, &pending);
+    let cancel_boundary = if close_retracted {
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::UncommittedCloseRetracted
+    } else if pending.acknowledged_close_key.is_some() {
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::AcknowledgedCloseRetained
+    } else if close_in_flight {
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::InFlightCloseRetained
+    } else {
+        // This should be limited to a close temporarily owned by a drain
+        // transaction. Keep the shift and report the unresolved boundary;
+        // sequence state must never be guessed from absence alone.
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::UnresolvedCloseRetained
+    };
     state.inventory_equipment.staged_client_gui_status_state =
         InventoryEquipmentStagedClientGuiStatusState::Cancelled;
     state
@@ -1483,10 +1504,48 @@ fn cancel_staged_client_gui_status_open(
         .staged_client_gui_status_last_cancel_reason = reason;
     state
         .inventory_equipment
+        .staged_client_gui_status_last_cancel_boundary = cancel_boundary;
+    state
+        .inventory_equipment
         .staged_client_gui_status_cancellations = state
         .inventory_equipment
         .staged_client_gui_status_cancellations
         .saturating_add(1);
+    match cancel_boundary {
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::None => {}
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::UncommittedCloseRetracted => {
+            state
+                .inventory_equipment
+                .staged_client_gui_status_uncommitted_close_retractions = state
+                .inventory_equipment
+                .staged_client_gui_status_uncommitted_close_retractions
+                .saturating_add(1);
+        }
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::InFlightCloseRetained => {
+            state
+                .inventory_equipment
+                .staged_client_gui_status_in_flight_close_cancellations = state
+                .inventory_equipment
+                .staged_client_gui_status_in_flight_close_cancellations
+                .saturating_add(1);
+        }
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::AcknowledgedCloseRetained => {
+            state
+                .inventory_equipment
+                .staged_client_gui_status_acknowledged_close_cancellations = state
+                .inventory_equipment
+                .staged_client_gui_status_acknowledged_close_cancellations
+                .saturating_add(1);
+        }
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary::UnresolvedCloseRetained => {
+            state
+                .inventory_equipment
+                .staged_client_gui_status_unresolved_close_cancellations = state
+                .inventory_equipment
+                .staged_client_gui_status_unresolved_close_cancellations
+                .saturating_add(1);
+        }
+    }
     tracing::info!(
         update_index = pending.update.update_index,
         close_sequence = pending.close_synthetic_sequence,
@@ -1495,6 +1554,7 @@ fn cancel_staged_client_gui_status_open(
         raw_server_ack_sequence = ?pending.acknowledged_raw_server_ack_sequence,
         close_retracted,
         reason = reason.as_str(),
+        cancel_boundary = cancel_boundary.as_str(),
         "inventory/equipment cancelled staged Status open"
     );
     true
@@ -1878,10 +1938,6 @@ fn queue_client_gui_status_output_with_claim(
         .inventory_equipment
         .staged_client_gui_status_close_outputs
         .saturating_add(1);
-    state
-        .inventory_equipment
-        .staged_client_gui_status_last_cancel_reason =
-        InventoryEquipmentStagedClientGuiStatusCancelReason::None;
     state
         .inventory_equipment
         .staged_client_gui_status_last_update_index = Some(update.update_index);
@@ -2390,6 +2446,206 @@ mod tests {
                 .staged_client_gui_status_last_cancel_reason,
             InventoryEquipmentStagedClientGuiStatusCancelReason::NativeStatus
         );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_boundary,
+            InventoryEquipmentStagedClientGuiStatusCancelBoundary::UncommittedCloseRetracted
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_uncommitted_close_retractions,
+            1
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_in_flight_close_cancellations,
+            0
+        );
+    }
+
+    #[test]
+    fn native_status_cancellation_retains_an_in_flight_close_and_shift() {
+        let current_player = 0x8000_5678;
+        let (update, claim) = ready_current_player_status_update(current_player);
+        let mut state = SessionState::default();
+        state
+            .inventory_equipment
+            .staged_client_gui_status_close_ack_open_enabled = true;
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state.semantic.player_control.current_controlled_object_id = Some(current_player);
+        state.semantic.player_control.control_epoch = 2;
+        state.semantic.area.client_area_packets = 1;
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+        queue_client_gui_status_output_with_claim(&mut state, update, claim, 10, None)
+            .expect("stage exact close");
+
+        let close = state.sequence.pending_client_to_server_packets.remove(0);
+        let close_emit = crate::translate::Emit::VerifiedPackets {
+            family: close.family,
+            packets: vec![close.packet],
+        };
+        super::super::diamond_send_window::stage(
+            &mut state.diamond_client_send_window,
+            super::super::diamond_send_window::DiamondClientSendOwner::PendingClientDrain,
+            &close_emit,
+            Instant::now(),
+        )
+        .expect("stage close in Diamond send window");
+        assert_eq!(
+            super::super::diamond_send_window::finish(
+                &mut state.diamond_client_send_window,
+                super::super::diamond_send_window::DiamondClientSendOwner::PendingClientDrain,
+                true,
+            ),
+            Some(1)
+        );
+        assert!(staged_client_gui_status_close_send_slot(&state).is_some());
+
+        maybe_record_non_server_inventory_equipment_bridge_output_decision(
+            &mut state,
+            Some((11, 4, claim)),
+        );
+
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_boundary,
+            InventoryEquipmentStagedClientGuiStatusCancelBoundary::InFlightCloseRetained
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_in_flight_close_cancellations,
+            1
+        );
+        assert_eq!(state.diamond_client_send_window.slots.len(), 1);
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
+    }
+
+    #[test]
+    fn native_status_cancellation_retains_an_acknowledged_close_and_shift() {
+        let current_player = 0x8000_5678;
+        let (update, claim) = ready_current_player_status_update(current_player);
+        let mut state = SessionState::default();
+        state
+            .inventory_equipment
+            .staged_client_gui_status_close_ack_open_enabled = true;
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state.semantic.player_control.current_controlled_object_id = Some(current_player);
+        state.semantic.player_control.control_epoch = 2;
+        state.semantic.area.client_area_packets = 1;
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+        queue_client_gui_status_output_with_claim(&mut state, update, claim, 10, None)
+            .expect("stage exact close");
+
+        let close = state.sequence.pending_client_to_server_packets.remove(0);
+        let close_view = MFrameView::parse(&close.packet).expect("parse staged close");
+        let close_emit = crate::translate::Emit::VerifiedPackets {
+            family: close.family,
+            packets: vec![close.packet],
+        };
+        super::super::diamond_send_window::stage(
+            &mut state.diamond_client_send_window,
+            super::super::diamond_send_window::DiamondClientSendOwner::PendingClientDrain,
+            &close_emit,
+            Instant::now(),
+        )
+        .expect("stage close in Diamond send window");
+        assert_eq!(
+            super::super::diamond_send_window::finish(
+                &mut state.diamond_client_send_window,
+                super::super::diamond_send_window::DiamondClientSendOwner::PendingClientDrain,
+                true,
+            ),
+            Some(1)
+        );
+        let (_, close_key) =
+            staged_client_gui_status_close_send_slot(&state).expect("find exact close slot");
+        assert_eq!(
+            super::super::diamond_send_window::retire_through_raw_server_ack(
+                &mut state.diamond_client_send_window,
+                close_view.sequence,
+            ),
+            1
+        );
+        observe_raw_server_ack_for_staged_client_gui_status(
+            &mut state,
+            close_view.sequence,
+            Some(close_key),
+        );
+
+        maybe_record_non_server_inventory_equipment_bridge_output_decision(
+            &mut state,
+            Some((11, 4, claim)),
+        );
+
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_boundary,
+            InventoryEquipmentStagedClientGuiStatusCancelBoundary::AcknowledgedCloseRetained
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_acknowledged_close_cancellations,
+            1
+        );
+        assert!(state.diamond_client_send_window.slots.is_empty());
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
+    }
+
+    #[test]
+    fn native_status_cancellation_keeps_an_unresolved_drain_owned_close_shift() {
+        let current_player = 0x8000_5678;
+        let (update, claim) = ready_current_player_status_update(current_player);
+        let mut state = SessionState::default();
+        state
+            .inventory_equipment
+            .staged_client_gui_status_close_ack_open_enabled = true;
+        state.sequence.latest_client_sequence_from_client = Some(10);
+        state.semantic.player_control.current_controlled_object_id = Some(current_player);
+        state.semantic.player_control.control_epoch = 2;
+        state.semantic.area.client_area_packets = 1;
+        state
+            .semantic
+            .ui
+            .last_inventory_equipment_bridge_handoff_state_update = Some(update);
+        queue_client_gui_status_output_with_claim(&mut state, update, claim, 10, None)
+            .expect("stage exact close");
+
+        // Model the brief drain-transaction boundary after the producer queue
+        // owns no packet but before strict commit can publish a send-window
+        // slot. Absence at both locations is not permission to retract the
+        // already-owned shift.
+        let _drain_owned_close = state.sequence.pending_client_to_server_packets.remove(0);
+        maybe_record_non_server_inventory_equipment_bridge_output_decision(
+            &mut state,
+            Some((11, 4, claim)),
+        );
+
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_boundary,
+            InventoryEquipmentStagedClientGuiStatusCancelBoundary::UnresolvedCloseRetained
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_unresolved_close_cancellations,
+            1
+        );
+        assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
     }
 
     #[test]
@@ -2499,6 +2755,27 @@ mod tests {
                 .inventory_equipment
                 .staged_client_gui_status_close_outputs,
             2
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_boundary,
+            InventoryEquipmentStagedClientGuiStatusCancelBoundary::UncommittedCloseRetracted,
+            "rearming must retain the last cancellation boundary"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_last_cancel_reason,
+            InventoryEquipmentStagedClientGuiStatusCancelReason::SupersedingUpdate,
+            "rearming must retain the last cancellation reason"
+        );
+        assert_eq!(
+            state
+                .inventory_equipment
+                .staged_client_gui_status_uncommitted_close_retractions,
+            1,
+            "cumulative cancellation evidence survives rearming"
         );
         assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
         assert_eq!(state.sequence.client_sequence_shifts.len(), 1);

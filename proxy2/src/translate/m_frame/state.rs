@@ -433,6 +433,34 @@ impl InventoryEquipmentStagedClientGuiStatusCancelReason {
     }
 }
 
+/// Exact transport boundary at which a staged Status open was cancelled.
+///
+/// Reason and boundary are deliberately separate: a native Status, area
+/// change, or control change can race the synthetic close at any of these
+/// points, and only the boundary determines whether the close and its sequence
+/// shift may still be retracted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum InventoryEquipmentStagedClientGuiStatusCancelBoundary {
+    #[default]
+    None,
+    UncommittedCloseRetracted,
+    InFlightCloseRetained,
+    AcknowledgedCloseRetained,
+    UnresolvedCloseRetained,
+}
+
+impl InventoryEquipmentStagedClientGuiStatusCancelBoundary {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::UncommittedCloseRetracted => "uncommitted_close_retracted",
+            Self::InFlightCloseRetained => "in_flight_close_retained",
+            Self::AcknowledgedCloseRetained => "acknowledged_close_retained",
+            Self::UnresolvedCloseRetained => "unresolved_close_retained",
+        }
+    }
+}
+
 /// One opt-in proxy-owned inventory refresh held between its exact close and
 /// open writes.
 ///
@@ -821,6 +849,12 @@ pub(super) struct InventoryEquipmentBridgeState {
     pub(super) staged_client_gui_status_cancellations: u64,
     pub(super) staged_client_gui_status_last_cancel_reason:
         InventoryEquipmentStagedClientGuiStatusCancelReason,
+    pub(super) staged_client_gui_status_last_cancel_boundary:
+        InventoryEquipmentStagedClientGuiStatusCancelBoundary,
+    pub(super) staged_client_gui_status_uncommitted_close_retractions: u64,
+    pub(super) staged_client_gui_status_in_flight_close_cancellations: u64,
+    pub(super) staged_client_gui_status_acknowledged_close_cancellations: u64,
+    pub(super) staged_client_gui_status_unresolved_close_cancellations: u64,
     pub(super) staged_client_gui_status_last_update_index: Option<u64>,
     pub(super) staged_client_gui_status_last_object_id: Option<u32>,
     pub(super) staged_client_gui_status_last_current_player_object_id: Option<u32>,
