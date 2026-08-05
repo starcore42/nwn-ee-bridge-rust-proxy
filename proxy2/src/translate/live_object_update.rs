@@ -5056,6 +5056,15 @@ mod diagnostic_tests {
             false, // scalar orientation branch.
             true, false, true, false, // scalar orientation low bits.
         ]);
+        let omitted_target_payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("source-only creature U/5 payload");
+        assert!(
+            claim_payload_if_verified(&omitted_target_payload).is_none(),
+            "Diamond may omit the target subbranch, but EE always consumes its BOOL"
+        );
+
+        let target_bit_cursor = fragment_bits.len();
+        fragment_bits.push(false); // explicit EE orientation-target guard: no target.
         let payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("creature U/5 payload");
 
@@ -5083,12 +5092,15 @@ mod diagnostic_tests {
                         + 1
                         + 4,
                     raw: LiveObjectCreatureUpdateOrientationRaw::Scalar(0x044A),
-                    target: LiveObjectCreatureUpdateOrientationTarget::Omitted,
+                    target: LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+                        bit_cursor: target_bit_cursor,
+                    },
                     selected_read_end: 17,
                     selected_bit_cursor: CNW_FRAGMENT_HEADER_BITS
                         + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
                         + 1
-                        + 4,
+                        + 4
+                        + 1,
                 }),
             })
         );

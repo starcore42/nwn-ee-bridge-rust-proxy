@@ -157,6 +157,7 @@ pub(super) fn verified_creature_update_claim_for_ee(
         &mut proof_cursor,
         &mut orientation,
     ) || proof_cursor != expected_next_bit_cursor
+        || !orientation_target_guard_is_owned_for_ee(orientation)
     {
         return None;
     }
@@ -182,15 +183,53 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    let mut ignored_orientation = None;
-    advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
+    let original_bit_cursor = *bit_cursor;
+    let mut orientation = None;
+    if !advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
         bytes,
         offset,
         record_end,
         fragment_bits,
         bit_cursor,
-        &mut ignored_orientation,
-    )
+        &mut orientation,
+    ) {
+        return false;
+    }
+
+    if orientation_target_guard_is_owned_for_ee(orientation) {
+        return true;
+    }
+
+    // Diamond server `0x44525B..0x4453B3` can omit the entire orientation
+    // target subbranch when its target accessor is absent. EE client
+    // `0x140782102..0x1407821E7` unconditionally reads the target BOOL after
+    // the scalar/vector body, so that Diamond-only winner is source evidence,
+    // not an exact emitted-EE record. Keep the tolerant private candidate walk
+    // for a future typed writer, but fail closed at every final EE wrapper.
+    trace_creature_update_cursor_reject(
+        "orientation-target-guard-omitted-for-ee",
+        read_u32_le(bytes, offset + 6).unwrap_or_default(),
+        orientation
+            .map(|proof| proof.selected_read_end)
+            .unwrap_or(record_end),
+        orientation
+            .map(|proof| proof.selected_bit_cursor)
+            .unwrap_or(*bit_cursor),
+        record_end,
+    );
+    *bit_cursor = original_bit_cursor;
+    false
+}
+
+fn orientation_target_guard_is_owned_for_ee(
+    orientation: Option<super::LiveObjectCreatureUpdateOrientationProof>,
+) -> bool {
+    orientation.is_none_or(|proof| {
+        !matches!(
+            proof.target,
+            super::LiveObjectCreatureUpdateOrientationTarget::Omitted
+        )
+    })
 }
 
 fn advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
@@ -4565,19 +4604,6 @@ mod tests {
         bytes
     }
 
-    fn creature_update_3967_action0_scalar_fragment_bits() -> Vec<bool> {
-        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
-        bits.extend_from_slice(&[
-            true, false, // position Z high bits.
-            false, // scalar orientation branch.
-            true, false, true, false, // scalar orientation residual bits.
-            true,  // 0x0040 state BOOL.
-            false, true, // identity branch BOOLs.
-            true, false, // associate suffix BOOLs.
-        ]);
-        bits
-    }
-
     fn creature_update_3967_action0_scalar_target_false_fragment_bits() -> Vec<bool> {
         let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
         bits.extend_from_slice(&[
@@ -4636,6 +4662,7 @@ mod tests {
             false,
             true,
             false,          // scalar orientation residual bits.
+            false,          // explicit orientation-target guard: no target object id.
             optional_float, // action-code 2 movement follow-up optional-float guard.
             true,           // 0x0040 state BOOL.
             false,
@@ -4994,6 +5021,114 @@ mod tests {
     }
 
     #[test]
+    fn creature_update_orientation_target_guard_ee_contract_rejects_omitted_source() {
+        let bytes = creature_update_0047_action4_zero_followup_live_bytes(false);
+        let mut bits = creature_update_0047_action4_omitted_target_fragment_bits();
+        let mut source_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        let mut source_orientation = None;
+
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut source_cursor,
+                &mut source_orientation,
+            ),
+            "the private Diamond/source walk must retain an authentic omitted-target candidate"
+        );
+        let source_proof = source_orientation.expect("source orientation proof");
+        assert_eq!(
+            source_proof.target,
+            super::super::LiveObjectCreatureUpdateOrientationTarget::Omitted
+        );
+
+        let mut ee_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            !advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut ee_cursor,
+            ),
+            "EE unconditionally reads the orientation target BOOL, so a Diamond-only omission is not exact EE output"
+        );
+        assert_eq!(
+            ee_cursor,
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+            "rejecting a source-only winner must restore the caller-owned fragment cursor"
+        );
+
+        let omitted_payload = live_object_payload_for_creature_test(&bytes, &bits);
+        assert!(
+            super::super::claim_payload_if_verified(&omitted_payload).is_none(),
+            "the whole-payload final EE claim must not bypass the target-guard invariant"
+        );
+
+        bits.insert(source_proof.branch_fragment_end, false);
+        let mut guarded_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut guarded_cursor,
+            ),
+            "one explicit false target BOOL at the decompiled handoff makes the record exact EE"
+        );
+        assert_eq!(guarded_cursor, bits.len());
+
+        let guarded_claim = verified_creature_update_claim_for_ee(
+            &bytes,
+            0,
+            bytes.len(),
+            &bits,
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+            bits.len(),
+        )
+        .expect("guarded final EE creature claim");
+        assert_eq!(
+            guarded_claim
+                .orientation
+                .expect("guarded orientation")
+                .target,
+            super::super::LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+                bit_cursor: source_proof.branch_fragment_end,
+            }
+        );
+
+        let guarded_payload = live_object_payload_for_creature_test(&bytes, &bits);
+        let payload_claim = super::super::claim_payload_if_verified(&guarded_payload)
+            .expect("the guarded whole payload must exact-claim");
+        let payload_orientation = payload_claim
+            .mentions
+            .iter()
+            .find_map(|mention| mention.creature_update?.orientation)
+            .expect("whole-payload guarded orientation proof");
+        assert_eq!(
+            payload_orientation.target,
+            guarded_claim.orientation.unwrap().target
+        );
+    }
+
+    fn live_object_payload_for_creature_test(live: &[u8], fragment_bits: &[bool]) -> Vec<u8> {
+        let mut payload = vec![b'P', 0x05, 0x01];
+        let declared = (super::super::HIGH_LEVEL_HEADER_BYTES
+            + super::super::CNW_LENGTH_BYTES
+            + live.len()) as u32;
+        payload.extend_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(live);
+        payload.extend_from_slice(&super::super::bits::pack_msb_valid_bits(
+            fragment_bits.to_vec(),
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+        ));
+        payload
+    }
+
+    #[test]
     fn creature_update_0047_action4_zero_followup_accepts_vector_target_branch() {
         let bytes = creature_update_0047_action4_vector_target_live_bytes();
         let bits = creature_update_0047_action4_vector_target_fragment_bits();
@@ -5072,7 +5207,7 @@ mod tests {
     #[test]
     fn creature_update_3967_scalar_orientation_rejects_shifted_fragment_cursor() {
         let bytes = creature_update_3967_action0_scalar_live_bytes();
-        let bits = creature_update_3967_action0_scalar_fragment_bits();
+        let bits = creature_update_3967_action0_scalar_target_false_fragment_bits();
         let mut exact_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
         assert!(
             advance_verified_noop_creature_update_record_exact_cursor(
@@ -5176,7 +5311,7 @@ mod tests {
     fn creature_update_3967_action2_optional_float_repair_clears_exact_guard_bit() {
         let bytes = creature_update_3967_action2_scalar_live_bytes();
         let mut bits = creature_update_3967_action2_scalar_fragment_bits(true);
-        let optional_float_bit = super::super::CNW_FRAGMENT_HEADER_BITS + 2 + 1 + 4;
+        let optional_float_bit = super::super::CNW_FRAGMENT_HEADER_BITS + 2 + 1 + 4 + 1;
         let mut unrepaired_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
 
         assert!(
