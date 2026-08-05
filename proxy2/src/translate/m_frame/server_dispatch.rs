@@ -225,8 +225,12 @@ struct LiveObjectExactClaimTraceSummary {
     creature_orientation_mentions: u32,
     creature_update_claim_mentions: u32,
     creature_update_claim_position_mentions: u32,
+    creature_update_claim_orientation_proof_mentions: u32,
     creature_update_claim_scalar_orientation_mentions: u32,
     creature_update_claim_vector_orientation_mentions: u32,
+    creature_update_claim_orientation_target_omitted_mentions: u32,
+    creature_update_claim_orientation_target_guard_false_mentions: u32,
+    creature_update_claim_orientation_target_guard_true_mentions: u32,
     item_mentions: u32,
     trigger_mentions: u32,
     placeable_mentions: u32,
@@ -624,14 +628,27 @@ impl LiveObjectExactClaimTraceSummary {
                         if claim.has_position {
                             trace.creature_update_claim_position_mentions += 1;
                         }
-                        match claim.orientation_source {
-                            Some(crate::translate::live_object_update::LiveObjectRecordOrientationSource::Scalar) => {
-                                trace.creature_update_claim_scalar_orientation_mentions += 1;
+                        if let Some(orientation) = claim.orientation {
+                            trace.creature_update_claim_orientation_proof_mentions += 1;
+                            match orientation.source {
+                                crate::translate::live_object_update::LiveObjectRecordOrientationSource::Scalar => {
+                                    trace.creature_update_claim_scalar_orientation_mentions += 1;
+                                }
+                                crate::translate::live_object_update::LiveObjectRecordOrientationSource::Vector => {
+                                    trace.creature_update_claim_vector_orientation_mentions += 1;
+                                }
                             }
-                            Some(crate::translate::live_object_update::LiveObjectRecordOrientationSource::Vector) => {
-                                trace.creature_update_claim_vector_orientation_mentions += 1;
+                            match orientation.target {
+                                crate::translate::live_object_update::LiveObjectCreatureUpdateOrientationTarget::Omitted => {
+                                    trace.creature_update_claim_orientation_target_omitted_mentions += 1;
+                                }
+                                crate::translate::live_object_update::LiveObjectCreatureUpdateOrientationTarget::GuardFalse { .. } => {
+                                    trace.creature_update_claim_orientation_target_guard_false_mentions += 1;
+                                }
+                                crate::translate::live_object_update::LiveObjectCreatureUpdateOrientationTarget::GuardTrue { .. } => {
+                                    trace.creature_update_claim_orientation_target_guard_true_mentions += 1;
+                                }
                             }
-                            None => {}
                         }
                     }
                 }
@@ -2291,10 +2308,18 @@ fn trace_live_object_exact_claim_summary(
         creature_orientation_mentions = trace.creature_orientation_mentions,
         creature_update_claim_mentions = trace.creature_update_claim_mentions,
         creature_update_claim_position_mentions = trace.creature_update_claim_position_mentions,
+        creature_update_claim_orientation_proof_mentions =
+            trace.creature_update_claim_orientation_proof_mentions,
         creature_update_claim_scalar_orientation_mentions =
             trace.creature_update_claim_scalar_orientation_mentions,
         creature_update_claim_vector_orientation_mentions =
             trace.creature_update_claim_vector_orientation_mentions,
+        creature_update_claim_orientation_target_omitted_mentions =
+            trace.creature_update_claim_orientation_target_omitted_mentions,
+        creature_update_claim_orientation_target_guard_false_mentions =
+            trace.creature_update_claim_orientation_target_guard_false_mentions,
+        creature_update_claim_orientation_target_guard_true_mentions =
+            trace.creature_update_claim_orientation_target_guard_true_mentions,
         item_mentions = trace.item_mentions,
         trigger_mentions = trace.trigger_mentions,
         placeable_mentions = trace.placeable_mentions,
@@ -6536,14 +6561,15 @@ mod live_object_dispatch_tests {
 mod exact_claim_trace_tests {
     use super::*;
     use crate::translate::live_object_update::{
-        LiveObjectCreatureUpdateClaim, LiveObjectCreatureVisibleEquipmentClaim,
-        LiveObjectInventoryFeature25Claim, LiveObjectInventoryMaskBranches,
-        LiveObjectInventoryOwnerClaim, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableAppearanceClaim, LiveObjectPlaceableState, LiveObjectRecordMention,
-        LiveObjectRecordOrientation, LiveObjectRecordOrientationSource,
-        LiveObjectRecordOrientationVector, LiveObjectRecordPosition,
-        LiveObjectVisibleEquipmentOperation, LiveObjectVisibleEquipmentRow,
-        LiveObjectVisibleEquipmentUpdateProvenance,
+        LiveObjectCreatureUpdateClaim, LiveObjectCreatureUpdateOrientationProof,
+        LiveObjectCreatureUpdateOrientationRaw, LiveObjectCreatureUpdateOrientationTarget,
+        LiveObjectCreatureVisibleEquipmentClaim, LiveObjectInventoryFeature25Claim,
+        LiveObjectInventoryMaskBranches, LiveObjectInventoryOwnerClaim,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableAppearanceClaim,
+        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordOrientation,
+        LiveObjectRecordOrientationSource, LiveObjectRecordOrientationVector,
+        LiveObjectRecordPosition, LiveObjectVisibleEquipmentOperation,
+        LiveObjectVisibleEquipmentRow, LiveObjectVisibleEquipmentUpdateProvenance,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -6626,8 +6652,21 @@ mod exact_claim_trace_tests {
             raw_mask: 0x0000_0003,
             has_position: true,
             position_bit_cursor: Some(3),
-            orientation_source: Some(LiveObjectRecordOrientationSource::Vector),
-            orientation_bit_cursor: Some(5),
+            orientation: Some(LiveObjectCreatureUpdateOrientationProof {
+                source: LiveObjectRecordOrientationSource::Vector,
+                selector_bit_cursor: 5,
+                branch_read_start: 0,
+                branch_read_end: 6,
+                branch_fragment_end: 6,
+                raw: LiveObjectCreatureUpdateOrientationRaw::Vector([0, 0xFFFF, 0x8000]),
+                target: LiveObjectCreatureUpdateOrientationTarget::GuardTrue {
+                    bit_cursor: 5,
+                    object_read_offset: 6,
+                    object_id: 0x8000_0020,
+                },
+                selected_read_end: 10,
+                selected_bit_cursor: 6,
+            }),
         });
         let item = mention(b'I', 0x06, 0x8000_0100);
         let mut inventory = mention(b'I', 0, 0xFFFF_FFEC);
@@ -6785,8 +6824,21 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.creature_orientation_mentions, 1);
         assert_eq!(trace.creature_update_claim_mentions, 1);
         assert_eq!(trace.creature_update_claim_position_mentions, 1);
+        assert_eq!(trace.creature_update_claim_orientation_proof_mentions, 1);
         assert_eq!(trace.creature_update_claim_scalar_orientation_mentions, 0);
         assert_eq!(trace.creature_update_claim_vector_orientation_mentions, 1);
+        assert_eq!(
+            trace.creature_update_claim_orientation_target_omitted_mentions,
+            0
+        );
+        assert_eq!(
+            trace.creature_update_claim_orientation_target_guard_false_mentions,
+            0
+        );
+        assert_eq!(
+            trace.creature_update_claim_orientation_target_guard_true_mentions,
+            1
+        );
         assert_eq!(trace.item_mentions, 1);
         assert_eq!(trace.trigger_mentions, 0);
         assert_eq!(trace.door_mentions, 0);

@@ -148,45 +148,30 @@ pub(super) fn verified_creature_update_claim_for_ee(
 
     let raw_mask = read_u32_le(bytes, offset + 6)?;
     let mut proof_cursor = bit_cursor;
-    if !advance_verified_noop_creature_update_record_exact_cursor(
+    let mut orientation = None;
+    if !advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
         bytes,
         offset,
         record_end,
         fragment_bits,
         &mut proof_cursor,
+        &mut orientation,
     ) || proof_cursor != expected_next_bit_cursor
     {
         return None;
     }
 
     // Diamond and EE read the creature-update mask before the ordered optional
-    // body. The `0x0001` position branch consumes six read-buffer bytes plus
-    // two fragment bits; the `0x0002` orientation branch then reads one
-    // scalar/vector selector BOOL. Reuse the exact validator above for the
-    // complete record, then expose only these decompile-fixed cursor facts.
+    // body. The exact full-record winner above retains its raw orientation
+    // branch and optional target proof; do not independently re-read only the
+    // selector BOOL after candidate selection.
     let has_position = (raw_mask & 0x0000_0001) != 0;
     let position_bit_cursor = has_position.then_some(bit_cursor);
-    let orientation_bit_cursor = if (raw_mask & 0x0000_0002) != 0 {
-        Some(bit_cursor + if has_position { 2 } else { 0 })
-    } else {
-        None
-    };
-    let orientation_source = if let Some(cursor) = orientation_bit_cursor {
-        Some(if fragment_bits.get(cursor).copied()? {
-            super::LiveObjectRecordOrientationSource::Vector
-        } else {
-            super::LiveObjectRecordOrientationSource::Scalar
-        })
-    } else {
-        None
-    };
-
     Some(super::LiveObjectCreatureUpdateClaim {
         raw_mask,
         has_position,
         position_bit_cursor,
-        orientation_source,
-        orientation_bit_cursor,
+        orientation,
     })
 }
 
@@ -197,6 +182,26 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    let mut ignored_orientation = None;
+    advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        &mut ignored_orientation,
+    )
+}
+
+fn advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+    orientation: &mut Option<super::LiveObjectCreatureUpdateOrientationProof>,
+) -> bool {
+    *orientation = None;
     if offset + 10 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'U')
@@ -241,32 +246,35 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
     }
     if raw_mask == LEGACY_CREATURE_UPDATE_3967_MASK {
         let original_bit_cursor = *bit_cursor;
-        if advance_verified_creature_update_3967_action0_ee_record(
+        if advance_verified_creature_update_3967_action0_ee_record_with_orientation(
             bytes,
             offset,
             record_end,
             fragment_bits,
             bit_cursor,
+            orientation,
         ) {
             return true;
         }
         *bit_cursor = original_bit_cursor;
-        if advance_verified_creature_update_3967_action_ffff_ee_record(
+        if advance_verified_creature_update_3967_action_ffff_ee_record_with_orientation(
             bytes,
             offset,
             record_end,
             fragment_bits,
             bit_cursor,
+            orientation,
         ) {
             return true;
         }
         *bit_cursor = original_bit_cursor;
-        if advance_verified_creature_update_3967_action_fffd_ee_record(
+        if advance_verified_creature_update_3967_action_fffd_ee_record_with_orientation(
             bytes,
             offset,
             record_end,
             fragment_bits,
             bit_cursor,
+            orientation,
         ) {
             return true;
         }
@@ -288,12 +296,13 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
     }
 
     let original_bit_cursor = *bit_cursor;
-    let advanced = simulate_legacy_live_creature_update_cursors(
+    let advanced = simulate_legacy_live_creature_update_cursors_with_orientation(
         bytes,
         offset,
         record_end,
         fragment_bits,
         bit_cursor,
+        orientation,
     );
 
     if !advanced {
@@ -1593,6 +1602,26 @@ fn advance_verified_creature_update_3967_action_ffff_ee_record(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    let mut ignored_orientation = None;
+    advance_verified_creature_update_3967_action_ffff_ee_record_with_orientation(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        &mut ignored_orientation,
+    )
+}
+
+fn advance_verified_creature_update_3967_action_ffff_ee_record_with_orientation(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+    orientation: &mut Option<super::LiveObjectCreatureUpdateOrientationProof>,
+) -> bool {
+    *orientation = None;
     if offset + 10 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'U')
@@ -1609,6 +1638,7 @@ fn advance_verified_creature_update_3967_action_ffff_ee_record(
         read_cursor: offset + 10,
         bit_cursor: *bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if cursor.read_unsigned_bits(16).is_none()
@@ -1652,6 +1682,7 @@ fn advance_verified_creature_update_3967_action_ffff_ee_record(
         *bit_cursor = start_bit_cursor;
         return false;
     };
+    *orientation = cursor.orientation;
     trace_creature_update_cursor_accept(
         LEGACY_CREATURE_UPDATE_3967_MASK,
         cursor.read_cursor,
@@ -1704,6 +1735,26 @@ fn advance_verified_creature_update_3967_action_fffd_ee_record(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    let mut ignored_orientation = None;
+    advance_verified_creature_update_3967_action_fffd_ee_record_with_orientation(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        &mut ignored_orientation,
+    )
+}
+
+fn advance_verified_creature_update_3967_action_fffd_ee_record_with_orientation(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+    orientation: &mut Option<super::LiveObjectCreatureUpdateOrientationProof>,
+) -> bool {
+    *orientation = None;
     if offset + 10 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'U')
@@ -1720,6 +1771,7 @@ fn advance_verified_creature_update_3967_action_fffd_ee_record(
         read_cursor: offset + 10,
         bit_cursor: *bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if cursor.read_unsigned_bits(16).is_none()
@@ -1763,6 +1815,7 @@ fn advance_verified_creature_update_3967_action_fffd_ee_record(
         *bit_cursor = start_bit_cursor;
         return false;
     };
+    *orientation = cursor.orientation;
     trace_creature_update_cursor_accept(
         LEGACY_CREATURE_UPDATE_3967_MASK,
         cursor.read_cursor,
@@ -1821,6 +1874,26 @@ fn advance_verified_creature_update_3967_action0_ee_record(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    let mut ignored_orientation = None;
+    advance_verified_creature_update_3967_action0_ee_record_with_orientation(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        &mut ignored_orientation,
+    )
+}
+
+fn advance_verified_creature_update_3967_action0_ee_record_with_orientation(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+    orientation: &mut Option<super::LiveObjectCreatureUpdateOrientationProof>,
+) -> bool {
+    *orientation = None;
     if offset + 10 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'U')
@@ -1837,6 +1910,7 @@ fn advance_verified_creature_update_3967_action0_ee_record(
         read_cursor: offset + 10,
         bit_cursor: *bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if cursor.read_unsigned_bits(16).is_none()
@@ -1874,6 +1948,7 @@ fn advance_verified_creature_update_3967_action0_ee_record(
         *bit_cursor = start_bit_cursor;
         return false;
     };
+    *orientation = cursor.orientation;
     trace_creature_update_cursor_accept(
         LEGACY_CREATURE_UPDATE_3967_MASK,
         cursor.read_cursor,
@@ -2141,6 +2216,7 @@ fn build_3967_bare_second_identity_string_candidate(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
     cursor.read_unsigned_bits(16)?;
     cursor.read_unsigned_bits(16)?;
@@ -2668,6 +2744,7 @@ fn find_legacy_3967_action0_reader_end_before_empty_fragment_storage(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
     cursor.read_unsigned_bits(16)?;
     cursor.read_unsigned_bits(16)?;
@@ -2753,6 +2830,7 @@ fn find_legacy_3967_action0_missing_second_associate_bool_insert_bit(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
     cursor.read_unsigned_bits(16)?;
     cursor.read_unsigned_bits(16)?;
@@ -2858,6 +2936,7 @@ fn find_legacy_3967_action0_short_associate_suffix_insertion(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
     cursor.read_unsigned_bits(16)?;
     cursor.read_unsigned_bits(16)?;
@@ -2925,6 +3004,7 @@ fn find_legacy_3967_action0_missing_damage_byte_ee_repair(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
     cursor.read_unsigned_bits(16)?;
     cursor.read_unsigned_bits(16)?;
@@ -3016,6 +3096,7 @@ fn find_legacy_3967_action0_bridge_followup_removals(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if cursor.read_unsigned_bits(16).is_none()
@@ -3168,6 +3249,7 @@ fn find_legacy_3967_hg_action_ffff_omitted_code_insertion(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if cursor.read_unsigned_bits(16).is_none()
@@ -3228,6 +3310,7 @@ fn find_legacy_3967_action2_optional_float_bit_for_repair(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if cursor.read_unsigned_bits(16).is_none()
@@ -3428,6 +3511,7 @@ pub(super) fn advance_verified_noop_creature_appearance_record(
         read_cursor: offset + 8,
         bit_cursor: *bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     let Some(locstring_pair_shape) = cursor.read_bool() else {
@@ -3500,6 +3584,26 @@ fn simulate_legacy_live_creature_update_cursors(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    let mut ignored_orientation = None;
+    simulate_legacy_live_creature_update_cursors_with_orientation(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        &mut ignored_orientation,
+    )
+}
+
+fn simulate_legacy_live_creature_update_cursors_with_orientation(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+    orientation: &mut Option<super::LiveObjectCreatureUpdateOrientationProof>,
+) -> bool {
+    *orientation = None;
     let start_bit_cursor = *bit_cursor;
     let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
         trace_creature_update_cursor_reject("missing-mask", 0, offset + 6, *bit_cursor, record_end);
@@ -3522,6 +3626,7 @@ fn simulate_legacy_live_creature_update_cursors(
         read_cursor: offset + 10,
         bit_cursor: *bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if (raw_mask & 0x0000_0001) != 0
@@ -3566,6 +3671,7 @@ fn simulate_legacy_live_creature_update_cursors(
     let Some(cursor) = accepted else {
         return false;
     };
+    *orientation = cursor.orientation;
 
     trace_creature_update_cursor_accept(
         raw_mask,
@@ -3603,6 +3709,7 @@ fn legacy_creature_update_status_effect_start_states<'a>(
         read_cursor: offset + 10,
         bit_cursor,
         fragment_bits,
+        orientation: None,
     };
 
     if (raw_mask & 0x0000_0001) != 0 {
@@ -3664,6 +3771,7 @@ fn build_legacy_creature_orientation_branch_candidate_states<'a>(
     raw_mask: u32,
     mut cursor: LegacyCreatureUpdateCursor<'a>,
 ) -> Option<Vec<LegacyCreatureUpdateCursor<'a>>> {
+    let selector_bit_cursor = cursor.bit_cursor;
     let Some(vector_branch) = cursor.read_bool() else {
         trace_creature_update_cursor_reject(
             "orientation-branch-bit",
@@ -3674,11 +3782,9 @@ fn build_legacy_creature_orientation_branch_candidate_states<'a>(
         );
         return None;
     };
-    if vector_branch {
-        if cursor.read_unsigned_bits(16).is_none()
-            || cursor.read_unsigned_bits(16).is_none()
-            || cursor.read_unsigned_bits(16).is_none()
-        {
+    let branch_read_start = cursor.read_cursor;
+    let (source, raw) = if vector_branch {
+        let Some(x) = cursor.read_u16() else {
             trace_creature_update_cursor_reject(
                 "orientation-vector",
                 raw_mask,
@@ -3687,36 +3793,95 @@ fn build_legacy_creature_orientation_branch_candidate_states<'a>(
                 cursor.record_end,
             );
             return None;
-        }
-    } else if cursor.read_unsigned_bits(12).is_none() {
-        trace_creature_update_cursor_reject(
-            "orientation-scalar",
-            raw_mask,
-            cursor.read_cursor,
-            cursor.bit_cursor,
-            cursor.record_end,
-        );
-        return None;
-    }
+        };
+        let Some(y) = cursor.read_u16() else {
+            trace_creature_update_cursor_reject(
+                "orientation-vector",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                cursor.record_end,
+            );
+            return None;
+        };
+        let Some(z) = cursor.read_u16() else {
+            trace_creature_update_cursor_reject(
+                "orientation-vector",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                cursor.record_end,
+            );
+            return None;
+        };
+        (
+            super::LiveObjectRecordOrientationSource::Vector,
+            super::LiveObjectCreatureUpdateOrientationRaw::Vector([x, y, z]),
+        )
+    } else {
+        let Some(raw) = cursor.read_unsigned_bits(12) else {
+            trace_creature_update_cursor_reject(
+                "orientation-scalar",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                cursor.record_end,
+            );
+            return None;
+        };
+        (
+            super::LiveObjectRecordOrientationSource::Scalar,
+            super::LiveObjectCreatureUpdateOrientationRaw::Scalar(raw as u16),
+        )
+    };
+    cursor.orientation = Some(super::LiveObjectCreatureUpdateOrientationProof {
+        source,
+        selector_bit_cursor,
+        branch_read_start,
+        branch_read_end: cursor.read_cursor,
+        branch_fragment_end: cursor.bit_cursor,
+        raw,
+        target: super::LiveObjectCreatureUpdateOrientationTarget::Omitted,
+        selected_read_end: cursor.read_cursor,
+        selected_bit_cursor: cursor.bit_cursor,
+    });
 
-    // Diamond server sub_44525B..sub_4453B3 writes the vector/scalar
-    // orientation branch unconditionally, but only writes the target
-    // BOOL/object-id subbranch when the server object exposes that target
-    // accessor. Model both exact server-emitted shapes and let the full
-    // bounded record parser below select a single complete parse.
+    // Diamond server sub_44525B..sub_4453B3 writes the selector BOOL followed
+    // by either one 12-bit scalar or three 16-bit vector components, then only
+    // writes the target BOOL/object-id subbranch when the server object exposes
+    // that target accessor. EE client 0x140782102..0x1407821E7 reads the same
+    // selector/scalar-or-vector order and then a target BOOL plus conditional
+    // object. Model both exact Diamond-emitted shapes and let the full bounded
+    // record parser below select a single complete parse.
     let mut candidates = vec![cursor];
     let mut target_cursor = cursor;
+    let target_bit_cursor = target_cursor.bit_cursor;
     if let Some(has_target) = target_cursor.read_bool() {
-        if !has_target || target_cursor.read_u32().is_some() {
+        if !has_target {
+            target_cursor.orientation.as_mut()?.target =
+                super::LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+                    bit_cursor: target_bit_cursor,
+                };
             candidates.push(target_cursor);
         } else {
-            trace_creature_update_cursor_reject(
-                "orientation-target-object",
-                raw_mask,
-                target_cursor.read_cursor,
-                target_cursor.bit_cursor,
-                target_cursor.record_end,
-            );
+            let object_read_offset = target_cursor.read_cursor;
+            if let Some(object_id) = target_cursor.read_u32() {
+                target_cursor.orientation.as_mut()?.target =
+                    super::LiveObjectCreatureUpdateOrientationTarget::GuardTrue {
+                        bit_cursor: target_bit_cursor,
+                        object_read_offset,
+                        object_id,
+                    };
+                candidates.push(target_cursor);
+            } else {
+                trace_creature_update_cursor_reject(
+                    "orientation-target-object",
+                    raw_mask,
+                    target_cursor.read_cursor,
+                    target_cursor.bit_cursor,
+                    target_cursor.record_end,
+                );
+            }
         }
     }
 
@@ -4161,8 +4326,10 @@ fn simulate_ee_creature_update_status_effect_helper_cursor_with_rows(
     ) else {
         return false;
     };
-    cursor.read_cursor = read_cursor;
-    true
+    let Some(delta) = read_cursor.checked_sub(cursor.read_cursor) else {
+        return false;
+    };
+    cursor.advance_read(delta).is_some()
 }
 
 fn simulate_ee_creature_update_status_effect_helper_cursor_without_2da(
@@ -4188,8 +4355,10 @@ fn simulate_ee_creature_update_status_effect_helper_cursor_without_2da(
         // evidence; they are not exact-owned by the creature reader.
         return false;
     };
-    cursor.read_cursor = read_cursor;
-    true
+    let Some(delta) = read_cursor.checked_sub(cursor.read_cursor) else {
+        return false;
+    };
+    cursor.advance_read(delta).is_some()
 }
 
 #[cfg(test)]
@@ -4240,6 +4409,30 @@ mod tests {
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.push(1);
         bytes
+    }
+
+    fn creature_update_000a_scalar_status_live_bytes() -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05];
+        bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_000Au32.to_le_bytes());
+        bytes.push(0x44); // scalar orientation low 8 bits.
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // one status-effect row.
+        bytes.push(b'A');
+        bytes.extend_from_slice(&VFX_DUR_LOWLIGHTVISION_ROW.to_le_bytes());
+        bytes.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+        bytes
+    }
+
+    fn creature_update_000a_scalar_status_fragment_bits() -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            false, // scalar orientation branch.
+            true, false, true, false, // scalar orientation residual bits.
+            false, // explicit orientation-target guard: no target object id.
+        ]);
+        bits
     }
 
     fn creature_update_0047_action4_fragment_bits() -> Vec<bool> {
@@ -4564,6 +4757,7 @@ mod tests {
             read_cursor: 0,
             bit_cursor: 0,
             fragment_bits: &[],
+            orientation: None,
         };
 
         assert!(
@@ -4588,6 +4782,7 @@ mod tests {
             read_cursor: 0,
             bit_cursor: 0,
             fragment_bits: &[],
+            orientation: None,
         };
 
         assert!(
@@ -4753,14 +4948,16 @@ mod tests {
         let bytes = creature_update_0047_action4_zero_followup_live_bytes(false);
         let bits = creature_update_0047_action4_omitted_target_fragment_bits();
         let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        let mut orientation = None;
 
         assert!(
-            advance_verified_noop_creature_update_record_exact_cursor(
+            advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
                 &bytes,
                 0,
                 bytes.len(),
                 &bits,
                 &mut bit_cursor,
+                &mut orientation,
             ),
             "Diamond may omit the orientation target guard entirely before the action/state tail"
         );
@@ -4769,6 +4966,31 @@ mod tests {
             bits.len(),
             "the action extra-float bit must not be misread as a target guard"
         );
+        let proof = orientation.expect("the exact winner must retain its orientation proof");
+        assert_eq!(
+            proof.source,
+            super::super::LiveObjectRecordOrientationSource::Scalar
+        );
+        assert_eq!(
+            proof.raw,
+            super::super::LiveObjectCreatureUpdateOrientationRaw::Scalar(0x6F0)
+        );
+        assert_eq!(
+            proof.target,
+            super::super::LiveObjectCreatureUpdateOrientationTarget::Omitted
+        );
+        assert_eq!(
+            proof.selector_bit_cursor,
+            super::super::CNW_FRAGMENT_HEADER_BITS + 2
+        );
+        assert_eq!(proof.branch_read_start, 16);
+        assert_eq!(proof.branch_read_end, 17);
+        assert_eq!(
+            proof.branch_fragment_end,
+            super::super::CNW_FRAGMENT_HEADER_BITS + 7
+        );
+        assert_eq!(proof.selected_read_end, bytes.len());
+        assert_eq!(proof.selected_bit_cursor, bits.len());
     }
 
     #[test]
@@ -4776,17 +4998,74 @@ mod tests {
         let bytes = creature_update_0047_action4_vector_target_live_bytes();
         let bits = creature_update_0047_action4_vector_target_fragment_bits();
         let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        let mut orientation = None;
 
         assert!(
-            advance_verified_noop_creature_update_record_exact_cursor(
+            advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
                 &bytes,
                 0,
                 bytes.len(),
                 &bits,
                 &mut bit_cursor,
+                &mut orientation,
             ),
             "vector orientation, target object, implicit point, and mode-2 0x0040 object must share one exact 0x47 cursor"
         );
+        assert_eq!(bit_cursor, bits.len());
+        let proof = orientation.expect("the exact winner must retain its orientation proof");
+        assert_eq!(
+            proof.source,
+            super::super::LiveObjectRecordOrientationSource::Vector
+        );
+        assert_eq!(
+            proof.raw,
+            super::super::LiveObjectCreatureUpdateOrientationRaw::Vector([0x0101, 0x0202, 0x0303])
+        );
+        assert_eq!(
+            proof.target,
+            super::super::LiveObjectCreatureUpdateOrientationTarget::GuardTrue {
+                bit_cursor: super::super::CNW_FRAGMENT_HEADER_BITS + 3,
+                object_read_offset: 22,
+                object_id: 0x8000_000B,
+            }
+        );
+        assert_eq!(proof.branch_read_start, 16);
+        assert_eq!(proof.branch_read_end, 22);
+        assert_eq!(proof.selected_read_end, bytes.len());
+        assert_eq!(proof.selected_bit_cursor, bits.len());
+    }
+
+    #[test]
+    fn creature_update_000a_orientation_proof_tracks_nonempty_status_row_end() {
+        let bytes = creature_update_000a_scalar_status_live_bytes();
+        let bits = creature_update_000a_scalar_status_fragment_bits();
+        let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        let mut orientation = None;
+
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut bit_cursor,
+                &mut orientation,
+            ),
+            "orientation plus a nonempty EE status row must form one exact record"
+        );
+        let proof = orientation.expect("the exact winner must retain its orientation proof");
+        assert_eq!(
+            proof.raw,
+            super::super::LiveObjectCreatureUpdateOrientationRaw::Scalar(0x44A)
+        );
+        assert_eq!(
+            proof.target,
+            super::super::LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+                bit_cursor: super::super::CNW_FRAGMENT_HEADER_BITS + 5,
+            }
+        );
+        assert_eq!(proof.selected_read_end, bytes.len());
+        assert_eq!(proof.selected_bit_cursor, bits.len());
         assert_eq!(bit_cursor, bits.len());
     }
 
@@ -4849,14 +5128,16 @@ mod tests {
         let bytes = creature_update_3967_action0_scalar_live_bytes();
         let bits = creature_update_3967_action0_scalar_target_false_fragment_bits();
         let mut cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        let mut orientation = None;
 
         assert!(
-            advance_verified_noop_creature_update_record_exact_cursor(
+            advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
                 &bytes,
                 0,
                 bytes.len(),
                 &bits,
                 &mut cursor,
+                &mut orientation,
             ),
             "explicit false target ownership must validate before the later 0x0040 state BOOL"
         );
@@ -4870,6 +5151,25 @@ mod tests {
             13,
             "the Sooty offset-218 shape advances 13 CNW bits when the orientation target guard is emitted"
         );
+        let proof = orientation.expect("the exact winner must retain its orientation proof");
+        assert_eq!(
+            proof.source,
+            super::super::LiveObjectRecordOrientationSource::Scalar
+        );
+        assert_eq!(
+            proof.raw,
+            super::super::LiveObjectCreatureUpdateOrientationRaw::Scalar(0x44A)
+        );
+        assert_eq!(
+            proof.target,
+            super::super::LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+                bit_cursor: super::super::CNW_FRAGMENT_HEADER_BITS + 7,
+            }
+        );
+        assert_eq!(proof.branch_read_start, 16);
+        assert_eq!(proof.branch_read_end, 17);
+        assert_eq!(proof.selected_read_end, bytes.len());
+        assert_eq!(proof.selected_bit_cursor, bits.len());
     }
 
     #[test]
@@ -5511,20 +5811,30 @@ struct LegacyCreatureUpdateCursor<'a> {
     read_cursor: usize,
     bit_cursor: usize,
     fragment_bits: &'a [bool],
+    orientation: Option<super::LiveObjectCreatureUpdateOrientationProof>,
 }
 
 impl LegacyCreatureUpdateCursor<'_> {
+    fn sync_orientation_selected_end(&mut self) {
+        if let Some(orientation) = self.orientation.as_mut() {
+            orientation.selected_read_end = self.read_cursor;
+            orientation.selected_bit_cursor = self.bit_cursor;
+        }
+    }
+
     fn advance_read(&mut self, count: usize) -> Option<()> {
         if count > self.record_end.checked_sub(self.read_cursor)? {
             return None;
         }
         self.read_cursor = self.read_cursor.checked_add(count)?;
+        self.sync_orientation_selected_end();
         Some(())
     }
 
     fn read_u8(&mut self) -> Option<u8> {
         let value = *self.bytes.get(self.read_cursor)?;
         self.read_cursor = self.read_cursor.checked_add(1)?;
+        self.sync_orientation_selected_end();
         Some(value)
     }
 
@@ -5534,6 +5844,7 @@ impl LegacyCreatureUpdateCursor<'_> {
         }
         let value = read_u16_le(self.bytes, self.read_cursor)?;
         self.read_cursor = self.read_cursor.checked_add(2)?;
+        self.sync_orientation_selected_end();
         Some(value)
     }
 
@@ -5543,6 +5854,7 @@ impl LegacyCreatureUpdateCursor<'_> {
         }
         let value = read_u32_le(self.bytes, self.read_cursor)?;
         self.read_cursor = self.read_cursor.checked_add(4)?;
+        self.sync_orientation_selected_end();
         Some(value)
     }
 
@@ -5597,6 +5909,7 @@ impl LegacyCreatureUpdateCursor<'_> {
             value = (value << 1) | u64::from(self.fragment_bits[self.bit_cursor]);
             self.bit_cursor += 1;
         }
+        self.sync_orientation_selected_end();
         Some(value)
     }
 

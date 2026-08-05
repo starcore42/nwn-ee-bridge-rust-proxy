@@ -5072,10 +5072,24 @@ mod diagnostic_tests {
                 raw_mask,
                 has_position: true,
                 position_bit_cursor: Some(CNW_FRAGMENT_HEADER_BITS),
-                orientation_source: Some(LiveObjectRecordOrientationSource::Scalar),
-                orientation_bit_cursor: Some(
-                    CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
-                ),
+                orientation: Some(LiveObjectCreatureUpdateOrientationProof {
+                    source: LiveObjectRecordOrientationSource::Scalar,
+                    selector_bit_cursor: CNW_FRAGMENT_HEADER_BITS
+                        + LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+                    branch_read_start: 16,
+                    branch_read_end: 17,
+                    branch_fragment_end: CNW_FRAGMENT_HEADER_BITS
+                        + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                        + 1
+                        + 4,
+                    raw: LiveObjectCreatureUpdateOrientationRaw::Scalar(0x044A),
+                    target: LiveObjectCreatureUpdateOrientationTarget::Omitted,
+                    selected_read_end: 17,
+                    selected_bit_cursor: CNW_FRAGMENT_HEADER_BITS
+                        + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                        + 1
+                        + 4,
+                }),
             })
         );
         assert_eq!(
@@ -20480,12 +20494,43 @@ pub struct LiveObjectRecordOrientationVector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectCreatureUpdateOrientationRaw {
+    Scalar(u16),
+    Vector([u16; 3]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectCreatureUpdateOrientationTarget {
+    Omitted,
+    GuardFalse {
+        bit_cursor: usize,
+    },
+    GuardTrue {
+        bit_cursor: usize,
+        object_read_offset: usize,
+        object_id: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectCreatureUpdateOrientationProof {
+    pub source: LiveObjectRecordOrientationSource,
+    pub selector_bit_cursor: usize,
+    pub branch_read_start: usize,
+    pub branch_read_end: usize,
+    pub branch_fragment_end: usize,
+    pub raw: LiveObjectCreatureUpdateOrientationRaw,
+    pub target: LiveObjectCreatureUpdateOrientationTarget,
+    pub selected_read_end: usize,
+    pub selected_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectCreatureUpdateClaim {
     pub raw_mask: u32,
     pub has_position: bool,
     pub position_bit_cursor: Option<usize>,
-    pub orientation_source: Option<LiveObjectRecordOrientationSource>,
-    pub orientation_bit_cursor: Option<usize>,
+    pub orientation: Option<LiveObjectCreatureUpdateOrientationProof>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
