@@ -24941,6 +24941,91 @@ fn record_update_record_rewrite_summary(
         .saturating_add(record_rewrite.bits_removed);
 }
 
+fn terminal_item_update_handoff_requires_typed_item_create_rewrite(
+    live_bytes: &[u8],
+    item_create_offset: usize,
+    item_create_end: usize,
+    fragment_bits: &[bool],
+    item_create_bit_cursor: usize,
+    exact_item_create_bit_cursor: usize,
+) -> bool {
+    if !appearance::starts_with_typed_live_object_add_marker(live_bytes, item_create_offset)
+        || item_create_end.saturating_add(2) > live_bytes.len()
+        || live_bytes.get(item_create_end).copied() != Some(b'U')
+        || live_bytes.get(item_create_end + 1).copied() != Some(ITEM_OBJECT_TYPE)
+    {
+        return false;
+    }
+
+    let Some(item_create_claim) = appearance::verified_ee_item_create_fragment_claim(
+        live_bytes,
+        item_create_offset + 2,
+        item_create_end,
+        fragment_bits,
+        item_create_bit_cursor,
+    ) else {
+        return false;
+    };
+    let Some(source_fragment_bits) = item_create_claim.unique_source_fragment_bits_for_extra(1)
+    else {
+        return false;
+    };
+    let Some(emitted_fragment_bits) = item_create_claim.unique_emitted_fragment_bits() else {
+        return false;
+    };
+    let Some(source_handoff_cursor) = item_create_bit_cursor.checked_add(source_fragment_bits)
+    else {
+        return false;
+    };
+    if source_handoff_cursor.checked_add(1) != Some(exact_item_create_bit_cursor)
+        || item_create_bit_cursor.checked_add(emitted_fragment_bits)
+            != Some(exact_item_create_bit_cursor)
+    {
+        return false;
+    }
+
+    let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        live_bytes,
+        item_create_end,
+        live_bytes.len(),
+    )
+    .min(live_bytes.len());
+    if following_end != live_bytes.len() {
+        return false;
+    }
+
+    // Diamond `sub_451020` owns the item-name branch and four active-property
+    // BOOLs. EE `sub_14076BD30` appends one final BOOL. When an earlier
+    // structured pass has already produced EE item bytes, the isolated EE item
+    // reader can consume the following record's first bit as that final BOOL.
+    // Resolve only the bounded, terminal A/6 -> U/6 case: the Diamond handoff
+    // must make the complete translated item update exact through the terminal
+    // fragment cursor, while the apparent EE handoff must not. This is a
+    // two-record cursor proof, not neighboring-cursor search.
+    let Some(source_update_claim) = item::parse_item_update_rewrite_claim(
+        live_bytes,
+        item_create_end,
+        following_end,
+        fragment_bits,
+        source_handoff_cursor,
+    ) else {
+        return false;
+    };
+    if source_update_claim.cursor.next_bit_cursor != fragment_bits.len() {
+        return false;
+    }
+
+    item::parse_item_update_rewrite_claim(
+        live_bytes,
+        item_create_end,
+        following_end,
+        fragment_bits,
+        exact_item_create_bit_cursor,
+    )
+    .map(|claim| claim.cursor.next_bit_cursor != fragment_bits.len())
+    .unwrap_or(true)
+}
+
 fn rewrite_update_records_payload_with_area_context_inner(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
@@ -26127,13 +26212,24 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 }
 
                 let exact_add_start_bit_cursor = bit_cursor;
-                if add::advance_verified_add_record(
+                let exact_add_record = add::advance_verified_add_record(
                     &live_bytes,
                     offset,
                     record_end,
                     &fragment_bits,
                     &mut bit_cursor,
-                ) {
+                );
+                let exact_typed_item_create_steals_terminal_update_bit = exact_add_record
+                    && object_type == ITEM_OBJECT_TYPE
+                    && terminal_item_update_handoff_requires_typed_item_create_rewrite(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &fragment_bits,
+                        exact_add_start_bit_cursor,
+                        bit_cursor,
+                    );
+                if exact_add_record && !exact_typed_item_create_steals_terminal_update_bit {
                     if !rewrite_bit_ledger.commit_record(
                         &live_bytes,
                         LiveObjectRewriteBitLedgerCommit {

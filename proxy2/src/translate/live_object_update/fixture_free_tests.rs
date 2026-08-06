@@ -5755,7 +5755,7 @@ fn update_rewrite_typed_item_create_preserves_following_update_bits() {
             .expect("rewritten fragment bits");
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
-        &[false, false, false, true, false, false, false, true],
+        &[false, false, true, false, false, false, false, true],
         "the inserted EE bit must precede, not consume, the following update bits"
     );
 
@@ -5797,7 +5797,7 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_bits() 
     let fragment_bits =
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
-    let mut expected = vec![false, false, false, true, false, false];
+    let mut expected = vec![false, false, true, false, false, false];
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -5859,8 +5859,9 @@ fn legacy_width_typed_item_create_preserves_following_full_item_update_bits() {
     // This is the Diamond-body sibling of the CEP v2.3 `A/6` handoff audit.
     // At this layer the EE object visual-map may already be present, while the
     // typed item-create row still has Diamond-width model-type-2 BYTE parts and
-    // lacks EE's active-property BOOL. Widening those bytes must not move the
-    // following full `U/6` source bit.
+    // lacks EE's active-property BOOL and build-0x24 metadata. Widening those
+    // bytes and promoting the active tail must not move the following full
+    // `U/6` source bit.
     let mut live = legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes();
     live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
         b"Lance",
@@ -5876,8 +5877,9 @@ fn legacy_width_typed_item_create_preserves_following_full_item_update_bits() {
         .expect("legacy typed item-create widening should preserve the following U/6 cursor");
     assert_eq!(rewrite.bits_inserted, 1);
     assert_eq!(
-        rewrite.bytes_inserted, 3,
-        "model-type-2 BYTE parts widen to WORDs before the existing EE visual-map"
+        rewrite.bytes_inserted,
+        3 + 8,
+        "model-type-2 BYTE parts widen and build-0x24 metadata is inserted before the existing EE visual-map"
     );
     assert_eq!(rewrite.masks_translated, 1);
 
@@ -5886,7 +5888,7 @@ fn legacy_width_typed_item_create_preserves_following_full_item_update_bits() {
     let fragment_bits =
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
-    let mut expected = vec![false, false, false, true, false, false];
+    let mut expected = vec![false, false, true, false, false, false];
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -5924,8 +5926,8 @@ fn legacy_width_typed_item_create_without_visual_map_preserves_following_full_it
     assert_eq!(rewrite.bits_inserted, 1);
     assert_eq!(
         rewrite.bytes_inserted,
-        3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32,
-        "model-type-2 BYTE parts widen and EE's item visual-transform map is inserted"
+        3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32 + 8,
+        "model-type-2 BYTE parts widen, EE's item visual-transform map is inserted, and the active tail gains build-0x24 metadata"
     );
     assert_eq!(rewrite.masks_translated, 1);
 
@@ -5934,7 +5936,7 @@ fn legacy_width_typed_item_create_without_visual_map_preserves_following_full_it
     let fragment_bits =
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
-    let mut expected = vec![false, false, false, true, false, false];
+    let mut expected = vec![false, false, true, false, false, false];
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -6037,7 +6039,7 @@ fn tail9_door_update_before_typed_item_create_preserves_following_full_item_upda
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
     let mut expected = legacy_tail9_door_update_expected_ee_bits();
-    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&[false, false, true, false, false, false]); // A/6 plus final EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -6117,7 +6119,7 @@ fn synthetic_compact_tail9_name_token_before_typed_item_create_preserves_followi
             .expect("rewritten fragment bits");
     let mut expected = legacy_short_strref_door_add_expected_ee_bits();
     expected.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
-    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&[false, false, true, false, false, false]); // A/6 plus final EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -6164,7 +6166,7 @@ fn synthetic_compact_tail9_name_token_before_legacy_width_item_create_without_vi
             .expect("rewritten fragment bits");
     let mut expected = legacy_short_strref_door_add_expected_ee_bits();
     expected.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
-    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&[false, false, true, false, false, false]); // A/6 plus final EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -6212,7 +6214,7 @@ fn synthetic_compact_tail9_name_token_with_actual_short_strref_state_preserves_n
     let mut expected =
         legacy_short_strref_door_add_expected_ee_bits_with_state(actual_short_strref_state_bits);
     expected.extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
-    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&[false, false, true, false, false, false]); // A/6 plus final EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -7062,7 +7064,7 @@ fn synthetic_compact_no_map_u6_neighboring_cursor_fits_are_not_ownership_proof()
         legacy_short_strref_door_add_expected_ee_bits_with_state(actual_short_strref_state_bits);
     prefix_bits
         .extend_from_slice(&synthetic_compact_tail9_door_update_name_token_expected_ee_bits());
-    prefix_bits.extend_from_slice(&[false, false, false, true, false, false]); // no-map A/6 after EE repair.
+    prefix_bits.extend_from_slice(&[false, false, true, false, false, false]); // no-map A/6 after EE repair.
 
     let shifted_item_bits = vec![
         false, true, // unowned pre-cursor residue.
@@ -7220,7 +7222,7 @@ fn short_strref_door_add_before_tail9_item_handoff_preserves_full_item_update_bi
             .expect("rewritten fragment bits");
     let mut expected = legacy_short_strref_door_add_expected_ee_bits();
     expected.extend_from_slice(&legacy_tail9_door_update_expected_ee_bits());
-    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&[false, false, true, false, false, false]); // A/6 plus final EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -7310,7 +7312,7 @@ fn ee_shaped_door_add_before_tail9_item_handoff_preserves_full_item_update_bits(
             .expect("rewritten fragment bits");
     let mut expected = ee_shaped_generic_door_add_bits();
     expected.extend_from_slice(&legacy_tail9_door_update_expected_ee_bits());
-    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&[false, false, true, false, false, false]); // A/6 plus final EE BOOL.
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -7440,7 +7442,7 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_locstri
     let fragment_bits =
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
-    let mut expected = vec![false, false, false, true, false, false];
+    let mut expected = vec![false, false, true, false, false, false];
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -7486,7 +7488,7 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_locstri
     let fragment_bits =
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
-    let mut expected = vec![false, false, false, true, false, false];
+    let mut expected = vec![false, false, true, false, false, false];
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
@@ -7531,7 +7533,7 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_vector_
     let fragment_bits =
         super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
             .expect("rewritten fragment bits");
-    let mut expected = vec![false, false, false, true, false, false];
+    let mut expected = vec![false, false, true, false, false, false];
     expected.extend_from_slice(&following_update_bits);
     assert_eq!(
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],

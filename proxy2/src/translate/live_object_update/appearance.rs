@@ -2277,13 +2277,31 @@ pub(super) fn advance_legacy_item_create_record_for_transport(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    advance_legacy_gui_item_create_record(
+    // The transport capacity pass already owns a fixed typed A/6 byte window.
+    // It may therefore admit the same EE-build-0x23-appearance / Diamond-active-
+    // tail source shape as the transactional writer without broadening generic
+    // live-object endpoint discovery inside counted creature appearances.
+    let matching_source_widths = parse_legacy_item_create_record_candidates_with_mixed_active_tail(
         bytes,
         item_object_offset,
         record_end,
-        fragment_bits,
-        bit_cursor,
     )
+    .into_iter()
+    .filter(|record| {
+        record.fragment_bits_consumed <= fragment_bits.len().saturating_sub(*bit_cursor)
+            && record
+                .name_fragment_proof
+                .matches(fragment_bits, *bit_cursor)
+    })
+    .map(|record| record.fragment_bits_consumed);
+    let Some(source_fragment_bits) = unique_fragment_bit_width(matching_source_widths) else {
+        return false;
+    };
+    let Some(next_cursor) = bit_cursor.checked_add(source_fragment_bits) else {
+        return false;
+    };
+    *bit_cursor = next_cursor;
+    true
 }
 
 pub(super) fn try_get_verified_ee_gui_item_create_record_end(
@@ -2433,6 +2451,18 @@ pub(super) fn verified_ee_gui_item_create_record_end_candidates(
     }
 }
 
+fn unique_fragment_bit_width(widths: impl IntoIterator<Item = usize>) -> Option<usize> {
+    let mut unique = None;
+    for width in widths {
+        match unique {
+            None => unique = Some(width),
+            Some(existing) if existing == width => {}
+            Some(_) => return None,
+        }
+    }
+    unique
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VerifiedEeItemCreateFragmentClaim {
     pub selected_source_fragment_bits: usize,
@@ -2442,6 +2472,38 @@ pub(super) struct VerifiedEeItemCreateFragmentClaim {
     pub matching_candidates: usize,
     pub matching_fragment_bit_widths: Vec<usize>,
     pub matching_candidate_profiles: Vec<LiveObjectGuiItemFragmentCandidateProfile>,
+}
+
+impl VerifiedEeItemCreateFragmentClaim {
+    pub(super) fn unique_emitted_fragment_bits(&self) -> Option<usize> {
+        unique_fragment_bit_width(self.matching_fragment_bit_widths.iter().copied())
+    }
+
+    pub(super) fn unique_source_fragment_bits_for_extra(
+        &self,
+        required_extra_bits: usize,
+    ) -> Option<usize> {
+        if self.matching_candidate_profiles.len() != self.matching_candidates {
+            return None;
+        }
+        let emitted_bits = self.unique_emitted_fragment_bits()?;
+        let source_bits = unique_fragment_bit_width(
+            self.matching_candidate_profiles
+                .iter()
+                .map(|profile| profile.source_fragment_bits),
+        )?;
+        if self.matching_candidate_profiles.iter().any(|profile| {
+            profile.ee_extra_fragment_bits != required_extra_bits
+                || profile.fragment_bits != emitted_bits
+                || profile
+                    .source_fragment_bits
+                    .checked_add(required_extra_bits)
+                    != Some(emitted_bits)
+        }) {
+            return None;
+        }
+        Some(source_bits)
+    }
 }
 
 pub(super) fn verified_ee_item_create_fragment_claim(
@@ -2574,7 +2636,13 @@ pub(super) fn advance_verified_ee_item_create_record(
     ) else {
         return false;
     };
-    *bit_cursor = bit_cursor.saturating_add(claim.selected_fragment_bits);
+    let Some(fragment_bits_consumed) = claim.unique_emitted_fragment_bits() else {
+        return false;
+    };
+    let Some(next_cursor) = bit_cursor.checked_add(fragment_bits_consumed) else {
+        return false;
+    };
+    *bit_cursor = next_cursor;
     true
 }
 
@@ -2731,23 +2799,6 @@ pub(super) fn insert_ee_item_create_extras_for_ee(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
 ) -> Option<CreatureAppearanceExtraRewrite> {
-    let mut matching_records =
-        parse_legacy_item_create_record_candidates(bytes, item_object_offset, *record_end)
-            .into_iter()
-            .filter(|record| {
-                record.fragment_bits_consumed <= fragment_bits.len().saturating_sub(bit_cursor)
-                    && record
-                        .name_fragment_proof
-                        .matches(fragment_bits, bit_cursor)
-            });
-    let record = matching_records.next()?;
-    if matching_records.next().is_some() {
-        return None;
-    }
-    let emitted_fragment_bits_consumed = record
-        .fragment_bits_consumed
-        .checked_add(record.ee_extra_fragment_bits)?;
-
     // GUI inventory/repository item-create rows call the same EE helper as
     // top-level item adds after their GUI prefix:
     //
@@ -2758,35 +2809,145 @@ pub(super) fn insert_ee_item_create_extras_for_ee(
     // with the other item-create translators. Stage both fragment and byte
     // edits together so a failed byte proof cannot strand EE-only BOOLs before
     // the following live-object record cursor.
-    let mut staged_bytes = bytes.clone();
-    let mut staged_record_end = *record_end;
-    let mut staged_fragment_bits = fragment_bits.clone();
-    for (inserted, relative_offset) in record.ee_extra_insert_offsets.iter().copied().enumerate() {
-        bits::insert_msb_bit(
-            &mut staged_fragment_bits,
-            bit_cursor
-                .checked_add(relative_offset)?
-                .checked_add(inserted)?,
-            false,
-        )?;
+    // Appearance width and active-property dialect are independent reader
+    // decisions. A source item can already carry EE build-0x23 appearance/map
+    // bytes while its active-property tail still owns Diamond's four BOOLs and
+    // omits build-0x24 metadata. Supporting that mixed shape introduces an
+    // intentional overlap with the pure Diamond and pure EE candidates below.
+    // Trial every source-proven candidate transactionally through the exact EE
+    // item-create validator. Equivalent candidates may collapse only when they
+    // emit identical read-buffer and fragment-bit results; distinct valid
+    // outputs remain fail-closed.
+    let original_record_end = *record_end;
+    let mut accepted: Option<(
+        Vec<u8>,
+        usize,
+        Vec<bool>,
+        CreatureAppearanceByteApplySummary,
+        usize,
+        usize,
+        usize,
+    )> = None;
+    let source_candidates = parse_legacy_item_create_record_candidates_with_mixed_active_tail(
+        bytes,
+        item_object_offset,
+        original_record_end,
+    );
+    for record in source_candidates {
+        if record.fragment_bits_consumed > fragment_bits.len().saturating_sub(bit_cursor)
+            || !record
+                .name_fragment_proof
+                .matches(fragment_bits, bit_cursor)
+        {
+            continue;
+        }
+        let Some(emitted_fragment_bits_consumed) = record
+            .fragment_bits_consumed
+            .checked_add(record.ee_extra_fragment_bits)
+        else {
+            continue;
+        };
+
+        let mut staged_bytes = bytes.clone();
+        let mut staged_record_end = original_record_end;
+        let mut staged_fragment_bits = fragment_bits.clone();
+        let mut bit_insert_failed = false;
+        for (inserted, relative_offset) in
+            record.ee_extra_insert_offsets.iter().copied().enumerate()
+        {
+            let Some(insert_at) = bit_cursor
+                .checked_add(relative_offset)
+                .and_then(|offset| offset.checked_add(inserted))
+            else {
+                bit_insert_failed = true;
+                break;
+            };
+            if bits::insert_msb_bit(&mut staged_fragment_bits, insert_at, false).is_none() {
+                bit_insert_failed = true;
+                break;
+            }
+        }
+        if bit_insert_failed {
+            continue;
+        }
+
+        let Some(byte_apply) = apply_creature_appearance_byte_inserts(
+            &mut staged_bytes,
+            item_object_offset,
+            &mut staged_record_end,
+            &record.ee_extra_byte_inserts,
+        ) else {
+            continue;
+        };
+        let Some(expected_cursor) = bit_cursor.checked_add(emitted_fragment_bits_consumed) else {
+            continue;
+        };
+        let mut exact_cursor = bit_cursor;
+        let exact_valid = advance_verified_ee_item_create_record(
+            &staged_bytes,
+            item_object_offset,
+            staged_record_end,
+            &staged_fragment_bits,
+            &mut exact_cursor,
+        );
+        if !exact_valid || exact_cursor != expected_cursor {
+            continue;
+        }
+
+        if let Some((
+            accepted_bytes,
+            accepted_end,
+            accepted_bits,
+            _accepted_byte_apply,
+            accepted_source_bits,
+            accepted_emitted_bits,
+            _accepted_bits_inserted,
+        )) = accepted.as_ref()
+        {
+            if accepted_bytes != &staged_bytes
+                || *accepted_end != staged_record_end
+                || accepted_bits != &staged_fragment_bits
+                || *accepted_source_bits != record.fragment_bits_consumed
+                || *accepted_emitted_bits != emitted_fragment_bits_consumed
+            {
+                return None;
+            }
+            // Gross insert/remove counts describe the construction path, not
+            // the emitted protocol value. Once bytes, record end, fragment
+            // bits, and both cursor widths are identical, retain the first
+            // concrete edit ledger and accept the equivalent proof path.
+            continue;
+        }
+        accepted = Some((
+            staged_bytes,
+            staged_record_end,
+            staged_fragment_bits,
+            byte_apply,
+            record.fragment_bits_consumed,
+            emitted_fragment_bits_consumed,
+            record.ee_extra_insert_offsets.len(),
+        ));
     }
 
-    let byte_apply = apply_creature_appearance_byte_inserts(
-        &mut staged_bytes,
-        item_object_offset,
-        &mut staged_record_end,
-        &record.ee_extra_byte_inserts,
-    )?;
+    let (
+        staged_bytes,
+        staged_record_end,
+        staged_fragment_bits,
+        byte_apply,
+        source_fragment_bits_consumed,
+        emitted_fragment_bits_consumed,
+        bits_inserted,
+    ) = accepted?;
     *bytes = staged_bytes;
     *record_end = staged_record_end;
     *fragment_bits = staged_fragment_bits;
 
     Some(CreatureAppearanceExtraRewrite {
-        bits_inserted: record.ee_extra_insert_offsets.len(),
+        bits_inserted,
         bits_removed: 0,
         bytes_inserted: byte_apply.bytes_inserted,
         bytes_removed: byte_apply.bytes_removed,
-        source_fragment_bits_consumed: Some(record.fragment_bits_consumed),
+        source_fragment_bits_consumed: Some(source_fragment_bits_consumed),
         emitted_fragment_bits_consumed: Some(emitted_fragment_bits_consumed),
         visible_equipment_update_source_decisions:
             LiveObjectVisibleEquipmentUpdateSourceDecisionLedger::default(),
@@ -9347,6 +9508,38 @@ fn parse_legacy_item_create_record_candidates(
     parse_legacy_item_object_body_candidates(bytes, body_start, record_end, 0)
 }
 
+fn parse_legacy_item_create_record_candidates_with_mixed_active_tail(
+    bytes: &[u8],
+    item_object_offset: usize,
+    record_end: usize,
+) -> Vec<LegacyAppearanceItemAddRecord> {
+    let Some(min_object_end) = item_object_offset.checked_add(4) else {
+        return Vec::new();
+    };
+    if min_object_end >= record_end
+        || record_end > bytes.len()
+        || record_end.saturating_sub(item_object_offset) > LEGACY_APPEARANCE_MAX_ITEM_ADD_BYTES
+    {
+        return Vec::new();
+    }
+
+    let Some(object_id) = read_u32_le(bytes, item_object_offset) else {
+        return Vec::new();
+    };
+    if !looks_like_creature_or_legacy_sentinel_id(object_id) {
+        return Vec::new();
+    }
+
+    let Some(body_start) = item_object_offset.checked_add(4) else {
+        return Vec::new();
+    };
+    // This dialect pairing is intentionally local to the transactional item-
+    // create writer. Generic endpoint and nested-equipment discovery retain
+    // their established source dialects, so an EE-looking byte run inside a
+    // creature appearance cannot manufacture a live-object boundary.
+    parse_legacy_item_object_body_candidates_with_policy(bytes, body_start, record_end, 0, true)
+}
+
 fn parse_legacy_item_object_body(
     bytes: &[u8],
     body_start: usize,
@@ -9364,6 +9557,16 @@ fn parse_legacy_item_object_body_candidates(
     record_end: usize,
     slot: u32,
 ) -> Vec<LegacyAppearanceItemAddRecord> {
+    parse_legacy_item_object_body_candidates_with_policy(bytes, body_start, record_end, slot, false)
+}
+
+fn parse_legacy_item_object_body_candidates_with_policy(
+    bytes: &[u8],
+    body_start: usize,
+    record_end: usize,
+    slot: u32,
+    allow_mixed_ee_appearance_legacy_active_tail: bool,
+) -> Vec<LegacyAppearanceItemAddRecord> {
     // Visible-equipment item bodies are not searched by "any printable string
     // followed by a plausible active-property tail" here. Diamond's
     // `sub_451020` reaches the name reader only after the baseitems.2da
@@ -9373,7 +9576,11 @@ fn parse_legacy_item_object_body_candidates(
     // an `A`/`D` byte inside an item name or property blob as the next visible
     // equipment record.
     parse_legacy_visible_equipment_item_add_by_appearance_candidates(
-        bytes, body_start, record_end, slot,
+        bytes,
+        body_start,
+        record_end,
+        slot,
+        allow_mixed_ee_appearance_legacy_active_tail,
     )
 }
 
@@ -9384,7 +9591,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance(
     _slot: u32,
 ) -> Option<LegacyAppearanceItemAddRecord> {
     parse_legacy_visible_equipment_item_add_by_appearance_candidates(
-        bytes, body_start, record_end, _slot,
+        bytes, body_start, record_end, _slot, false,
     )
     .into_iter()
     .next()
@@ -9395,6 +9602,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
     body_start: usize,
     record_end: usize,
     slot: u32,
+    allow_mixed_ee_appearance_legacy_active_tail: bool,
 ) -> Vec<LegacyAppearanceItemAddRecord> {
     let Some(base_item) = read_u32_le(bytes, body_start) else {
         return Vec::new();
@@ -9410,6 +9618,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
         base_item,
         appearance_layout,
         ItemAppearanceWireDialect::LegacyDiamond,
+        allow_mixed_ee_appearance_legacy_active_tail,
         &mut candidates,
     );
     collect_visible_equipment_item_add_candidates_for_dialect(
@@ -9419,6 +9628,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
         base_item,
         appearance_layout,
         ItemAppearanceWireDialect::EeBuild8193,
+        allow_mixed_ee_appearance_legacy_active_tail,
         &mut candidates,
     );
     if let Some(body_visual_layout) =
@@ -9431,6 +9641,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
             base_item,
             body_visual_layout,
             ItemAppearanceWireDialect::LegacyDiamond,
+            allow_mixed_ee_appearance_legacy_active_tail,
             &mut candidates,
         );
         collect_visible_equipment_item_add_candidates_for_dialect(
@@ -9440,6 +9651,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
             base_item,
             body_visual_layout,
             ItemAppearanceWireDialect::EeBuild8193,
+            allow_mixed_ee_appearance_legacy_active_tail,
             &mut candidates,
         );
     }
@@ -9453,6 +9665,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
             base_item,
             body_visual_inline_layout,
             ItemAppearanceWireDialect::LegacyDiamond,
+            allow_mixed_ee_appearance_legacy_active_tail,
             &mut candidates,
         );
         collect_visible_equipment_item_add_candidates_for_dialect(
@@ -9462,6 +9675,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
             base_item,
             body_visual_inline_layout,
             ItemAppearanceWireDialect::EeBuild8193,
+            allow_mixed_ee_appearance_legacy_active_tail,
             &mut candidates,
         );
     }
@@ -9475,6 +9689,7 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
     base_item: u32,
     appearance_layout: LegacyVisibleEquipmentAppearanceLayout,
     dialect: ItemAppearanceWireDialect,
+    allow_mixed_ee_appearance_legacy_active_tail: bool,
     candidates: &mut Vec<LegacyAppearanceItemAddRecord>,
 ) {
     let appearance_bytes = appearance_layout.legacy_bytes;
@@ -9579,28 +9794,49 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
         return;
     }
     let active_bytes = &bytes[active_offset..record_end];
-    let active_tails = match dialect {
+    let active_tails: Vec<(LegacyVisibleEquipmentActiveTail, bool)> = match dialect {
         ItemAppearanceWireDialect::LegacyDiamond => {
             legacy_active_item_properties_tail_candidates_for_visible_equipment(
                 base_item,
                 appearance_layout.model_type,
                 active_bytes,
             )
+            .into_iter()
+            .map(|tail| (tail, true))
+            .collect()
         }
         ItemAppearanceWireDialect::EeBuild8193 => {
-            let Some(active_tails) =
+            let mut active_tails: Vec<_> =
                 ee_build_24_active_item_properties_tail_candidates_for_visible_equipment(
                     base_item,
                     appearance_layout.model_type,
                     active_bytes,
                 )
-            else {
-                return;
-            };
+                .unwrap_or_default()
+                .into_iter()
+                .map(|tail| (tail, false))
+                .collect();
+            if allow_mixed_ee_appearance_legacy_active_tail {
+                // EE `sub_14079FAC0` owns the build-0x23 appearance widths and
+                // visual-transform map before it hands off to `sub_14076BD30`.
+                // Those byte decisions do not prove that the source already
+                // carries build-0x24 metadata or EE's final fragment BOOL. Keep
+                // both interpretations when both parse so the transactional
+                // writer can require a unique emitted wire result.
+                active_tails.extend(
+                    legacy_active_item_properties_tail_candidates_for_visible_equipment(
+                        base_item,
+                        appearance_layout.model_type,
+                        active_bytes,
+                    )
+                    .into_iter()
+                    .map(|tail| (tail, true)),
+                );
+            }
             active_tails
         }
     };
-    for active_tail in active_tails {
+    for (active_tail, needs_build_24_metadata) in active_tails {
         if dialect == ItemAppearanceWireDialect::LegacyDiamond
             && appearance_layout.slot_zero_body_visual_compat
             && appearance_layout.needs_ee_model_type_3_table
@@ -9661,7 +9897,7 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
                 CreatureAppearanceByteInsert::MissingSecondInlineNameLength { offset, length },
             );
         }
-        if dialect == ItemAppearanceWireDialect::LegacyDiamond {
+        if needs_build_24_metadata {
             let relative_offset = active_tail.metadata_insert_relative_offset;
             let Some(offset) = active_offset.checked_add(relative_offset) else {
                 continue;
@@ -10554,6 +10790,51 @@ fn looks_like_creature_or_legacy_sentinel_id(object_id: u32) -> bool {
 #[cfg(test)]
 mod public_tests {
     use super::*;
+
+    #[test]
+    fn unique_fragment_bit_width_accepts_only_one_distinct_width() {
+        assert_eq!(unique_fragment_bit_width([17, 17, 17]), Some(17));
+        assert_eq!(unique_fragment_bit_width([17, 18]), None);
+        assert_eq!(unique_fragment_bit_width(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn item_create_claim_requires_complete_unique_cursor_profiles() {
+        let profile = LiveObjectGuiItemFragmentCandidateProfile {
+            source_fragment_bits: 12,
+            ee_extra_fragment_bits: 1,
+            fragment_bits: 13,
+            name_proof: "locstring-token",
+        };
+        let mut claim = VerifiedEeItemCreateFragmentClaim {
+            selected_source_fragment_bits: 12,
+            selected_ee_extra_fragment_bits: 1,
+            selected_fragment_bits: 13,
+            selected_name_proof: "locstring-token",
+            matching_candidates: 2,
+            matching_fragment_bit_widths: vec![13, 13],
+            matching_candidate_profiles: vec![profile.clone(), profile],
+        };
+
+        assert_eq!(claim.unique_emitted_fragment_bits(), Some(13));
+        assert_eq!(claim.unique_source_fragment_bits_for_extra(1), Some(12));
+
+        claim.matching_candidate_profiles.pop();
+        assert_eq!(claim.unique_source_fragment_bits_for_extra(1), None);
+
+        claim
+            .matching_candidate_profiles
+            .push(LiveObjectGuiItemFragmentCandidateProfile {
+                source_fragment_bits: 11,
+                ee_extra_fragment_bits: 2,
+                fragment_bits: 13,
+                name_proof: "locstring-token",
+            });
+        assert_eq!(claim.unique_source_fragment_bits_for_extra(1), None);
+
+        claim.matching_fragment_bit_widths[1] = 14;
+        assert_eq!(claim.unique_emitted_fragment_bits(), None);
+    }
 
     fn push_u16(bytes: &mut Vec<u8>, value: u16) {
         bytes.extend_from_slice(&value.to_le_bytes());
