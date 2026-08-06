@@ -5064,9 +5064,69 @@ mod diagnostic_tests {
         );
 
         let target_bit_cursor = fragment_bits.len();
+        let omitted_diagnostics = claim_payload_diagnostics(&omitted_target_payload);
+        assert_eq!(
+            omitted_diagnostics.reject.map(|reject| reject.stage),
+            Some(LiveObjectPayloadClaimRejectStage::RecordValidator)
+        );
+        let omission = omitted_diagnostics
+            .source_creature_orientation_target_omission
+            .expect("the rejected record should retain exact Diamond-source omission proof");
+        assert_eq!(omission.object_id, object_id);
+        assert_eq!(omission.raw_mask, raw_mask);
+        assert_eq!(
+            omission.source_orientation.raw,
+            LiveObjectCreatureUpdateOrientationRaw::Scalar(0x044A)
+        );
+        assert_eq!(
+            omission.source_orientation.target,
+            LiveObjectCreatureUpdateOrientationTarget::Omitted
+        );
+        assert_eq!(
+            omission.source_orientation.branch_fragment_end,
+            target_bit_cursor
+        );
+        assert_eq!(
+            omission.source_orientation.selected_bit_cursor,
+            target_bit_cursor
+        );
+        assert_eq!(
+            omission.false_guard_candidate.target,
+            LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+                bit_cursor: target_bit_cursor,
+            }
+        );
+        assert_eq!(
+            omission.false_guard_candidate.selected_read_end,
+            omission.source_orientation.selected_read_end
+        );
+        assert_eq!(
+            omission.false_guard_candidate.selected_bit_cursor,
+            target_bit_cursor + 1
+        );
+
+        let mut shifted_omitted_bits = fragment_bits.clone();
+        shifted_omitted_bits.remove(CNW_FRAGMENT_HEADER_BITS);
+        let shifted_omitted_payload = live_object_payload_from_parts(&live, &shifted_omitted_bits)
+            .expect("shifted source-only creature U/5 payload");
+        assert!(
+            claim_payload_diagnostics(&shifted_omitted_payload)
+                .source_creature_orientation_target_omission
+                .is_none(),
+            "a shifted fragment cursor must remain an ordinary invalid record, not omitted-target evidence"
+        );
+
         fragment_bits.push(false); // explicit EE orientation-target guard: no target.
         let payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("creature U/5 payload");
+        let exact_diagnostics = claim_payload_diagnostics(&payload);
+        assert!(exact_diagnostics.reject.is_none());
+        assert!(
+            exact_diagnostics
+                .source_creature_orientation_target_omission
+                .is_none(),
+            "an explicit EE target guard must never enter source-only diagnostics"
+        );
 
         let claim = claim_payload_if_verified(&payload).expect("exact creature U/5 claim");
         assert_eq!(claim.creature_update_records, 1);
@@ -5123,6 +5183,122 @@ mod diagnostic_tests {
         assert!(
             claim_payload_if_verified(&shifted_payload).is_none(),
             "removing the first position bit must prevent the exact U/5 cursor claim"
+        );
+    }
+
+    #[test]
+    fn source_orientation_omission_diagnostic_uses_inherited_record_cursor() {
+        let first_object_id = 0x8000_0020u32;
+        let second_object_id = 0x8000_0021u32;
+        let mut live = vec![b'U', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&first_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_POSITION_MASK.to_le_bytes());
+        live.extend_from_slice(&0x1111u16.to_le_bytes());
+        live.extend_from_slice(&0x2222u16.to_le_bytes());
+        live.extend_from_slice(&0x3333u16.to_le_bytes());
+        let second_offset = live.len();
+        live.extend_from_slice(&[b'U', CREATURE_OBJECT_TYPE]);
+        live.extend_from_slice(&second_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_ORIENTATION_MASK.to_le_bytes());
+        live.push(0x44);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            true, false, // first record position Z low bits.
+            false, // second record scalar orientation branch.
+            true, false, true, false, // second record scalar orientation low bits.
+        ]);
+        let payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("mixed creature U/5 payload");
+        let diagnostics = claim_payload_diagnostics(&payload);
+        let reject = diagnostics.reject.expect("second record should reject");
+        assert_eq!(
+            reject.stage,
+            LiveObjectPayloadClaimRejectStage::RecordValidator
+        );
+        assert_eq!(reject.offset, Some(second_offset));
+        assert_eq!(
+            reject.bit_cursor,
+            Some(CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS)
+        );
+
+        let omission = diagnostics
+            .source_creature_orientation_target_omission
+            .expect("second record should retain source-only target omission");
+        assert_eq!(omission.object_id, second_object_id);
+        assert_eq!(omission.raw_mask, LEGACY_UPDATE_ORIENTATION_MASK);
+        assert_eq!(
+            omission.source_orientation.selector_bit_cursor,
+            CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+        );
+        assert_eq!(omission.source_orientation.selected_read_end, live.len());
+        assert_eq!(
+            omission.source_orientation.selected_bit_cursor,
+            fragment_bits.len()
+        );
+        assert_eq!(
+            omission.false_guard_candidate.selected_bit_cursor,
+            fragment_bits.len() + 1
+        );
+    }
+
+    #[test]
+    fn source_vector_orientation_omission_diagnostic_preserves_body_and_handoff() {
+        let object_id = 0x8000_0022u32;
+        let mut live = vec![b'U', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_ORIENTATION_MASK.to_le_bytes());
+        live.extend_from_slice(&0x1111u16.to_le_bytes());
+        live.extend_from_slice(&0x2222u16.to_le_bytes());
+        live.extend_from_slice(&0x3333u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.push(true); // vector orientation branch; Diamond target is omitted.
+        let target_bit_cursor = fragment_bits.len();
+        let payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("source-only vector creature U/5 payload");
+        let diagnostics = claim_payload_diagnostics(&payload);
+        assert_eq!(
+            diagnostics.reject.map(|reject| reject.stage),
+            Some(LiveObjectPayloadClaimRejectStage::RecordValidator)
+        );
+
+        let omission = diagnostics
+            .source_creature_orientation_target_omission
+            .expect("the rejected vector record should retain exact source omission proof");
+        assert_eq!(omission.object_id, object_id);
+        assert_eq!(omission.raw_mask, LEGACY_UPDATE_ORIENTATION_MASK);
+        assert_eq!(
+            omission.source_orientation.raw,
+            LiveObjectCreatureUpdateOrientationRaw::Vector([0x1111, 0x2222, 0x3333])
+        );
+        assert_eq!(
+            omission.source_orientation.target,
+            LiveObjectCreatureUpdateOrientationTarget::Omitted
+        );
+        assert_eq!(
+            omission.source_orientation.branch_fragment_end,
+            target_bit_cursor
+        );
+        assert_eq!(omission.source_orientation.selected_read_end, live.len());
+        assert_eq!(
+            omission.source_orientation.selected_bit_cursor,
+            target_bit_cursor
+        );
+        assert_eq!(
+            omission.false_guard_candidate.raw,
+            omission.source_orientation.raw
+        );
+        assert_eq!(
+            omission.false_guard_candidate.target,
+            LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+                bit_cursor: target_bit_cursor,
+            }
+        );
+        assert_eq!(omission.false_guard_candidate.selected_read_end, live.len());
+        assert_eq!(
+            omission.false_guard_candidate.selected_bit_cursor,
+            target_bit_cursor + 1
         );
     }
 
@@ -20537,6 +20713,24 @@ pub struct LiveObjectCreatureUpdateOrientationProof {
     pub selected_bit_cursor: usize,
 }
 
+/// Exact Diamond-source evidence for a creature orientation record that the EE
+/// reader cannot consume without an explicit target BOOL.
+///
+/// This is diagnostic evidence only. Diamond server `0x44525B..0x4453B3`
+/// conditionally omits the complete target subbranch, while EE client
+/// `0x140782102..0x1407821E7` always reads the target BOOL after the
+/// scalar/vector body. The false-guard candidate is retained only after the
+/// same complete record validates with one false MSB-first BOOL inserted at
+/// the source branch handoff; callers must not treat that proof as authority to
+/// mutate or emit the packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectCreatureUpdateOrientationTargetOmissionDiagnostic {
+    pub object_id: u32,
+    pub raw_mask: u32,
+    pub source_orientation: LiveObjectCreatureUpdateOrientationProof,
+    pub false_guard_candidate: LiveObjectCreatureUpdateOrientationProof,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectCreatureUpdateClaim {
     pub raw_mask: u32,
@@ -20860,6 +21054,8 @@ pub struct LiveObjectPayloadClaimDiagnostics {
     pub first_capacity_plausible_repair_fragment_bytes_length: Option<usize>,
     pub reject: Option<LiveObjectPayloadClaimReject>,
     pub reject_record_preview: Option<LiveObjectPayloadClaimRejectRecordPreview>,
+    pub source_creature_orientation_target_omission:
+        Option<LiveObjectCreatureUpdateOrientationTargetOmissionDiagnostic>,
 }
 
 pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagnostics {
@@ -20873,10 +21069,10 @@ pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagno
     let live_bytes_length = declared_window
         .map(|declared| declared.saturating_sub(HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES));
     let fragment_bytes = declared_window.map(|declared| payload.len().saturating_sub(declared));
-    let fragment_bits = declared_window.and_then(|declared| {
+    let decoded_fragment_bits = declared_window.and_then(|declared| {
         bits::decode_msb_valid_bits(&payload[declared..], CNW_FRAGMENT_HEADER_BITS)
-            .map(|bits| bits.len())
     });
+    let fragment_bits = decoded_fragment_bits.as_ref().map(Vec::len);
     // Exact-claim diagnostics run on intermediate and final rejection paths.
     // Declared-length repair owns its candidate search in the dispatcher; doing
     // the same nested read-prefix analysis again here turned one unsupported
@@ -20886,6 +21082,13 @@ pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagno
     let reject = claim_payload_if_verified_with_reject(payload).err();
     let reject_record_preview =
         live_object_claim_reject_record_preview(payload, declared_window, reject);
+    let source_creature_orientation_target_omission =
+        live_object_source_creature_orientation_target_omission_diagnostic(
+            payload,
+            declared_window,
+            decoded_fragment_bits.as_deref(),
+            reject,
+        );
 
     LiveObjectPayloadClaimDiagnostics {
         payload_length: payload.len(),
@@ -20903,7 +21106,38 @@ pub fn claim_payload_diagnostics(payload: &[u8]) -> LiveObjectPayloadClaimDiagno
         first_capacity_plausible_repair_fragment_bytes_length: None,
         reject,
         reject_record_preview,
+        source_creature_orientation_target_omission,
     }
+}
+
+fn live_object_source_creature_orientation_target_omission_diagnostic(
+    payload: &[u8],
+    declared_window: Option<usize>,
+    fragment_bits: Option<&[bool]>,
+    reject: Option<LiveObjectPayloadClaimReject>,
+) -> Option<LiveObjectCreatureUpdateOrientationTargetOmissionDiagnostic> {
+    let declared = declared_window?;
+    let fragment_bits = fragment_bits?;
+    let reject = reject?;
+    if reject.stage != LiveObjectPayloadClaimRejectStage::RecordValidator {
+        return None;
+    }
+    let offset = reject.offset?;
+    let record_end = reject.record_end?;
+    let bit_cursor = reject.bit_cursor?;
+    let live_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let live_bytes = payload.get(live_start..declared)?;
+    if record_end <= offset || record_end > live_bytes.len() {
+        return None;
+    }
+
+    creature::diagnose_source_orientation_target_omission(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
 }
 
 fn live_object_claim_reject_record_preview(

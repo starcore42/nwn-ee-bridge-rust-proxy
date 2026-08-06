@@ -3419,6 +3419,7 @@ try {
         LiveObjectExactClaimCreatureUpdateClaimOrientationTargetOmittedMentions = Get-LiveObjectExactClaimTraceFieldSum -Text $proxyLogText -Field 'creature_update_claim_orientation_target_omitted_mentions'
         LiveObjectExactClaimCreatureUpdateClaimOrientationTargetGuardFalseMentions = Get-LiveObjectExactClaimTraceFieldSum -Text $proxyLogText -Field 'creature_update_claim_orientation_target_guard_false_mentions'
         LiveObjectExactClaimCreatureUpdateClaimOrientationTargetGuardTrueMentions = Get-LiveObjectExactClaimTraceFieldSum -Text $proxyLogText -Field 'creature_update_claim_orientation_target_guard_true_mentions'
+        LiveObjectSourceCreatureOrientationTargetOmissionDiagnostics = Get-TextMatchCount -Text $proxyLogText -Pattern 'server live-object Diamond-source creature orientation target omission diagnosed'
         LiveObjectExactClaimItemMentions = Get-LiveObjectExactClaimTraceFieldSum -Text $proxyLogText -Field 'item_mentions'
         LiveObjectExactClaimTriggerMentions = Get-LiveObjectExactClaimTraceFieldSum -Text $proxyLogText -Field 'trigger_mentions'
         LiveObjectExactClaimPlaceableMentions = Get-LiveObjectExactClaimTraceFieldSum -Text $proxyLogText -Field 'placeable_mentions'

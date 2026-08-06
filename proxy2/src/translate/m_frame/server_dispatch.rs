@@ -1603,6 +1603,9 @@ fn rewrite_live_object_high_level_payload_for_ee(
     let claim_diagnostics = live_update::claim_payload_diagnostics(payload);
     let claim_reject = claim_diagnostics.reject;
     let claim_reject_record = claim_diagnostics.reject_record_preview;
+    if let Some(omission) = claim_diagnostics.source_creature_orientation_target_omission {
+        trace_live_object_source_creature_orientation_target_omission(omission);
+    }
     let dump_path = dump_unrewritten_semantic_payload(payload, reason);
     tracing::warn!(
         reason,
@@ -1696,6 +1699,53 @@ fn rewrite_live_object_high_level_payload_for_ee(
         "server live-object payload quarantined: no focused live-object translator produced an exact EE reader shape"
     );
     rewrite
+}
+
+fn trace_live_object_source_creature_orientation_target_omission(
+    omission: live_object_update::LiveObjectCreatureUpdateOrientationTargetOmissionDiagnostic,
+) {
+    let source = omission.source_orientation;
+    let false_guard = omission.false_guard_candidate;
+    let (orientation_source, scalar_raw_known, scalar_raw, vector_raw_known, vector_raw) =
+        match source.raw {
+            live_object_update::LiveObjectCreatureUpdateOrientationRaw::Scalar(raw) => {
+                ("scalar", true, raw, false, [0; 3])
+            }
+            live_object_update::LiveObjectCreatureUpdateOrientationRaw::Vector(raw) => {
+                ("vector", false, 0, true, raw)
+            }
+        };
+    let false_guard_insert_bit_cursor = match false_guard.target {
+        live_object_update::LiveObjectCreatureUpdateOrientationTarget::GuardFalse {
+            bit_cursor,
+        } => bit_cursor,
+        _ => source.branch_fragment_end,
+    };
+
+    tracing::warn!(
+        object_id = omission.object_id,
+        raw_mask = omission.raw_mask,
+        orientation_source,
+        scalar_raw_known,
+        scalar_raw,
+        vector_raw_known,
+        vector_raw_x = vector_raw[0],
+        vector_raw_y = vector_raw[1],
+        vector_raw_z = vector_raw[2],
+        source_target = "omitted",
+        source_selector_bit_cursor = source.selector_bit_cursor,
+        source_branch_read_start = source.branch_read_start,
+        source_branch_read_end = source.branch_read_end,
+        source_branch_fragment_end = source.branch_fragment_end,
+        source_selected_read_end = source.selected_read_end,
+        source_selected_bit_cursor = source.selected_bit_cursor,
+        false_guard_insert_bit_cursor,
+        false_guard_selected_read_end = false_guard.selected_read_end,
+        false_guard_selected_bit_cursor = false_guard.selected_bit_cursor,
+        diagnostic_authority = "observation-only",
+        emission_permitted = false,
+        "server live-object Diamond-source creature orientation target omission diagnosed"
+    );
 }
 
 fn finalize_server_translator_claim(

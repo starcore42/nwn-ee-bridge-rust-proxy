@@ -232,6 +232,95 @@ fn orientation_target_guard_is_owned_for_ee(
     })
 }
 
+pub(super) fn diagnose_source_orientation_target_omission(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<super::LiveObjectCreatureUpdateOrientationTargetOmissionDiagnostic> {
+    if offset + 10 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != 0x05
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, offset + 2)?;
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    let mut source_bit_cursor = bit_cursor;
+    let mut source_orientation = None;
+    if !advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut source_bit_cursor,
+        &mut source_orientation,
+    ) {
+        return None;
+    }
+    let source_orientation = source_orientation?;
+    if source_orientation.selected_read_end != record_end
+        || source_orientation.selected_bit_cursor != source_bit_cursor
+        || !matches!(
+            source_orientation.target,
+            super::LiveObjectCreatureUpdateOrientationTarget::Omitted
+        )
+    {
+        return None;
+    }
+
+    // This is an observation-only writer plan. Inserting a false target BOOL
+    // at the Diamond branch handoff must make the same complete record satisfy
+    // the EE reader and advance the fragment cursor by exactly one bit. We do
+    // not modify the caller's packet or grant the reconstructed shape semantic
+    // authority here.
+    let false_guard_insert_bit_cursor = source_orientation.branch_fragment_end;
+    let mut trial_fragment_bits = fragment_bits.to_vec();
+    bits::insert_msb_bit(
+        &mut trial_fragment_bits,
+        false_guard_insert_bit_cursor,
+        false,
+    )?;
+    let mut false_guard_bit_cursor = bit_cursor;
+    let mut false_guard_candidate = None;
+    if !advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
+        bytes,
+        offset,
+        record_end,
+        &trial_fragment_bits,
+        &mut false_guard_bit_cursor,
+        &mut false_guard_candidate,
+    ) {
+        return None;
+    }
+    let false_guard_candidate = false_guard_candidate?;
+    if false_guard_candidate.source != source_orientation.source
+        || false_guard_candidate.raw != source_orientation.raw
+        || false_guard_candidate.selected_read_end != record_end
+        || false_guard_candidate.selected_bit_cursor != false_guard_bit_cursor
+        || false_guard_bit_cursor != source_bit_cursor.checked_add(1)?
+        || !matches!(
+            false_guard_candidate.target,
+            super::LiveObjectCreatureUpdateOrientationTarget::GuardFalse { bit_cursor }
+                if bit_cursor == false_guard_insert_bit_cursor
+        )
+    {
+        return None;
+    }
+
+    Some(
+        super::LiveObjectCreatureUpdateOrientationTargetOmissionDiagnostic {
+            object_id,
+            raw_mask,
+            source_orientation,
+            false_guard_candidate,
+        },
+    )
+}
+
 fn advance_verified_noop_creature_update_record_exact_cursor_with_orientation(
     bytes: &[u8],
     offset: usize,
