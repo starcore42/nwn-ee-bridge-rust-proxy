@@ -5812,6 +5812,53 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_bits() 
 }
 
 #[test]
+fn typed_item_create_handoff_preserves_terminal_work_remaining() {
+    // WorkRemaining is three read-buffer bytes and owns no fragment bits.
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(&[
+        b'L', b'a', b'n', b'c', b'e',
+    ]));
+    live.extend_from_slice(&[b'W', 0x01, 0x0E]);
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    let mut owned_bits = vec![false, false, true, false, false];
+    owned_bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, owned_bits);
+    assert!(super::claim_payload_if_verified(&payload).is_none());
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload).unwrap();
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .unwrap();
+    let mut expected = vec![false, false, true, false, false, false];
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice()
+    );
+    let claim = super::claim_payload_if_verified(&payload).unwrap();
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.world_status_records, 1);
+}
+
+#[test]
+fn typed_item_create_terminal_work_remaining_rejects_shifted_update_cursor() {
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(&[
+        b'L', b'a', b'n', b'c', b'e',
+    ]));
+    live.extend_from_slice(&[b'W', 0x01, 0x0E]);
+    let mut bits = vec![false, false, true, false, false];
+    bits.extend_from_slice(&item_update_full_mask_vector_direct_name_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+    assert!(super::rewrite_update_records_payload_if_possible(&mut payload).is_none());
+    assert_eq!(payload, original);
+}
+
+#[test]
 fn typed_item_create_boundary_uses_item_body_proof_over_property_opcode_bytes() {
     // Diamond `sub_451020` and EE `sub_14076BD30` both consume the counted
     // active-property tail inside the typed `A/6` item body. Bytes in that tail
@@ -7545,6 +7592,36 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_vector_
         .expect("rewritten typed item-create/vector full-update stream should claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn update_rewrite_typed_item_create_preserves_vector_update_before_terminal_work_remaining() {
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_vector_direct_name_live_bytes(&[
+        b'L', b'a', b'n', b'c', b'e',
+    ]));
+    live.extend_from_slice(&[b'W', 0x10, 0x20]);
+    let mut bits = vec![false, false, true, false, false];
+    bits.extend_from_slice(&item_update_full_mask_vector_direct_name_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload).unwrap();
+    assert_eq!(rewrite.bits_inserted, 1);
+    let claim = super::claim_payload_if_verified(&payload).unwrap();
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.world_status_records, 1);
+}
+
+#[test]
+fn typed_item_create_handoff_rejects_multiple_work_remaining_suffix() {
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(&[
+        b'L', b'a', b'n', b'c', b'e',
+    ]));
+    live.extend_from_slice(&[b'W', 1, 2, b'W', 2, 2]);
+    let mut bits = vec![false, false, true, false, false];
+    bits.extend_from_slice(&item_update_full_mask_scalar_direct_name_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    assert!(super::rewrite_update_records_payload_if_possible(&mut payload).is_none());
 }
 
 #[test]

@@ -24941,7 +24941,7 @@ fn record_update_record_rewrite_summary(
         .saturating_add(record_rewrite.bits_removed);
 }
 
-fn terminal_item_update_handoff_requires_typed_item_create_rewrite(
+fn item_update_handoff_requires_typed_item_create_rewrite(
     live_bytes: &[u8],
     item_create_offset: usize,
     item_create_end: usize,
@@ -24990,7 +24990,18 @@ fn terminal_item_update_handoff_requires_typed_item_create_rewrite(
         live_bytes.len(),
     )
     .min(live_bytes.len());
-    if following_end != live_bytes.len() {
+    // `W current total` is the only proven nonterminal successor here. Both
+    // Diamond and EE write/read exactly three bytes for work-remaining and no
+    // fragment bits, so the preceding U/6 still owns the terminal bit cursor.
+    // Keep every other suffix fail-closed until it can be verified in place
+    // without rebasing the original fragment phase.
+    if following_end != live_bytes.len()
+        && !world_status::is_verified_work_remaining_record(
+            live_bytes,
+            following_end,
+            live_bytes.len(),
+        )
+    {
         return false;
     }
 
@@ -24998,10 +25009,11 @@ fn terminal_item_update_handoff_requires_typed_item_create_rewrite(
     // BOOLs. EE `sub_14076BD30` appends one final BOOL. When an earlier
     // structured pass has already produced EE item bytes, the isolated EE item
     // reader can consume the following record's first bit as that final BOOL.
-    // Resolve only the bounded, terminal A/6 -> U/6 case: the Diamond handoff
-    // must make the complete translated item update exact through the terminal
-    // fragment cursor, while the apparent EE handoff must not. This is a
-    // two-record cursor proof, not neighboring-cursor search.
+    // Resolve only the bounded A/6 -> U/6 -> EOF or A/6 -> U/6 -> terminal W
+    // cases: the Diamond handoff must make the complete translated item update
+    // exact through the terminal fragment cursor, while the apparent EE
+    // handoff must not. W is fragment-neutral, so this remains a two-record
+    // cursor proof, not neighboring-cursor search.
     let Some(source_update_claim) = item::parse_item_update_rewrite_claim(
         live_bytes,
         item_create_end,
@@ -26219,9 +26231,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     &fragment_bits,
                     &mut bit_cursor,
                 );
-                let exact_typed_item_create_steals_terminal_update_bit = exact_add_record
+                let exact_typed_item_create_steals_following_update_bit = exact_add_record
                     && object_type == ITEM_OBJECT_TYPE
-                    && terminal_item_update_handoff_requires_typed_item_create_rewrite(
+                    && item_update_handoff_requires_typed_item_create_rewrite(
                         &live_bytes,
                         offset,
                         record_end,
@@ -26229,7 +26241,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         exact_add_start_bit_cursor,
                         bit_cursor,
                     );
-                if exact_add_record && !exact_typed_item_create_steals_terminal_update_bit {
+                if exact_add_record && !exact_typed_item_create_steals_following_update_bit {
                     if !rewrite_bit_ledger.commit_record(
                         &live_bytes,
                         LiveObjectRewriteBitLedgerCommit {
